@@ -61,6 +61,7 @@ all-reduce、NCCL、张量并行、流水线气泡、ZeRO 三个阶段、激活�
 |---|---|
 | **[Megatron-LM拆解.md](Megatron-LM拆解.md)** | ⭐ 真源码走查：目录结构、一次 `train_step` 的完整调用链、`schedules.py` 那 8 行分派、`parallel_state.py` 的 rank 排布 |
 | **[训练框架对比.md](训练框架对比.md)** | ⭐ Megatron-LM / DeepSpeed / FSDP-TorchTitan / veRL / **VeOmni** 五家横向对比与选型决策图 |
+| **[../强化学习训练框架/](../强化学习训练框架/)** | ⭐ **RL 后训练框架的横向调研**（独立目录，11 篇）：18 个开源框架 + 5 套前沿模型自研系统、同步→全异步的架构主轴、权重同步、训推一致性、slime 与 OpenRLHF 源码走查 |
 
 ### 资料
 
@@ -95,6 +96,7 @@ all-reduce、NCCL、张量并行、流水线气泡、ZeRO 三个阶段、激活�
 
 【路线 E：我做 RLHF / RL 后训练】
    01 → 02 → 05 → 14 → 训练框架对比.md
+   ↳ 想进一步看 RL 框架的横向格局与源码：../强化学习训练框架/
 
 【路线 F：我做多模态 / 超长上下文】
    02 → 05 → 08 → 11 → 12 → 训练框架对比.md（§6 VeOmni）

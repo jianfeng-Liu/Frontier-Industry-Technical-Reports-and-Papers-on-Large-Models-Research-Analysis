@@ -297,7 +297,7 @@ if attn_tp_size == tensor_model_parallel_size:
 ```
 
 > ★★ **三个值得注意的信号**：
-> ① `*_cuda_graph_runner.py` 有 5 个 —— **草稿模型不上 CUDA Graph，投机解码的收益会被 CPU 派发开销吃掉**（12 章 §12.6）。
+> ① `*_cuda_graph_runner.py` 有 5 个 —— **草稿模型不上 CUDA Graph，投机解码的收益会被 CPU 派发开销吃掉**（12 章 §12.7）。
 > ② `eagle_disaggregation.py` —— 投机解码和 PD 分离**要专门做组合**，不是各开各的就行。
 > ③ `adaptive_*` —— 印证 08 章那条规律：**投机解码必须按负载动态开关。**
 

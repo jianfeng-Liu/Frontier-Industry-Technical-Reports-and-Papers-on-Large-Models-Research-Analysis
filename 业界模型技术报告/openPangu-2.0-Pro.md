@@ -503,8 +503,86 @@ Pro：权重占用 1009 GB → 517 GB，压缩 1.95×
 - **算子**：mHC 拆成三个可重叠的算子（含专用 sinkhorn 算子）；SWA 侧提出 **intra-core 动态 micro-tile 级 mask-skip**——把 L1 上的粗粒度基本块切成与计算阵列物理维度对齐的 micro-tile，**在 L1→L0 搬运前跳过"全无效" micro-tile**，同时让 PAS 常驻 L1。
 - **通信**：MoE Dispatch 改为 **token-centric 执行模型**——每个 token **只读取和量化一次**再分发给所有路由专家，消除 Top-k 相关的冗余计算，**Dispatch 延迟降 25~30%，端到端延迟最多改善 5%**。
 - **图优化**：CANN 的 ACL Graph + Npugraph_ex（静态 kernel 编译 + Superkernel 融合），**合计改善 TPOT 3.2 ms**（静态编译 1.2 ms + Superkernel 2 ms）。
-- **并行**：MoE 走经典 EP；注意力在 prefill 侧用 **DSA CP + SWA TP**、decode 侧用 Attention DP。CP 方案叫 **Felix**。
+- **并行**：MoE 走经典 EP；注意力在 prefill 侧用 **DSA CP + SWA TP**、decode 侧用 Attention DP。CP 方案叫 **Felix**。（★ 这一条信息量最大，单独拆在 §11.4）
 - 训练侧部署在 **CloudMatrix 384 超节点**。
+
+### 11.4 ★ 把那句「prefill CP+TP、decode Attention DP」拆开看
+
+> 📖 **先把缩写摊开**：**TP**（Tensor Parallelism，张量并行，切权重矩阵）· **DP**（Data Parallelism，数据并行，切请求、权重复制）· **EP**（Expert Parallelism，专家并行，切专家）· **CP**（Context Parallelism，上下文并行，切序列）· **GEMM**（General Matrix Multiply，通用矩阵乘，就是一次大矩阵乘法）。
+
+上面那条 bullet 是报告披露的原话，但它压缩得太狠了。**这里按 Table 8 的配置把它还原成「每张卡到底拿到哪些权重」**——因为它是 505B 这类模型能在昇腾上跑起来的核心，也是最容易被读错的一句话。
+
+> ⚠️ **口径声明**：**切法本身（MoE 走 EP、prefill DSA CP + SWA TP、decode Attention DP）是报告原文；下面的卡数（32）和每卡参数账是本文按 Table 8 推算的，报告没有给。** 通用机理与 vLLM / SGLang 的源码对应见 [推理框架/10-PD分离 §10.4](../推理框架/推理优化入门/10-PD分离.md)。
+
+#### ① 先破一个误解：「decode 全用 DP」不等于每卡放一份完整模型
+
+505B 就算 W8A8 也要 ~505 GB，**没有任何一张卡装得下一个副本**。所谓 P/D 用不同并行，**说的只是注意力那一段**：
+
+```
+    ★ 占 98.4% 的路由专家（497 B），P 和 D 【都是 EP】，切法完全一样
+    ★ 分歧只在 MLA 那 4.0 B 的注意力权重上
+```
+
+⚠️ 按 Table 8 推算的三块权重（50 层 = 3 dense + 47 MoE，hidden 5120，64 头，KV 秩 512，384 专家，专家中间维 1792）：
+
+| 权重块 | 参数量 | 能怎么切 |
+|---|---|---|
+| 路由专家 ×384 | **497 B（98.4%）** | ★ 只能 EP。单个专家才 27.5M，TP 再切 32 份 = 1792/32 = 56 维，矩阵小到算子跑不满 |
+| MLA 注意力 | 4.0 B | TP 行（按头切）、DP 也行（整份复制）——**全部分歧在这里** |
+| Dense FFN + 共享专家 + 词表 | 3.6 B | 都行，量太小 |
+
+#### ② 每张卡拿到什么（⚠️ 设 P 实例 32 卡、D 实例 32 卡）
+
+| | **Prefill 侧** | **Decode 侧** |
+|---|---|---|
+| 注意力 | DSA 层 CP（Felix）+ SWA 层 TP；64 头 ÷ 32 = **每卡 2 头**。`W^DQ`/`W^DKV` 不带头维、切不动 ⟹ 32 卡各存一份 ≈ 0.54 B | **不切**，4.0 B 整份复制；**每卡处理不同请求，注意力算完一次通信都不用** |
+| Dense FFN | 16128 ÷ 32 = 每卡 504 维 | 跟注意力一起复制 |
+| MoE | **EP=32，每卡 12 个完整专家 ≈ 15.5 B** | **EP=32，每卡 12 个完整专家 ≈ 15.5 B**（★ 与 P 侧相同） |
+| 每卡合计 | ≈ **16.3 GB** @ W8A8 | ≈ **23 GB** @ W8A8（多出的 ~7 GB 就是复制的代价） |
+
+> ★ 顺带说准一件事：**prefill 侧不是「全 TP」。** DSA 层要看全序列，128K 的 prompt 切序列（CP）比切头划算；SWA 层窗口只有 512，切序列没意义，切头就够——**所以报告写的是 DSA CP + SWA TP 两种混着上。**
+
+#### ③ ★★ decode 为什么必须反着来——决定性的一条是 MLA
+
+报告在训推一致性那节自己写了前提：**MLA 在 decode 端切到 Absorptive 模式，等价于 MQA（见 §10.3 B 类失配）**。这一步把 TP 的地基抽掉了：
+
+```
+    ★ TP 的前提是「按注意力头切」。
+      Absorptive 之后 KV 只剩【1 个头】⟹ 32 张卡没法切
+      ⟹ 只能【32 张卡各存一份完全相同的 KV cache】
+```
+
+⚠️ 按 KV 秩 512 + RoPE 维 64 = 576、bf16、DSA:SWA = 1:2 推算：
+
+```
+    单条 128K 序列的 KV cache
+      17 个 DSA 层：17 × 576 × 2B × 131072 ≈ 2.5 GB    ← 随长度线性增长
+      33 个 SWA 层：33 × 576 × 2B × 512    ≈  19 MB    ← 窗口 512，★ 恒定
+      ───────────────────────────────────── ≈ 2.5 GB / 条
+
+    若 decode 也用 TP=32：32 卡各存同一条 ⟹ 80 GB 只服务【1 个】用户
+    改用 Attention DP=32：32 卡各存不同条 ⟹ 同样 80 GB 服务【32 个】用户
+                                          ★★★ 并发差 32 倍
+```
+
+> ★ 这笔账也解释了 §11.2 那个「Pro 从 8K 到 128K，TPOT 只涨 0.02 ms」的另一半：
+> **33 个 SWA 层的 cache 是恒定的，只有 17 个 DSA 层随长度增长。**
+
+另外两条辅助理由：
+
+- **decode 的矩阵已经小到切不动**：Table 7 的 Pro 用 batch=40，若 TP=32 则每卡 GEMM 只有 `40 × 2 × 128`，时间全花在 all-reduce 和 kernel 启动上（这也正是 §11.3 那些 Superkernel 融合和静态图编译要救的东西）。
+- **DP 把有效 batch 放大 32 倍，正好喂饱 EP**：TP 下全系统只有 40 个 token 路由给 384 个专家，**每个专家平均分不到 1 个 token**；DP=32 下是 1280 个 token，每个专家 ≈ 27 个 ⟹ 专家 GEMM 才有形状。
+
+#### ④ ⚠️ 代价
+
+```
+    ⚠️ ① 多花 ~7 GB/卡 复制注意力 + dense + 词表
+    ⚠️ ② 32 个 DP rank 必须【步调一致地一起 generate】——
+          MoE 的 all-to-all 是跨 DP 的集合通信，
+          没请求的卡也得塞【假 batch】进去凑数，否则另外 31 张卡一直等
+    ⚠️ ③ P 和 D 的专家热度分布不同 ⟹ 负载均衡（EPLB，Expert Parallelism Load Balancer，专家并行负载均衡器）要分两套配
+          ★ 报告的 EP-group 辅助损失（§6.2）管的是训练侧均衡，和这是两码事
+```
 
 ---
 
@@ -633,6 +711,8 @@ Agent / 工具 ：−12 ~ −26      ← 差一代，且是最大的一处
 | Table 8 架构超参、Table 1 效率系数、Table 2 mHC 消融、Table 3 MTP 调度、Table 5 全部评测、Table 6/7 延迟吞吐、三阶段课程与全部超参、OPD 公式、训推失配三分类、量化配置、附录 A.2/A.3 消融 | **报告正文提取** | 一手，可在 [papers/openPangu-2.0-正文提取.txt](papers/openPangu-2.0-正文提取.txt) grep 核对 |
 | 505B/18B、512K、34T、许可、发布时间线 | HF 模型卡 + 华为官网 | 一手 |
 | 541B 的口径拆解、参数量验算 | **本文推算**（基于 Table 8） | 推算，两项均与官方数字吻合 |
+| §11.4 的并行切法（MoE 走 EP、prefill DSA CP + SWA TP、decode Attention DP、Felix） | **报告 Infra 节原文** | 一手 |
+| §11.4 的 **32 卡假设与全部每卡参数账 / KV cache 账** | **本文推算**（基于 Table 8） | ⚠️ **推算，报告未给卡数与显存数字** |
 | §12.2 与四家的全部差距 | **跨厂商拼接** | ⚠️ **二手组合，口径不统一** |
 | WildClawBench 榜单排位 | 第三方榜单快照 | 二手，且是 Flash 不是 Pro |
 

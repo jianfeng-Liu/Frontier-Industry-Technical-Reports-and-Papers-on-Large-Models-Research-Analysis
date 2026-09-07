@@ -1,0 +1,1568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 推理中的并行策略 ⭐ 核心章</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="06">06 推理中的并行策略 ⭐ 核心章</h1>
+<blockquote>
+<p><strong>一句话</strong>：推理用的还是 TP / PP / DP / EP 那几个名字，但<strong>成本模型全变了</strong>——所以最优的排布顺序和训练<strong>正好相反</strong>。</p>
+<p>本章是全书唯一需要你回头对照 <a href="../../训练框架/分布式训练入门/12-并行策略组合与MFU.html">训练框架/12 章</a> 来读的一章。</p>
+</blockquote>
+<hr />
+<h2 id="60">6.0 先把结论摆出来</h2>
+<div class="codehilite"><pre><span></span><code>┌───────────────────────────────────────────────────────────────────┐
+│  训练（Megatron-LM）的 rank 排布顺序：                             │
+│      tp - cp - ep - dp - pp        ← ★ PP 在最外，DP 在中间        │
+│                                                                   │
+│  推理（vLLM）的 rank 排布顺序：                                    │
+│      ExternalDP - DP - PP - PCP - TP   ← ★★ PP 在 DP 【里面】     │
+│                                                                   │
+│  ★★ 一模一样的两个维度，相对位置【调了个个儿】。                    │
+│     不是谁写错了——是 DP 的通信成本从「最贵之一」变成了「几乎为零」。│
+└───────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>原文可查</strong>：vLLM <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1817">parallel_state.py:1817</a><br />
+```python</p>
+<h1 id="the-layout-order-is-externaldp-x-dp-x-pp-x-pcp-x-tp">the layout order is: ExternalDP x DP x PP x PCP x TP</h1>
+<p>```</p>
+</blockquote>
+<p>这一章就是要把这个「调个个儿」讲透。</p>
+<hr />
+<h2 id="61-rank">6.1 先复习：rank 排布顺序到底在说什么</h2>
+<blockquote>
+<p>📖 <strong>rank</strong>——每张 GPU 的全局编号，0, 1, 2, ... N-1。<br />
+📖 <strong>排布顺序</strong>——把这 N 个编号 reshape 成一个多维数组，<strong>哪个维度变化最快</strong>。</p>
+</blockquote>
+<p>vLLM 就是字面意义上地 reshape 了一下：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ parallel_state.py:1826</span>
+<span class="n">all_ranks</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">world_size</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span>
+    <span class="o">-</span><span class="mi">1</span><span class="p">,</span>                                    <span class="c1"># ExternalDP</span>
+    <span class="n">data_parallel_size</span><span class="p">,</span>                    <span class="c1"># DP</span>
+    <span class="n">pipeline_model_parallel_size</span><span class="p">,</span>          <span class="c1"># PP</span>
+    <span class="n">prefill_context_model_parallel_size</span><span class="p">,</span>   <span class="c1"># PCP</span>
+    <span class="n">tensor_model_parallel_size</span><span class="p">,</span>            <span class="c1"># TP   ← ★ 最后一维 = 变化最快</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<p><strong>「变化最快」= 组内 rank 编号连续 = 物理距离最近。</strong> 这就是全部的含义。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 步长（stride）= 同组内相邻两个 rank 的编号差
+
+      TP  组：步长 1                     ← ★ 最近，同一台机器内，走 NVLink
+      PCP 组：步长 = TP
+      PP  组：步长 = PCP × TP
+      DP  组：步长 = PP × PCP × TP       ← ★ 最远，跨机器，走网络
+
+    ⟹ ★★ 排在【越后面】的维度，通信越【近】越【快】。
+       所以排布顺序的设计原则永远是同一条：
+       ★★★ 通信量最大的维度，放到最后（离得最近）。
+</code></pre></div>
+
+<p>拿一个具体例子：<strong>8 卡，TP=2，PP=2，DP=2</strong>（PCP=1）：</p>
+<div class="codehilite"><pre><span></span><code>    reshape 成 [1, 2, 2, 1, 2]，即 [ExtDP=1][DP=2][PP=2][PCP=1][TP=2]
+
+    rank 0 1 2 3 4 5 6 7 摆进去：
+
+              DP=0                    DP=1
+        ┌───────────────┐      ┌───────────────┐
+    PP=0│  rank 0, 1    │      │  rank 4, 5    │
+        │   └─TP 组─┘   │      │   └─TP 组─┘   │
+    PP=1│  rank 2, 3    │      │  rank 6, 7    │
+        │   └─TP 组─┘   │      │   └─TP 组─┘   │
+        └───────────────┘      └───────────────┘
+
+    ⟹ TP 组：[0,1] [2,3] [4,5] [6,7]           步长 1  ★最近
+    ⟹ PP 组：[0,2] [1,3] [4,6] [5,7]           步长 2
+    ⟹ DP 组：[0,4] [1,5] [2,6] [3,7]           步长 4  ★最远
+
+    ★★ 请对比训练：训练里 DP 步长小于 PP，DP 比 PP 【近】。
+       这里反过来了。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 各组的构造代码：<br />
+TP <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1843">parallel_state.py:1843</a>（直接 <code>view(-1, tp)</code>，不需要转置，因为它已经在最后一维）；<br />
+PP <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1891">L1891</a>（<code>all_ranks.transpose(2, 4)</code>——把第 2 维换到最后）；<br />
+DP <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1908">L1908</a>（<code>all_ranks.transpose(1, 4)</code>）。<br />
+★ 代码注释把这套手法说得很清楚：<em>"to get group_ranks for each dimension, transpose that dimension to the last dimension, then reshape to 2D, then unbind"</em>。</p>
+</blockquote>
+<hr />
+<h2 id="62">6.2 ★★ 为什么反过来：一张表说清</h2>
+<p>回到那条唯一的原则——<strong>通信量大的放近处</strong>。所以只要比较四个维度在训练/推理下各自的通信量：</p>
+<div class="codehilite"><pre><span></span><code>┌────────┬──────────────────────────┬──────────────────────────┐
+│  维度   │  训练的通信量             │  推理的通信量             │
+├────────┼──────────────────────────┼──────────────────────────┤
+│  TP    │ 每层 4 次 all-reduce      │ 每层 2 次 all-reduce      │
+│        │ （前向2 + 反向2）          │ ★ 没有反向，直接减半      │
+│        │ ⟹ 最大，必须放最近         │ ⟹ 仍然最大，仍放最近      │
+├────────┼──────────────────────────┼──────────────────────────┤
+│  PP    │ 每个 micro-batch 传一次   │ 每步传一次激活            │
+│        │ 激活（前向）+ 梯度（反向） │ ★ 只有前向，量减半        │
+│        │ 量中等，可以跨机           │ 量中等，可以跨机           │
+├────────┼──────────────────────────┼──────────────────────────┤
+│  DP    │ ★★ 每步 all-reduce 全部    │ ★★ 几乎【为零】           │
+│        │ 梯度 = 2Ψ                 │ 各副本服务不同用户，       │
+│        │ ⟹ 【非常贵】，必须离得近   │ 不需要同步任何东西         │
+│        │                          │ ⟹ 【可以扔到天涯海角】     │
+├────────┼──────────────────────────┼──────────────────────────┤
+│  EP    │ 每层 2 次 all-to-all      │ 每层 2 次 all-to-all      │
+│  (MoE) │ + 反向 2 次               │ ★ 没有反向                │
+└────────┴──────────────────────────┴──────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>★★★ 全章最重要的一句话</strong>：<br />
+训练的 DP 每步要 all-reduce 整个模型的梯度（<a href="../../训练框架/分布式训练入门/05-ZeRO与FSDP.html">训练框架/05 章</a> 算过是 2Ψ），<br />
+所以 DP 必须排在 PP 前面（更近）。<br />
+<strong>推理的 DP 只是「N 份完全独立的副本，各服务各的用户」，一个字节都不用传。</strong><br />
+既然它不花通信，就理应被踢到最外圈，把宝贵的近距离带宽让给 TP 和 PP。</p>
+</blockquote>
+<p><strong>再补一个二阶原因</strong>（⚠️ 我的推断，代码注释支持但未明说）：</p>
+<div class="codehilite"><pre><span></span><code>    ★ DP 在最外层，还有一个工程上的好处：
+      「一个 DP 副本」= 一段连续的 rank = 一个完整的、自洽的推理引擎实例。
+      ⟹ 可以整块地启动、整块地挂掉重启、整块地做弹性伸缩
+      ⟹ 这正是 ExternalDP 这一维存在的意义：
+         代码注释说它用于 &quot;verl integration&quot;（强化学习框架），
+         ★ every dp rank can generate independently
+</code></pre></div>
+
+<hr />
+<h2 id="63">6.3 逐个维度：推理里它们各自怎么用</h2>
+<h3 id="1-tp">① TP（张量并行）——切权重，仍然是主力</h3>
+<blockquote>
+<p>📖 <strong>TP</strong>（<strong>T</strong>ensor <strong>P</strong>arallelism，张量并行）——把每一层的权重矩阵切开，每张卡存一片。</p>
+</blockquote>
+<p>推理里的 TP 和训练完全同构，还是那套「列切 + 行切」：</p>
+<div class="codehilite"><pre><span></span><code>    一个 MLP（多层感知机）块：
+      第一个线性层：★ 按【列】切（ColumnParallelLinear）→ 不需要通信
+      激活函数：                                        → 逐元素，不需要通信
+      第二个线性层：★ 按【行】切（RowParallelLinear）   → ⚠️ 需要 all-reduce
+
+    注意力块同理，QKV 按列切，输出投影按行切 → ⚠️ 一次 all-reduce
+
+    ⟹ ★ 每层 2 次 all-reduce（注意力 1 次 + MLP 1 次）
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>源码可查</strong>（vLLM <a href="../源码/vLLM/vllm/model_executor/layers/linear.py">linear.py</a>）：<br />
+<code>ColumnParallelLinear</code> <strong>L407</strong>（注意 <code>gather_output</code> 默认 <strong>False</strong>——★ 故意不 all-gather，把结果直接喂给下一个行切层，省掉一次通信）；<br />
+<code>QKVParallelLinear</code> <strong>L971</strong>（QKV 三个矩阵合并成一个列切层）；<br />
+<code>RowParallelLinear</code> <strong>L1510</strong>，唯一那次通信在 <strong>L1660</strong>：<br />
+<code>python
+output = tensor_model_parallel_all_reduce(output_parallel)</code></p>
+</blockquote>
+<p><strong>推理里 TP 的两个新特点</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 特点一：TP 是【降低单卡显存 + 降低延迟】的主要手段
+      TP=8 ⟹ 权重和 KV Cache 都切成 1/8
+           ⟹ 单个 token 的计算和访存都变成 1/8 ⟹ ★ TPOT 直接变快
+      ⟹ 这是训练里没有的动机（训练不在乎单步延迟）
+
+    ⚠️ 特点二：TP 在 Decode 阶段【收益递减】
+      Decode 本来就访存受限、kernel 很小。TP=8 之后，
+      每张卡的计算小到「通信时间 &gt; 计算时间」
+      ⟹ ★ 再加卡就是纯亏。经验上 TP 一般不超过单机卡数（8）。
+      ⟹ 想再扩，用 DP 加副本，不要继续加 TP。
+</code></pre></div>
+
+<p><strong>一个 TP 的硬约束</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ TP 数必须能整除【KV 头数】。
+       Llama-3-8B 用了 GQA，只有 8 个 KV 头 ⟹ ★ TP 最大只能到 8。
+       TP=16 的话，有的卡分不到 KV 头。
+       （框架的绕法是复制 KV 头，但那就白费显存了）
+</code></pre></div>
+
+<h3 id="2-pp">② PP（流水线并行）——推理里地位下降</h3>
+<blockquote>
+<p>📖 <strong>PP</strong>（<strong>P</strong>ipeline <strong>P</strong>arallelism，流水线并行）——把模型按层切成几段，每张卡放一段。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 训练里 PP 很重要：它是唯一能把超大模型放下、且通信量小的手段。
+    ⚠️ 推理里 PP 的地位明显下降，原因是【气泡】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    训练的流水线：一个 batch 切成 N 个 micro-batch 灌进去
+                 ⟹ 气泡率 ≈ (PP-1) / (PP-1+N)，N 可以很大 ⟹ 气泡小
+
+    ★★ 推理的 Decode：每一步只有【1 个 token】
+       ⟹ 没有 micro-batch 可切！
+       ⟹ 气泡率 ≈ (PP-1)/PP，PP=4 时高达 75%
+
+    ⚠️ 挽救办法：靠【连续批处理】天然的多请求来填流水线——
+       不同请求处在不同的流水段上，互相填对方的气泡。
+       ⟹ 所以推理的 PP 必须配合【大并发】才有意义。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️（我的判断）实践中的选择顺序通常是：<br />
+<strong>能单机 TP 装下 → 只用 TP；单机装不下 → 先考虑量化（09 章）；还是装不下 → 才上 PP 跨机。</strong><br />
+PP 主要用在「模型大到单机 8 卡也放不下」的场景（比如 DeepSeek-V3 这种 671B）。</p>
+</blockquote>
+<h3 id="3-dp">③ DP（数据并行）——推理里含义完全不同</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 训练的 DP：同一个 batch 切开，算完【必须 all-reduce 梯度】
+    ★ 推理的 DP：★★ 就是「多开几个一模一样的服务实例」
+
+    ⟹ 没有任何梯度、没有任何同步、通信量 = 0
+    ⟹ 扩容方式：想翻倍吞吐？DP 翻倍即可，线性扩展
+</code></pre></div>
+
+<p><strong>但有一个坑</strong>，代码注释专门警告了：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ parallel_state.py:1819-1823</span>
+<span class="c1"># DP is the data parallel group that is part of the model,</span>
+<span class="c1"># all the ranks in the same DP group should generate simultaneously,</span>
+<span class="c1"># i.e. the `generate` call in the same DP group should be called together,</span>
+<span class="c1"># otherwise it will cause deadlock.</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 为什么会死锁？
+       DP 组内虽然不传梯度，但如果模型里有 MoE 层，
+       MoE 的 all-to-all 是【跨 DP 组】的集合通信（见 §6.4）。
+       集合通信要求所有参与者【同时到场】。
+       ⟹ 某个 DP rank 因为没请求而不发起 generate，其他人就永远在等它。
+    ⟹ 这就是为什么 vLLM 里 DP 组必须「同步地一起 generate」，
+       没请求的 rank 也要发一个【假的空 batch】进去凑数（dummy run）。
+</code></pre></div>
+
+<h3 id="4-epmoe">④ EP（专家并行）——MoE 专用</h3>
+<blockquote>
+<p>📖 <strong>EP</strong>（<strong>E</strong>xpert <strong>P</strong>arallelism，专家并行）——MoE 模型里，把不同的专家放到不同卡上。<br />
+📖 <strong>MoE</strong>（<strong>M</strong>ixture <strong>o</strong>f <strong>E</strong>xperts，混合专家）——每个 token 只激活一小部分参数。</p>
+</blockquote>
+<p>EP 的 rank 组构造很有意思，它是 <strong>DP × PCP × TP 三个维度合并</strong>出来的：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ parallel_state.py:1923 附近</span>
+<span class="n">group_ranks</span> <span class="o">=</span> <span class="n">all_ranks</span><span class="o">.</span><span class="n">transpose</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span>
+    <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">data_parallel_size</span> <span class="o">*</span> <span class="n">prefill_context_model_parallel_size</span> <span class="o">*</span>
+        <span class="n">tensor_model_parallel_size</span><span class="p">)</span><span class="o">.</span><span class="n">unbind</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ EP 组 = 「同一个 PP 段内的所有卡」
+       含义：专家在一层内横着切，但不跨流水线段——这符合直觉，
+             因为不同 PP 段本来就是不同的层。
+</code></pre></div>
+
+<p>11 章会详细讲 MoE 推理和负载均衡（EPLB）。</p>
+<h3 id="5-pcp-dcp">⑤ 推理独有的新维度：PCP 和 DCP</h3>
+<p>这是训练侧没有的东西，vLLM 的比较新的加法：</p>
+<div class="codehilite"><pre><span></span><code>    📖 CP（Context Parallelism，上下文并行）——把【序列】切开，
+       不同卡负责序列的不同片段。训练侧也有（Ring Attention 等）。
+
+    ★ vLLM 把它拆成了两个独立的旋钮：
+      📖 PCP = Prefill Context Parallel（预填充上下文并行）
+              → 处理超长 prompt 时，把 prompt 切段并行做 Prefill
+              ★ 它在 rank 布局里占了独立一维（PP 和 TP 之间）
+      📖 DCP = Decode Context Parallel（解码上下文并行）
+              → 把【KV Cache】按序列维切到多张卡上
+              ★ 主要解决的是「tp 超过 KV 头数后，KV 被白白复制」
+                （单卡装不下超长序列只是顺带的好处，见 6.4.1）
+
+    ⟹ ★★ 为什么要拆成两个？因为 03 章那条：两个阶段性格不同，
+       Prefill 想切序列换算力，Decode 想切序列换显存。目标不一样。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 布局里 PCP 的位置见 L1826 的 reshape；DCP 的组在 TP 组之后构造<br />
+（<a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1851-L1866">parallel_state.py:1851-1866</a>）。<br />
+★ DCP <strong>不占全局维度</strong>——它是从已有的那五维里再切出来的，这和 PCP 不同。</p>
+<p>⚠️ <strong>一处要说准</strong>：常说的「DCP 从 TP 组内部再切」只在 <strong>PCP=1</strong> 时成立。<br />
+PCP&gt;1 时源码会先转置再 reshape，注释写得很明白：<br />
+<code>python
+if dcp_size &gt; 1:
+    # DCP spans PCP first, then TP for full TP x PCP groups.
+    dcp_ranks = dcp_ranks.transpose(-1, -2)
+group_ranks = dcp_ranks.reshape(-1, dcp_size).unbind(0)</code><br />
+⟹ DCP 组<strong>先沿 PCP 铺，铺满了才溢出到 TP</strong>。这也是为什么配置校验里<br />
+PCP&gt;1 时合法的 dcp 只有 <code>1 / pcp / tp*pcp</code> 三个值<br />
+（<a href="../源码/vLLM/vllm/config/parallel.py#L533">parallel.py:533</a>）。</p>
+<p><strong>DCP 具体怎么实现的？</strong> ⟹ 下一节 6.4 整节都在讲这件事。</p>
+</blockquote>
+<hr />
+<h2 id="64-dcp-kv">6.4 ★★ DCP 深挖：KV 到底怎么切、怎么拼回来</h2>
+<p>⑤ 里只说了 DCP「把 KV 按序列维切开」，这一节把它拆到能对着源码逐行读的程度。<br />
+之所以值得单开一节：DCP 是这一轮长上下文推理里<strong>最实用的一个旋钮</strong>，而它的设计里有两处相当反直觉。</p>
+<blockquote>
+<p>✅ vLLM 官方文档：<a href="../源码/vLLM/docs/serving/context_parallel_deployment.html">docs/serving/context_parallel_deployment.md</a><br />
+命令行开关：<code>-dcp &lt;size&gt;</code> / <code>--decode-context-parallel-size</code></p>
+</blockquote>
+<hr />
+<h3 id="641">6.4.1 真正的动机：不是「放不下」，是「白白重复」</h3>
+<p>先纠正一个很容易想岔的地方。DCP 的第一动机<strong>不是</strong>「单条 128K 序列的 KV 一张卡装不下」——那只是顺带的好处。真正的痛点是：</p>
+<div class="codehilite"><pre><span></span><code>    ★ TP 切 KV Cache，是沿【KV 头数 H】这一维切的。
+      但 H 是模型结构定死的，切不动了怎么办？
+
+      tp_size ≤ H  ⟹ 正常切，每卡拿 H/tp 个头 ✅
+      tp_size &gt; H  ⟹ ★★ 没得切了，只能【每卡存一份一模一样的】
+                    重复倍数 = tp_size / H
+</code></pre></div>
+
+<p>这就是 07 章「MLA 让 KV 变小」的副作用：<strong>KV 越小，TP 越容易越过 H 这道坎</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>注意力类型</th>
+<th>KV 头数 H</th>
+<th>典型部署</th>
+<th>★ KV 重复倍数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepSeek-R1</td>
+<td>MLA</td>
+<td><strong>1</strong></td>
+<td><code>-tp 8</code></td>
+<td><strong>8×</strong></td>
+</tr>
+<tr>
+<td>Kimi-K2</td>
+<td>MLA</td>
+<td><strong>1</strong></td>
+<td><code>-tp 16</code></td>
+<td><strong>16×</strong></td>
+</tr>
+<tr>
+<td>Qwen3-235B-A22B</td>
+<td>GQA</td>
+<td>4</td>
+<td><code>-tp 8</code></td>
+<td>2×</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ 这三个例子和倍数都是官方文档里的原话（context_parallel_deployment.md 的 Case study 段）。</p>
+</blockquote>
+<p><code>-tp 16</code> 跑 Kimi-K2，等于 16 张卡的 KV Cache 显存<strong>存了 16 份同样的东西</strong>。加上 <code>-dcp 16</code> 就能完全消掉；加 <code>-dcp 8</code> 则降到 2×，但通信只发生在<strong>单机内</strong>（NVLink），代价更小。</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 记住这句：DCP【不增加 GPU 数量】。
+       它不是「再加几张卡来装 KV」，而是把 TP 组里那些
+       本来存重复副本的卡，改成【各存一段】。
+</code></pre></div>
+
+<hr />
+<h3 id="642-interleave">6.4.2 存：交错分片（interleave）——第一处反直觉</h3>
+<p>KV 要沿序列长度 <code>T</code> 切，怎么切？</p>
+<div class="codehilite"><pre><span></span><code>    ✗ 朴素想法：切成连续的 N 段，rank0 拿前 1/N，rank1 拿next 1/N……
+      ★★ 死在哪：Decode 阶段序列【是在长长的】。
+         每生成一个 token，各段的边界就要挪一次，还得跨卡搬数据。
+         成本完全无法接受。
+
+    ✅ vLLM 的做法：交错分片（interleave）
+      ★ token 归谁，【只取决于它的绝对位置】，和序列当前多长无关。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 实现在 Triton 内核里：<br />
+<a href="../源码/vLLM/vllm/v1/worker/block_table.py#L410-L475">block_table.py:410-475</a><br />
+```python<br />
+virtual_block_size   = KV_CACHE_BLOCK_SIZE * TOTAL_CP_WORLD_SIZE<br />
+virtual_block_indices = pos // virtual_block_size<br />
+virtual_block_offsets = pos - virtual_block_indices * virtual_block_size</p>
+<h1 id="token">这个 token 归不归我？</h1>
+<p>is_local = (virtual_block_offsets // CP_KV_CACHE_INTERLEAVE_SIZE<br />
+           ) % TOTAL_CP_WORLD_SIZE == TOTAL_CP_RANK<br />
+```</p>
+</blockquote>
+<p>📖 <strong>Triton</strong>——OpenAI 的 GPU 内核编程语言，写起来像 Python，编译出来接近手写 CUDA。<br />
+📖 <strong>slot mapping</strong>——「第 i 个 token 的 KV 该写进显存池的哪个槽位」这张映射表。</p>
+<p><code>cp_kv_cache_interleave_size</code> 默认 <strong>1</strong>（<a href="../源码/vLLM/vllm/config/parallel.py#L362">parallel.py:362</a>），也就是<strong>逐 token 轮流坐庄</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    dcp_size = 4 时（interleave=1）：
+
+    位置:   0    1    2    3    4    5    6    7    8   ...
+    归属: rank0 rank1 rank2 rank3 rank0 rank1 rank2 rank3 rank0 ...
+            └─────────一轮─────────┘└─────────一轮─────────┘
+
+    ⟹ ★★ 新生成的 token 位置是 T, T+1, T+2……
+       套同一个公式就自然落到不同 rank 上。
+       【天然均衡，永远不需要重新分配、不需要搬数据】。
+</code></pre></div>
+
+<p>不归自己的 token，槽位号直接写成占位值：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">slot_ids</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">is_local</span><span class="p">,</span> <span class="n">slot_ids</span><span class="p">,</span> <span class="n">PAD_ID</span><span class="p">)</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 约束：<code>block_size</code> 必须 ≥ <code>cp_kv_cache_interleave_size</code> 且能被它整除<br />
+（<a href="../源码/vLLM/vllm/config/parallel.py#L371">parallel.py:371</a>）。</p>
+<p>📌 <strong>出处</strong>：这个交错方案由月之暗面（Moonshot）的 Chao Hong 提出，<br />
+论文 <a href="http://arxiv.org/abs/2507.07120">arXiv:2507.07120</a>。vLLM 文档里明确致谢了。</p>
+</blockquote>
+<hr />
+<h3 id="643-lse">6.4.3 算：用 LSE 把半成品精确拼回来——第二处反直觉</h3>
+<p>切完之后每张卡只有 1/N 的 KV，各自算出来的注意力结果都是<strong>残缺</strong>的。怎么合并？</p>
+<div class="codehilite"><pre><span></span><code>    ✗ 不能直接相加或求平均——softmax 的分母是全局的，
+      各卡分母不同，加起来毫无意义。
+
+    ✅ 靠 LSE。
+</code></pre></div>
+
+<p>📖 <strong>LSE</strong>（<strong>L</strong>og-<strong>S</strong>um-<strong>E</strong>xp，对数-求和-取指数）——FlashAttention 分块算 softmax 时会顺手吐出的一个标量，记录了这一块内所有注意力分数的「归一化底数」。<br />
+★★ 有了它，几块局部结果可以<strong>精确</strong>（不是近似）拼成全局结果——和 Ring Attention、Flash-Decoding 是同一个数学技巧。</p>
+<p>Decode 完整走一遍（<a href="../源码/vLLM/vllm/model_executor/layers/attention/mla_attention.py#L957-L996">mla_attention.py:957-996</a>）：</p>
+<div class="codehilite"><pre><span></span><code>   ① Query all-gather ─────────────── dcp_manager.query_gather(mqa_q)
+      每卡本来只有 num_heads/tp 个查询头，
+      在 DCP 组内全收集，凑齐【整组的头】
+                    ↓
+   ② 本地注意力 ──────────────────── impl.forward_mqa(...)
+      全部的头  ×  本地那 1/N 的 KV
+      → 局部 output + 局部 lse
+                    ↓
+   ③ LSE 校正 ────────────────────── dcp_manager.combine(...)
+      组内 all-gather 所有 lse → 算出全局 lse
+      本地 output 乘以 exp(本地lse − 全局lse) 做缩放
+                    ↓
+   ④ Reduce-scatter ──────────────── 沿【头】维归约并切回
+      每卡拿回自己那份头，且已是完整正确的结果
+
+   ⟹ ★ ①+④ 合起来就是默认通信后端的名字：ag_rs = AllGather + ReduceScatter
+</code></pre></div>
+
+<p>第 ③ 步的缩放因子，就是那个 Triton 内核 <code>_correct_attn_cp_out_kernel</code> 干的事：</p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L140-L150">dcp.py:140-150</a><br />
+<code>python
+lse_finally = lse_tmp - lse          # 本地 lse − 全局 lse
+factor = tl.exp(lse_finally)
+output = output * factor</code></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 注意方向：Decode 是【广播 query、各算各的 KV】。
+       为什么不反过来收集 KV？因为 Decode 每步只有 1 个 query token，
+       query 是【极小】的，KV 是【极大】的——当然搬小的那个。
+</code></pre></div>
+
+<hr />
+<h3 id="644-prefill-kv">6.4.4 Prefill 阶段反过来：收集 KV</h3>
+<p>分块预填充（chunked prefill）要对<strong>已有上下文</strong>做注意力，但那些 KV 按 6.4.2 散在各卡上。这时候 query 不再是 1 个 token 而是一大片，成本关系反转：</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ Prefill：all-gather【KV】。和 Decode 正好相反。
+</code></pre></div>
+
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/model_executor/layers/attention/mla_attention.py#L2829-L2851">mla_attention.py:2829-2851</a><br />
+源码里连 workspace 的内存布局都画了图：<br />
+```</p>
+<h1 id="-n-tokens-ndcp_size-tokens-">|------- N tokens --------|--------- N*dcp_size tokens ----------|</h1>
+<h1 id="-use-for-local_gather-use-for-allgather-">|&lt;- use for local_gather -&gt;|&lt;--------- use for allgather --------&gt;|</h1>
+<p>```</p>
+</blockquote>
+<p>收集完还要 <code>reorg_kvcache()</code> 重排——因为交错分片打乱了顺序，得还原成连续序列才能喂给注意力内核。</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 这正是 ⑤ 里那句「两个阶段性格不同」的具体体现：
+       同一份切开的 KV，Decode 搬 query，Prefill 搬 KV。
+       一个旋钮，两条完全相反的数据流。
+</code></pre></div>
+
+<hr />
+<h3 id="645">6.4.5 两个可以再压一压的优化</h3>
+<blockquote>
+<p>⚠️ 这两个<strong>都是可选项，默认都不开</strong>。看不懂可以先跳过，不影响理解 DCP 主线。</p>
+</blockquote>
+<h4 id="_1">先补课：三个「集合通信」动作</h4>
+<p>📖 <strong>集合通信</strong>（collective communication）——多张卡之间搬数据的几个标准动作。<br />
+不先说清这三个，下面 ① 讲不通。</p>
+<div class="codehilite"><pre><span></span><code>    假设 4 张卡，每张卡手里有一块数据
+
+    ① AllGather（全收集）
+       卡0[A] 卡1[B] 卡2[C] 卡3[D]
+       ⟹ 卡0[ABCD] 卡1[ABCD] 卡2[ABCD] 卡3[ABCD]
+       ★ 数据变多，「人手一份完整的」
+
+    ② ReduceScatter（归约-散射）
+       每张卡都有【完整尺寸】的一份，要把 4 份加起来
+       ⟹ 加完之后，每张卡只拿走结果的 1/4
+       ★ 数据变少，「加完各拿各的那段」
+
+    ③ All-to-All（全交换）
+       每张卡把自己的数据切成 4 份，第 i 份【定向发给】第 i 张卡
+       ⟹ 卡0 收到 [卡0的第0份, 卡1的第0份, 卡2的第0份, 卡3的第0份]
+       ★ 总量不变，是个「转置」，各拿各需要的
+</code></pre></div>
+
+<h4 id="1-dcp-comm-backend-a2a">① 换通信模式：<code>--dcp-comm-backend a2a</code></h4>
+<p>回看 6.4.3 的 decode 四步，第 ③④ 步用了<strong>两次</strong>集合通信：</p>
+<div class="codehilite"><pre><span></span><code>    ③ AllGather(lse)      ← 小。目的：每张卡都得知道全局 lse 才能算缩放因子
+    ④ ReduceScatter(out)  ← 大。目的：各卡局部结果加起来，再各拿各的头
+
+    ★★ 问题：这两趟是【串行】的。
+       必须先等 lse 收齐、算完缩放，才能开始归约 output。
+</code></pre></div>
+
+<p><strong>★★ 为什么非得两趟？因为 ReduceScatter 只会做加法，不会做加权。</strong></p>
+<p>权重 <code>exp(local_lse − global_lse)</code> 必须在<strong>发出去之前</strong>就乘好，<br />
+而 <code>global_lse</code> 要等所有卡的 lse 都齐了才算得出 ⟹ 被迫先来一趟 AllGather。</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 根子在于：计算（加权）被夹在通信中间，受制于通信原语的能力。
+       a2a 的解法是把顺序颠倒过来 ——【先搬运，后计算】。
+       All-to-All 不做任何算术，纯搬数据，
+       于是加权可以推迟到收完之后【在本地】做。
+</code></pre></div>
+
+<p><strong>第 0 步：搬运前，每张卡手里是什么</strong></p>
+<p>例子沿用：<strong>DeepSeek-R1，<code>-tp 8 -dcp 8</code>，batch=16，128 个注意力头，输出维度 512，bf16</strong>。</p>
+<p>做完 query all-gather 之后，每张卡都对<strong>全部 128 个头</strong>算了一遍注意力，<br />
+只不过用的是自己那 1/8 份 KV：</p>
+<div class="codehilite"><pre><span></span><code>    rank0:  out[16, 128, 512] + lse[16, 128]   ← 128 个头，基于 KV 分片 0
+    rank1:  out[16, 128, 512] + lse[16, 128]   ← 同样 128 个头，基于 KV 分片 1
+    ...                                          （八份都是半成品）
+
+    但最终每张卡只需保留 128 ÷ 8 = 16 个头（下游 o_proj 按头切）
+
+    ★★ 我【有】：全部 128 个头  ×  我的 1 份 KV
+       我【要】：我的 16 个头    ×  全部 8 份 KV
+       ⟹ 行列对调 —— 这正是 All-to-All 的定义
+</code></pre></div>
+
+<p><strong>第 1 步：打包 —— 一个精心设计的缓冲区形状</strong></p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L747-L751">dcp.py:747-751</a><br />
+<code>python
+send_buffer, recv_buffer = _dcp_a2a_send_recv_buffers(
+    (world_size, B, H_per_rank, D + lse_pack_dim), ...)</code></p>
+</blockquote>
+<p>代入数字就是 <code>[8, 16, 16, 514]</code>：</p>
+<div class="codehilite"><pre><span></span><code>    [    8    ,   16   ,     16      ,        514        ]
+      发给谁    batch    我给他的      512 个数 + lse
+     (收件人)   (16 条)   16 个头          ↑        ↑
+                                        向量   缝在尾巴上的 lse
+
+    ★ 第 0 维是【收件人地址】：send_buffer[j] = 我要发给 rank j 的包裹。
+      包裹里装的，正是 rank j 最终要负责的那 16 个头。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 打包内核里这一行就是全部逻辑（<a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L464">dcp.py:464</a>）：<br />
+<code>python
+src_head_idx = rank_idx * H_PER_RANK + local_head_idx</code><br />
+即 <code>send_buffer[j]</code> ← 我的 <code>out[:, j*16 : (j+1)*16, :]</code>。<br />
+★ <strong>打包纯粹是一次「按头重新排序」，没有任何算术。</strong></p>
+</blockquote>
+<p>📖 <strong>那个多出来的 <code>+2</code>（<code>lse_pack_dim</code>）是什么</strong></p>
+<p>缓冲区是 bf16 的（跟 out 同类型），而 lse 必须保持 fp32——它要进指数函数，<br />
+精度掉了结果就错。源码的办法是<strong>把一个 fp32 按位劈成两个 16 位塞进去</strong>：</p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L539-L543">dcp.py:539-543</a>（收端拼回来）<br />
+<code>python
+lo = lo_raw.to(tl.uint16, bitcast=True).to(tl.uint32)
+hi = hi_raw.to(tl.uint16, bitcast=True).to(tl.uint32)
+lse_val = (lo | (hi &lt;&lt; 16)).to(tl.float32, bitcast=True)</code><br />
+📖 <code>bitcast</code> = 不转换数值、只重新解释这 16 个比特。<strong>精度一位不丢。</strong><br />
+fp32 缓冲区场景下 <code>lse_pack_dim = 1</code>，不用劈（<a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L410">dcp.py:410</a>）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 这个小技巧就是「两趟变一趟」的实现关键：
+       lse 不再需要单独一趟通信，
+       它搭上了 output 的顺风车，
+       跟自己要加权的那份数据装在【同一个包裹】里。
+</code></pre></div>
+
+<p><strong>第 2 步：一次 All-to-All，完成转置</strong></p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L765">dcp.py:765</a><br />
+<code>python
+work = dist.all_to_all_single(recv_buffer.view(-1), send_buffer.view(-1),
+                              group=cp_group.device_group, async_op=True)</code></p>
+</blockquote>
+<p>搬完之后，站在 <strong>rank 3</strong> 的角度看自己的 <code>recv_buffer[8, 16, 16, 514]</code>：</p>
+<div class="codehilite"><pre><span></span><code>    recv_buffer[0] ← rank0 发来：头 48~63 的半成品（基于 KV 分片 0）+ 各自 lse
+    recv_buffer[1] ← rank1 发来：头 48~63 的半成品（基于 KV 分片 1）+ 各自 lse
+    ...
+    recv_buffer[7] ← rank7 发来：头 48~63 的半成品（基于 KV 分片 7）+ 各自 lse
+
+    ★★ 第 0 维的含义变了：
+       发之前是「收件人」，收到后是「寄件人」——这就是转置。
+
+    ⟹ rank3 对于自己负责的头 48~63，八块 KV 分片的答案【全齐了】，
+       每份还自带 lse。不需要再跟任何人通信。
+</code></pre></div>
+
+<p><strong>第 3 步：本地合并 —— 三遍循环</strong></p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L504-L627">dcp.py:504-627 <code>_dcp_a2a_unpack_combine_kernel</code></a>，<br />
+一个 Triton 内核，对每个 (token, 头) 独立跑，沿 <code>rank_idx</code> 循环 8 次、走三遍：</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    第一遍（L528）找最大值（防指数溢出）
+            lse_max = max(lse_0 … lse_7)                       L549
+
+    第二遍（L554）算全局 lse
+            lse_sum    = Σ exp(lse_i − lse_max)                L576
+            global_lse = log(lse_sum) + lse_max                L581
+
+    第三遍（L586）加权求和
+            weight_i = exp(lse_i − global_lse)                 L608
+            acc     += partial_i × weight_i                    L616
+
+    ⟹ 输出 [16, 16, 512]
+       ★ 跟 ReduceScatter 吐出来的形状【一模一样】，下游 o_proj 完全不用改。
+       ✅ 驱动函数注释原话：Combined output [B, H/N, D] (head-scattered)
+</code></pre></div>
+
+<p><strong>为什么这样加权是精确的，不是近似</strong></p>
+<p>实算一组（假设 4 张卡，lse 分别是 10、12、9、11）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>rank0</th>
+<th>rank1</th>
+<th>rank2</th>
+<th>rank3</th>
+<th>合计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>lse</td>
+<td>10.0</td>
+<td>12.0</td>
+<td>9.0</td>
+<td>11.0</td>
+<td></td>
+</tr>
+<tr>
+<td>weight</td>
+<td>0.08714</td>
+<td><strong>0.64391</strong></td>
+<td>0.03206</td>
+<td>0.23688</td>
+<td><strong>1.0000000000</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    exp(lse_i) 就是第 i 块 softmax 的【分母】，
+    所以 weight_i = exp(lse_i) / Σ exp(lse_j) = 第 i 块分母占总分母的比例。
+
+    ⟹ ★★ softmax 的分子分块可加，分母也分块可加，
+       按分母占比加权求和 = 完整 softmax 的【精确】结果。
+       这不是近似，是恒等式（浮点误差以内）。
+</code></pre></div>
+
+<p>★★ 关键差别一句话：<strong>校正的地点变了</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>校正在哪做</th>
+<th>集合通信次数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ag_rs</code>（默认）</td>
+<td>发之前 ⟹ 必须先把 lse 收齐（多一趟）</td>
+<td>2</td>
+</tr>
+<tr>
+<td><code>a2a</code></td>
+<td><strong>收之后</strong> ⟹ 这张卡已集齐自己那些头的全部 N 份局部答案</td>
+<td><strong>1</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>这一趟到底省了什么：把字节数算出来</strong></p>
+<p>⚠️ 以下按上面同一组参数（B=16, H=128, D=512, bf16, dcp=8）实算：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>通信量</th>
+<th>集合通信次数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ag_rs</code> AllGather(lse)</td>
+<td>7.2 KB</td>
+<td></td>
+</tr>
+<tr>
+<td><code>ag_rs</code> ReduceScatter(out)</td>
+<td>1.835 MB</td>
+<td></td>
+</tr>
+<tr>
+<td><strong><code>ag_rs</code> 合计</strong></td>
+<td><strong>1.842 MB</strong></td>
+<td><strong>2 次</strong></td>
+</tr>
+<tr>
+<td><strong><code>a2a</code> All-to-All</strong></td>
+<td><strong>1.842 MB</strong></td>
+<td><strong>1 次</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 字节数完全打平，一个 KB 都没省！
+
+    两边的 lse 开销恰好抵消：
+      ag_rs：lse 广播给所有人（每卡拿到全部 128 个头的 lse）  7.2 KB
+      a2a  ：lse 只定向送给这个头的主人（那 +2 个槽）         7.2 KB
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>所以「两趟变一趟」省的不是带宽</strong>，是这三样：<br />
+1. <strong>一次内核启动 + 一次同步点</strong>。61 层 × 每 token 一遍，固定开销累积起来不小。<br />
+2. <strong>不用物化那个加权后的全尺寸张量</strong>。<code>ag_rs</code> 要先写出完整的<br />
+<code>[16,128,512]</code> = 2 MB 中间结果再喂给 ReduceScatter；<br />
+<code>a2a</code> 的 combine 内核直接写 <code>[16,16,512]</code> = 0.26 MB。★ 省的是 HBM 读写。<br />
+3. <strong>A2A 天生点对点</strong>，不像 AllGather 那样人人都收一份用不上的数据。</p>
+<p>⟹ 因此它在<strong>小 batch、通信延迟占主导</strong>的场景收益才明显。</p>
+<p>⚠️ <strong>两处容易误读的地方</strong></p>
+<p><strong>① <code>a2a</code> 只替换「合并」这半程，不碰 query all-gather。</strong><br />
+<code>MLADCPManager</code> 里 <code>_init_combine</code> 和 <code>_init_query_gather</code> 是<strong>两条独立的路</strong><br />
+（<a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L1220">dcp.py:1220 起</a>）。<br />
+<code>--dcp-comm-backend a2a</code> 只改前者。decode 开头那趟 query all-gather 照走不误——<br />
+★ 省掉它是下面 ② 讲的 <code>qrep</code> 的活，<strong>两码事</strong>，可叠加也可各用各的。<br />
+<code>query all-gather   2.06 MB   ← a2a 不管这个，qrep 才管
+    合并               1.84 MB   ← a2a 管的是这个
+    ────────────────────────────
+    合计               3.91 MB</code></p>
+<p><strong>② <code>a2a</code> 不是默认值，也不是无脑更优。</strong><br />
+✅ <a href="../源码/vLLM/vllm/config/parallel.py#L354">parallel.py:354</a> 默认 <code>"ag_rs"</code>。<br />
+因为 <code>ReduceScatter</code> 跑在 NCCL 里，是 NVIDIA 调优多年的「通信+归约」融合实现；<br />
+<code>a2a</code> 把归约挪进了自家 Triton 内核，还要额外开 send/recv 两块 2.1 MB 缓冲区<br />
+（⚠️ <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L419">dcp.py:419</a> 用的是 <code>torch.empty</code><br />
+而非共享 workspace，注释说明是为了避开 CUDA Graph 把地址烤死的坑）。<br />
+★ <strong>赢不赢要实测。</strong></p>
+<p>✅ 选项定义 <a href="../源码/vLLM/vllm/config/parallel.py#L40">parallel.py:40</a><br />
+<code>DCPCommBackend = Literal["ag_rs", "a2a"]</code>，<br />
+实现 <a href="../源码/vLLM/vllm/v1/attention/ops/dcp.py#L704">dcp.py:704 <code>dcp_a2a_lse_reduce</code></a>。<br />
+⚠️ 硬约束两条：<code>H % dcp_size != 0</code> 直接抛异常（128 % 8 = 0，本例过关）；<br />
+<code>a2a</code> 要求 <code>dcp &gt; 1</code>（<a href="../源码/vLLM/vllm/config/parallel.py#L541">parallel.py:541</a>）。<br />
+★ 若硬件支持 symmetric memory（对称内存，NVLink 上的直接远端读写），<br />
+会自动再切到 <code>DirectDCPA2AWorkspace</code> 绕开 NCCL，日志里会打<br />
+<code>Using direct symmetric-memory DCP A2A for MLA.</code></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 一句话记住两条路的区别：
+       ag_rs = 先问清楚权重，乘好了再交给【只会做加法】的搬运工  → 问一趟 + 搬一趟
+       a2a   = 数据和权重装一个包裹直接寄给收件人，收到了自己算   → 只搬一趟
+</code></pre></div>
+
+<h4 id="2-1-query-all-gatherqrep">② 干脆省掉第 ① 步的 query all-gather（qrep）</h4>
+<p>📖 <strong>qrep</strong> = query replicate（查询复制）。用具体数字走一遍最清楚。<br />
+例子：<strong>DeepSeek-R1（128 个注意力头），<code>-tp 8 -dcp 2</code></strong>。</p>
+<p><strong>默认行为（<code>ColumnParallelLinear</code>）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    q_proj 权重按 tp=8 切成 8 份：
+       rank0→头0-15   rank1→头16-31   rank2→头32-47  ...
+
+    DCP 组 = {rank0, rank1}
+       （两张卡各存一半 KV：偶数位置 token / 奇数位置 token）
+
+    ★ decode 时 rank0 要干什么？
+      它手上只有【一半的 KV】，但必须对【组内全部 32 个头】各算一遍，
+      算完再和 rank1 的结果做 LSE 合并（6.4.3）。
+      ⟹ 可它只有 16 个头的 q！
+      ⟹ ★★ 所以必须 all-gather：rank0的16头 + rank1的16头 = 32头
+</code></pre></div>
+
+<p><strong>开了 qrep（<code>DCPGroupColumnParallelLinear</code>）</strong>：</p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/model_executor/layers/linear.py#L626-L631">linear.py:626-631</a><br />
+<code>python
+super().__init__(..., tp_rank=rank // self.group_size,       # 1 // 2 = 0
+                      tp_size=world_size // self.group_size)  # 8 // 2 = 4</code></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 权重不再按 8 切，改成按 4 切（= tp/dcp），每份 32 个头：
+       rank0 (tp_rank = 0//2 = 0) → 头0-31
+       rank1 (tp_rank = 1//2 = 0) → 头0-31   ← ★★ 和 rank0【一模一样】
+       rank2 (tp_rank = 2//2 = 1) → 头32-63
+       rank3 (tp_rank = 3//2 = 1) → 头32-63
+
+    ⟹ ★★ rank0 一出手就持有 32 个头，正好是组内全头。
+       all-gather 直接跳过。
+</code></pre></div>
+
+<p>★ 代价说白了就是：<strong>组内两张卡把同一个矩阵乘法各算了一遍</strong>。<br />
+q_proj 的算力和权重显存都变成 <code>×dcp_size</code>。</p>
+<p>那 Prefill 怎么办？Prefill 不需要组内全头，于是切回正常的 TP 分片：</p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/model_executor/layers/linear.py#L633-L641">linear.py:633-641</a><br />
+<code>python
+n = out.shape[-2] // self.group_size      # 32 // 2 = 16
+start = self.rank_in_group * n            # rank0→0, rank1→16
+return out[..., start : start + n, :]     # 切回自己那 16 头</code></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 又一次「拿算力换通信」——q_proj 算了冗余的一遍，但省一趟 all-gather。
+       和 6.2 那张成本表是同一个思路：推理阶段【带宽比算力金贵】。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>两个前提</strong>（不满足就不会启用）：<br />
+- 默认<strong>关闭</strong>，需显式开环境变量 <code>VLLM_DCP_Q_REPLICATE=1</code><br />
+  （<a href="../源码/vLLM/vllm/envs.py#L200">envs.py:200</a>、<a href="../源码/vLLM/vllm/envs.py#L1562">envs.py:1562</a>）<br />
+- 要求 <code>dcp &gt; 1</code> <strong>且</strong> <code>pcp ≤ 1</code><br />
+  （<a href="../源码/vLLM/vllm/model_executor/models/deepseek_v2.py#L1044-L1048">deepseek_v2.py:1044-1048</a>）</p>
+</blockquote>
+<hr />
+<h3 id="646">6.4.6 限制条件（配错了直接起不来）</h3>
+<table>
+<thead>
+<tr>
+<th>约束</th>
+<th>适用</th>
+<th>✅ 校验位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tp % dcp == 0</code></td>
+<td>MLA</td>
+<td><a href="../源码/vLLM/vllm/config/parallel.py#L531">parallel.py:531</a></td>
+</tr>
+<tr>
+<td>PCP&gt;1 时 <code>dcp ∈ {1, pcp, tp*pcp}</code></td>
+<td>通用</td>
+<td><a href="../源码/vLLM/vllm/config/parallel.py#L533">parallel.py:533</a></td>
+</tr>
+<tr>
+<td><code>tp</code> 必须<strong>严格大于</strong> KV 头总数</td>
+<td>GQA/MQA</td>
+<td><a href="../源码/vLLM/vllm/config/model.py#L1435">model.py:1435</a></td>
+</tr>
+<tr>
+<td><code>dcp ≤ tp // kv_heads</code></td>
+<td>GQA/MQA</td>
+<td><a href="../源码/vLLM/vllm/config/model.py#L1444">model.py:1444</a></td>
+</tr>
+<tr>
+<td>每 KV 头的 Q 头数能被 <code>dcp</code> 整除</td>
+<td>GQA/MQA</td>
+<td><a href="../源码/vLLM/vllm/config/model.py#L1455">model.py:1455</a></td>
+</tr>
+<tr>
+<td><code>block_size ≥ interleave_size</code> 且整除</td>
+<td>通用</td>
+<td><a href="../源码/vLLM/vllm/config/parallel.py#L371">parallel.py:371</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★ 第二条那个白名单为什么长这样：<code>dcp ∈ {1, pcp, tp*pcp}</code></strong></p>
+<p>先注意两个分支<strong>宽严不一样</strong>——这个反差就是解题入口：</p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/config/parallel.py#L529-L539">parallel.py:529-539</a><br />
+<code>python
+if pcp == 1:
+    # DCP reuses the TP ranks when PCP is disabled.
+    if tp % dcp != 0:  raise ...          # ← 只要整除就行，tp=8 可配 dcp=2/4/8
+elif dcp not in (1, pcp, tp * pcp):       # ← 变成一张【白名单】，只剩三个值
+    raise ValueError("When PCP is enabled, DCP must be disabled, span the "
+                     "PCP axis, or span the full TP x PCP axis. ...")</code></p>
+</blockquote>
+<p><strong>① rank 是按什么顺序摆的</strong></p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1817">parallel_state.py:1817</a><br />
+<code># the layout order is: ExternalDP x DP x PP x PCP x TP</code></p>
+</blockquote>
+<p>TP 在最里层、变得最快，PCP 在它外面一层，所以 <code>rank = pcp × TP + tp</code>。<br />
+拿 <code>TP=4, PCP=2</code>（8 张卡）排成二维（<strong>行 = PCP，列 = TP</strong>）：</p>
+<div class="codehilite"><pre><span></span><code>              tp0   tp1   tp2   tp3
+      pcp0  [  0     1     2     3  ]
+      pcp1  [  4     5     6     7  ]
+</code></pre></div>
+
+<p><strong>② DCP 组是怎么切的：先转置，再切块</strong></p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1856-L1859">parallel_state.py:1856-1859</a><br />
+<code>python
+if dcp_size &gt; 1:
+    # DCP spans PCP first, then TP for full TP x PCP groups.
+    dcp_ranks = dcp_ranks.transpose(-1, -2)      # (PCP,TP) → (TP,PCP)
+group_ranks = dcp_ranks.reshape(-1, dcp_size).unbind(0)</code></p>
+</blockquote>
+<p>转置把矩阵转 90°，<strong>PCP 变成变得最快的那一维</strong>，拉平成一条队列：</p>
+<div class="codehilite"><pre><span></span><code>    转置后：      pcp0  pcp1        拉平：  0, 4,  1, 5,  2, 6,  3, 7
+            tp0  [  0     4  ]              └──┘  └──┘  └──┘  └──┘
+            tp1  [  1     5  ]              每两个恰好是一个 PCP 组
+            tp2  [  2     6  ]
+            tp3  [  3     7  ]      然后 reshape(-1, dcp) = 每 dcp 个切一刀
+</code></pre></div>
+
+<p>★ 关键对照：✅ <a href="../源码/vLLM/vllm/distributed/parallel_state.py#L1871-L1874">parallel_state.py:1871-1874</a><br />
+里 <strong>PCP 组用的是同一个转置</strong>，只是每 <code>pcp</code> 个切一刀。<br />
+⟹ <strong>两条队列是同一条队列，区别只在刀距。</strong></p>
+<p><strong>③ 于是白名单可以这么读</strong></p>
+<p>⚠️ 实测 <code>TP=4, PCP=2</code>（PCP 组 = <code>[0,4] [1,5] [2,6] [3,7]</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>dcp</th>
+<th>DCP 分组</th>
+<th>一个 DCP 组 = 几个 PCP 组</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>[0] [1] [2] … [7]</code></td>
+<td><strong>半个</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>2 = pcp</td>
+<td><code>[0,4] [1,5] [2,6] [3,7]</code></td>
+<td><strong>正好 1 个</strong>（与 PCP 组逐位相同）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>4</strong></td>
+<td><code>[0,4,1,5]  [2,6,3,7]</code></td>
+<td><strong>2 个</strong></td>
+<td>❌</td>
+</tr>
+<tr>
+<td>8 = tp×pcp</td>
+<td><code>[0,4,1,5,2,6,3,7]</code></td>
+<td><strong>全部 4 个</strong></td>
+<td>✅</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 规则的白话版：
+       DCP 组要么不碰 PCP 组（dcp=1，一卡一组），
+       要么【正好等于一个】PCP 组（dcp=pcp），
+       要么把所有 PCP 组【一口气全吞下】（dcp=tp×pcp）。
+       ★ 不许「挑几个 PCP 组拼一起」。
+</code></pre></div>
+
+<p><code>dcp=4</code> 被拒<strong>不是因为切不出来</strong>——上表显示它切得齐齐整整、一张卡不多不少。<br />
+被拒是因为它拼出来的组<strong>在系统里对应不上任何已有的东西</strong>：<br />
+它横跨了 PCP 全部 2 行 × TP 的<strong>一半</strong>（2 列），比一个 PCP 组大、比全世界小，是个「四不像」。</p>
+<p><strong>④ 承重的那个事实：KV 分片只认 DCP 一个维度</strong></p>
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/v1/attention/backend.py#L945-L946">backend.py:945-946</a><br />
+<code>python
+self.total_cp_world_size = self.dcp_world_size      # ← 不是 dcp × pcp
+self.total_cp_rank = self.dcp_rank</code></p>
+</blockquote>
+<p>6.4.2 那个交错分片公式里的 <code>TOTAL_CP_WORLD_SIZE</code> / <code>TOTAL_CP_RANK</code>，<br />
+喂进去的就是它俩（✅ <a href="../源码/vLLM/vllm/v1/worker/block_table.py#L150-L151">block_table.py:150-151</a>）。<br />
+<strong>PCP 完全不参与 KV 分片。</strong> 于是 prefill 和 decode 之间必须对上账：</p>
+<div class="codehilite"><pre><span></span><code>    prefill：PCP 把 token 分给 pcp 张卡各算一段，
+             算完在 PCP 组内做一次 KV all-gather，
+             再配一个 write_mask 决定「我收到这么多，但只写属于我的那些」
+             ✅ pcp_manager.py:579 _convert_to_gathered_slot_mappings
+
+    decode ：谁存哪些 token，由 DCP 的交错分片说了算
+
+    ★★ write_mask 要能算对，DCP 的切法和 PCP 的切法就得能【互相翻译】。
+       dcp = pcp     → 同一批卡、同一种切法，mask 是恒等的        ⟹ 最省事
+       dcp = tp×pcp  → DCP 组 = 整个 TP×PCP 矩形，是个天然范围    ⟹ 能对齐
+       dcp = 4       → 「半个 TP 轴」在 vLLM 里【没有对应的通信组】
+                       （TP 组是完整 4 卡，PCP 组是 2 卡，没有等于「tp0+tp1 两列」的）
+</code></pre></div>
+
+<p><strong>⑤ 那为什么 <code>pcp = 1</code> 时反而允许「半个 TP 轴」</strong></p>
+<p>因为那时候<strong>根本没转置</strong>（PCP 维长度为 1，转了等于没转），<br />
+DCP 组就是在 TP 组<strong>内部</strong>连续切块：<code>tp=4, dcp=2</code> → <code>[0,1] [2,3]</code>。<br />
+✅ 源码注释直说了：<em>"DCP reuses the TP ranks when PCP is disabled."</em></p>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 一维里切段，怎么切都是段；
+       二维里切，就可能切出个歪的矩形。
+       这就是两个分支宽严不一的全部原因。
+</code></pre></div>
+
+<p><strong>⑥ 实操上要当心的一个坑</strong></p>
+<p>单节点经典配方是 <code>-tp 8 -dcp 8</code>（DeepSeek-R1，MLA 的 KV 头数 H=1，8 倍重复全消掉）。</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 一旦加上 -pcp 2，-dcp 8 立刻【非法】！
+
+       tp=8, pcp=2  →  合法 dcp ∈ {1, 2, 16}
+                                    ↑        ↑
+                              只消 2 倍   要 16 卡（两个节点）
+</code></pre></div>
+
+<p>想在 16 卡上既开 PCP 又完全消除 KV 重复，只能 <code>-tp 8 -pcp 2 -dcp 16</code>，<br />
+⚠️ 代价是 DCP 通信跨节点走 InfiniBand/RoCE 而不是 NVLink——<br />
+对照 6.4.7 算的那笔账（每层每 step 约 3.91 MB），带宽掉一个数量级，很可能得不偿失。</p>
+<blockquote>
+<p>⚠️ <strong>诚实标注</strong>：④⑤ 两段「为什么中间值要禁」是我从代码结构推的，<br />
+<strong>源码里没有任何注释解释原因</strong>，报错信息本身也只是列了张白名单、没给证明。<br />
+工程上看这些中间值应该是<strong>能做但没做</strong>，跟官方文档对 <code>dcp ≤ tp/H</code> 上限的措辞<br />
+一个调性。另外 ✅ <a href="../源码/vLLM/vllm/v1/worker/gpu/pcp_manager.py#L125-L160">pcp_manager.py:125-160</a><br />
+<code>validate_config</code> 显示 <strong>PCP 目前限制还很多</strong>：只支持 MLA，不支持 PP、DP、<br />
+多模态、LoRA、投机解码，且只能用 PIECEWISE CUDA Graph。<br />
+★ 这块整体还在早期，白名单窄一点很合理。</p>
+</blockquote>
+<hr />
+<p><code>dcp ≤ tp/H</code> 这个上界值得单独说一句——它是<strong>有意设的，不是做不到</strong>：</p>
+<blockquote>
+<p>✅ 文档原话（意译）：理论上可以把 dcp 开得更大来进一步切 KV、加速解码。<br />
+但 Decode 阶段 query token 本来就少，多出来的 <code>dcp − tp/H</code> 张卡<br />
+在<strong>非注意力层无事可做</strong>，收益不明。为简单起见就卡在 <code>tp/H</code>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 所以官方给的调参顺序是：
+       ① 先把 tp 加到性能满意
+       ② 再用 dcp 消掉 KV 重复
+       【不要一上来就调 dcp】。
+</code></pre></div>
+
+<hr />
+<h3 id="647">6.4.7 算一笔账：计算和通信到底是什么关系</h3>
+<p>前面讲的都是「怎么做」，这一节回答「值不值」。<br />
+⚠️ 下面全部是<strong>模型估算</strong>，不是实测数字——用来建立数量级直觉，不能当 benchmark 引。</p>
+<p><strong>参数</strong>：DeepSeek-R1（61 层、128 个 query 头、MLA 压缩维 512 + rope 64 = 576），<br />
+<code>-tp 8</code>，batch=16，上下文 32K，bf16，H100 SXM（HBM 带宽 3.35 TB/s、NVLink 450 GB/s、<br />
+峰值算力 989 TFLOP/s）。口径：<strong>单层、单张卡、一次 decode step</strong>。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>dcp=1</code></th>
+<th><code>dcp=8</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>参与计算的 query 头数</td>
+<td>16</td>
+<td><strong>128</strong>（query 被 all-gather 过来了）</td>
+</tr>
+<tr>
+<td>本卡持有的 KV token 数</td>
+<td>32768</td>
+<td><strong>4096</strong>（只存 1/8）</td>
+</tr>
+<tr>
+<td>注意力 FLOP</td>
+<td>18.25 G</td>
+<td><strong>18.25 G ← 一模一样</strong></td>
+</tr>
+<tr>
+<td>本层要读的 KV</td>
+<td>604.0 MB</td>
+<td><strong>75.5 MB</strong></td>
+</tr>
+<tr>
+<td>HBM 读取耗时</td>
+<td>180.3 µs</td>
+<td><strong>22.5 µs</strong></td>
+</tr>
+<tr>
+<td>算术强度（FLOP/Byte）</td>
+<td>30.2</td>
+<td><strong>241.8</strong></td>
+</tr>
+<tr>
+<td>NVLink 通信量</td>
+<td>0</td>
+<td>3.91 MB</td>
+</tr>
+<tr>
+<td>通信耗时</td>
+<td>0</td>
+<td>8.7 µs</td>
+</tr>
+<tr>
+<td><strong>★ 合计</strong></td>
+<td><strong>180.3 µs</strong></td>
+<td><strong>31.2 µs（5.8×）</strong></td>
+</tr>
+<tr>
+<td>KV Cache 占用/卡（61 层）</td>
+<td>34.31 GiB</td>
+<td><strong>4.29 GiB</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 这张表里最反直觉的一行是【注意力 FLOP 完全相同】。
+
+       dcp=1：16 个头  × 32768 个 KV
+       dcp=8：128 个头 × 4096 个 KV     ← 头数 ×8，KV 数 ÷8，乘积不变
+
+    ⟹ DCP【一个浮点运算都没省】。
+       它省的全部是【访存】：每张卡只需要读 1/8 的 KV。
+</code></pre></div>
+
+<p><strong>为什么省访存就等于省时间：算术强度</strong></p>
+<p>📖 <strong>算术强度</strong>（arithmetic intensity）= 每从显存读 1 字节能做多少次浮点运算。<br />
+📖 <strong>Roofline 拐点</strong> = 峰值算力 ÷ 显存带宽。H100 上是 <code>989 TFLOP/s ÷ 3.35 TB/s ≈ 295</code>。<br />
+低于这个数就是<strong>访存受限</strong>（memory-bound），GPU 大部分时间在等数据、算力闲着。</p>
+<div class="codehilite"><pre><span></span><code>    dcp=1： 30.2  ←── 远低于 295，严重访存受限，算力几乎全闲
+    dcp=8：241.8  ←── 逼近 295，快把 GPU 喂饱了
+
+    ⟹ ★★ Decode 阶段的本质困境：query 只有几个 token，
+       却要把整个 KV Cache 从 HBM 里搬一遍。
+       DCP 把「搬一遍」变成「搬 1/8」，
+       同时让每张卡多算 8 倍的头把算力填上 —— 【拿闲置算力换访存】。
+</code></pre></div>
+
+<p><strong>通信在这笔账里占多大</strong></p>
+<div class="codehilite"><pre><span></span><code>    3.91 MB 拆开看（每层每 step）：
+      query all-gather      2.06 MB   ← 大头。qrep 能省掉它（见 6.4.5 ②）
+      lse all-gather        0.01 MB
+      output reduce-scatter 1.84 MB   ← a2a 能把它和 lse 合成一趟（见 6.4.5 ①）
+
+    8.7 µs 通信  vs  节省的 157.8 µs 访存  ⟹ 通信只吃掉收益的 5%
+</code></pre></div>
+
+<p>⚠️ 但这个比例<strong>强烈依赖上下文长度</strong>：访存收益随 T 线性增长，通信量却基本不随 T 变<br />
+（它只跟 batch 和头数有关）。按同样的模型倒推<strong>盈亏平衡点</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ B=16 时约 1800 token 上下文
+       ⟹ 短上下文（几百 token）开 DCP 反而【亏】——通信费白花。
+          长上下文（几万 token）才是它的主场。
+</code></pre></div>
+
+<p><strong>顺带记住这几个数</strong></p>
+<div class="codehilite"><pre><span></span><code>    DeepSeek-R1 的 KV Cache 密度（MLA 压缩后）：
+      每 token 每层  = (512 + 64) × 2 B = 1152 B
+      每 token 全模型 = 1152 × 61      = 68.6 KiB
+      一条 32K 请求   = 2.14 GiB       ← 一条！所以显存永远不够用
+</code></pre></div>
+
+<p><strong>自己换硬件跑一遍</strong>（把 <code>HBM_BW / NVL / PEAK</code> 换成 H200、B200 的即可）</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># DeepSeek-R1 / MLA，单层、单 rank、一次 decode step</span>
+<span class="n">L</span><span class="p">,</span> <span class="n">HID</span>       <span class="o">=</span> <span class="mi">61</span><span class="p">,</span> <span class="mi">7168</span>      <span class="c1"># 层数 / hidden</span>
+<span class="n">H_TOTAL</span>      <span class="o">=</span> <span class="mi">128</span>           <span class="c1"># query 头数</span>
+<span class="n">KV_LORA</span><span class="p">,</span> <span class="n">ROPE</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span> <span class="mi">64</span>      <span class="c1"># MLA 压缩维 / rope 维</span>
+<span class="n">D_Q</span>          <span class="o">=</span> <span class="n">KV_LORA</span> <span class="o">+</span> <span class="n">ROPE</span>  <span class="c1"># 576，query 与 KV 的 latent 维</span>
+<span class="n">BYTES</span>        <span class="o">=</span> <span class="mi">2</span>             <span class="c1"># bf16</span>
+<span class="n">B</span><span class="p">,</span> <span class="n">T</span>         <span class="o">=</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">32768</span>     <span class="c1"># batch / 上下文长度</span>
+<span class="n">TP</span>           <span class="o">=</span> <span class="mi">8</span>
+<span class="n">HBM_BW</span><span class="p">,</span> <span class="n">NVL</span><span class="p">,</span> <span class="n">PEAK</span> <span class="o">=</span> <span class="mf">3.35e12</span><span class="p">,</span> <span class="mf">450e9</span><span class="p">,</span> <span class="mf">989e12</span>   <span class="c1"># ← H100 SXM，换卡改这行</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="n">dcp</span><span class="p">):</span>
+    <span class="n">heads</span> <span class="o">=</span> <span class="n">H_TOTAL</span> <span class="o">//</span> <span class="p">(</span><span class="n">TP</span> <span class="o">//</span> <span class="n">dcp</span><span class="p">)</span>      <span class="c1"># 本卡参与计算的 query 头数</span>
+    <span class="n">T_loc</span> <span class="o">=</span> <span class="n">T</span> <span class="o">//</span> <span class="n">dcp</span>                    <span class="c1"># 本卡持有的 KV token 数</span>
+    <span class="n">flops</span> <span class="o">=</span> <span class="mi">2</span><span class="o">*</span><span class="p">(</span><span class="n">D_Q</span> <span class="o">+</span> <span class="n">KV_LORA</span><span class="p">)</span><span class="o">*</span><span class="n">T_loc</span> <span class="o">*</span> <span class="n">heads</span> <span class="o">*</span> <span class="n">B</span>     <span class="c1"># q·k + attn·v</span>
+    <span class="n">kv_B</span>  <span class="o">=</span> <span class="n">B</span> <span class="o">*</span> <span class="n">T_loc</span> <span class="o">*</span> <span class="n">D_Q</span> <span class="o">*</span> <span class="n">BYTES</span>                 <span class="c1"># 本卡本层要读的 KV</span>
+    <span class="n">comm</span>  <span class="o">=</span> <span class="mi">0</span> <span class="k">if</span> <span class="n">dcp</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="p">(</span>
+        <span class="n">B</span><span class="o">*</span><span class="n">H_TOTAL</span><span class="o">*</span><span class="n">D_Q</span><span class="o">*</span><span class="n">BYTES</span><span class="o">*</span><span class="p">(</span><span class="n">dcp</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="o">/</span><span class="n">dcp</span>             <span class="c1"># query all-gather</span>
+      <span class="o">+</span> <span class="n">B</span><span class="o">*</span><span class="n">H_TOTAL</span><span class="o">*</span><span class="mi">4</span><span class="o">*</span><span class="p">(</span><span class="n">dcp</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="o">/</span><span class="n">dcp</span>                     <span class="c1"># lse all-gather</span>
+      <span class="o">+</span> <span class="n">B</span><span class="o">*</span><span class="n">H_TOTAL</span><span class="o">*</span><span class="n">KV_LORA</span><span class="o">*</span><span class="n">BYTES</span><span class="o">*</span><span class="p">(</span><span class="n">dcp</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="o">/</span><span class="n">dcp</span><span class="p">)</span>        <span class="c1"># output reduce-scatter</span>
+    <span class="k">return</span> <span class="nb">dict</span><span class="p">(</span><span class="n">heads</span><span class="o">=</span><span class="n">heads</span><span class="p">,</span> <span class="n">T_loc</span><span class="o">=</span><span class="n">T_loc</span><span class="p">,</span> <span class="n">ai</span><span class="o">=</span><span class="n">flops</span><span class="o">/</span><span class="n">kv_B</span><span class="p">,</span>
+                <span class="n">t_hbm</span><span class="o">=</span><span class="n">kv_B</span><span class="o">/</span><span class="n">HBM_BW</span><span class="p">,</span> <span class="n">t_net</span><span class="o">=</span><span class="n">comm</span><span class="o">/</span><span class="n">NVL</span><span class="p">,</span>
+                <span class="n">total</span><span class="o">=</span><span class="n">kv_B</span><span class="o">/</span><span class="n">HBM_BW</span> <span class="o">+</span> <span class="n">comm</span><span class="o">/</span><span class="n">NVL</span><span class="p">,</span>
+                <span class="n">kv_gpu</span><span class="o">=</span><span class="n">B</span><span class="o">*</span><span class="n">T_loc</span><span class="o">*</span><span class="n">D_Q</span><span class="o">*</span><span class="n">BYTES</span><span class="o">*</span><span class="n">L</span><span class="o">/</span><span class="mi">2</span><span class="o">**</span><span class="mi">30</span><span class="p">)</span>
+
+<span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="o">=</span> <span class="n">run</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span> <span class="n">run</span><span class="p">(</span><span class="mi">8</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;算术强度  </span><span class="si">{</span><span class="n">a</span><span class="p">[</span><span class="s1">&#39;ai&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> → </span><span class="si">{</span><span class="n">b</span><span class="p">[</span><span class="s1">&#39;ai&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">   (拐点 </span><span class="si">{</span><span class="n">PEAK</span><span class="o">/</span><span class="n">HBM_BW</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;单层耗时  </span><span class="si">{</span><span class="n">a</span><span class="p">[</span><span class="s1">&#39;total&#39;</span><span class="p">]</span><span class="o">*</span><span class="mf">1e6</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> µs → </span><span class="si">{</span><span class="n">b</span><span class="p">[</span><span class="s1">&#39;total&#39;</span><span class="p">]</span><span class="o">*</span><span class="mf">1e6</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> µs&quot;</span>
+      <span class="sa">f</span><span class="s2">&quot;  (</span><span class="si">{</span><span class="n">a</span><span class="p">[</span><span class="s1">&#39;total&#39;</span><span class="p">]</span><span class="o">/</span><span class="n">b</span><span class="p">[</span><span class="s1">&#39;total&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">×)&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;KV/卡     </span><span class="si">{</span><span class="n">a</span><span class="p">[</span><span class="s1">&#39;kv_gpu&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> GiB → </span><span class="si">{</span><span class="n">b</span><span class="p">[</span><span class="s1">&#39;kv_gpu&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> GiB&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 这一节的结论一句话：
+       DCP 不省算力，只省访存；而 decode 恰恰是【访存受限】的，
+       所以省访存 = 省时间。通信是要付的学费，
+       上下文越长学费占比越低。
+</code></pre></div>
+
+<hr />
+<h3 id="648">6.4.8 这一节小结</h3>
+<div class="codehilite"><pre><span></span><code>┌───────────────────────────────────────────────────────────────────┐
+│  ① ★★ 动机：tp &gt; KV头数 H 时，KV Cache 被白白复制 tp/H 份         │
+│     MLA 模型 H=1，最惨（DeepSeek-R1 tp8 → 8×，Kimi-K2 tp16 → 16×） │
+│     ★ DCP 不加卡，只把重复副本改成【各存一段】                    │
+│                                                                   │
+│  ② ★★ 存：交错分片，token 归属只看【绝对位置】                    │
+│     ✅ block_table.py Triton 内核，interleave 默认 1（逐 token）  │
+│     ⟹ 序列长长时新 token 自然落位，【零重分配】                   │
+│     📌 方案来自 Moonshot，arXiv:2507.07120                        │
+│                                                                   │
+│  ③ ★★ 算：LSE 精确合并，不是近似                                  │
+│     Decode：广播 query → 各算局部 → LSE 校正 → ReduceScatter      │
+│     Prefill：反过来，all-gather KV 再 reorg                       │
+│     ⟹ ★ 一个旋钮，两条相反的数据流（因为两阶段性格不同）          │
+│                                                                   │
+│  ④ 调参顺序：先加 tp 到满意，再加 dcp 消重复。上界 tp/H 是故意的  │
+│                                                                   │
+│  ⑤ ★★ 账：DCP【不省一个 FLOP】，省的全是访存                      │
+│     16头×32768KV → 128头×4096KV，乘积不变，读的字节 ÷8            │
+│     算术强度 30 → 242（H100 拐点 295）                            │
+│     ⟹ 从访存受限拉回算力受限；⚠️ 约 1800 token 以下开 DCP 反而亏   │
+└───────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="65-sglang-dp">6.5 SGLang 的路子：干脆不要全局 DP 维度</h2>
+<p>vLLM 是「五维张量 reshape」。SGLang 走了一条<strong>完全不同</strong>的路。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ SGLang parallel_state.py:2408</span>
+<span class="k">if</span> <span class="n">world_size</span> <span class="o">!=</span> <span class="n">tensor_model_parallel_size</span> <span class="o">*</span> <span class="n">pipeline_model_parallel_size</span><span class="p">:</span>
+    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 读懂这一行：SGLang 的全局网格里【只有 TP 和 PP 两个维度】。
+       world_size 严格等于 tp × pp。没有 DP 这一维的位置。
+</code></pre></div>
+
+<p>那 SGLang 怎么做数据并行？答案很反直觉：</p>
+<div class="codehilite"><pre><span></span><code>    ★★★ 它把【同一个 TP 组】，针对模型的不同部分，
+        用【不同的方式】重新切分。
+
+    ┌─────────────────────────────────────────────────────┐
+    │  注意力部分：  tp_size = attn_dp × attn_cp × attn_tp │
+    │  MoE 部分：    tp_size = moe_dp × moe_ep × moe_tp    │
+    │                                                     │
+    │  ★ 同样的 8 张卡，在注意力层眼里是一种分组，          │
+    │    在 MoE 层眼里是另一种分组。                        │
+    └─────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>源码可查</strong>（SGLang <a href="../源码/SGLang/python/sglang/srt/distributed/parallel_state.py">parallel_state.py</a>）：<br />
+<code>_TP</code> <strong>L2446</strong>、<code>_ATTN_CP</code> <strong>L2526</strong>、<code>_ATTN_TP</code> <strong>L2571</strong>、<br />
+<code>_MOE_DP</code>/<code>_MOE_EP</code> <strong>L2636</strong>、<code>_MOE_TP</code> <strong>L2666</strong>、<code>_PP</code> <strong>L2689</strong>。<br />
+其中 MoE 那一侧的除法尤其直白（<strong>L2587</strong>）：<br />
+<code>python
+moe_tp_size = tensor_model_parallel_size // moe_ep_size // moe_dp_size</code><br />
+而 <strong>L2554</strong> 有个漂亮的短路：<br />
+<code>python
+if attn_tp_size == tensor_model_parallel_size:
+    _ATTN_TP = _TP        # ★ 不切的话直接复用 TP 组，不新建通信组</code></p>
+</blockquote>
+<p><strong>★ 为什么 SGLang 要这么设计？——因为 MoE 模型的注意力和 MoE 层，最优切法根本不同。</strong></p>
+<div class="codehilite"><pre><span></span><code>    以 DeepSeek-V3 这类模型为例（⚠️ 以下是机理说明，非论文数字）：
+
+    ★ 注意力层：用了 MLA（07 章），KV Cache 已经压得很小。
+      如果还按 TP=8 切注意力头 ⟹ 每张卡都要存【同一份】KV 的一部分，
+      而且 all-reduce 开销大。
+      ⟹ 更好的做法：★ 注意力层用 DP！每张卡处理【不同的请求】，
+         各自持有完整的小 KV，一次 all-reduce 都不用。
+         这就是 attn_dp，SGLang 叫 【DP Attention】。
+
+    ★ MoE 层：256 个专家，每个 token 只激活 8 个。
+      ⟹ 最优做法是 EP：专家分散到各卡，token 通过 all-to-all 路由过去。
+
+    ⟹ ★★ 同一个模型，注意力想要 DP，MoE 想要 EP。
+       vLLM 的固定五维网格表达不了这个；
+       SGLang 干脆放弃全局网格，让每一部分自己决定怎么切。
+</code></pre></div>
+
+<blockquote>
+<p>✅ DP Attention 的实现在 <a href="../源码/SGLang/python/sglang/srt/layers/dp_attention.py">dp_attention.py</a>：<br />
+<code>compute_dp_attention_world_info</code> <strong>L326</strong>、<code>initialize_dp_attention</code> <strong>L343</strong>。<br />
+注意力算完要把结果聚回来，SGLang 提供了两条路径（<strong>L489</strong> <code>_dp_gather_via_all_reduce</code><br />
+和 <strong>L531</strong> <code>_dp_gather_via_all_gather</code>），★ 因为哪条快取决于 batch 形状。<br />
+<code>DpPaddingMode</code> <strong>L81</strong> 处理各 DP rank 序列长度不一样时的补齐问题。</p>
+</blockquote>
+<hr />
+<h2 id="66">6.6 ★ 两种设计哲学的对比</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────┬─────────────────────┬──────────────────────────┐
+│              │  vLLM               │  SGLang                  │
+├──────────────┼─────────────────────┼──────────────────────────┤
+│  全局网格     │ 5 维固定：           │ ★ 2 维：world = tp × pp   │
+│              │ ExtDP×DP×PP×PCP×TP  │                          │
+├──────────────┼─────────────────────┼──────────────────────────┤
+│  DP 怎么来    │ ★ 网格里的一个维度   │ ★ 从 TP 组内部【再切】    │
+│              │ （整块副本）         │ （按模型部位分别切）      │
+├──────────────┼─────────────────────┼──────────────────────────┤
+│  灵活性      │ 低：所有层用同一套切法│ ★ 高：注意力和 MoE 可以   │
+│              │                     │ 用完全不同的切法          │
+├──────────────┼─────────────────────┼──────────────────────────┤
+│  理解成本     │ ★ 低：一次 reshape   │ 高：要跟踪 6+ 个通信组    │
+│              │ 就看懂全部           │ 之间的关系                │
+├──────────────┼─────────────────────┼──────────────────────────┤
+│  最擅长      │ 稠密模型、通用场景    │ ★ 超大 MoE（DeepSeek 类） │
+└──────────────┴─────────────────────┴──────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>⚠️（我的判断，非官方表述）可以这样记：<br />
+<strong>vLLM 把并行策略当成「部署配置」——先定好网格，模型往里填。</strong><br />
+<strong>SGLang 把并行策略当成「模型属性」——模型的每一部分自己声明想怎么切。</strong><br />
+两条路都在收敛：vLLM 后来加了 DCP/PCP 和 EP 的独立处理，SGLang 也在补 PP。</p>
+</blockquote>
+<hr />
+<h2 id="67">6.7 实践：怎么选</h2>
+<p>给一个可操作的决策树（⚠️ 经验法则，非论文结论）：</p>
+<div class="codehilite"><pre><span></span><code>    ① 模型（含 KV Cache）单卡放得下？
+       → ★ TP=1，DP=卡数。最简单、吞吐最高、没有任何通信。
+
+    ② 单卡放不下，单机 8 卡放得下？
+       → ★ TP = 刚好够装下的最小值（2/4/8），DP = 机器数
+       → ⚠️ 不要为了「更快」盲目加 TP，Decode 阶段收益递减
+       → ⚠️ TP 必须整除 KV 头数
+
+    ③ 单机放不下（&gt;200B 稠密 / 超大 MoE）？
+       → 先试量化（09 章）能不能塞回单机
+       → 塞不回：机内 TP=8，★ 机间 PP（或 MoE 的 EP）
+       → ⟹ 这就是「机内 TP、机间 PP、最外 DP」，
+            ★ 和训练的口诀字面一样，但 DP 的「最外」这次是【真的最外】
+
+    ④ tp 已经超过模型的 KV 头数 H 了？（MLA 模型 H=1，tp≥2 就中）
+       → ★ 此时 KV Cache 正在被复制 tp/H 份，纯浪费
+       → 上 DCP：-dcp &lt;size&gt;，size ≤ tp/H，不用加卡
+       → ⚠️ 顺序别搞反：先把 tp 加到性能满意，再加 dcp（见 6.4.6）
+       → 单条序列超长装不下，也是靠这个旋钮，但那是顺带的
+
+    ⑤ 首字延迟被超长 prompt 拖垮？
+       → 上 PCP（预填充上下文并行），或者直接上 PD 分离（10 章）
+</code></pre></div>
+
+<hr />
+<h2 id="68">6.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌───────────────────────────────────────────────────────────────────┐
+│  ① ★★ vLLM 布局：ExternalDP × DP × PP × PCP × TP                  │
+│     ✅ parallel_state.py:1817 原文注释                             │
+│     TP 变化最快（最近），DP 最慢（最远）                            │
+│     ⟹ 和训练的 tp-cp-ep-dp-pp 相比，★ PP 和 DP 【换了位置】       │
+│                                                                   │
+│  ② ★★★ 换位的唯一原因：                                           │
+│     训练 DP 每步要 all-reduce 2Ψ 梯度 ⟹ 贵 ⟹ 必须近               │
+│     推理 DP 是独立副本，通信量为 0    ⟹ 免费 ⟹ 可以最远           │
+│     原则从来没变：★ 通信量大的维度放最近                            │
+│                                                                   │
+│  ③ 各维度在推理里的新特点                                          │
+│     TP：仍是主力，每层 2 次 all-reduce（训练 4 次）                 │
+│         ★ Decode 阶段收益递减，别超过单机卡数；必须整除 KV 头数     │
+│     PP：★ 地位下降——Decode 只有 1 token，没有 micro-batch 填气泡   │
+│     DP：★ 变成「多开实例」，但 MoE 场景下必须同步 generate 防死锁   │
+│     PCP/DCP：★ 推理独有，Prefill 和 Decode 各要一个上下文并行       │
+│         ★★ DCP 详见 6.4：交错分片存 + LSE 精确合并算                │
+│            动机是消 KV 重复（tp/H 份），不加卡                       │
+│                                                                   │
+│  ④ ★★ SGLang 的另一条路：world_size == tp × pp，没有全局 DP 维     │
+│     ✅ parallel_state.py:2408                                     │
+│     改为把 TP 组【按模型部位重新切】：                              │
+│       注意力 = attn_dp × attn_cp × attn_tp                        │
+│       MoE   = moe_dp × moe_ep × moe_tp                           │
+│     ★ 动机：MoE 模型的注意力层想要 DP，MoE 层想要 EP，需求冲突      │
+└───────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="07-注意力变体MQA-GQA-MLA.html">07 注意力变体：MQA / GQA / MLA</a><br />
+本章反复提到「KV 头数限制 TP」「MLA 让 KV 变小所以注意力可以用 DP」。<br />
+下一章讲清楚这些注意力变体到底改了什么。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

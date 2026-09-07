@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>00 · 一个例子讲清：你发一张图，模型里到底发生了什么</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="README.html">目录</a> ｜ 下一章 → <a href="01-鸟瞰全景.html">01 鸟瞰全景</a></p>
+</blockquote>
+<h1 id="00">00 · 一个例子讲清：你发一张图，模型里到底发生了什么</h1>
+<blockquote>
+<p>这一章只讲<strong>一件事</strong>：一张图片是怎么"变成模型能读的东西"的。<br />
+读完这一章，后面 01~14 章都只是在给这条链路的每一节做放大。<br />
+<strong>不需要任何背景</strong>，只需要知道"大模型是一个吃 token、吐 token 的东西"。</p>
+</blockquote>
+<hr />
+<h2 id="01">0.1 先看现场</h2>
+<p>你在对话框里拖进一张手机截图，配一句话：</p>
+<div class="codehilite"><pre><span></span><code>    [截图.png]  +  「这个报错怎么修？」
+</code></pre></div>
+
+<p>几秒后模型说："你的 <code>config.yaml</code> 第 12 行缩进用了 tab，YAML 只认空格。"</p>
+<p><strong>它没有"看见"任何东西。</strong> 它收到的，从头到尾都是一串数字向量。这一章讲这串向量是怎么造出来的。</p>
+<hr />
+<h2 id="02">0.2 ★★ 卡住一切的那个约束</h2>
+<p>先记住这句话，它是整个多模态领域的<strong>总起点</strong>：</p>
+<blockquote>
+<p>🔑 <strong>大语言模型（LLM）的输入只有一种东西：一串向量。</strong><br />
+每个向量长得都一样（比如 4096 维），谁也不知道它原来是文字、是图、还是声音。</p>
+</blockquote>
+<p>文本是怎么变成向量的？两步，中间隔着一本<strong>词典</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    「猫」 ──[tokenizer 查词典]──→ 编号 27364 ──[查 embedding 表]──→ 4096 维向量
+             ★ 离散的：全世界只有 15 万种可能                 ★ 连续的：一行浮点数
+</code></pre></div>
+
+<p>图片没有词典。<strong>没有人能说清一张照片对应词表里的第几号。</strong> 于是问题变成：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 怎么在【不查词典】的情况下，把一张图直接变成一串 4096 维向量，
+       并且要让 LLM 觉得这些向量&quot;和文字向量是一路货&quot;？
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>多模态大模型的全部工程，几乎都是在回答这一个问题。</strong></p>
+</blockquote>
+<hr />
+<h2 id="03">0.3 四步走完全程</h2>
+<div class="codehilite"><pre><span></span><code>    ┌─────────────┐
+    │  原图        │  1092 × 1092 像素，3 个颜色通道
+    └──────┬──────┘
+           │  ① 切块（patchify）
+           ▼
+    ┌─────────────┐
+    │ 6084 个小块  │  每块 14×14 像素，78 × 78 = 6084 块
+    └──────┬──────┘
+           │  ② 视觉编码器（ViT）：让每块&quot;看看邻居&quot;，理解自己是什么
+           ▼
+    ┌─────────────┐
+    │ 6084 个向量  │  每个 1152 维（视觉塔自己的宽度）
+    └──────┬──────┘
+           │  ③ 合并 + 连接器：4 块并 1 块，再把 1152 维→ 4096 维
+           ▼
+    ┌─────────────┐
+    │ 1521 个向量  │  每个 4096 维 ← ★ 现在它们&quot;长得和文字向量一模一样&quot;了
+    └──────┬──────┘
+           │  ④ 和文字向量拼成一条序列，喂进 LLM
+           ▼
+    [&lt;img&gt; v1 v2 ... v1521 &lt;/img&gt;] [这][个][报][错][怎][么][修]
+    └──────── 1521 个 ────────┘   └──── 7 个 ────┘
+</code></pre></div>
+
+<p><strong>然后 LLM 就照常干活了</strong>——它根本不在乎前面那 1521 个向量是从哪来的，<br />
+就像你读一本书时不在乎某一页是激光打印还是喷墨打印。</p>
+<blockquote>
+<p>★★ 这就是为什么这类模型的通用名字叫 <strong>"视觉语言模型"</strong>，而不是"看图模型"：<br />
+<strong>它 90% 的身体还是那个语言模型</strong>，前面只是多接了一个"翻译器"。</p>
+</blockquote>
+<hr />
+<h2 id="04">0.4 📖 三个新名词，一次讲完</h2>
+<table>
+<thead>
+<tr>
+<th>名词</th>
+<th>英文</th>
+<th>干什么</th>
+<th>在哪讲</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>视觉编码器 / 视觉塔</strong></td>
+<td>vision encoder / vision tower</td>
+<td>把像素块变成"有语义的向量"，比如认出这块是"字母 t"</td>
+<td><a href="02-视觉编码器.html">02</a></td>
+</tr>
+<tr>
+<td><strong>连接器 / 投影层</strong></td>
+<td>connector / projector / adapter</td>
+<td>把视觉塔的向量"翻译"成 LLM 认识的形状和风格</td>
+<td><a href="03-连接器.html">03</a></td>
+</tr>
+<tr>
+<td><strong>视觉 token</strong></td>
+<td>visual token</td>
+<td>上面那 1521 个向量，一个就叫一个视觉 token</td>
+<td>全书</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"视觉 token"这个叫法有点骗人</strong>：文本 token 是<strong>整数编号</strong>（27364），视觉 token 是<strong>一行浮点数</strong>，<br />
+它<strong>不在词表里，也没有编号</strong>。之所以也叫 token，只因为它在序列里占一个位置、参与同一套注意力计算。<br />
+★ 这个区别在 <a href="09-生成侧-图像与统一模型.html">09 章讲图像生成</a>时会突然变得极其重要——<br />
+因为"要模型<strong>吐出</strong>一张图"的时候，你就不得不给图像发明一本词典了。</p>
+</blockquote>
+<hr />
+<h2 id="05">0.5 ★★ 现在算一笔账：一张图值多少钱</h2>
+<p>上面那张 1092×1092 的图，最后占了 <strong>1521 个 token</strong>。做个对照：</p>
+<div class="codehilite"><pre><span></span><code>    1521 个 token  ≈  1100 个汉字   ≈  一页半 A4 纸的中文
+                   ≈  1150 个英文单词
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一张普通截图 ≈ 一篇短文的成本。</strong> 这一句话解释了这个领域一大半的技术动作。</p>
+</blockquote>
+<p>再看几个真实型号的口径（✅ 数字来自本仓库已核对的一手报告）：</p>
+<table>
+<thead>
+<tr>
+<th>型号</th>
+<th>输入尺寸</th>
+<th>patch</th>
+<th>切出多少块</th>
+<th>合并后 token 数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Kimi K3</strong> / MoonViT-V2</td>
+<td>3584 × 3584</td>
+<td>14</td>
+<td>256×256 = <strong>65536</strong></td>
+<td>2×2 pixel shuffle → <strong>16384</strong></td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>2016 × 2016</td>
+<td>14</td>
+<td>144×144 = <strong>20736</strong></td>
+<td>2×2 merge → <strong>5184</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ 出处：<a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a> §六、<a href="../业界模型技术报告/MiniMax-M3.html">../业界模型技术报告/MiniMax-M3.md</a> §架构表。<br />
+⚠️ "合并后 token 数"是我按 <code>边长÷patch</code> 再除以 4 算的，两家报告都没有直接列这个数字。</p>
+</blockquote>
+<p><strong>视频更夸张</strong>。按 GLM-5.3 报告里提到的 <strong>1 fps 抽帧</strong>口径 ✅：</p>
+<div class="codehilite"><pre><span></span><code>    一段 5 分钟的视频  →  300 帧
+    每帧按 448×448 编码  →  每帧 (448/14)² = 1024 块  →  2×2 合并后 256 token
+    ⟹ 300 × 256 = 76,800 token
+    ⟹ ⚠️ 一段五分钟的视频，比一本《活着》还长
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>所以你会看到本领域到处都在做同一件事：想尽办法砍 token 数。</strong><br />
+2×2 合并、时间维池化、动态分辨率、token 剪枝……<a href="04-分辨率与token预算.html">04</a> 和 <a href="05-位置编码与视频.html">05</a> 两整章都在讲这个。<br />
+<strong>不是为了省显存那么简单——注意力的开销是 token 数的平方。</strong> token 数翻倍，算力翻四倍。</p>
+</blockquote>
+<hr />
+<h2 id="06">0.6 ★ 三个反直觉的点</h2>
+<h3 id="1">① 模型看到的画面，分辨率比你想的低得多</h3>
+<p>一张图被切成 14×14 的块之后，<strong>块内部的细节就被压成一个向量了</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ 这就是为什么早期模型看不清图里的小字：
+       224×224 的输入，一个 14×14 的块里可能糊了两三个字符
+    ⟹ 这也是为什么&quot;提高分辨率&quot;是过去两年多模态最大的性能来源之一（04 章）
+</code></pre></div>
+
+<h3 id="2-token">② 图像 token 的"信息密度"和文字完全不对等</h3>
+<div class="codehilite"><pre><span></span><code>    一段文字里，去掉 10% 的 token → 句子基本读不懂了
+    一张图里，去掉 10% 的 patch  → 你多半看不出差别
+    ⟹ 图像 token 冗余度极高 ⟹ 才敢做 2×2 合并、token 剪枝这些暴力操作
+    ⟹ ⚠️ 但&quot;冗余&quot;是对**普通照片**说的；对**密集文档**（表格、公式、小字）就不成立
+       —— 这是 04 章那些&quot;动态分辨率&quot;方案的根本动机
+</code></pre></div>
+
+<h3 id="3-token-10">③ 同一张图，喂给两个模型，token 数可以差 10 倍</h3>
+<p>因为切法不同（patch 大小、分辨率策略、合并倍数全都不一样）。</p>
+<blockquote>
+<p>⟹ <strong>两家模型的"多模态价格"根本没法直接比</strong>，得先问清楚"你这张图算几个 token"。<br />
+⟹ 同理，<strong>两家的多模态评测分数也没法直接比</strong>（<a href="11-多模态评测.html">11 章</a>会展开，<br />
+本仓库的 <a href="../业界模型技术报告/模型技术对比.html">模型技术对比</a> 已经点破过这件事：<br />
+✅ K3 与 M3 之间"<strong>零个共享的视觉 benchmark</strong>"）。</p>
+</blockquote>
+<hr />
+<h2 id="07">0.7 那声音、视频、图像生成呢？</h2>
+<p><strong>同一套骨架，换一个前端</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    图片  →  ViT 视觉塔      →  连接器  →┐
+    视频  →  ViT + 时间维处理  →  连接器  →┤
+    音频  →  音频编码器        →  连接器  →┼→  [一串 4096 维向量]  →  LLM
+    文字  →  tokenizer + 查表                →┘
+</code></pre></div>
+
+<p><strong>输出侧则是另一个故事</strong>，也是这两年真正在变的地方：</p>
+<div class="codehilite"><pre><span></span><code>    只输出文字      →  &quot;理解型&quot;多模态模型（本教程 01~08 章）
+    还要输出图/音   →  ⚠️ 麻烦大了：LLM 只会从词表里挑编号，怎么&quot;挑&quot;出一张图？
+                       →  两条路：外挂一个扩散模型 / 给图像造一本词典
+                       →  [09 章](09-生成侧-图像与统一模型.md) 专门讲这个
+</code></pre></div>
+
+<hr />
+<h2 id="08">0.8 🔑 这一章的四句话</h2>
+<ol>
+<li>LLM 只吃向量。<strong>多模态的全部难点，是在没有词典的情况下把图/音变成"像文字一样的向量"。</strong></li>
+<li>链路是四步：<strong>切块 → 视觉编码器 → 连接器 → 拼进文本序列</strong>。三大件对应 <a href="02-视觉编码器.html">02</a><a href="03-连接器.html">03</a> 两章。</li>
+<li><strong>一张图 ≈ 一千多个 token，一段五分钟视频 ≈ 七八万个 token。</strong> 这个账决定了后面所有的设计取舍。</li>
+<li>⚠️ <strong>"多模态"其实是两个方向的问题</strong>：让模型<strong>看懂</strong>（01~08 章）和让模型<strong>画出来/说出来</strong>（09、10 章），<br />
+   它们的技术栈差别，比很多人以为的大得多。</li>
+</ol>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="01-鸟瞰全景.html">01 鸟瞰全景：三大件、两条路线、四个战场</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

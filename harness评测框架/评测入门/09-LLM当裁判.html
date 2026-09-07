@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · 让模型当裁判：LLM-as-a-Judge</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="09-llm-as-a-judge">09 · 让模型当裁判：LLM-as-a-Judge</h1>
+<blockquote>
+<p>★ 07/08 章讲的代码题能"跑测试"来判。<br />
+★★ 但"这封邮件写得好不好""这个解释清不清楚"没有测试可跑。<br />
+⟹ 🔑 于是有了一个看起来像作弊、实际却是当前主流的办法：<strong>让另一个模型来打分</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="91">9.1 为什么非得这么干</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：LLM-as-a-Judge（大模型当裁判）
+      用一个强模型去给另一个模型的回答打分或排序。
+</code></pre></div>
+
+<p>✅ 论文原文（MT-Bench，arXiv:2306.05685，NeurIPS 2023，§3）：</p>
+<blockquote>
+<p>"collecting human preferences can be <strong>costly and laborious</strong>. ...<br />
+Given that most questions in MT-bench and Chatbot Arena are <strong>open-ended<br />
+without reference answers</strong>, devising a <strong>rule-based program</strong> to assess the<br />
+outputs is <strong>extremely challenging</strong>. Traditional evaluation metrics based on<br />
+the similarity between outputs and reference answers (e.g., ROUGE, BLEU)<br />
+are also <strong>ineffective</strong> for these questions."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 三条路，全堵死了：
+    ┌──────────────────┬────────────────────────────────────┐
+    │ ① 人来打分        │ ★ 最准，但慢且贵，无法天天跑       │
+    │ ② 写规则/正则     │ ★★ 开放题根本没有&quot;标准答案&quot;可比    │
+    │ ③ 和参考答案算相似度│ ★★ BLEU/ROUGE 只看字面重合，       │
+    │                   │   ⚠️ 换个说法但意思一样 → 判低分   │
+    └──────────────────┴────────────────────────────────────┘
+    ⟹ ★★★ 剩下的只有 ④：让模型判。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 名词：BLEU / ROUGE
+      两个上古（2002/2004 年）自动指标，本质是【统计你的输出和参考答案
+      有多少词重合】。★★ 对翻译/摘要还行，对开放问答基本失效。
+</code></pre></div>
+
+<p>★★ 论文还指出一个更根本的动机（§1）：</p>
+<blockquote>
+<p>"benchmarks like <strong>MMLU and HELM cannot effectively tell the difference<br />
+between these aligned models and the base models</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 这句话分量很重：★★★ 做完对齐（RLHF）后用户明显更喜欢的模型，
+       在 MMLU 这类选择题榜上【看不出提升】。
+       ⟹ 说明 01-06 章那套判别式评测，
+          ★★ 测不出&quot;好不好用&quot;这个维度。这是 LLM 裁判存在的根本理由。
+</code></pre></div>
+
+<hr />
+<h2 id="92">9.2 三种裁判形态</h2>
+<p>✅ 论文 §3.1 明确列了三种：</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ ① Pairwise comparison（两两对比）─────────────────┐
+   │  给裁判一个问题 + 两份答案 → 判谁更好，或平局。     │
+   │  ★★ 最稳，因为&quot;比较&quot;比&quot;打绝对分&quot;容易。            │
+   │  ⚠️ 缺点：✅ &quot;the number of possible pairs grows    │
+   │     quadratically&quot; —— ★ 模型一多，对数爆炸。       │
+   ├─ ② Single answer grading（单答案打分）─────────────┤
+   │  直接给一份答案打个分（比如 1-10）。               │
+   │  ★ 便宜、线性。⚠️ 论文说它 &quot;may become unstable&quot;： │
+   │     ★★ 换个裁判模型，绝对分会整体漂移。           │
+   ├─ ③ Reference-guided grading（带参考答案打分）──────┤
+   │  ★★ 把标准答案也给裁判看，再让它判。              │
+   │  ⟹ 数学题上效果显著（见 §9.4）                     │
+   └────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>★ 这三种在源码里都能看到。比如 EvalScope 的默认裁判模板<br />
+<a href="../源码/evalscope-1.10.0/evalscope/metrics/judge/llm_judge.py">metrics/judge/llm_judge.py:12</a><br />
+就是第 ③ 种（★ 逐字，节选）：</p>
+<div class="codehilite"><pre><span></span><code>Your job is to look at a question, a gold target, and a predicted answer,
+and return a letter &quot;A&quot; or &quot;B&quot; to indicate whether the predicted answer is
+correct or incorrect.
+
+[Question] {question}
+[Reference Answer] {gold}
+[Predicted Answer] {pred}
+
+Grade the predicted answer of this new question as one of:
+A: CORRECT
+B: INCORRECT
+
+Just return the letters &quot;A&quot; or &quot;B&quot;, with no text around it.
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 注意最后一句 &quot;Just return the letters ... with no text around it&quot;。
+    ⟹ 🔑 这是在【为 05 章的抽取环节服务】：
+       裁判自己也是个模型，它的输出也要被正则抽取。
+       ⟹ ★★ 所以裁判提示词里必须死死约束输出格式。
+</code></pre></div>
+
+<p>同文件里还有第 ② 种模板 <code>DEFAULT_NUMERIC_SCORE_TEMPLATE</code>（★ 逐字节选）：</p>
+<blockquote>
+<p>"you must rate the response on a scale of 0 (worst) to 1 (best) by strictly<br />
+following this format: <code>\"[[rating]]\"</code>, for example: <code>\"Rating: [[0.5]]\"</code>"</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 那个双方括号 [[ ]] 不是装饰，是【给正则用的锚点】。
+    ⟹ 🔑 因为裁判会写一大段解释，必须有个不会误命中的标记把分数框出来。
+</code></pre></div>
+
+<hr />
+<h2 id="93">9.3 裁判靠谱吗？—— 靠谱到出人意料</h2>
+<p>✅ 论文摘要：</p>
+<blockquote>
+<p>"strong LLM judges like <strong>GPT-4 can match both controlled and crowdsourced<br />
+human preferences well, achieving </strong>over 80% agreement**, the same level of<br />
+agreement between humans."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 最后半句是关键：★★★【人和人之间的一致率也就 80% 左右】。
+
+    ★★ 这意味着：不能因为&quot;裁判和人不完全一致&quot;就否定它，
+       因为【人和人本来也不完全一致】。
+       ⟹ 开放题的&quot;正确答案&quot;本身就不唯一。
+
+    ⚠️ 但请注意时代：这是 2023 年的 GPT-4。
+       ★ 今天的裁判模型只会更强，⚠️ 不过下面那些偏差【并没有消失】。
+</code></pre></div>
+
+<hr />
+<h2 id="94">9.4 三个必须知道的偏差</h2>
+<p>★★★ 这是本章最有价值的部分。论文 §3.3 用实验把它们量化了。</p>
+<h3 id="1-position-bias">① 位置偏差（position bias）</h3>
+<p>✅ 定义：<em>"an LLM exhibits a propensity to favor certain positions over others"</em></p>
+<p>✅ Table 2（★ 三个裁判，默认提示词）：</p>
+<div class="codehilite"><pre><span></span><code>   ┌───────────┬──────────┬────────────┬────────────┐
+   │ 裁判       │ 一致率    │ 偏向第一个  │ 偏向第二个  │
+   ├───────────┼──────────┼────────────┼────────────┤
+   │ Claude-v1  │  23.8%   │ ★★ 75.0%  │   0.0%     │
+   │ GPT-3.5    │  46.2%   │   50.0%    │   1.2%     │
+   │ GPT-4      │ ★ 65.0%  │   30.0%    │   5.0%     │
+   └───────────┴──────────┴────────────┴────────────┘
+
+   ★ &quot;一致率&quot; = 把两份答案【调换顺序】后，判决不变的比例。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读懂这张表：Claude-v1 只有 23.8% 的情况下judgment 不随顺序变，
+       ★★★ 也就是说【四次里有三次，谁放前面谁赢】。
+       ⟹ 那一次评测得到的排名，★★ 相当大一部分是【摆放顺序造成的】。
+
+    ⚠️ 论文自己说明这个测试很苛刻：两份答案是同一个模型
+       temperature=0.7 采两次生成的，本来就极难分辨。
+       ✅ &quot;occasionally indistinguishable even to humans&quot;
+       ⟹ ★ 所以别把 23.8% 理解成&quot;Claude 判什么都乱&quot;。
+</code></pre></div>
+
+<p>★★ 论文对成因的猜测（✅ 逐字）：</p>
+<blockquote>
+<p>"we suspect that it could be rooted in the training data or <strong>inherent to the<br />
+left-to-right architecture of causal transformers</strong>"</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：causal transformer（因果 Transformer）
+      ★★ 就是现在所有主流大模型的结构：读文本时【只能看左边，不能看右边】。
+      ⟹ 于是&quot;先读到的东西&quot;天然占据了更多的推理路径。
+      ⚠️ 这只是论文的猜测，未被证明。
+</code></pre></div>
+
+<p><strong>★★★ 怎么治：跑两遍，交换位置，取平均。</strong></p>
+<p>这在源码里是标准做法。EvalScope 的 Arena-Hard 适配器<br />
+<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:41</a><br />
+文档字符串直接写着（★ 逐字）：</p>
+<div class="codehilite"><pre><span></span><code>- Two-game battle system (A vs B and B vs A)
+</code></pre></div>
+
+<p>实现在同文件 L110-138：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">game1_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt1</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
+<span class="n">game2_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt2</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
+<span class="o">...</span>
+<span class="n">score1</span> <span class="o">=</span> <span class="n">get_judge_score</span><span class="p">(</span><span class="n">res1</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>     <span class="c1"># ★ 注意 reverse</span>
+<span class="n">score2</span> <span class="o">=</span> <span class="n">get_judge_score</span><span class="p">(</span><span class="n">res2</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="o">...</span>
+<span class="n">score</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;score&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">score1</span> <span class="o">+</span> <span class="n">score2</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span><span class="p">}</span>   <span class="c1"># ★★ 两局取平均</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 一句话：★★★ 一道题判两次，成本翻倍，换掉一个系统性偏差。
+       ⚠️ 看到某个主观榜单【只判一遍】，它的结果就要打折看。
+</code></pre></div>
+
+<h3 id="2-verbosity-bias">② 冗长偏差（verbosity bias）</h3>
+<p>✅ 定义：<em>"an LLM judge favors longer, verbose responses, even if they are not<br />
+as clear, high-quality, or accurate as shorter alternatives"</em></p>
+<p>★★ 论文设计了一个很妙的攻击实验："repetitive list" attack ——<br />
+把一个 5 条的列表，让 GPT-4 换个说法复述成 5 条，拼在原列表前面，<br />
+★ 变成 10 条但<strong>信息量完全没增加</strong>。</p>
+<p>✅ Table 3（23 个答案上的"攻击成功率"）：</p>
+<div class="codehilite"><pre><span></span><code>   ┌───────────┬───────────┬─────────┐
+   │ Claude-v1 │  GPT-3.5  │  GPT-4  │
+   │ ★★ 91.3% │ ★★ 91.3% │  8.7%   │
+   └───────────┴───────────┴─────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读法：★★★ 把答案注水一倍、不加任何新信息，
+       有两个裁判【九成以上会认为变好了】。
+
+    ⟹ ★★ 这直接解释了一个你一定见过的现象：
+       为什么很多模型答什么都要先来一段&quot;这是一个很好的问题&quot;，
+       然后分点、加粗、总结、再展望。
+       ⟹ 🔑 因为在【被冗长偏差污染的偏好数据】上训练过。
+
+    ⚠️ 这是我的推断链，不是论文结论。但方向是清楚的：
+       ★★★ 评测的偏差会顺着训练回流到模型行为里。
+</code></pre></div>
+
+<p>★ 论文还做了个对照：裁判对<strong>完全相同</strong>的两个答案总是判平局<br />
+（✅ "always return a tie for two identical answers"），<br />
+⟹ ★★ 说明它不是乱判，是【真的被"更长"骗到了】。</p>
+<p><strong>怎么治：</strong> ⚠️ 论文没给通用解法。工程上常见的是<br />
+"控制长度偏差"的评测变体——OpenCompass 里就专门有一个数据集叫<br />
+<a href="../源码/opencompass-0.5.3/opencompass/datasets/subjective/compassbench_control_length_bias.py">compassbench_control_length_bias.py</a>。<br />
+★ 一个偏差重要到要为它单独做一套题，说明它有多难缠。</p>
+<h3 id="3-self-enhancement-bias">③ 自我偏好（self-enhancement bias）</h3>
+<p>✅ 定义：<em>"LLM judges may favor the answers generated by themselves"</em></p>
+<p>✅ 论文 §3.3 实测：</p>
+<blockquote>
+<p>"GPT-4 favors itself with a <strong>10% higher win rate</strong>;<br />
+Claude-v1 favors itself with a <strong>25% higher win rate</strong>.<br />
+However, they also favor other models and <strong>GPT-3.5 does not favor itself</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 最实用的一条推论：
+       ★★★【不要用 A 家的模型当裁判去评 A 家的模型】。
+
+    ⚠️ 但也别过度解读：论文自己说 GPT-3.5 就不偏袒自己，
+       ✅ 而且明确写了 &quot;Due to limited data&quot; ——★ 样本量有限。
+       ⟹ 这是一个【要防范的风险】，不是一条铁律。
+</code></pre></div>
+
+<h3 id="4">④ 附带一个：裁判自己不会做题</h3>
+<p>✅ Table 4（10 道数学题，"裁判把错答案判成对"的失败次数）：</p>
+<div class="codehilite"><pre><span></span><code>   ┌──────────┬─────────┬────────────┐
+   │ Default  │  CoT    │ Reference  │
+   │ ★★ 14/20│  6/20   │  ★ 3/20    │
+   └──────────┴─────────┴────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 直接裁判：★★★ 二十次里有十四次把错的判成对——比瞎猜还差。
+    ⟹ ★ 让裁判先自己想一遍（CoT）：降到 6/20。
+    ⟹ ★★ 把标准答案给它看（Reference）：降到 3/20。
+
+    🔑🔑 结论：★★★ 有客观答案的题，就别让裁判&quot;凭感觉&quot;判。
+       能给参考答案就给，能跑测试就跑测试（07 章）。
+       ⟹ LLM 裁判是【开放题的无奈之选】，不是万能替代品。
+</code></pre></div>
+
+<hr />
+<h2 id="95-elo">9.5 从"两两对比"到一个排行榜：Elo</h2>
+<p>★★ 两两对比只能告诉你"A 赢了 B"。要变成一张榜，还差一步。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：Elo 评分（Elo rating）
+      来自国际象棋（1960 年代，Arpad Elo 发明）。
+      ★★ 核心思想：赢了高分对手加很多分，赢了低分对手加一点点。
+      ⟹ 从一堆【两两胜负】推出【每个人的绝对实力分】。
+</code></pre></div>
+
+<p>源码里就是这么做的，<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:148-158</a>：</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_mle_elo</span><span class="p">,</span> <span class="n">get_battles_from_row</span><span class="p">,</span> <span class="n">get_bootstrap_result</span><span class="p">,</span> <span class="n">get_win_rate_column</span>
+<span class="n">battles</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">concat</span><span class="p">([</span><span class="n">get_battles_from_row</span><span class="p">(</span><span class="n">res</span><span class="o">.</span><span class="n">score</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;battle_result&#39;</span><span class="p">])</span> <span class="k">for</span> <span class="n">res</span> <span class="ow">in</span> <span class="n">sample_scores</span><span class="p">])</span>
+<span class="n">bootstrap_online_elo</span> <span class="o">=</span> <span class="n">compute_mle_elo</span><span class="p">(</span><span class="n">battles</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 名词：bootstrap（自助法）
+      ★★ 一种统计方法：把数据【有放回地重复抽样】很多次，
+      每次算一遍分数，看这些分数散得有多开。
+      ⟹ 🔑 用来算【置信区间】——也就是&quot;这个分数上下浮动多少算正常&quot;。
+
+    ⟹ 🔑🔑 所以正经的主观榜单，★★★ 报的应该是
+       &quot;1247 ± 8&quot; 而不是光秃秃一个 &quot;1247&quot;。
+       ⚠️ 两个模型分差 3 分、区间重叠 20 分 ⟹ 【实际上没分出胜负】。
+</code></pre></div>
+
+<p>★★ 还要注意 arena_hard 源码里的这两行：</p>
+<div class="codehilite"><pre><span></span><code><span class="s1">&#39;model_a&#39;</span><span class="p">:</span> <span class="s1">&#39;gpt4-0314&#39;</span><span class="p">,</span>
+<span class="s1">&#39;model_b&#39;</span><span class="p">:</span> <span class="s1">&#39;test_model&#39;</span><span class="p">,</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 它不是让所有模型互相打，而是【全部去挑战同一个固定基线】。
+       ★★ 这叫【锚点模型】(anchor / baseline model)。
+
+    ⟹ ★★★ 好处：新模型加进来只要打 N 场，不是 N² 场（解决了 §9.2 的爆炸问题）。
+    ⟹ ⚠️ 代价：★★ 整张榜的刻度绑死在这个锚点上。
+       锚点一换，所有历史分数【全部不可比】。
+</code></pre></div>
+
+<hr />
+<h2 id="96">9.6 裁判评测的复现性：比你想的更差</h2>
+<p>★★ 把 01 章的"分数是联合产物"套到这里，变量列表变得很长：</p>
+<div class="codehilite"><pre><span></span><code>   ┌───────────────────────┬──────────────────────────────────┐
+   │ ★★ 裁判模型是哪个？   │ 换裁判 = 换尺子                   │
+   │ ★★★ 裁判模型的版本？  │ 闭源 API 会静默更新              │
+   │ ★ 裁判的提示词？       │ Table 2 里 default vs rename     │
+   │                        │ 就让一致率从 23.8% → 56.2%       │
+   │ ★★ 判了一遍还是两遍？  │ 位置偏差有没有被抵消              │
+   │ ★ 裁判的 temperature？ │ 非 0 就不可复现                   │
+   │ ★★ 锚点模型是谁？      │ 换锚点整张榜作废                  │
+   │ ★ 平局怎么算分？       │ 0.5 分还是不计入                  │
+   └───────────────────────┴──────────────────────────────────┘
+
+    ⟹ 🔑🔑 EvalScope 默认裁判是写死在源码里的：
+       DEFAULT_JUDGE_MODEL = &#39;Qwen/Qwen3-235B-A22B&#39;
+       ★ 这是好事——★★ 至少它【明确写出来了】。
+       ⚠️ 很多榜单只说&quot;用了 LLM 裁判&quot;，不说是谁。那种分数没法用。
+</code></pre></div>
+
+<hr />
+<h2 id="97">9.7 什么时候该用、什么时候不该用</h2>
+<div class="codehilite"><pre><span></span><code>   ┌─ ✅ 适合 ────────────────────────────────────────────┐
+   │ ① 开放题：写作、总结、角色扮演、多轮对话             │
+   │ ② ★★ 相对比较（A 和 B 哪个好），而不是绝对分        │
+   │ ③ ★ 快速迭代：你改了提示词，想知道有没有变好         │
+   │ ④ 大规模粗筛：先用裁判筛掉明显差的，再人工看剩下的   │
+   └──────────────────────────────────────────────────────┘
+   ┌─ ❌ 不适合 ──────────────────────────────────────────┐
+   │ ① ★★★ 有客观答案的（数学/代码）—— Table 4 已证明   │
+   │ ② ★★ 需要跨时间比较的（裁判会升级，刻度会漂）       │
+   │ ③ ★★ 评自家模型用自家裁判（自我偏好）               │
+   │ ④ ★★★ 要拿去对外宣称&quot;我们比 X 强&quot;的场合            │
+   │    ⟹ 因为对方可以用另一个裁判得出相反结论           │
+   └──────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="98">9.8 本章总结</h2>
+<div class="codehilite"><pre><span></span><code>    🔑 七条带走：
+
+    ① ★★ 开放题没有可跑的测试，也没法算相似度 ⟹ 只能让模型判
+    ② ★ 三种形态：两两对比 / 单答案打分 / 带参考答案打分
+    ③ ✅ GPT-4 与人的一致率 &gt;80%，★★ 和人与人之间的一致率同级
+    ④ ★★★ 三大偏差：位置（Claude-v1 一致率仅 23.8%）、
+       冗长（注水攻击成功率 91.3%）、自我偏好（+10%~+25%）
+    ⑤ ★★ 位置偏差有解：交换顺序判两遍取平均（源码是标准做法）
+    ⑥ ★★★ 有客观答案就别用裁判：直判 14/20 判错，给参考答案降到 3/20
+    ⑦ 🔑🔑 Elo + bootstrap ⟹ 看榜要看【置信区间】，
+       区间重叠就是没分出胜负；换锚点则整张榜作废
+
+    ⟹ 🔑🔑🔑 一句话立场：
+       ★★★ LLM 裁判是【便宜、可扩展、有解释】的近似人类偏好，
+       但它是【近似】。★★ 用它做迭代信号很好，用它做对外结论很危险。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>下一章：<a href="10-DeepSeek的评测口径.html">10-DeepSeek的评测口径.md</a> —— ⭐⭐ 拿一份真实的技术报告，看一线团队到底怎么设置 harness，以及为什么同一个模型在不同口径下能差十几分。<br />
+返回 <a href="README.html">评测入门总目录</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

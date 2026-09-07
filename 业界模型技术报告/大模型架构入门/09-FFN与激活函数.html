@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · FFN 与激活函数：模型 2/3 的参数都在这里</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="08-高效注意力.html">← 08 高效注意力</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="10-MoE.html">10 MoE</a></p>
+</blockquote>
+<h1 id="09-ffn-23">09 · FFN 与激活函数：模型 2/3 的参数都在这里</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：讲清模型的另一半积木。<br />
+读完你应该能回答：FFN 到底在干什么？为什么是"先扩再缩"？SwiGLU 的门控是什么意思、为什么那个 2/3 因子？以及一条完整的因果链——<strong>为什么想做 4-bit 量化，就必须给激活函数加界</strong>？</p>
+</blockquote>
+<hr />
+<h2 id="91-ffn">9.1 FFN 是什么</h2>
+<p>回忆 <a href="01-鸟瞰全景.html">01 章</a>的二分法：<strong>Attention 横向混合，FFN 纵向变换。</strong></p>
+<p><strong>FFN（Feed-Forward Network）对每个 token 独立地做同一件事，位置之间毫无交流。</strong></p>
+<p>$$\text{FFN}(x) = W_{\text{down}}\ \text{act}!\left(W_{\text{up}}\,x\right)$$</p>
+<div class="codehilite"><pre><span></span><code>    x  [5120]
+      │
+      │  W_up  [5120, 13824]     ★ 先【扩张】到 2.7 倍
+      ▼
+    h  [13824]
+      │
+      │  act(·)：非线性激活          ← 这一步是整个模型唯一的非线性来源之一
+      ▼
+      │  W_down  [13824, 5120]   ★ 再【压缩】回来
+      ▼
+    y  [5120]
+</code></pre></div>
+
+<h3 id="_1">为什么要"先扩再缩"</h3>
+<div class="codehilite"><pre><span></span><code>① 如果不扩张，直接 [5120 → 5120] 两层线性，中间夹一个激活：
+   表达力有限，而且参数量只有 2d²
+
+② 扩张到 d_ff 之后，中间层有 13824 个神经元
+   每个神经元可以检测一个【特征】：
+       &quot;这个 token 是不是一个人名？&quot;
+       &quot;上下文是不是在讨论数学？&quot;
+       &quot;这个位置需不需要一个动词？&quot;
+
+   然后 W_down 根据激活了哪些特征，决定往残差流写什么
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>用 <a href="03-残差流.html">03 章</a>的总线视角说得更准确</strong>：<br />
+```<br />
+W_up   的每一【行】  = 一个从残差流上【读取】的方向（"检测器"）<br />
+W_down 的每一【列】  = 一个往残差流【写入】的方向（"结论"）</p>
+<p>FFN = 13824 个 [检测器 → 结论] 的规则，激活函数决定哪些规则被触发<br />
+```<br />
+<strong>这是一个非常有解释力的图景</strong>：FFN 常被理解为<strong>键值记忆</strong>（key-value memory）——$W_{up}$ 是键，$W_{down}$ 是值，激活函数决定匹配度。可解释性研究确实找到了很多这样的"事实神经元"。</p>
+</blockquote>
+<hr />
+<h2 id="92">9.2 激活函数的演化</h2>
+<div class="codehilite"><pre><span></span><code>┌── ReLU (2010) ────────────────────────────────────┐
+│   f(x) = max(0, x)                                 │
+│                    ╱                               │
+│   ────────────────●                                │
+│                                                    │
+│   ✅ 极简、极快   ❌ x&lt;0 时梯度恒为 0（神经元&quot;死亡&quot;） │
+│                   ❌ 在 0 处不可导                   │
+└────────────────────────────────────────────────────┘
+
+┌── GELU (2016) ────────────────────────────────────┐
+│   f(x) = x · Φ(x)      Φ 是标准正态的累积分布函数    │
+│                    ╱                               │
+│   ──────────╲___╱                                  │
+│              ↑ 负半轴有个小凹陷，不是硬截断           │
+│   ✅ 平滑可导  ✅ GPT/BERT 时代的标准                 │
+└────────────────────────────────────────────────────┘
+
+┌── SiLU / Swish (2017) ────────────────────────────┐
+│   f(x) = x · σ(x) = x / (1 + e^{−x})               │
+│   ✅ 和 GELU 形状几乎一样，但【算得更快】             │
+│      （只需要一个 sigmoid，不需要 erf）              │
+│   ★ 现在的事实标准                                  │
+└────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>SiLU 的形状</strong>：</p>
+<div class="codehilite"><pre><span></span><code>       f(x)
+        ▲
+      3 ┤                          ╱
+      2 ┤                       ╱
+      1 ┤                    ╱
+      0 ┼───────────────╱──────────────→ x
+     -1 ┤      ╲____╱
+        └────┬────┬────┬────┬────
+           -4   -2    0    2    4
+              ↑ 最小值 ≈ −0.278 @ x ≈ −1.278
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>注意负半轴那个小凹陷</strong>：它意味着<strong>中等负值的输入会得到一个小的负输出</strong>，而<strong>很负的输入趋近 0</strong>。这给了模型一个"软的"抑制机制，比 ReLU 的硬截断信息量大。</p>
+</blockquote>
+<hr />
+<h2 id="93-glu">9.3 GLU：加一个门</h2>
+<p><strong>GLU（Gated Linear Unit）是这一代 FFN 的标配。它的改动是：把 $x$ 投影两次，一份过激活当"门"，一份不过激活当"内容"，然后逐元素相乘。</strong></p>
+<p>$$\text{SwiGLU}(x) = W_{\text{down}}\Big(\underbrace{\text{SiLU}(W_{\text{gate}}\,x)}<em _text_up="\text{up">{\text{门：开多大}}\ \odot\ \underbrace{W</em>\Big)$$}}\,x}_{\text{内容：传什么}</p>
+<div class="codehilite"><pre><span></span><code>              ┌──── W_gate ──→ SiLU ──┐
+    x  [5120]─┤                        ⊙  ──→ W_down ──→ y [5120]
+              └──── W_up ─────────────┘
+                                       ↑
+                              逐元素相乘（element-wise）
+
+    门 ≈ 0  →  这个通道被【关闭】，内容传不过去
+    门 ≈ 1  →  内容原样通过
+    门 &lt; 0  →  内容被【反向】传递
+</code></pre></div>
+
+<h3 id="_2">为什么门控有用</h3>
+<div class="codehilite"><pre><span></span><code>① 标准 FFN：act(W·x) —— 一个神经元是否激活，只取决于【一个】线性投影
+② GLU：     两个独立的投影，一个决定&quot;传不传&quot;，一个决定&quot;传什么&quot;
+   → 【乘法交互】。乘法比加法的表达力强得多：
+      加法只能叠加特征，乘法可以表达&quot;条件&quot;和&quot;选择&quot;
+
+   这和 LSTM 的门控、[08 章](08-高效注意力.md) delta rule 的遗忘门是同一种思想
+</code></pre></div>
+
+<p><strong>实证上 SwiGLU 稳定优于 ReLU/GELU FFN</strong>（Noam Shazeer 的原论文里做了完整的消融）。<strong>五家全部用 GLU 系。</strong></p>
+<h3 id="23">⚠️ 那个奇怪的 2/3 因子</h3>
+<p><strong>GLU 有【三个】矩阵（$W_{gate}, W_{up}, W_{down}$），而标准 FFN 只有两个。</strong> 为了参数量公平对比：</p>
+<p>$$3\,d\,d_{ff}^{\text{GLU}} = 2\,d\,d_{ff}^{\text{标准}}\quad\Longrightarrow\quad d_{ff}^{\text{GLU}} = \tfrac{2}{3}\,d_{ff}^{\text{标准}}$$</p>
+<div class="codehilite"><pre><span></span><code>    标准 FFN 的惯例：d_ff = 4d
+    GLU 版本：      d_ff = (2/3) × 4d = 8d/3 ≈ 2.67d
+
+    d = 5120  →  d_ff ≈ 13653  →  取整到 128 的倍数 → 13824
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是你在配置文件里看到 <code>intermediate_size: 13824</code> 这种"奇怪"数字的原因。</strong><br />
+它不是随便定的，是 $\frac{8}{3}d$ 向上对齐到硬件友好的倍数。</p>
+</blockquote>
+<hr />
+<h2 id="94-swiglu">9.4 ⚠️ SwiGLU 的一个大麻烦：它无界</h2>
+<p><strong>这一节是本章最重要的部分，它连着 <a href="14-量化.html">14 量化</a>。</strong></p>
+<h3 id="_3">问题</h3>
+<div class="codehilite"><pre><span></span><code>    SwiGLU(x) = SiLU(W_g x) ⊙ (W_u x)
+
+    ① SiLU 在正半轴是【线性增长】的：SiLU(100) ≈ 100
+    ② W_u x 也是【无界】的线性投影
+    ③ 两个无界的东西【相乘】 → 输出可以到 【平方级别】的大
+
+    输入 100 → 输出可能到 10,000
+</code></pre></div>
+
+<p><strong>再叠加 <a href="05-注意力机制.html">05 章 §5.5</a> 那条链</strong>（softmax 和为 1 → attention sink → 巨大激活），FFN 的输入本来就可能带着离群值进来，<strong>经过 SwiGLU 的乘法会被平方放大</strong>。</p>
+<h3 id="_4">后果</h3>
+<div class="codehilite"><pre><span></span><code>① 训练不稳定：偶发的巨大激活 → loss spike → 甚至 NaN
+② ★ 量化崩溃：一个 10,000 的离群值和一堆 0.1 的正常值在同一个量化组里
+   → 量化区间被离群值撑满 → 正常值全部塌成 0
+   → 详见 [14 章 §14.6](14-量化.md)
+</code></pre></div>
+
+<h3 id="clamp">解法一：硬截断（clamp）</h3>
+<p>$$\text{clamp}(z, -c, +c) = \min(\max(z, -c), +c)$$</p>
+<blockquote>
+<p>✅ <strong>DeepSeek-V4：SwiGLU 输出 clamp 到 $[-10, 10]$</strong><br />
+✅ <strong>MiniMax M3：clamp 到 $7.0$</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>✅ 极简，几乎零开销
+✅ 硬保证了上界 → 量化区间可控
+❌ 截断处梯度为 0 → 被截断的通道&quot;学不动&quot;了
+❌ 不平滑，理论上不优雅
+</code></pre></div>
+
+<h3 id="kimi-k3-situ-glu">解法二：软饱和 —— Kimi K3 的 SiTU-GLU</h3>
+<blockquote>
+<p>✅ <strong>K3 报告给出的完整形式</strong>：<br />
+$$\text{SiTU-GLU}(x) = \Big[\beta_1\tanh!\left(\tfrac{W_g x}{\beta_1}\right)\odot\sigma(W_g x)\Big]\ \odot\ \beta_2\tanh!\left(\tfrac{W_u x}{\beta_2}\right)$$<br />
+<strong>参数：$\beta_1 = 4$，$\beta_2 = 25$。</strong></p>
+</blockquote>
+<p><strong>逐块拆解</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① β₁·tanh(z/β₁)     ← 把 z 【软性地】限制在 (−β₁, +β₁) = (−4, 4)
+                       ★ 关键：|z| 很小时 tanh(z/β)·β ≈ z，几乎不改变
+                                |z| 很大时饱和到 ±β₁
+
+② ⊙ σ(W_g x)        ← 这就是 SiLU 的 sigmoid 部分（门）
+   ①②合起来 ≈ 一个【有界版本的 SiLU】，上界 4
+
+③ β₂·tanh(W_u x/β₂) ← 内容分支也软性限制在 (−25, 25)
+</code></pre></div>
+
+<p>$$\Rightarrow\quad |\text{SiTU-GLU}(x)| \le \beta_1\times\beta_2 = 4\times 25 = \boxed{100}$$</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 输出被【硬性数学保证】在 [−100, 100] 之内 ★★
+
+    ✅ 处处平滑可导，没有梯度为 0 的死区（tanh 的导数处处 &gt; 0）
+    ✅ 小值区几乎恒等 —— 正常范围内的行为和 SwiGLU 一样
+    ✅ 大值区软饱和 —— 离群值被自动压住，但仍保留大小顺序
+</code></pre></div>
+
+<h3 id="_5">对比</h3>
+<div class="codehilite"><pre><span></span><code>        clamp（V4/M3）              SiTU-GLU（K3）
+              ┌────                       ┌──────
+             ╱│                          ╱
+    ────────╱ │              ────────╱‾‾
+           ╱  │                     ╱
+      ────┘   ▲                ────┘
+              截断处梯度=0        处处可导，软饱和
+
+    简单、够用                复杂、更优雅、上界更精确可控
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么 K3 值得做这么复杂的东西</strong>：见下一节的因果链。</p>
+</blockquote>
+<hr />
+<h2 id="95">9.5 ★ 一条完整的因果链</h2>
+<p><strong>这条链把 09 章和 14 章连起来了，是全教程最有价值的推论之一。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① 想把模型量化到 【4-bit】（省 4 倍显存和带宽）
+             ↓
+    ② 4-bit 只有 16 个量化档位，PTQ（训练后量化）在这个精度下必崩
+       → 【必须用 QAT】（量化感知训练，训练时就模拟量化）
+             ↓
+    ③ QAT 期间，任何一个巨大的离群值都会毁掉整个量化组
+       （详见 [14 章 §14.6](14-量化.md) 的手算例子）
+             ↓
+    ④ 而 SwiGLU 是【无界】的，且是两个无界量相乘（平方放大）
+       → 它是离群值最大的产地
+             ↓
+    ⑤ ★ 所以：【必须给激活函数加界】
+             ↓
+    ⑥ 加界的两种方式：硬截断（简单）/ 软饱和（优雅）
+</code></pre></div>
+
+<h3 id="_6">反向验证：用这条链去看五家</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>激活函数处理</th>
+<th>量化目标</th>
+<th>是否吻合</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>SiTU-GLU</strong>（软饱和，界 = 100）</td>
+<td><strong>MXFP4 QAT</strong>，贯穿 SFT 到 RL</td>
+<td>✅ 目标最激进 → 处理最讲究</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>SwiGLU + <strong>clamp [−10, 10]</strong></td>
+<td><strong>FP4</strong> 存 + FP8 算</td>
+<td>✅ 目标激进 → 加了界</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>SwiGLU</td>
+<td><strong>INT4</strong>（MoE）+ W8A8 QAT</td>
+<td>✅ 有 4-bit 目标</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>SwiGLU + <strong>clamp 7.0</strong></td>
+<td><strong>MXFP8</strong></td>
+<td>✅ 只到 8-bit，但仍加了界</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>❓ <strong>报告中完全没提</strong></td>
+<td><strong>W8A8</strong>（疑似 PTQ）</td>
+<td>⚠️ 见下</td>
+</tr>
+</tbody>
+</table>
+<h3 id="openpangu">⚠️ openPangu 那个空格</h3>
+<blockquote>
+<p><strong>一个已核对的事实</strong>：openPangu-2.0-Pro 技术报告中，<code>SwiGLU</code> / <code>GLU</code> / <code>SiLU</code> / <code>激活函数</code> 这几个关键词的命中次数是 <strong>0</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    这有两种可能的解读：
+
+    ① 它就是用的标准 SwiGLU，因为太常规所以没写
+    ② 它确实没做任何激活函数的加界处理
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>我倾向于第二种，但这只是推断，华为报告没有任何相关表述。</strong> 理由是那条因果链的<strong>反向</strong>：</p>
+<p><code>openPangu 的量化目标只到 【W8A8】（8-bit），而且疑似是 PTQ 而非 QAT
+         ↓
+8-bit 有 256 个档位，对离群值的容忍度比 4-bit 高【16 倍】
+         ↓
+★ 所以它【不需要】给 SwiGLU 加界 —— 那个空格是自洽的</code></p>
+<p><strong>⚠️ 再次强调：这是一个自洽的解释，不是被验证的因果。</strong> 也完全可能只是报告没写。</p>
+<p>📌 但这个视角本身是有用的：<strong>当你看到一份报告在某个位置什么都没做，去看它在下游的目标是什么，往往能解释得通。</strong></p>
+</blockquote>
+<hr />
+<h2 id="96">9.6 挂回五家（含参数量）</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>激活</th>
+<th>$d_{ff}$（专家）</th>
+<th>特别的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>SwiGLU + clamp [−10,10]</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>SiTU-GLU</strong>（$\beta_1{=}4,\beta_2{=}25$，$\vert f\vert\le100$）</td>
+<td>latent 3584</td>
+<td>见 <a href="10-MoE.html">10 章</a> 的 Stable LatentMoE</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>SwiGLU</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>SwiGLU + clamp 7.0</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>❓ 报告未提</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 完整的横向论证见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.4「激活函数的四种补丁」。</p>
+</blockquote>
+<hr />
+<h2 id="97">9.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① FFN = 先扩张到 2.7d，过激活，再压缩回 d。对每个 token 独立
+   总线视角：W_up 的行是【检测器】，W_down 的列是【结论】
+   → 常被理解为&quot;键值记忆&quot;
+② 激活函数演化：ReLU → GELU → SiLU（x·σ(x)，形状同 GELU 但更快）
+③ GLU 门控：两个投影，一个当门一个当内容，逐元素相乘
+   乘法交互比加法表达力强 → 实证稳定优于普通 FFN，五家全用
+   三个矩阵 → d_ff 要乘 2/3 才公平 → 8d/3 ≈ 13824 这个&quot;怪&quot;数字的由来
+④ ★ SwiGLU 是【无界】的，且两个无界量相乘 → 离群值的主要产地
+   解法一：clamp（V4 [−10,10]，M3 7.0）—— 简单，但截断处梯度为 0
+   解法二：SiTU-GLU（K3）—— β₁tanh(·/β₁)⊙σ ⊙ β₂tanh(·/β₂)
+           β₁=4, β₂=25 → 数学保证 |输出| ≤ 100，且处处可导
+⑤ ★ 因果链：想要 4-bit → 必须 QAT → 必须治离群值 → 必须给激活加界
+   反向看，openPangu 只做 8-bit（容忍度高 16 倍），所以那个空格是自洽的
+   ⚠️ 但这是我的推断，报告没这么说
+</code></pre></div>
+
+<p><strong>下一章</strong>讲 FFN 的现代形态：把一个 FFN 换成 384 个专家，只激活其中 8 个。这是"505B / 18B"这两个数字的由来。</p>
+<hr />
+<blockquote>
+<p><a href="08-高效注意力.html">← 08 高效注意力</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="10-MoE.html">10 MoE</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · agentic 编码评测：SWE-bench 是怎么工作的</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="07-agentic-swe-bench">07 · agentic 编码评测：SWE-bench 是怎么工作的</h1>
+<blockquote>
+<p>⭐⭐ 这是全篇最重要的一章。<br />
+前六章讲的是【怎么给答案打分】，这一章开始讲【怎么给"干活"打分】。<br />
+你想知道的 Claude Code / Codex 怎么被评，答案的地基就在这里。</p>
+</blockquote>
+<hr />
+<h2 id="71">7.1 先把名词摆清楚</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：agentic（智能体式的）
+
+      形容词，来自 agent（智能体 / 代理人）。
+      ★ 指【模型不是回答一个问题，而是被放进一个环境里，
+         自己看、自己动手、自己改，反复多轮，直到把事办成】。
+
+    ★ 名词：SWE-bench
+      SWE = Software Engineering（软件工程），bench = benchmark（基准测试集）。
+      读作 &quot;S-W-E bench&quot;。
+      ★ 一套【真实 GitHub issue（问题单）→ 让模型改代码 → 跑真单元测试】的评测集。
+
+    ★ 名词：issue（问题单）
+      GitHub 上用户提交的一条 bug 报告或功能请求。就是一段自然语言描述。
+
+    ★ 名词：pull request，简称 PR（合并请求）
+      开发者提交的一份【代码修改提案】。被仓库维护者审核通过后合入主干。
+
+    ★ 名词：patch（补丁）
+      一份纯文本的差异描述，写明&quot;第几行删掉什么、加上什么&quot;。
+      ★ 模型的输出就是这个，不是&quot;完整的新文件&quot;。
+
+    ★ 名词：unit test（单元测试）
+      仓库里自带的一段代码，专门用来检查某个函数行为对不对。
+      跑通=通过，报错=失败。★★ 它是 SWE-bench 唯一的裁判。
+</code></pre></div>
+
+<hr />
+<h2 id="72-swe-bench">7.2 一句话说清 SWE-bench 在干什么</h2>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────────────────────────────────────────────────┐
+   │  给模型：① 一段 issue 文字   ② 一整个真实代码仓库        │
+   │  要模型：产出一个 patch                                   │
+   │  怎么判：把 patch 打进仓库 → ★★ 真的把测试跑一遍         │
+   │  分数是：★ 有百分之几的题，测试全绿                       │
+   └──────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>✅ 论文原文（arXiv:2310.06770，ICLR 2024，摘要）：</p>
+<blockquote>
+<p>"an evaluation framework consisting of <strong>2,294 software engineering problems</strong><br />
+drawn from real GitHub issues and corresponding pull requests across<br />
+<strong>12 popular Python repositories</strong>"</p>
+</blockquote>
+<p>✅ 同篇 §2.2 对"算解决了"的定义（这是最该记住的一句）：</p>
+<blockquote>
+<p>"If the patch applies successfully and <strong>all of these tests pass</strong> we consider<br />
+the proposed solution to have successfully resolved the issue.<br />
+The metric for our benchmark is <strong>the percentage of task instances that are resolved</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 注意这里【完全没有出现&quot;答案&quot;两个字】。
+       ★★ 没有标准答案，没有正则抽取，没有裁判模型。
+       只有一句话：测试跑没跑绿。
+
+    ⟹ 🔑🔑 05 章讲的所有&quot;抽取失败&quot;的脏活，在这里【一次性全部消失】。
+       这就是执行式验证（execution-based verification）的全部魅力。
+</code></pre></div>
+
+<hr />
+<h2 id="73">7.3 题目是怎么造出来的：三级漏斗</h2>
+<p>★★ 这套流程值得看懂，因为它解释了"为什么这些题是干净的"。</p>
+<p>✅ 论文 §2.1 原文：<em>"we use a </em><em>3-stage pipeline</em><em>"</em></p>
+<div class="codehilite"><pre><span></span><code>   ┌─ Stage I  抓取 ───────────────────────────────────┐
+   │  从 12 个热门 Python 仓库抓 PR                     │
+   │  ✅ &quot;producing about ~90,000 PRs in total&quot;         │
+   └───────────────────────────────────────────────────┘
+                        ↓
+   ┌─ Stage II  属性过滤 ──────────────────────────────┐
+   │  只留【已合入】且同时满足：                        │
+   │    ① 关联了一个 issue                              │
+   │    ② ★★ 这个 PR 自己改了测试文件                  │
+   │  ⟹ 说明作者顺手写了&quot;验收标准&quot;                      │
+   └───────────────────────────────────────────────────┘
+                        ↓
+   ┌─ Stage III  执行过滤 ─────────────────────────────┐
+   │  ★★★ 真的跑一遍：打补丁前 vs 打补丁后             │
+   │  必须至少有一个测试【由失败变成通过】              │
+   │  ✅ &quot;henceforth referred to as fail-to-pass test&quot;  │
+   │  装不上、跑不起来的，全丢掉                        │
+   └───────────────────────────────────────────────────┘
+                        ↓
+              ★ 90,000 → 2,294 条（留存率 2.5%）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    🔑 Stage II 的 ②【必须改了测试文件】是整个设计的灵魂。
+
+    ★★ 因为它意味着：验收标准不是评测团队编的，
+       是【当年那个真人开发者自己写的】。
+       ⟹ 所以这套题没有&quot;出题人偏见&quot;，也几乎不可能出错。
+</code></pre></div>
+
+<hr />
+<h2 id="74">7.4 判卷：两把尺子，不是一把</h2>
+<p>★★★ 这是本章最实用的知识点。</p>
+<p>源码在 <a href="../源码/swebench-5.0.2/swebench/harness/constants/__init__.py">swebench/harness/constants/<strong>init</strong>.py</a>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">FAIL_TO_PASS</span> <span class="o">=</span> <span class="s2">&quot;FAIL_TO_PASS&quot;</span>      <span class="c1"># L30</span>
+<span class="n">PASS_TO_PASS</span> <span class="o">=</span> <span class="s2">&quot;PASS_TO_PASS&quot;</span>      <span class="c1"># L32</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ┌──────────────┬──────────────────────┬────────────────────────┐
+   │ 尺子          │ 中文                  │ 它在问什么              │
+   ├──────────────┼──────────────────────┼────────────────────────┤
+   │ FAIL_TO_PASS │ ★ 修复度（resolution）│ 原来坏的，你修好了吗？  │
+   │ PASS_TO_PASS │ ★ 维持度（maintenance）│ 原来好的，你弄坏了吗？  │
+   └──────────────┴──────────────────────┴────────────────────────┘
+
+    ⟹ 🔑🔑 一句话：★★★【不但要修好这个 bug，还不能弄坏别的】。
+
+    ★★ 为什么必须有第二把尺子？
+       因为只看第一把的话，模型有个作弊捷径：
+       把那个函数整个删掉重写成&quot;永远返回测试期望的值&quot;。
+       ⟹ 目标测试绿了，其余 100 多个测试全红。
+       ⟹ PASS_TO_PASS 就是堵这个洞的。
+</code></pre></div>
+
+<p>源码里两者被压成 0~1 的比例，<a href="../源码/swebench-5.0.2/swebench/harness/grading.py">grading.py:288 / :298</a>：<br />
+<code>compute_fail_to_pass</code> 和 <code>compute_pass_to_pass</code>。</p>
+<p>然后 <a href="../源码/swebench-5.0.2/swebench/harness/grading.py">grading.py:309-328</a> 做最终裁定（★ 逐字摘录）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_resolution_status</span><span class="p">(</span><span class="n">report</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Criteria:</span>
+<span class="sd">        - If fail-to-pass (Resolution) = 1 and pass-to-pass (Maintenance) = 1 -&gt; FULL</span>
+<span class="sd">        - If (fail-to-pass (Resolution) &lt; 1 and &gt; 0) and pass-to-pass (Maintenance) = 1 -&gt; PARTIAL</span>
+<span class="sd">        - Otherwise -&gt; NO</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">f2p</span> <span class="o">=</span> <span class="n">compute_fail_to_pass</span><span class="p">(</span><span class="n">report</span><span class="p">)</span>
+    <span class="n">p2p</span> <span class="o">=</span> <span class="n">compute_pass_to_pass</span><span class="p">(</span><span class="n">report</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">f2p</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">p2p</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ResolvedStatus</span><span class="o">.</span><span class="n">FULL</span><span class="o">.</span><span class="n">value</span>
+    <span class="k">elif</span> <span class="n">f2p</span> <span class="o">&lt;</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">f2p</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">p2p</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ResolvedStatus</span><span class="o">.</span><span class="n">PARTIAL</span><span class="o">.</span><span class="n">value</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ResolvedStatus</span><span class="o">.</span><span class="n">NO</span><span class="o">.</span><span class="n">value</span>
+</code></pre></div>
+
+<p>三种结局定义在同文件树的 <a href="../源码/swebench-5.0.2/swebench/harness/constants/__init__.py">constants/<strong>init</strong>.py:6-9</a>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ResolvedStatus</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">NO</span>      <span class="o">=</span> <span class="s2">&quot;RESOLVED_NO&quot;</span>
+    <span class="n">PARTIAL</span> <span class="o">=</span> <span class="s2">&quot;RESOLVED_PARTIAL&quot;</span>
+    <span class="n">FULL</span>    <span class="o">=</span> <span class="s2">&quot;RESOLVED_FULL&quot;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 读懂这段逻辑，你会发现一个不对称：
+
+       p2p 必须【严格等于 1】才有可能拿 PARTIAL。
+       ⟹ 🔑 只要你弄坏了任何一个原本好的测试，
+          不管 bug 修得多漂亮，直接 NO。
+
+    ⟹ 🔑🔑 这个基准对&quot;改坏东西&quot;是零容忍的。
+       ★★ 这比大多数人想象的严格得多，也是分数普遍偏低的原因之一。
+
+    ⚠️ 另外：榜单上通常只报 FULL 的占比（即 % Resolved），
+       PARTIAL 一般【不计分】。这是我的观察，不是论文明文规定。
+</code></pre></div>
+
+<hr />
+<h2 id="75">7.5 一个特别有教育意义的细节：打补丁本身会失败</h2>
+<p>模型输出的是一份文本 patch。★★ 但这份 patch 经常【打不进去】——<br />
+行号对不上、上下文差一个空格、缩进错了。</p>
+<p><a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:54</a> 里是这样兜底的（★ 逐字）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">GIT_APPLY_CMDS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="s2">&quot;git apply --verbose&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;git apply --verbose --3way&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;git apply --verbose --reject&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;patch --batch --forward --fuzz=5 -p1 -i&quot;</span><span class="p">,</span>
+<span class="p">]</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ┌───────────────────────────────┬──────────────────────────────┐
+   │ 第 1 档  git apply            │ 严格：一个字符不对就拒绝      │
+   │ 第 2 档  --3way               │ ★ 三方合并，容忍一点上下文漂移│
+   │ 第 3 档  --reject             │ 能打的打，打不了的单独记下来  │
+   │ 第 4 档  patch --fuzz=5       │ ★★ 最宽松：允许模糊匹配 5 行 │
+   └───────────────────────────────┴──────────────────────────────┘
+</code></pre></div>
+
+<p><a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:301</a> 里逐档尝试：<br />
+<code>for attempt, git_apply_cmd in enumerate(GIT_APPLY_CMDS):</code></p>
+<p>四档全失败，就打上这个标记（constants/<strong>init</strong>.py:44）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">APPLY_PATCH_FAIL</span> <span class="o">=</span> <span class="s2">&quot;&gt;&gt;&gt;&gt;&gt; Patch Apply Failed&quot;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    🔑🔑 这段代码在讲一个和 05 章【完全同构】的道理：
+
+       ★ 05 章：模型答对了，但正则没抽出来 ⟹ 记成答错
+       ★ 07 章：模型改对了，但 patch 格式歪了 ⟹ 记成没解决
+
+    ⟹ ★★★ 换了范式，&quot;格式问题冒充能力问题&quot;这个幽灵还在，
+       只是从【抽取层】搬到了【应用层】。
+
+    ⟹ 但 SWE-bench 做了一件对的事：它【给这种失败单独立了一个标记】。
+       ⚠️ 而不是像 &quot;[invalid]&quot; 那样，混进&quot;答错&quot;里看不见了。
+       ★★ 你自己搭评测时，请学这一点。
+</code></pre></div>
+
+<p>还有一个同级标记（constants/<strong>init</strong>.py:50）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">TESTS_TIMEOUT</span> <span class="o">=</span> <span class="s2">&quot;&gt;&gt;&gt;&gt;&gt; Tests Timed Out&quot;</span>
+</code></pre></div>
+
+<p>★ 测试卡死也要和"测试失败"分开记。同一个思想。</p>
+<hr />
+<h2 id="76">7.6 为什么这种评测这么贵</h2>
+<p><a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:3</a> 第一眼就说明了一切：</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">docker</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 名词：Docker（容器）
+      一种把&quot;操作系统+依赖库+代码&quot;整个打包冻住的技术。
+      ★★ 每道题一个容器，互不干扰，环境完全可复现。
+</code></pre></div>
+
+<p>同文件里的两个常量：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">DOCKER_CLIENT_TIMEOUT</span>   <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SWEBENCH_DOCKER_TIMEOUT&quot;</span><span class="p">,</span>   <span class="s2">&quot;1800&quot;</span><span class="p">))</span>
+<span class="n">DOCKER_CLIENT_POOL_SIZE</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SWEBENCH_DOCKER_POOL_SIZE&quot;</span><span class="p">,</span> <span class="s2">&quot;128&quot;</span><span class="p">))</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 1800 秒 = 30 分钟。★★【单道题】的超时上限。
+    ★ 128 = 容器连接池大小，说明设计上就是要【大规模并发】的。
+
+   ⟹ 把 02 章 §2.4 的成本论断落到实处：
+   ┌────────────────┬────────────────┬───────────────────────────┐
+   │ 范式            │ 一道题的开销    │ 需要什么                   │
+   ├────────────────┼────────────────┼───────────────────────────┤
+   │ ① 判别式        │ 1 次前向        │ 一张卡                     │
+   │ ② 生成式        │ 几百~几千 token │ 一张卡                     │
+   │ ③ agentic       │ ★★ 几十轮对话  │ ★★★ 容器 + 装依赖 + 跑测试│
+   │                 │  + 一整个容器   │  + 最多 30 分钟            │
+   └────────────────┴────────────────┴───────────────────────────┘
+
+   ⟹ 🔑 这就是为什么 MMLU 每天都能跑，而 SWE-bench 一个季度才跑一次。
+</code></pre></div>
+
+<hr />
+<h2 id="77-196-70">7.7 分数的历史：从 1.96% 到 70%+</h2>
+<p>✅ 论文摘要（2023 年 10 月）：</p>
+<blockquote>
+<p>"The best-performing model, <strong>Claude 2</strong>, is able to solve a mere <strong>1.96%</strong> of the issues."</p>
+</blockquote>
+<p>✅ 论文 Table 2（BM25 检索，13k 上下文）：</p>
+<div class="codehilite"><pre><span></span><code>    Claude 2        1.96
+    SWE-Llama 7b    0.70
+    SWE-Llama 13b   0.70
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 到 2025-2026 年，前沿模型 + 成熟脚手架在 SWE-bench Verified 上
+       ★ 已经普遍报到 70% 以上。这是我依据公开报道的概括，
+       ⚠️ 不是来自本篇论文，具体数字请以各家发布当天的原始说明为准。
+
+    ★★ 但请注意：1.96% → 70% 这个跨度里，
+       【模型变强】和【脚手架变强】是两件事，而榜单把它们混在一起了。
+       ⟹ 🔑 这正是下一章要拆的东西。
+</code></pre></div>
+
+<hr />
+<h2 id="78-swe-bench-verified">7.8 为什么会有 "SWE-bench Verified"</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：SWE-bench Verified（人工校验子集）
+      ★★ 从原始 2,294 条里，由专业工程师逐条人工审核后留下的 500 条。
+
+    ⚠️ 它解决的是原始集的三个毛病（我的归纳）：
+      ① 有些 issue 描述【本身就说不清要什么】，人来了也做不对
+      ② 有些 fail-to-pass 测试【超出 issue 的要求范围】，等于超纲
+      ③ 有些题的环境配置本身就是坏的
+
+    ⟹ 🔑 所以 &quot;SWE-bench 45%&quot; 和 &quot;SWE-bench Verified 45%&quot; ★★ 不是一回事，
+       后者是被清洗过的、更容易的子集。
+       ⚠️ 看到分数第一件事：★★★ 问清楚是哪个子集。
+</code></pre></div>
+
+<p>论文里已经埋了这个伏笔——作者自己先做了个 Lite 子集：</p>
+<blockquote>
+<p>✅ "we create a <strong>Lite</strong> subset of <strong>300 instances</strong> from SWE-bench that have been<br />
+sampled to be more self-contained, with a focus on evaluating functional bug fixes."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★ 于是同一个名字下至少有三套题：
+   ┌──────────────────┬────────┬──────────────────────────────┐
+   │ SWE-bench (full) │ 2,294  │ 原始全集                      │
+   │ SWE-bench Lite   │   300  │ ✅ 作者抽的&quot;更自足&quot;子集       │
+   │ SWE-bench Verified│  500  │ ⚠️ 人工校验子集（后出的）     │
+   └──────────────────┴────────┴──────────────────────────────┘
+   ★★ 三者分数不可直接比较。
+</code></pre></div>
+
+<hr />
+<h2 id="79">7.9 一个必须警惕的坑：上下文是怎么给的</h2>
+<p>★★★ 这是我认为新手最容易忽略、但影响最大的一件事。</p>
+<p>论文 §4.1 提供了两种给上下文的方式：</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ ① BM25 稀疏检索 ────────────────────────────────┐
+   │  ★ 用关键词匹配，从几千个文件里挑几个塞给模型     │
+   │  ✅ &quot;in almost half of the instances with the      │
+   │      27,000-token limit, it retrieves none of      │
+   │      the files from the &#39;oracle&#39; context&quot;          │
+   │  ⟹ 🔑 将近一半的题，★★ 该改的文件根本没给模型看  │
+   └──────────────────────────────────────────────────┘
+
+   ┌─ ② &quot;Oracle&quot; 检索（先知设定）─────────────────────┐
+   │  ★ 直接把【标准答案改过的那些文件】给模型         │
+   │  ✅ 论文自己说：&quot;less realistic&quot;                   │
+   │  ⟹ ★★ 相当于告诉考生&quot;答案在第 37 页&quot;             │
+   └──────────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 论文 Table 1 说仓库平均 3,010 个非测试文件、438K 行。
+    ⟹ 🔑🔑 所以【怎么找到该改的文件】本身就是这道题的一大半难度。
+
+    ⟹ ★★★ 结论：同一个模型，在 oracle 设定下的分数
+       和在&quot;自己去仓库里翻&quot;的设定下的分数，可能差【好几倍】。
+       这不是模型的差别，是【题面难度的差别】。
+
+    ⟹ 这正好呼应 01 章的总论点：
+       ★★★【分数是&quot;模型+评测方法&quot;的联合产物】。
+       在 agentic 评测里，&quot;评测方法&quot;这一项的权重比前面任何一章都大。
+</code></pre></div>
+
+<hr />
+<h2 id="710">7.10 本章总结</h2>
+<div class="codehilite"><pre><span></span><code>   ★★ 一图流：
+
+   issue 文字 + 整个仓库
+        ↓
+   ┌─────────────────┐
+   │ 模型/agent 干活  │  ← ★★ 这一格里装什么，07 章没管，08 章专门讲
+   └─────────────────┘
+        ↓  产出 patch
+   ┌─────────────────┐
+   │ 起容器、打补丁   │  ← 4 档 fallback；失败→ APPLY_PATCH_FAIL
+   └─────────────────┘
+        ↓
+   ┌─────────────────┐
+   │ 跑测试（≤30min）│  ← 卡死 → TESTS_TIMEOUT
+   └─────────────────┘
+        ↓
+   FAIL_TO_PASS=1 且 PASS_TO_PASS=1 ⟹ RESOLVED_FULL
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    🔑 五条带走：
+
+    ① ★★ 判卷靠【真跑测试】，不靠答案比对 ⟹ 05 章的抽取脏活全免
+    ② ★★★ 两把尺子：修好了（f2p）+ 没弄坏（p2p），后者零容忍
+    ③ ★★ 格式问题依然存在（patch 打不进去），但它被【单独标记】了
+    ④ ★★ 贵在容器：每题一个 Docker、超时 30 分钟 ⟹ 季度级而非日级
+    ⑤ 🔑🔑 ★★★ full / Lite / Verified 是三套题；oracle / BM25 是两种难度。
+       ⟹ 报分数不说清这两件事，等于没报。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>下一章：<a href="08-ClaudeCode与Codex怎么被评.html">08-ClaudeCode与Codex怎么被评.md</a> —— ⭐⭐ 上面那个"模型/agent 干活"的格子里到底是什么，以及为什么"评的其实不只是模型"。<br />
+返回 <a href="README.html">评测入门总目录</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

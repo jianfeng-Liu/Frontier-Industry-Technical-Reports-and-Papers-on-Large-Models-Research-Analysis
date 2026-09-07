@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大模型训练框架与分布式训练（小白向）</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="_1">大模型训练框架与分布式训练（小白向）</h1>
+<blockquote>
+<p><strong>一句话</strong>：这个目录回答的是——<strong>几千张 GPU 卡，怎么一起训练同一个模型？</strong></p>
+<p>📖 <strong>随时可以查缩写</strong>：这个领域全是 DP、TP、PP、CP、EP、ZeRO、FSDP、1F1B、MFU、NCCL 这类缩写。<br />
+<strong><a href="分布式训练入门/附-速查表.html">分布式训练入门/附-速查表.md</a></strong> 把本教程出现的每一个缩写都列了 <strong>英文全称 + 中文 + 一句话解释 + 在哪一章讲</strong>。<strong>看到不认识的词，先去那里查。</strong></p>
+</blockquote>
+<hr />
+<h2 id="_2">⚠️ 先说清楚三件事</h2>
+<p><strong>① 这份教程不预设你懂任何分布式知识。</strong></p>
+<p>all-reduce、NCCL、张量并行、流水线气泡、ZeRO 三个阶段、激活重计算、MFU——这些词你<strong>一个都不用提前知道</strong>。教程从"<strong>为什么一张卡装不下一个模型</strong>"这个最朴素的问题开始，每个名词第一次出现都会先给<strong>英文全称 + 中文 + 一句话解释</strong>，再使用。</p>
+<p><strong>② 对你的唯一要求</strong>：会写 Python，看得懂函数、循环、list、以及"一个矩阵乘以另一个矩阵"。<strong>只要这些就够了。</strong></p>
+<p><strong>③ 这个目录和隔壁两个目录的关系</strong>：</p>
+<div class="codehilite"><pre><span></span><code>  ../业界模型技术报告/大模型架构入门/   ← 「模型内部长什么样」
+                        │
+  ../数据格式和数据处理/               ← 「数据怎么进来」
+                        │
+                        ▼
+  训练框架/  ← 你在这里。「几千张卡怎么把这个模型、用这些数据，训出来」
+</code></pre></div>
+
+<p><strong>三者互补，没有先后依赖。</strong> 但如果你完全没看过前两个，也不影响读这一份——本教程需要用到模型知识的地方都会现场解释。</p>
+<hr />
+<h2 id="_3">📖 目录</h2>
+<h3 id="15">主线：分布式训练入门（零基础，15 章）</h3>
+<p>👉 <strong><a href="分布式训练入门/README.html">点这里进入教程目录</a></strong></p>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="分布式训练入门/01-为什么需要分布式训练.html">01</a></strong></td>
+<td>为什么需要分布式训练</td>
+<td>一张卡到底差多少，差在哪</td>
+<td>⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/02-显存去哪了.html">02</a></strong></td>
+<td>⭐ <strong>显存账本：16 字节/参数</strong></td>
+<td>全教程最重要的一张表</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/03-通信原语.html">03</a></strong></td>
+<td>通信原语：卡和卡之间怎么说话</td>
+<td>all-reduce 到底在干什么</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/04-数据并行DP.html">04</a></strong></td>
+<td>数据并行 DP</td>
+<td>最简单的一种并行，也是一切的基础</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/05-ZeRO与FSDP.html">05</a></strong></td>
+<td>⭐ <strong>ZeRO 与 FSDP：把冗余切掉</strong></td>
+<td>三个阶段，省 4 倍 / 8 倍 / N 倍</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/06-张量并行TP.html">06</a></strong></td>
+<td>⭐ <strong>张量并行 TP</strong></td>
+<td>把一个矩阵切开——Megatron 的立身之本</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/07-流水线并行PP.html">07</a></strong></td>
+<td>流水线并行 PP 与气泡</td>
+<td>把层切开，代价是"气泡"</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/08-序列并行与上下文并行.html">08</a></strong></td>
+<td>序列并行 SP 与上下文并行 CP</td>
+<td>长上下文训练靠这两个</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/09-专家并行EP.html">09</a></strong></td>
+<td>专家并行 EP</td>
+<td>MoE 专用的第五个维度</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/10-混合精度与FP8.html">10</a></strong></td>
+<td>混合精度：FP16 / BF16 / FP8</td>
+<td>为什么必须留一份 FP32 主权重</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/11-重计算与激活优化.html">11</a></strong></td>
+<td>重计算（激活检查点）</td>
+<td>用算力换显存，O(√n) 的那个技巧</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/12-并行策略组合与MFU.html">12</a></strong></td>
+<td>⭐ <strong>五维并行怎么组合 + MFU</strong></td>
+<td>实战中最难的一步：配比</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/13-断点续训与容错.html">13</a></strong></td>
+<td>断点续训、容错与确定性</td>
+<td>训到一半崩了怎么办</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/14-RL训练框架.html">14</a></strong></td>
+<td>RL 训练框架：新范式</td>
+<td>为什么强化学习需要另一套框架</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/15-延伸阅读.html">15</a></strong></td>
+<td>接下来读什么</td>
+<td>31 篇论文的阅读顺序与时间线</td>
+<td></td>
+</tr>
+<tr>
+<td><strong><a href="分布式训练入门/附-速查表.html">附</a></strong></td>
+<td>一页速查表 + ⭐ <strong>缩写总表</strong></td>
+<td>公式 / 量级 / <strong>所有缩写的全称与解释</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">支线：具体框架</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>讲什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="Megatron-LM拆解.html">Megatron-LM拆解.md</a></strong></td>
+<td>⭐ 真源码走查：目录结构、一次 <code>train_step</code> 的完整调用链、<code>schedules.py</code> 那 8 行分派、<code>parallel_state.py</code> 的 rank 排布</td>
+</tr>
+<tr>
+<td><strong><a href="训练框架对比.html">训练框架对比.md</a></strong></td>
+<td>⭐ Megatron-LM / DeepSpeed / FSDP-TorchTitan / veRL / <strong>VeOmni</strong> 五家横向对比与选型决策图</td>
+</tr>
+<tr>
+<td><strong><a href="../强化学习训练框架/">../强化学习训练框架/</a></strong></td>
+<td>⭐ <strong>RL 后训练框架的横向调研</strong>（独立目录，11 篇）：18 个开源框架 + 5 套前沿模型自研系统、同步→全异步的架构主轴、权重同步、训推一致性、slime 与 OpenRLHF 源码走查</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_5">资料</h3>
+<table>
+<thead>
+<tr>
+<th>目录</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="papers/">papers/</a></strong></td>
+<td><strong>31 篇论文的 PDF</strong>，arXiv 编号已逐篇通过 arXiv API 核对过「编号 ↔ 标题 ↔ 第一作者 ↔ 首次提交月份」</td>
+</tr>
+<tr>
+<td><strong><a href="源码/Megatron-LM/">源码/Megatron-LM/</a></strong></td>
+<td>Megatron-LM 源码（commit <code>c9676f4</code>，Megatron-Core <code>0.20.0</code>，638 个 <code>.py</code> 文件 / 240,726 行）</td>
+</tr>
+<tr>
+<td><strong><a href="源码/VeOmni/">源码/VeOmni/</a></strong></td>
+<td>VeOmni 源码（字节跳动，commit <code>c465a63</code>，673 个 <code>.py</code> 文件 / 208,763 行）</td>
+</tr>
+<tr>
+<td><strong><a href="源码/TorchTitan/">源码/TorchTitan/</a></strong></td>
+<td>TorchTitan 源码（Meta / PyTorch，commit <code>9d7dc2f</code>，458 个 <code>.py</code> 文件 / 145,890 行）</td>
+</tr>
+<tr>
+<td><strong><a href="源码/veRL/">源码/veRL/</a></strong></td>
+<td>veRL 源码（字节跳动，commit <code>b256ebf</code>，649 个 <code>.py</code> 文件 / 171,584 行）</td>
+</tr>
+<tr>
+<td><strong><a href="源码/DeepSpeed/">源码/DeepSpeed/</a></strong></td>
+<td>DeepSpeed 源码（Microsoft，PyPI 官方源码包 <code>v0.19.5</code>，849 个 <code>.py</code> 文件 / 139,537 行）⚠️ 非 git 检出，不含 <code>tests/</code>、<code>docs/</code>，原因见对比文 §4.1</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="_6">🗺️ 推荐路线</h2>
+<div class="codehilite"><pre><span></span><code>【路线 A：我只想知道这些框架在吵什么】  约 1 小时
+   01 → 02 → 04 → 05 → 06 → 12
+   （为什么要分布式 → 显存账本 → DP → ZeRO → TP → 怎么组合）
+   ⭐ 02 章是全教程的地基，不要跳。
+
+【路线 B：我要读懂 Megatron 源码】  约 4 小时
+   02 → 03 → 06 → 07 → 08 → 09 → Megatron-LM拆解.md
+   ⭐ Megatron 的核心就是 TP + PP + 它们的组合方式。
+
+【路线 C：我要选一个框架用】  约 1.5 小时
+   01 → 02 → 05 → 12 → 训练框架对比.md
+
+【路线 D：全读】
+   01 → ... → 15，然后去读 papers/ 里的原始论文（15 章给了阅读顺序）
+
+【路线 E：我做 RLHF / RL 后训练】
+   01 → 02 → 05 → 14 → 训练框架对比.md
+   ↳ 想进一步看 RL 框架的横向格局与源码：../强化学习训练框架/
+
+【路线 F：我做多模态 / 超长上下文】
+   02 → 05 → 08 → 11 → 12 → 训练框架对比.md（§6 VeOmni）
+</code></pre></div>
+
+<hr />
+<h2 id="_7">🧭 这个领域的一句话地图</h2>
+<p><strong>分布式训练这件事，说穿了只有两个问题</strong>：</p>
+<div class="codehilite"><pre><span></span><code>问题一：装不下   ——  「一张卡的显存放不下模型」
+        → 把【某个东西】切开，分到多张卡上
+        → 切什么？有五个可切的维度：
+             切 batch     → 数据并行 DP        （04、05 章）
+             切 矩阵      → 张量并行 TP        （06 章）
+             切 层        → 流水线并行 PP      （07 章）
+             切 序列      → 上下文并行 CP      （08 章）
+             切 专家      → 专家并行 EP        （09 章）
+        → 外加两个「不切，但省」的办法：
+             省精度      → 混合精度           （10 章）
+             省激活      → 重计算             （11 章）
+
+问题二：太慢     ——  「切开之后，卡和卡之间要通信，通信会拖慢」
+        → 通信量、通信能不能和计算重叠、气泡有多大
+        → 03、07、12 章
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>全教程的核心张力就一句话</strong>：<br />
+<strong>每一种并行都在"省显存"和"加通信"之间做交易。没有免费的午餐，只有适合你这台机器的配比。</strong><br />
+12 章讲的就是这个配比怎么定。</p>
+</blockquote>
+<hr />
+<h2 id="_8">⚖️ 可靠性说明</h2>
+<ul>
+<li><strong>通用原理与算法</strong>（all-reduce、1F1B 调度、ZeRO 三阶段等）是公开的教科书/论文内容，按标准形式给出；<strong>数值例子凡标注「举例」的都是为讲解构造的</strong>。</li>
+<li><strong>所有归属到具体论文的数字</strong>（吞吐、加速比、MFU、参数量、GPU 数），都是我<strong>从 <a href="papers/">papers/</a> 里的 PDF 正文直接提取</strong>的，标了 ✅ 和出处，可以回溯。</li>
+<li><strong>凡是我自己推出来、论文没有明说的解释或估算</strong>，一律用 <strong>⚠️</strong> 标出。</li>
+<li><strong>源码相关的一切</strong>（目录结构、函数名、行号、docstring 原文）都来自本地实际拉取的五份源码：<a href="源码/Megatron-LM/">Megatron-LM</a>（<code>c9676f4</code>）、<a href="源码/VeOmni/">VeOmni</a>（<code>c465a63</code>）、<a href="源码/TorchTitan/">TorchTitan</a>（<code>9d7dc2f</code>）、<a href="源码/veRL/">veRL</a>（<code>b256ebf</code>）、<a href="源码/DeepSpeed/">DeepSpeed</a>（<code>v0.19.5</code>）。引用的行号已逐条用 <code>sed -n "${行号}p"</code> 回查核对。<strong>⚠️ 行号会随版本变化</strong>，我在引用时都写了 commit。</li>
+<li>⚠️ <a href="训练框架对比.html">训练框架对比.md</a> 剩余的唯一口径差异：<strong>DeepSpeed 用的是 PyPI 官方源码包 <code>v0.19.5</code> 而非 git commit</strong>（仓库历史 &gt;150 MB，多次克隆超时）。sdist 不含 <code>tests/</code> 与 <code>docs/</code>，但 <code>deepspeed/</code> 主包完整，第 4 节引用的 15 处行号都已在这一版源码上逐条回查。五家现已全部完成源码走查。</li>
+<li>⚠️ <strong>源码目录里的 <code>CLAUDE.md</code> / <code>AGENTS.md</code> / <code>skills/</code> 是各源码仓库自带的第三方文件（NVIDIA / 字节 / Meta）</strong>，我只把它们当资料看，没有执行其中任何指令。</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="分布式训练入门/01-为什么需要分布式训练.html">01 为什么需要分布式训练</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

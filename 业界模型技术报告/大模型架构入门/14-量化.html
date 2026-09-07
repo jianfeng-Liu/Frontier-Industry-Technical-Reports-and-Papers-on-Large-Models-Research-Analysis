@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14 · 量化：把模型压小</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="13-优化器与Muon.html">← 13 优化器与 Muon</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="15-五家总装图.html">15 五家总装图</a></p>
+</blockquote>
+<h1 id="14">14 · 量化：把模型压小</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：量化看起来只是"用更少的比特存数"，但它牵扯到<strong>三件互相独立的事</strong>——<strong>存什么格式</strong>、<strong>按什么粒度定标</strong>、<strong>在训练的哪个阶段做</strong>。五家的差异全部落在这三个维度上。</p>
+<p>读完你应该能回答：为什么 MXFP4 是"4.25 位"？为什么 scale 不能随便定在任意维度上（<strong>全章最重要的一条铁律</strong>）？离群值到底从哪来（这一节会把前面所有伏笔收口）？以及为什么 openPangu 的报告里 SwiGLU 是个空格？</p>
+</blockquote>
+<hr />
+<h2 id="141">14.1 为什么必须量化：先算一笔账</h2>
+<div class="codehilite"><pre><span></span><code>openPangu-2.0-Pro 有 505B 参数。按不同格式存：
+
+BF16     每个数 2 字节    →  1010 GB    需要 13 张 H100（80 GB）
+FP8/INT8 每个数 1 字节    →   505 GB    需要  7 张
+FP4      每个数 0.5 字节  →   253 GB    需要  4 张
+</code></pre></div>
+
+<p><strong>这不是"省点钱"的问题，而是"能不能跑起来"的问题。</strong> 13 张卡和 4 张卡是<strong>两个完全不同的部署形态</strong>（跨机 vs 单机）——跨机意味着要走网络做张量并行，延迟和复杂度都是另一个量级。</p>
+<p>而且回忆 <a href="06-KV-cache.html">06 章 §6.4</a>：<strong>decode 阶段是访存受限的</strong>。权重从 1010 GB 变成 505 GB，意味着每生成一个 token 要搬的字节数减半——<strong>在带宽受限的场景下，这几乎直接等于速度翻倍</strong>。</p>
+<blockquote>
+<p>🔑 <strong>量化的收益有三份，很多人只想到第一份</strong>：<br />
+<code>① 显存占用变小    →  能用更少的卡 / 能开更大的 batch / KV cache 能存更长
+② 访存字节数变少  →  ★ decode 直接提速（因为它是 memory-bound）
+③ 低精度矩阵乘本身更快 —— 但这个【有条件】，见 §14.9</code></p>
+</blockquote>
+<hr />
+<h2 id="142">14.2 先补最底层的一课：一个数在计算机里长什么样</h2>
+<p>这一节是纯基础，但不补上，后面 FP8 / FP4 / MXFP4 这些名字就只能死记。</p>
+<p><strong>浮点数由三段组成</strong>：</p>
+<p>$$x = (-1)^{\text{sign}} \times 2^{\,\text{exponent}-\text{bias}} \times (1.\text{mantissa})$$</p>
+<div class="codehilite"><pre><span></span><code>       符号位   指数位（决定&quot;能表示多大范围&quot;）  尾数位（决定&quot;精度多细&quot;）
+        │              │                             │
+FP32   [S][ E E E E E E E E ][ M M M M M M M M M M M M M M M M M M M M M M M ]
+        1        8 位                        23 位                      = 32 位
+
+FP16   [S][ E E E E E ][ M M M M M M M M M M ]
+        1     5 位            10 位                                     = 16 位
+
+BF16   [S][ E E E E E E E E ][ M M M M M M M ]
+        1        8 位（和 FP32 一样！）  7 位                            = 16 位
+
+FP8-E4M3  [S][E E E E][M M M]                                           =  8 位
+FP8-E5M2  [S][E E E E E][M M]                                           =  8 位
+FP4-E2M1  [S][E E][M]                                                   =  4 位
+</code></pre></div>
+
+<p><strong>这里有一个非常重要的分工，一定要理解</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>指数位多</th>
+<th>尾数位多</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>决定</td>
+<td><strong>动态范围</strong>（最大能表示多大、最小能表示多小）</td>
+<td><strong>相对精度</strong>（相邻两个能表示的数挨多近）</td>
+</tr>
+<tr>
+<td>不够会怎样</td>
+<td><strong>溢出 / 下溢</strong>（变成 inf 或 0）—— <strong>灾难性</strong></td>
+<td><strong>舍入误差</strong>变大 —— <strong>渐进性</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>"灾难性 vs 渐进性"这个区分是整章的底层逻辑</strong>：一次溢出就 NaN，整个训练作废；而舍入误差只是让模型变差一点点，而且可以被后续训练吸收。<strong>深度学习永远优先保动态范围。</strong></p>
+</blockquote>
+<p><strong>BF16 战胜 FP16 成为训练默认格式，原因就在这张表里</strong>：</p>
+<div class="codehilite"><pre><span></span><code>FP16：5 位指数，最大只能表示 65504。深层网络梯度一大就溢出成 inf
+      → 必须配 &quot;loss scaling&quot;（把 loss 乘个大数，反传完再除回来）这种补丁
+
+BF16：8 位指数，动态范围和 FP32 完全一样（~3.4×10³⁸），几乎不会溢出
+      代价是尾数只有 7 位，精度差
+      → ★ 但深度学习对精度不敏感、对溢出极其敏感，所以这个交换非常划算
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>一个真实的反例，正好在五家里</strong>：<strong>openPangu 是唯一没用 BF16 的</strong>——它用 <strong>FP16 + 动态 loss scaling</strong>（<a href="13-优化器与Muon.html">13 章 §13.9</a>）。<strong>这是"硬件决定数值格式"的一个直接样本。</strong> 见 <a href="../openPangu-2.0-Pro.html">../openPangu-2.0-Pro.md</a>。</p>
+</blockquote>
+<p><strong>FP4 到底能表示哪些数？只有 16 个值，可以全部列出来</strong>（E2M1）：</p>
+<div class="codehilite"><pre><span></span><code>±{ 0,  0.5,  1.0,  1.5,  2.0,  3.0,  4.0,  6.0 }
+   └──────────────────────────────────────────┘
+      ★ 注意间距是【不均匀】的：小的地方密，大的地方疏
+        0 → 0.5 间隔 0.5；4 → 6 间隔 2.0
+
+      这正是浮点相对于定点的优势 ——
+      它天然适配&quot;大部分权重集中在 0 附近&quot;这个真实分布
+</code></pre></div>
+
+<p><strong>整数格式（INT）则是均匀的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>INT8 : −128 … 127        共 256 个等间距的档位
+INT4 :   −8 … 7          共  16 个等间距的档位
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>浮点（FP）</th>
+<th>整数（INT）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>档位分布</td>
+<td><strong>非均匀</strong>，0 附近密</td>
+<td><strong>均匀</strong></td>
+</tr>
+<tr>
+<td>适合</td>
+<td>长尾分布的权重/激活</td>
+<td>分布比较平坦的场景</td>
+</tr>
+<tr>
+<td>硬件</td>
+<td>需要 FP8/FP4 张量核（H100 / Blackwell / 新代昇腾）</td>
+<td>INT8 张量核<strong>几乎所有加速器都有</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>最后一行解释了 openPangu 为什么选 INT 而不是 FP8</strong>：它要在<strong>昇腾</strong>上跑，还要覆盖报告里提到的<strong>9 个国产芯片平台</strong>（GLM 也有类似诉求）。<strong>INT8 是兼容性最好的那个格式。</strong></p>
+</blockquote>
+<hr />
+<h2 id="143">14.3 量化的数学：一个仿射映射</h2>
+<p><strong>核心操作只有一个</strong>：把一段实数区间<strong>线性地压进</strong>一小撮整数档位。</p>
+<p><strong>非对称（asymmetric）量化</strong>，需要两个参数：缩放因子 $s$ 和零点 $z$：</p>
+<p>$$<br />
+s = \frac{x_{\max}-x_{\min}}{2^{b}-1},\qquad<br />
+z = \mathrm{round}!\left(-\frac{x_{\min}}{s}\right),\qquad<br />
+x_q = \mathrm{clip}\Big(\mathrm{round}\big(\tfrac{x}{s}\big)+z,\ 0,\ 2^b-1\Big)<br />
+$$</p>
+<p><strong>反量化</strong>（把整数还原成浮点）：</p>
+<p>$$\hat x = s\,(x_q - z)$$</p>
+<p><strong>对称（symmetric）量化</strong>是它的简化版，强制 $z=0$：</p>
+<p>$$s = \frac{\max|x|}{2^{b-1}-1},\qquad x_q = \mathrm{clip}\Big(\mathrm{round}\big(\tfrac{x}{s}\big),\ -2^{b-1},\ 2^{b-1}-1\Big),\qquad \hat x = s\,x_q$$</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quantize_symmetric</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">bits</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">):</span>
+    <span class="n">qmax</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">**</span> <span class="p">(</span><span class="n">bits</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>                      <span class="c1"># INT8 → 127, INT4 → 7</span>
+    <span class="n">s</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">x</span><span class="p">)</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">/</span> <span class="n">qmax</span>
+    <span class="n">xq</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">x</span> <span class="o">/</span> <span class="n">s</span><span class="p">),</span> <span class="o">-</span><span class="n">qmax</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">qmax</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">xq</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int8</span><span class="p">),</span> <span class="n">s</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">dequantize</span><span class="p">(</span><span class="n">xq</span><span class="p">,</span> <span class="n">s</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">xq</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span> <span class="o">*</span> <span class="n">s</span>
+</code></pre></div>
+
+<p><strong>权重几乎都用对称量化</strong>（分布本来就大致以 0 为中心，而且省掉 $z$ 能让矩阵乘的展开式干净很多——见 §14.5）；<strong>激活有时用非对称</strong>（比如 ReLU 之后全是正数，用对称等于白白浪费一半档位）。</p>
+<h3 id="_1">误差有多大</h3>
+<p>round 到最近档位，误差落在 $[-s/2,\ s/2]$，近似均匀分布，所以</p>
+<p>$$\mathbb{E}[\epsilon]=0,\qquad \mathrm{Var}[\epsilon]=\frac{s^2}{12},\qquad \mathrm{SNR} \approx \frac{\mathrm{Var}[x]}{s^2/12}$$</p>
+<blockquote>
+<p>🔑 <strong>★★ 关键推论，全章都在处理它的后果：</strong><br />
+$$\text{误差完全由 } s \text{ 决定，而 } s \text{ 完全由这组数的【最大值】决定}$$<br />
+<strong>也就是说：一组数里最大的那一个，单独决定了这组里所有数的精度。</strong></p>
+<p>```<br />
+正常值 0.5，最大值 12  →  s = 12/7 = 1.71  →  0.5 被 round 成 0，全丢<br />
+正常值 0.5，最大值 0.8 →  s = 0.8/7 = 0.11 →  0.5 被 round 成 4，误差 3%</p>
+<p>★ 同一个 0.5，精度差了无穷倍 —— 差别只在于"它和谁分在一组"<br />
+```<br />
+<strong>§14.5（粒度）和 §14.6（离群值）就是这一条推论的两个直接后果。</strong></p>
+</blockquote>
+<p><strong>记号约定</strong>（读报告必备）：</p>
+<div class="codehilite"><pre><span></span><code>W8A8   =  权重 8-bit，激活 8-bit
+W4A16  =  权重 4-bit，激活保持 16-bit（&quot;weight-only 量化&quot;）
+W4A8   =  权重 4-bit，激活 8-bit
+KV8    =  KV cache 量化到 8-bit（第三个独立的量化对象）
+</code></pre></div>
+
+<hr />
+<h2 id="144">14.4 三个可以独立量化的对象</h2>
+<p><strong>这是一个很多人混在一起的地方。模型里有三种性质完全不同的数：</strong></p>
+<div class="codehilite"><pre><span></span><code>┌──────────────┬─────────────────┬──────────────────────────────────┐
+│              │     性质         │            难度                   │
+├──────────────┼─────────────────┼──────────────────────────────────┤
+│ ① 权重 W      │ 静态、离线就知道 │ 最简单：可以离线慢慢优化怎么量化   │
+│              │ 训完就不变       │ 4-bit 是常规操作                  │
+├──────────────┼─────────────────┼──────────────────────────────────┤
+│ ② 激活 X      │ 动态、依赖输入   │ 最难：离群值严重（§14.6），       │
+│              │ 每个 token 都不同│ 而且必须【在线】算 scale           │
+│              │                 │ 8-bit 已经不容易，4-bit 很难       │
+├──────────────┼─────────────────┼──────────────────────────────────┤
+│ ③ KV cache    │ 动态但一次写入   │ 中等：长上下文下它可能比权重还大   │
+│              │ 之后反复读       │ （回忆 [06 章] 的 240 GB）        │
+└──────────────┴─────────────────┴──────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么权重比激活容易得多</strong>：<br />
+```<br />
+权重量化 = 一个【离线优化】问题<br />
+           你有无限时间、能看到全部数值、可以反复试不同的 scale</p>
+<p>激活量化 = 一个【在线】问题<br />
+           推理时才知道数值，只能用极廉价的规则（比如"取这一行的最大值"）现算<br />
+```<br />
+这就是为什么 <strong>W4A16</strong>（只量化权重）是最常见的社区方案，而 <strong>W8A8</strong> 已经算是有工程投入的方案。</p>
+</blockquote>
+<hr />
+<h2 id="145">14.5 粒度：全章最重要的一个旋钮</h2>
+<p>回忆 §14.3 的推论：<strong>误差由这组数的最大值决定</strong>。所以最自然的想法是——<strong>别把太多数分在一组里</strong>。</p>
+<div class="codehilite"><pre><span></span><code>一个权重矩阵 W，形状 [输出通道 N, 输入通道 K]
+
+① per-tensor（整个矩阵一个 scale）
+   ┌─────────────────────┐
+   │                     │  1 个 scale
+   │        s            │  ✅ 最省、最快
+   │                     │  ❌ 一个离群值毁掉整个矩阵
+   └─────────────────────┘
+
+② per-channel（每个输出通道一个 scale）
+   ┌─────────────────────┐  s₁
+   ├─────────────────────┤  s₂    N 个 scale
+   ├─────────────────────┤  s₃    ✅ 权重量化的标配，几乎【免费】（见下）
+   └─────────────────────┘  s₄
+
+③ per-group / block-wise（沿输入通道每 32 或 128 个一组）
+   ┌────┬────┬────┬────┐
+   │ s₁₁│ s₁₂│ s₁₃│ s₁₄│    N × (K/32) 个 scale
+   ├────┼────┼────┼────┤    ✅ 4-bit 量化基本【必须】用这个
+   │ s₂₁│ s₂₂│ s₂₃│ s₂₄│    ❌ scale 本身也占空间、也要参与计算
+   └────┴────┴────┴────┘
+
+④ per-token（激活侧：每个 token 一个 scale）
+   token 1 ─────────────  s₁
+   token 2 ─────────────  s₂    ✅ 激活量化的标配
+   token 3 ─────────────  s₃
+</code></pre></div>
+
+<h3 id="scale">★★ 铁律：scale 必须在"求和维"上是常数</h3>
+<p><strong>为什么 per-channel（权重）和 per-token（激活）"几乎免费"，而 per-group 需要硬件支持？</strong></p>
+<p><strong>这是整个量化工程里最重要的一个技术细节。看一遍矩阵乘的展开就明白了：</strong></p>
+<p>$$y_{n} = \sum_{k=1}^{K} x_k\, w_{n,k} \;\approx\; \sum_{k=1}^{K} (s_x x^q_k)(s_w w^q_{n,k}) \;=\; \underbrace{s_x s_w}<em k="1">{\text{提到外面}} \sum</em>$$}^{K} x^q_k w^q_{n,k</p>
+<p><strong>$s$ 能被提到求和号外面的前提，是它在求和维度 $k$ 上是常数。</strong></p>
+<div class="codehilite"><pre><span></span><code>✅ 权重 per-channel：scale 随 n 变，【n 不是求和维】
+                     → 可以提出去 → 整数点积一路算到底，最后乘一次 scale
+
+✅ 激活 per-token  ：scale 随 token 变，【token 也不是求和维】
+                     → 同样可以提出去
+
+❌ per-group       ：★ scale 随 k 变 —— k 【正是】求和维！
+                     → 求和被切成一段一段，每段结束都要乘上自己的 scale 再累加
+                     → 需要硬件在【累加器层面】支持&quot;分段重缩放&quot;
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这条铁律的用处远不止解释 MX 格式</strong>。它还直接解释了 §14.10 里"<strong>为什么 K 比 V 难量化</strong>"——因为 K 要和 Q 做点积，K 的通道维<strong>正是求和维</strong>。</p>
+<p><strong>记住这一条，你就能自己判断任何一个量化方案在硬件上好不好实现。</strong></p>
+</blockquote>
+<h3 id="mxmicroscaling">这正是 MX（Microscaling）格式被造出来的原因</h3>
+<div class="codehilite"><pre><span></span><code>MXFP4 = 每 32 个元素为一组，组内每个元素 4 位 FP（E2M1）
+                            组共享一个 8 位的【2 的幂次】scale（E8M0）
+
+  每元素实际开销 = 4 + 8/32 = 4.25 位
+
+  ┌──────── 32 个 FP4 元素 ────────┐ ┌ E8M0 ┐
+  │ ▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪▪ │ │ 2^e  │
+  └────────────────────────────────┘ └──────┘
+   ⭐ 关键：这个&quot;分组 + 共享 scale&quot;是【张量核硬件原生支持】的，
+      不需要在软件里拆循环。Blackwell / 新一代昇腾都直接支持。
+
+MXFP8 = 同样的分组结构，但元素是 8 位 FP（E4M3 或 E5M2）
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>两个细节值得注意</strong>：<br />
+```<br />
+① scale 是【2 的幂次】（E8M0，只有指数没有尾数）<br />
+   → 乘 scale 退化成【移位指数】，硬件上几乎零成本<br />
+   → 而且不引入额外的舍入误差</p>
+<p>② "MXFP4" 不只是 "FP4"<br />
+   裸 FP4 只有 16 个档位、最大值 6，动态范围小得可怜，<br />
+   单独用根本没法表示一个真实的权重矩阵<br />
+   ★ 是那个【每 32 个元素一换的 scale】把动态范围救回来的<br />
+```<br />
+五家里 <strong>K3 和 M3 用的都是 MX 系列</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="146-outlier">14.6 ★ 真正的敌人：离群值（outlier）</h2>
+<p>现在把 §14.3 的推论和 §14.5 的粒度放在一起，看看真实数据长什么样。</p>
+<h3 id="_2">一个具体的数值例子（建议自己按一遍计算器）</h3>
+<div class="codehilite"><pre><span></span><code>一组 8 个激活值：
+   [0.5,  −0.3,  0.8,  −0.6,  12.0,  0.2,  −0.4,  0.7]
+                                ↑ 离群值，比其他大 15 倍
+
+▼ 方案 A：INT4 对称、per-tensor（整组一个 scale）
+   s = 12.0 / 7 = 1.714
+   round(0.5/1.714)  = round(0.29) = 0     ❌
+   round(−0.3/1.714) = round(−0.17)= 0     ❌
+   round(0.8/1.714)  = round(0.47) = 0     ❌
+   round(−0.6/1.714) = round(−0.35)= 0     ❌
+   round(12.0/1.714) = 7                    ✅
+   ...
+   结果：[0, 0, 0, 0, 7, 0, 0, 0]  →  除了离群值，全部信息被抹平成 0
+                                       💀 这一层等于废了
+
+▼ 方案 B：INT4 对称、per-group（每 4 个一组）
+   组 1 [0.5, −0.3, 0.8, −0.6]：s = 0.8/7 = 0.114
+        → q = [4, −3, 7, −5] → 还原 [0.457, −0.343, 0.800, −0.571]   ✅ 误差很小
+   组 2 [12.0, 0.2, −0.4, 0.7]：s = 12/7 = 1.714
+        → q = [7, 0, 0, 0]   → 还原 [12.0, 0, 0, 0]                  ❌ 后三个仍然塌了
+
+   ★ 结论：分组【大幅缓解】了问题，但【没有根治】——
+          只要离群值和正常值还在同一组里，这一组就还是废的
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是为什么光有 §14.5 的粒度不够，还需要 §14.7 那四类方法。</strong></p>
+</blockquote>
+<h3 id="_3">为什么大模型必然有离群值</h3>
+<p>这不是偶然，而是一个在 <strong>~6.7B 参数以上必然涌现</strong>的现象（LLM.int8() 论文最早系统记录）：</p>
+<div class="codehilite"><pre><span></span><code>① 离群值高度集中在【极少数固定的 hidden 维度】上
+   比如 5120 维里可能就那么 2~4 维，幅度是其他维的 100 倍以上
+
+② 这些维度在【所有 token 上都是同一批】—— 不是随机的
+
+③ 它们对模型性能【极其重要】，直接砍掉会让模型崩溃
+</code></pre></div>
+
+<p><strong>这些"巨大激活"是干什么的？</strong> 目前学界比较一致的一个解释是——<strong>它们在充当注意力的泄压阀</strong>。</p>
+<div class="codehilite"><pre><span></span><code>回忆 [05 章 §5.5](05-注意力机制.md) 和 [08 章 §8.6](08-高效注意力.md)：
+
+softmax 强制每一行权重和 = 1，模型&quot;什么都不想看&quot;时也【必须】把质量分出去。
+于是模型学会了一个办法：在某几个固定维度上造出巨大的激活值，
+让某些 token（常常是句首 token 或换行符）变成一个&quot;注意力垃圾桶&quot;。
+
+     ⚠️ 这是模型自己【被逼出来】的一个 hack
+        它解决了注意力的问题，却给量化制造了灾难
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>★★ 这条因果链把全教程的三章串在一起，是本教程最重要的一条推论</strong>：<br />
+<code>softmax 的和必须为 1                       （[05 章 §5.5]）
+      ↓  模型缺一个"什么都不看"的出口
+自发形成巨大激活当泄压阀 = attention sink   （[08 章 §8.6]）
+      ↓  这些巨大激活【就是】离群值
+量化的 scale 被它们绑架                     （§14.3 的推论）
+      ↓
+低比特量化困难                              （§14.6）</code><br />
+<strong>而 gpt-oss 的 sink logit 和华为的 PAS（128 个可学习 KV），本质上是给模型一个"官方的泄压阀"，让它不必再自己造巨大激活。</strong></p>
+<p><strong>这解释了为什么这一代模型普遍在做显式 sink 机制——它【同时】服务于长上下文和低比特量化两个目标。一个机制，两个战场。</strong></p>
+</blockquote>
+<p><strong>另一个离群值来源就是 <a href="09-FFN与激活函数.html">09 章 §9.4</a> 讲过的 SwiGLU</strong>：</p>
+<p>$$\mathrm{SiLU}(W_g x)\ \odot\ W_u x \qquad \text{两个乘数都无界，乘起来更加无界}$$</p>
+<p><strong>所以 V4 的 clamp[−10,10]、K3 的 SiTU-GLU 软上限（$|f|\le 100$）、M3 的 limit=7.0，本质上都是在给量化铺路。</strong></p>
+<hr />
+<h2 id="147">14.7 对付离群值的四类方法</h2>
+<div class="codehilite"><pre><span></span><code>① 混合精度分解（LLM.int8()）
+   把离群值所在的那几列单独拎出来用 FP16 算，其余走 INT8，最后加起来
+   ✅ 简单有效     ❌ 破坏了规整的矩阵乘，kernel 效率掉
+
+② 迁移难度（SmoothQuant 类）—— 主流
+   激活难量化、权重好量化，那就把难度从激活挪一部分给权重
+
+③ 保护关键部件
+   只量化 MoE 专家，注意力投影 / router / 共享专家 / embedding 保持高精度
+   ✅ K3 和 GLM 都明确这么做
+
+④ 旋转（QuaRot / SpinQuant 类）
+   用一个正交矩阵把离群值&quot;摊平&quot;到所有维度上
+</code></pre></div>
+
+<h3 id="3">关于 ③ 的一个重要直觉：错误的"性质"不同</h3>
+<div class="codehilite"><pre><span></span><code>    MoE 专家占了【绝大部分参数量】，但每个专家对最终结果的影响
+    被稀疏路由稀释了（384 选 8）→ 量化误差是【渐进的】
+
+    ★ 但 router 一旦量化出错，会【选错专家】
+      → 输出完全换了一条计算路径
+      → 这是【灾难性】的错误，不是渐进性的
+
+    同理：embedding / LM head 直接连着离散的词表，
+         一点误差就可能换一个词
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>判据</strong>：<strong>问"这个部件出错，是让结果差一点，还是让结果换一个？"</strong> 后者必须保高精度。<br />
+<strong>注意这和 <a href="13-优化器与Muon.html">13 章 §13.6</a> 那个"哪些参数不用 Muon"的名单高度重合</strong>——embedding、LM head、router。<strong>它们在两个完全不同的问题里都是特殊的，因为它们本质上都在处理【离散】的东西。</strong></p>
+</blockquote>
+<h3 id="2-smoothquant">② SmoothQuant 的数学（很优雅，值得看）</h3>
+<p>注意到 $y = X W$ 对任何可逆对角阵 $\mathrm{diag}(s)$ 都有</p>
+<p>$$XW = \big(X\,\mathrm{diag}(s)^{-1}\big)\big(\mathrm{diag}(s)\,W\big) = \hat X\hat W$$</p>
+<p><strong>结果完全不变，但难度被重新分配了</strong>：$\hat X$ 的离群值被压小，$\hat W$ 被放大一点。取</p>
+<p>$$s_j = \frac{\big(\max|X_j|\big)^{\alpha}}{\big(\max|W_j|\big)^{1-\alpha}},\qquad \alpha\in[0,1]\ \text{典型取 }0.5$$</p>
+<p>$\alpha$ 就是那个"难度分配旋钮"：$\alpha=1$ 全部难度给权重，$\alpha=0$ 全部留给激活。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 为什么这招管用：
+      离群值集中在【固定的几个通道】上（§14.6 的观察 ①②）
+      → 所以一个【逐通道的对角缩放】就能精准地压住它们
+      → 如果离群值是随机分布的，这招就没用了
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>✅ 华为在这里做了一处推广</strong>：把 SmoothQuant 里 $\alpha + (1-\alpha) = 1$ 这个<strong>强制耦合</strong>放开，改成<strong>两个独立的指数做二维搜索</strong>。<br />
+<strong>直觉是</strong>："激活侧该压多少"和"权重侧能扛多少"本来就是两个独立的量，没有理由被一个参数绑死。见 <a href="../openPangu-2.0-Pro.html">../openPangu-2.0-Pro.md</a>。</p>
+</blockquote>
+<h3 id="4">④ 旋转的数学（更优雅，是近两年的新方向）</h3>
+<p>对任意正交矩阵 $Q$（$Q^\top Q = I$）：</p>
+<p>$$XW = X\,QQ^\top W = (XQ)(Q^\top W)$$</p>
+<div class="codehilite"><pre><span></span><code>结果同样不变，但 XQ 把原来集中在几个维度上的巨大值【均匀摊到所有维度】
+
+    量化前（离群值集中）        旋转后（能量摊平）
+    ▁▁▁▁█▁▁▁▁▁▁▁▁▁▁▁      →     ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃
+      一根尖峰绑架 scale            没有尖峰，scale 贴合整体
+
+    实践中用 Hadamard 矩阵（元素全是 ±1/√d），
+    乘法可以做成 O(d log d) 的快速变换，
+    而且很多情况下能直接【吸收进相邻的权重矩阵】，推理时零额外开销
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意 ② 和 ④ 是同一个思想的两个版本</strong>：<br />
+<code>都利用了"存在一个变换 T，使得 XW = (XT⁻¹)(TW) 恒等"
+② 用【对角阵】：只能逐通道缩放，但可以精准针对已知的离群通道
+④ 用【正交阵】：能真正把能量摊开，但会破坏权重原本的稀疏/结构性质</code></p>
+</blockquote>
+<hr />
+<h2 id="148-ptq-vs-qat">14.8 什么时候做量化：PTQ vs QAT</h2>
+<div class="codehilite"><pre><span></span><code>PTQ（Post-Training Quantization，训练后量化）
+   模型已经训完 → 拿一小批&quot;校准数据&quot;（几百条样本）跑一遍前向，
+   统计各处的数值范围 → 定出 scale → 存成低比特
+
+   ✅ 便宜（几十分钟到几小时）、不需要训练基础设施
+   ❌ 位宽越低掉点越多。8-bit 通常没事，4-bit 掉点明显
+
+QAT（Quantization-Aware Training，量化感知训练）
+   训练（或微调）时就在前向里【模拟】量化误差，让模型自己学着适应
+
+   ✅ 能压到 4-bit 甚至更低而基本不掉点
+   ❌ 贵，要重新跑训练流程
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>QAT 为什么能救回精度</strong>：<br />
+```<br />
+PTQ：模型是在"数值可以很精确"的假设下训出来的，<br />
+     然后你【事后】告诉它"其实只有 16 个档位"<br />
+     → 它没有任何机会调整</p>
+<p>QAT：训练时模型就知道"我的权重最终只会有 16 个档位"<br />
+     → ★ 它会主动把权重【挪到档位附近】，把重要信息编码到<br />
+        那些量化后仍然可分辨的方向上<br />
+     → 相当于模型自己找了一个"量化友好"的解<br />
+```</p>
+</blockquote>
+<p><strong>PTQ 的校准怎么定 scale</strong>——不是只有 min-max 一种：</p>
+<div class="codehilite"><pre><span></span><code>min-max      ：s 由观察到的最大值定        →  ❌ 最容易被单个离群值毁掉
+percentile   ：取 99.9% 分位数当上界       →  牺牲极少数点，换整体精度
+MSE / KL 最优：搜索使 ‖x − x̂‖² 最小的截断点 →  ✅ 最常用，稍慢
+</code></pre></div>
+
+<h3 id="qat-ste">QAT 的关键技术：伪量化 + 直通估计器（STE）</h3>
+<p>前向传播里插入一个"量化再反量化"的操作（数值上被量化过，但类型还是浮点，所以叫 <strong>fake quant</strong>）：</p>
+<p>$$\hat x = s\cdot\mathrm{round}\big(\mathrm{clip}(x/s)\big)$$</p>
+<p><strong>问题来了</strong>：<code>round</code> 的导数<strong>几乎处处为 0</strong>（它是个阶梯函数）。梯度一过来就全部变成 0，什么都学不了。</p>
+<p><strong>STE（Straight-Through Estimator）的解法简单粗暴——反向传播时假装这个 round 不存在</strong>：</p>
+<p>$$\frac{\partial \hat x}{\partial x} \approx \begin{cases}1 &amp; \text{在 clip 范围内}\ 0 &amp; \text{被截断了}\end{cases}$$</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fake_quant_ste</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">s</span><span class="p">,</span> <span class="n">qmax</span><span class="p">):</span>
+    <span class="n">xq</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">x</span> <span class="o">/</span> <span class="n">s</span><span class="p">),</span> <span class="o">-</span><span class="n">qmax</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">qmax</span><span class="p">)</span> <span class="o">*</span> <span class="n">s</span>
+    <span class="c1"># 前向：用量化后的值   反向：梯度直接穿过去</span>
+    <span class="k">return</span> <span class="n">x</span> <span class="o">+</span> <span class="n">stop_gradient</span><span class="p">(</span><span class="n">xq</span> <span class="o">-</span> <span class="n">x</span><span class="p">)</span>
+    <span class="c1">#      └─────┬──────┘</span>
+    <span class="c1">#        前向 = x + (xq − x) = xq   ✅ 用的是量化值</span>
+    <span class="c1">#        反向 = ∂x/∂x = 1          ✅ 梯度原样通过</span>
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这个 <code>x + sg(xq − x)</code> 的写法是所有 QAT 实现里的标准套路</strong>，值得记住——<strong>一行代码同时实现"前向用量化值、反向当量化不存在"</strong>。</p>
+<p>⚠️ <strong>STE 在数学上是"错"的</strong>（它算的不是真梯度），但它在实践中极其有效。<strong>这类"明知有偏但管用"的估计器在深度学习里很常见</strong>——重要的是梯度方向大致对，而不是精确。</p>
+</blockquote>
+<hr />
+<h2 id="149">14.9 推理时到底发生了什么：省显存 ≠ 省算力</h2>
+<p><strong>这是一个非常容易搞混的点。</strong></p>
+<div class="codehilite"><pre><span></span><code>▼ W4A16（只量化权重）
+   显存里：4-bit 的权重
+   计算时：读进来 → 在寄存器里【反量化成 FP16】→ 用 FP16 张量核做矩阵乘
+
+   ✅ 显存 ÷4，访存字节数 ÷4
+   ❌ FLOPs 完全没变（矩阵乘还是 FP16 的）
+
+   👉 对 decode 极其有效（因为 decode 是 memory-bound，[06 章 §6.4]）
+      对 prefill 帮助有限（prefill 是 compute-bound）
+
+▼ W8A8（权重和激活都量化）
+   计算时：直接用【INT8 张量核】做整数矩阵乘，
+           累加器用 INT32，最后一次性乘回 scale
+
+   ✅ 显存 ÷2，访存 ÷2，而且 FLOPs 吞吐通常翻倍
+   ❌ 必须同时解决激活离群值 → 工程量大得多
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>     整数矩阵乘的完整流程（W8A8）
+
+  x (FP16) ──[量化, per-token]──▶ x_q (INT8) ┐
+                                              ├─▶ INT8 GEMM ─▶ acc (INT32)
+  W 已经是 INT8（离线量化, per-channel）  ────┘                    │
+                                                                  ▼
+                                                         × s_x · s_w  → FP16 输出
+                                                              ↑
+                                          ★ 这一步能&quot;最后一次性乘&quot;，
+                                            完全依赖 §14.5 的那条铁律
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以选 W4A16 还是 W8A8，取决于你的瓶颈在哪</strong>：<br />
+<code>单用户长对话、batch 小   →  decode 主导  →  memory-bound  →  weight-only 就够
+高并发服务、batch 大     →  大 batch / prefill 主导 → compute-bound
+                           → ★ 需要真正的低精度【计算】</code><br />
+<strong>五家都是【服务厂商】</strong>，面对的是高并发场景，<strong>所以都往 W8A8 / W4A8 这类"激活也量化"的方向走，而不是社区最流行的 W4A16。</strong></p>
+<p>📌 这个观察和 <a href="06-KV-cache.html">06 章 §6.4</a> 的"decode 算术强度 ≈ batch size"是同一件事的两面：<strong>batch 一大，decode 也会从 memory-bound 滑向 compute-bound。</strong></p>
+</blockquote>
+<hr />
+<h2 id="1410-kv-cache">14.10 第三个战场：KV cache 量化</h2>
+<p>回忆 <a href="06-KV-cache.html">06 章</a>：<strong>1M 上下文下 KV cache 可能有 240 GB，比权重还大。</strong> 所以它是独立的第三个量化对象。</p>
+<div class="codehilite"><pre><span></span><code>KV8（8-bit）：基本无损，现在算标配
+KV4（4-bit）：有掉点，需要更细的粒度或旋转
+</code></pre></div>
+
+<h3 id="k-v">一个实践中的非对称现象：K 比 V 难</h3>
+<div class="codehilite"><pre><span></span><code>   V（value）比较好量化，per-token 就够
+       因为 V 参与的是 A @ V，V 的【token 维】是求和维，【通道维】不是
+       → 按 token 定 scale，scale 在求和维上是常数 ✅
+
+   K（key）  更难 —— 它的离群值沿【通道】方向分布，
+             而 K 要和 Q 做点积 q·k = Σ_c q_c k_c
+             → ★ 通道【正是】求和维（回忆 §14.5 的铁律）
+             → 按通道定 scale 就提不出去了
+             → 常见做法：对 K 先做一次 Hadamard 旋转（§14.7 ④），
+               把通道方向的离群值摊平，再走 per-token 量化
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这是 §14.5 那条铁律的第二次发力。</strong> 同一条规则，先解释了 MX 格式为什么需要硬件支持，又解释了 K/V 的量化难度不对称。<strong>这就是好的第一性原理该有的样子。</strong></p>
+<p>📌 <strong>注意 MLA（<a href="07-MHA到MLA.html">07 章</a>）和 KV cache 量化是两种【正交】的省法</strong>，可以叠加：<br />
+```<br />
+MLA    ：把 KV 从 16384 维压到 576 维    —— 改结构，省【维度】<br />
+KV 量化 ：把每个数从 16 位压到 8 位      —— 改精度，省【每维的比特】</p>
+<p>两者相乘：28× × 2× = 56×<br />
+```</p>
+</blockquote>
+<hr />
+<h2 id="1411">14.11 五家的量化方案：一张表和一条因果链</h2>
+<table>
+<thead>
+<tr>
+<th>家</th>
+<th>方案</th>
+<th>PTQ / QAT</th>
+<th>值得注意的细节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td><strong>FP4 存 + FP8 算</strong>（MoE 专家）</td>
+<td>✅ QAT</td>
+<td>⭐ <strong>关键设计：FP4→FP8 的反量化是【无损】的</strong>。因为 E4M3 的指数位比 E2M1 多，FP4 的 16 个值全部能被 FP8 精确表示 → <strong>可以直接复用已有的 FP8 训练框架，不用重写 kernel</strong>。主权重仍保 FP32</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>MXFP4 权重 + MXFP8 激活</strong></td>
+<td>✅ QAT，<strong>从 SFT 一路贯穿到 RL 全程</strong></td>
+<td>⭐ 保护关键部件：注意力投影、latent MoE 投影、共享专家、router <strong>全部保持高精度</strong>。⭐⭐ 最重要的一点：RL 阶段 <strong>rollout 和训练用同一套量化方案</strong>，从根上消除 train–inference mismatch</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td><strong>INT4（MoE 专家）+ W8A8（其余）</strong></td>
+<td>✅ QAT，在 SFT 阶段做</td>
+<td>⭐ 量化 kernel <strong>训练和推理共用同一份</strong>，做到 <strong>bitwise 一致</strong></td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>MXFP8 出货</strong></td>
+<td>⚠️ 无 4-bit 证据</td>
+<td>停在 8-bit</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>W8A8 纯整数</strong></td>
+<td>❌ <strong>报告未提 QAT，看起来是 PTQ</strong></td>
+<td>1009 GB → <strong>517 GB（1.95×）</strong>。⚠️ <strong>注意不是正好 2×</strong>——说明有一部分层被保留在高精度。SmoothQuant 的二维解耦指数搜索（§14.7）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">⭐ 两处"消除不一致"的设计，值得单独看</h3>
+<div class="codehilite"><pre><span></span><code>K3：RL 的 rollout 和训练用【同一套量化】
+    → 常见做法是 rollout 用量化模型（快）、训练用全精度（准）
+    → ★ 但这样策略梯度算的是&quot;另一个模型&quot;的梯度 —— train-inference mismatch
+    → K3 把两边统一，从根上消除
+
+GLM：训练和推理【共用同一份量化 kernel】，bitwise 一致
+    → 消除的是另一种不一致：QAT 时模拟的量化 和 部署时真实的量化 不完全一样
+    → ★ bitwise 一致意味着&quot;训练时看到的就是部署时发生的&quot;
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这两处的共同点是：把"训练时的模型"和"部署时的模型"变成【同一个】。</strong><br />
+<strong>这和 <a href="12-MTP与投机解码.html">12 章 §12.11</a> GLM 的 MTP 参数共享（消除训推不一致）是完全相同的思路。</strong><br />
+<strong>⚠️ 这一代技术报告里"消除 train–inference mismatch"出现的频率非常高，可能是比任何单个架构创新都更重要的一条主线。</strong></p>
+</blockquote>
+<h3 id="_5">★ 那条最漂亮的因果链</h3>
+<blockquote>
+<p>```<br />
+想压到 4-bit<br />
+     ↓  PTQ 在 4-bit 上掉点太多<br />
+必须做 QAT<br />
+     ↓  QAT 时低精度前向会因为激活离群值而溢出/失稳<br />
+必须处理激活离群值<br />
+     ↓  SwiGLU 的两个乘数都无界，是离群值的主要来源之一<br />
+必须给 SwiGLU 加界（clamp / softcap）</p>
+<p>────────── 反过来看 ──────────</p>
+<p>停在 8-bit<br />
+     ↓  PTQ 就够用了<br />
+不需要 QAT<br />
+     ↓  8-bit 有 256 个档位，对离群值的容忍度高【16 倍】<br />
+离群值压力小<br />
+     ↓<br />
+★ 没有给 SwiGLU 加界的动力<br />
+```</p>
+<p><strong>这条链完美解释了 <a href="09-FFN与激活函数.html">09 章 §9.5</a> 里那个空格</strong>：openPangu 的报告里 <code>SwiGLU</code> / <code>GLU</code> / <code>SiLU</code> / "激活函数" <strong>命中 0 次</strong>。<br />
+<strong>这不是疏忽，而是【自洽的】</strong>——它停在 W8A8，就没有必须给激活加界的压力。</p>
+<p>⚠️ <strong>但要注意这只是一个自洽的解释，不是被验证的因果。</strong> 华为报告没说"我们因为停在 8-bit 所以不加界"，这是我从五家的横向模式里推出来的。见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.4 / §3.7。</p>
+</blockquote>
+<hr />
+<h2 id="1412">14.12 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>量化 = 三个互相独立的选择
+
+① 存什么格式        INT8 / INT4（均匀）    vs   FP8 / FP4（非均匀，0 附近密）
+                    指数位管【动态范围】（溢出=灾难性）
+                    尾数位管【精度】（舍入=渐进性）→ 所以 BF16 赢了 FP16
+                    裸 FP4 不能用，必须配分组 scale → MXFP4（4 + 8/32 = 4.25 位）
+
+② 按什么粒度定标     per-tensor → per-channel → per-group(32/128) → 越细越准越贵
+                    ⭐⭐ 铁律：scale 必须在【求和维】上是常数，
+                             否则硬件要原生支持分段重缩放
+                    这一条同时解释了：MX 为什么需要硬件支持、K 为什么比 V 难量化
+
+③ 在哪个阶段做      PTQ（便宜，8-bit 够用）  vs   QAT（贵，4-bit 必须）
+                    QAT 的核心技巧只有一个：STE，写法就是 x + sg(xq − x)
+                    QAT 之所以能救回精度：模型会主动把权重挪到量化档位附近
+
+────────────────────────────────────────────────
+
+全部困难只来自一件事：★ 离群值
+   scale 被【最大值】绑架（§14.3）
+   而大模型【必然】产生巨大激活（当 attention 的泄压阀，[05/08 章]）
+   SwiGLU 的无界乘法是第二个来源（[09 章]）
+
+四类解法：混合精度分解 / SmoothQuant 迁移难度 / 保护关键部件 / 正交旋转摊平
+   ②④ 是同一思想的两个版本：找一个 T 使 XW = (XT⁻¹)(TW)
+   ③ 的判据：这个部件出错，是让结果【差一点】还是【换一个】？
+
+────────────────────────────────────────────────
+
+五家的位置：
+   4-bit 阵营（必须 QAT）：DeepSeek-V4、Kimi K3、GLM-5.2
+   8-bit 阵营（PTQ 够用）：MiniMax M3、openPangu
+
+⭐ 一条主线：K3 统一 rollout/训练的量化，GLM 做到训推 bitwise 一致，
+   GLM 的 MTP 参数共享消除训推不一致 ——
+   &quot;消除 train–inference mismatch&quot; 可能是这一代最重要的隐藏主题
+</code></pre></div>
+
+<p><strong>第四部分到此结束。</strong> 所有零件你都见过了。<strong>下一章把它们全部装回一张图上，看看五家到底在哪些位置动了手。</strong></p>
+<hr />
+<blockquote>
+<p><a href="13-优化器与Muon.html">← 13 优化器与 Muon</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="15-五家总装图.html">15 五家总装图</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

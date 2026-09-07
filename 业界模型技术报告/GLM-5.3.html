@@ -1,0 +1,1709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLM-5.3 / GLM-5.3-Flash 架构与技术报告解析</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="glm-53-glm-53-flash">GLM-5.3 / GLM-5.3-Flash 架构与技术报告解析</h1>
+<blockquote>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p><strong>重要前提一：这一代是"两个模型、一篇文档"</strong></p>
+<p>智谱在 2026 年 8 月连发两个模型，它们的性质完全不同，<strong>必须分开看</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>GLM-5.3</strong></th>
+<th><strong>GLM-5.3-Flash</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>发布</td>
+<td>2026-08-14</td>
+<td>2026-08-26</td>
+</tr>
+<tr>
+<td>基座</td>
+<td><strong>和 GLM-5.2 是同一个 base model</strong>，一行架构都没改</td>
+<td><strong>全新预训练的基座</strong>，架构大改</td>
+</tr>
+<tr>
+<td>增量来自</td>
+<td><strong>纯后训练</strong>（官方原话：<em>"Scaling post-training is all we did for GLM-5.3."</em>）</td>
+<td>架构 + 语料 + 后训练</td>
+</tr>
+<tr>
+<td>规模</td>
+<td>744B 总参 / 40B 激活（继承 5.2）</td>
+<td><strong>320B 总参 / 18B 激活</strong></td>
+</tr>
+<tr>
+<td>模态</td>
+<td>纯文本</td>
+<td><strong>原生多模态</strong>（GLM-5 系列首个）</td>
+</tr>
+<tr>
+<td>注意力</td>
+<td>MLA + DSA + IndexShare（继承 5.2）</td>
+<td><strong>KDA 线性注意力 + DSA 稀疏注意力 混合</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>所以"GLM-5.3 的架构"这个问题本身是个陷阱</strong>——本体没有架构，架构在 Flash 上。本文第二~四章讲 GLM-5.3（后训练与网络安全），第五章起讲 GLM-5.3-Flash（架构）。</p>
+<p><strong>重要前提二：这一代没有独立的技术报告论文</strong></p>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>来源</th>
+<th>可靠性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GLM-5.3 的后训练、环境合成、网络安全、slime 基建</td>
+<td><strong>官方技术博客 <a href="https://z.ai/blog/glm-5.3">z.ai/blog/glm-5.3</a></strong>（2026-08-14，正文逐段核对）</td>
+<td>中高（一手，但厂商自述，无论文）</td>
+</tr>
+<tr>
+<td>GLM-5.3-Flash 的架构主张、效率倍数、部署</td>
+<td><strong>官方技术博客 <a href="https://z.ai/blog/glm-5.3-flash">z.ai/blog/glm-5.3-flash</a></strong></td>
+<td>中高（同上）</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3-Flash 的全部架构参数</strong></td>
+<td><strong>Hugging Face <code>zai-org/GLM-5.3-Flash</code> 的 <code>config.json</code></strong></td>
+<td><strong>高（一手，可复现核对）</strong></td>
+</tr>
+<tr>
+<td>KDA 的内部结构</td>
+<td><strong>Kimi Linear 论文 arXiv:2510.26692</strong> + <strong>vLLM 源码 <code>vllm/models/kimi_k3/amd/kda.py</code></strong></td>
+<td>高（一手论文 + 可运行代码）</td>
+</tr>
+<tr>
+<td>骨干沿革、Muon Split、DSA 引入方式、异步 RL</td>
+<td><strong>GLM-5 技术报告 arXiv:2602.15763</strong></td>
+<td>高（一手）</td>
+</tr>
+<tr>
+<td>评测表格的完整数字</td>
+<td><strong>缺失</strong> —— 官方博客的评测表全是<strong>图片</strong>，只有正文里点名的数字可文本核对</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本地论文</strong>：<a href="papers/GLM-5-from-Vibe-Coding-to-Agentic-Engineering-arXiv-2602.15763.pdf">papers/GLM-5-from-Vibe-Coding-to-Agentic-Engineering-arXiv-2602.15763.pdf</a> · <a href="papers/GLM-5-正文提取.txt">papers/GLM-5-正文提取.txt</a> · <a href="papers/IndexCache-Cross-Layer-Index-Reuse-arXiv-2603.12201.pdf">papers/IndexCache-Cross-Layer-Index-Reuse-arXiv-2603.12201.pdf</a><br />
+<strong>前一代</strong>：<a href="GLM-5.2.html">GLM-5.2.md</a>（骨干配置表、MLA-256、Muon Split、DSA 续训、IndexShare 都在那篇）<br />
+<strong>横向对比</strong>：<a href="模型技术对比.html">模型技术对比.md</a> ｜ <strong>同系列</strong>：<a href="DeepSeek-V4.html">DeepSeek-V4.md</a> ｜ <a href="Kimi-K3.html">Kimi-K3.md</a> ｜ <a href="MiniMax-M3.html">MiniMax-M3.md</a> ｜ <a href="openPangu-2.0-Pro.html">openPangu-2.0-Pro.md</a></p>
+</blockquote>
+<hr />
+<h2 id="_1">一、一句话总览</h2>
+<p><strong>GLM-5.3 证明了"后训练还能单独榨出 50% 的提升"；GLM-5.3-Flash 证明了"把线性注意力和稀疏注意力叠起来，能用 1/10 的价格接近前沿智能"。</strong></p>
+<p>这是两个方向完全正交的发布：</p>
+<div class="codehilite"><pre><span></span><code>GLM-5.2 基座 (744B/40B)
+   │
+   ├─→ GLM-5.3        ：基座冻结，只加后训练  → 编程 +50%，网络安全能力涌现
+   │
+   └─（另起炉灶，全新基座）
+        └─→ GLM-5.3-Flash (320B/18B)：KDA+DSA 混合注意力 + mHC + 原生多模态
+                                       → 智能追平 Opus 4.8，价格 1/10，跑在国产芯片上
+</code></pre></div>
+
+<p><strong>代际全表</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GLM-4.5</th>
+<th>GLM-5</th>
+<th>GLM-5.1</th>
+<th>GLM-5.2</th>
+<th><strong>GLM-5.3</strong></th>
+<th><strong>GLM-5.3-Flash</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>发布</td>
+<td>2025</td>
+<td>2026-02</td>
+<td>2026-04</td>
+<td>2026-06-16</td>
+<td><strong>2026-08-14</strong></td>
+<td><strong>2026-08-26</strong></td>
+</tr>
+<tr>
+<td>总参 / 激活</td>
+<td>355B / 32B</td>
+<td>744B / 40B</td>
+<td>754B</td>
+<td>753B</td>
+<td><strong>同 5.2</strong></td>
+<td><strong>320B / 18B</strong></td>
+</tr>
+<tr>
+<td>层数</td>
+<td>92</td>
+<td>78</td>
+<td>78</td>
+<td>78</td>
+<td>同 5.2</td>
+<td><strong>45</strong></td>
+</tr>
+<tr>
+<td>上下文</td>
+<td>128K</td>
+<td>200K</td>
+<td>200K</td>
+<td><strong>1M</strong></td>
+<td>1M</td>
+<td><strong>1M</strong></td>
+</tr>
+<tr>
+<td>最大输出</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td><strong>128K</strong></td>
+<td>128K</td>
+</tr>
+<tr>
+<td>注意力</td>
+<td>GQA</td>
+<td>MLA + DSA</td>
+<td>同</td>
+<td>+ IndexShare</td>
+<td>同 5.2</td>
+<td><strong>KDA + DSA + IndexPool</strong></td>
+</tr>
+<tr>
+<td>模态</td>
+<td>文本</td>
+<td>文本</td>
+<td>文本</td>
+<td>文本</td>
+<td>文本</td>
+<td><strong>文本 + 图 + 视频</strong></td>
+</tr>
+<tr>
+<td>许可</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>MIT</td>
+<td>MIT（延后两周）</td>
+<td><strong>MIT</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="glm-53">二、GLM-5.3：把"后训练"当成唯一变量的一次实验</h2>
+<h3 id="21">2.1 官方口径：基座一行没动</h3>
+<p>博客第一句就是纲领：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Scaling post-training is all we did for GLM-5.3."</em>（GLM-5.3 我们做的全部事情就是把后训练规模化。）</p>
+<p>✅ <strong>官方原文</strong>：<em>"It uses the same base model as GLM-5.2 — every gain comes from post-training."</em>（它用的是和 GLM-5.2 一样的基座——所有提升都来自后训练。）</p>
+</blockquote>
+<p><strong>这句话在归档角度非常值钱</strong>：它意味着 <a href="GLM-5.2.html">GLM-5.2.md</a> 里那张骨干配置表（744B/40B、78 层、MLA-256、DSA、IndexShare、MTP）<strong>原封不动适用于 GLM-5.3</strong>。你不需要重新核对任何一个架构数字。</p>
+<blockquote>
+<p>💡 <strong>小白提示：什么叫"基座 / base model"？</strong><br />
+大模型训练分两段：<strong>预训练</strong>（在几十万亿字上学语言和知识，产出的东西叫"基座"）和<strong>后训练</strong>（教它怎么做任务、怎么用工具、怎么听话，主要手段是强化学习）。基座相当于"大脑硬件 + 通识"，后训练相当于"职业培训"。GLM-5.3 = GLM-5.2 的同一块大脑，换了一套更长更狠的职业培训。</p>
+</blockquote>
+<h3 id="22">2.2 后训练规模化做了什么：环境，而不是数据</h3>
+<p>官方把瓶颈定义得很明确：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"As agent capability improves, much of the difficulty in scaling post-training moves from the model to the environment."</em>（随着智能体能力提升，后训练规模化的难点从模型转移到了环境上。）</p>
+</blockquote>
+<p><strong>"环境"（environment）是什么</strong>：强化学习不像监督学习那样喂"题目+标准答案"，它需要一个能让模型<strong>真的动手、并且能自动判分</strong>的沙盒。写代码就得有能跑的容器、能装依赖的网络、能执行的测试。这个沙盒就叫环境。</p>
+<p>GLM-5.3 在环境上推了三件事：</p>
+<p><strong>① 任务难度上台阶</strong> ✅</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Some represent several days of work for an experienced engineer."</em>（有些任务相当于一个有经验的工程师几天的工作量。）</p>
+</blockquote>
+<p>官方举的例子是一个 <strong>ML 基础设施任务</strong>：模型拿到和工程师一样的工作环境——<strong>算力集群、存储系统、内部文档、代码库、实验结果</strong>，要求它<strong>诊断训练栈的瓶颈 → 实施优化 → 跑实验 → 交付一个可测量的端到端加速，且不能破坏正确性</strong>。</p>
+<p><strong>② 环境自己合成，验证器也自己合成</strong> ✅</p>
+<p>这是这次最工程化的一段。官方描述的流水线：</p>
+<div class="codehilite"><pre><span></span><code>真实工作 → [Research Agent] 抽取任务模式
+              ↓
+        生成可运行的长程环境（多步依赖 + 隐藏状态）
+              ↓
+        [Judge Agent] 亲自做一遍，确认&quot;这题真的能做出来&quot;
+              ↓
+        [Verifier 合成] —— 关键：合成验证器时【不给参考答案】
+              ↓
+        用 solver 轨迹去找&quot;奖励捷径&quot;并堵上
+              ↓
+        通过 oracle / no-op / unsolved-state 三项检查
+              ↓
+        产出可直接训练的二值奖励
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>"合成 verifier 时不给参考答案"为什么重要</strong>：如果判分器见过标准答案，它容易退化成"和标准答案比字符串"，模型就会学会<strong>背答案而不是解决问题</strong>。不给答案，判分器只能从"结果对不对"这个角度写检查，奖励才是真实的。</p>
+<p>🔑 <strong>三项检查是防作弊的</strong>：<br />
+- <strong>oracle 检查</strong>：把正确解喂进去，验证器必须判过（否则验证器太严，正确答案也过不了）<br />
+- <strong>no-op 检查</strong>：什么都不做，验证器必须判不过（否则白给分）<br />
+- <strong>unsolved-state 检查</strong>：题目初始状态，验证器必须判不过（否则题目本身就是"已完成"的）</p>
+<p>⚠️ 官方也承认这条流水线<strong>还需要大量人工介入</strong>：<em>"These pipelines still require a meaningful amount of human-in-the-loop work."</em></p>
+</blockquote>
+<p><strong>③ 沿用 GLM-5.2 的 RL 策略</strong> ✅</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"It carries over the RL strategies introduced in GLM-5.2, including SAO with compaction."</em></p>
+</blockquote>
+<p><strong>SAO with compaction</strong>（带上下文压缩的 SAO）——这是 GLM-5.2 引入的、用来让收益在<strong>长程任务</strong>而不只是短任务上站得住的机制。⚠️ 博客没展开 SAO 的全称与细节，GLM-5 报告里也没有这个缩写，<strong>这一项目前无法从一手材料还原</strong>。</p>
+<h3 id="23">2.3 评测：正文点名的数字</h3>
+<p>⚠️ <strong>注意</strong>：官方博客的评测大表是<strong>图片</strong>，无法文本核对。以下是正文里明确写出的数字，属于可核对的一手：</p>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>GLM-5.2</th>
+<th><strong>GLM-5.3</strong></th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Terminal-Bench 3.0</strong></td>
+<td>4.6</td>
+<td><strong>28.3</strong></td>
+<td>终端任务，6 倍</td>
+</tr>
+<tr>
+<td><strong>DeepSWE v1.1</strong></td>
+<td>46.2</td>
+<td><strong>66.9</strong></td>
+<td>真实仓库改 bug</td>
+</tr>
+<tr>
+<td><strong>Agents' Last Exam</strong></td>
+<td>23.8</td>
+<td><strong>28.5</strong></td>
+<td>长程智能体</td>
+</tr>
+<tr>
+<td><strong>Z.ai Code Bench</strong>（内部）</td>
+<td>—</td>
+<td><strong>+50%</strong></td>
+<td>官方主打数字</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>Terminal-Bench 3.0 的 4.6 → 28.3 要小心解读</strong>：GLM-5.2 在 <strong>Terminal-Bench 2.1</strong> 上是 81.0（见 <a href="GLM-5.2.html">GLM-5.2.md</a>），到 3.0 只剩 4.6。<strong>这说明 3.0 是一个难度断崖式提升的新版本</strong>，不是 5.2 突然变弱。跨版本不可比。</p>
+</blockquote>
+<h3 id="24-zai-code-bench">2.4 Z.ai Code Bench：这次真正有信息量的图</h3>
+<p>官方新引入了内部基准 <strong>Z.ai Code Bench</strong>，在<strong>两个维度</strong>打分：端到端任务完成率 + 细粒度 checklist 准确率。它同时画了<strong>性能 vs. 输出 token 数</strong>的散点——这才是重点：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>档位</th>
+<th>分数</th>
+<th>每任务输出 token</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GLM-5.2</td>
+<td>Max</td>
+<td>23.4%</td>
+<td>96K</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3</strong></td>
+<td><strong>Max</strong></td>
+<td><strong>34.5%</strong></td>
+<td><strong>~75K</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5.3</strong></td>
+<td><strong>High</strong></td>
+<td><strong>31.4%</strong></td>
+<td><strong>~50K</strong></td>
+</tr>
+<tr>
+<td>Claude Opus 4.8</td>
+<td>最高档</td>
+<td>29.5%</td>
+<td>120K</td>
+</tr>
+<tr>
+<td>Claude Fable 5</td>
+<td>Max</td>
+<td><strong>39.5%</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 以上全部为博客正文明确写出的数字。</p>
+<blockquote>
+<p>🔑 <strong>这张表的真正卖点不是分数，是 token 效率</strong>：GLM-5.3 在 High 档用 <strong>50K token 拿 31.4 分</strong>，Opus 4.8 用 <strong>120K token 拿 29.5 分</strong>——<strong>分更高，token 少 2.4 倍</strong>。对按 token 计费的 Agent 场景，这是直接的成本差。</p>
+<p>⚠️ 但也要老实读：<strong>Claude Fable 5 的 39.5% 仍然明显领先</strong>，官方自己把这行放进去了。</p>
+<p>⚠️ <strong>这是私有基准</strong>。官方给的理由是"避免公开测试集污染"（合理），但代价是<strong>第三方无法复现</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="_2">三、涌现的网络安全能力</h2>
+<p>这是 GLM-5.3 这次发布最被媒体抓住的一段，也是<strong>最需要冷静读</strong>的一段。</p>
+<h3 id="31">3.1 官方的说法：不是设计出来的，是长出来的</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"As we scaled post-training, cyber capability developed faster than we expected."</em></p>
+<p>✅ <strong>官方原文</strong>：<em>"GLM-5.3 did not simply become better at identifying isolated flaws: it began to reason across multiple stages of exploitation, forming coherent plans for complete exploitation chains."</em>（它不只是更会找孤立的漏洞了，而是开始跨多个利用阶段推理，形成完整利用链的连贯计划。）</p>
+</blockquote>
+<p>他们在训练混合里加入了漏洞发现的数据和环境，预期是"更会找洞"，结果是能力沿着<strong>利用链</strong>往上爬。</p>
+<h3 id="32">3.2 三个基准，一个很一致的模式</h3>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>测什么</th>
+<th>GLM-5.2</th>
+<th><strong>GLM-5.3</strong></th>
+<th>Mythos 5</th>
+<th>GPT-5.6 Sol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CyberGym</strong></td>
+<td>白盒源码，能否<strong>发现并触发</strong>漏洞</td>
+<td>77.2</td>
+<td><strong>84.5</strong> ⭐ SOTA</td>
+<td>83.8</td>
+<td>83.6</td>
+</tr>
+<tr>
+<td><strong>ExploitBench</strong></td>
+<td>对真实漏洞的<strong>深度推理与利用</strong></td>
+<td>24.4</td>
+<td><strong>54.4</strong>（翻倍多）</td>
+<td><strong>78.0</strong></td>
+<td>76.5</td>
+</tr>
+<tr>
+<td><strong>ExploitGym</strong></td>
+<td>限时内<strong>完成多少个利用任务</strong></td>
+<td>29 / 39</td>
+<td><strong>105 / 130</strong></td>
+<td><strong>181 / 247</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>（ExploitGym 两个数字 = 2 小时预算 / 6 小时预算）✅ 全部为博客正文数字。</p>
+<blockquote>
+<p>🔑 <strong>模式非常清晰，官方自己也点破了</strong>：</p>
+<p>✅ <strong>官方原文</strong>：<em>"the further up the exploitation chain a benchmark sits, the larger the gain from GLM-5.2 — and also the wider the remaining gap to the closed frontier. Capability is growing fastest exactly where we are furthest behind."</em>（基准越往利用链上游，相对 5.2 的涨幅越大——同时和闭源前沿的差距也越大。我们进步最快的地方，恰恰是我们落后最多的地方。）</p>
+<p><strong>翻译成人话</strong>：发现漏洞（第一步）已经追平甚至反超；真正把漏洞变成可用利用（后几步）还差一大截。这个自述是坦诚的。</p>
+<p>⚠️ <strong>ExploitGym 的方法学需要打问号</strong>。官方脚注写明：2 小时 / 6 小时的预算是把 API 推理时间<strong>按各模型的吞吐率重新缩放</strong>得到的——</p>
+<p>✅ <strong>官方脚注原文</strong>：<em>"we rescale GLM-5.3's results by 115 TPS, Kimi K3's results by 40 TPS and Qwen3.8 Max's results by 47 TPS"</em>（TPS = tokens per second，每秒生成 token 数，数据源为 Artificial Analysis）。</p>
+<p><strong>问题</strong>：脚注只列了 GLM-5.3 / Kimi K3 / Qwen3.8 Max 三个模型的缩放系数，<strong>Mythos 5 的缩放系数没有给出</strong>。GLM-5.3 被赋予 115 TPS（三者中最高），意味着同样的墙钟预算里它被允许生成最多 token。⚠️ <strong>这个折算方式对 GLM-5.3 是有利的，且无法从公开信息复核</strong>。</p>
+</blockquote>
+<h3 id="33">3.3 真实世界的漏洞披露：这部分数字很硬</h3>
+<p>从 GLM-5.2 起，智谱就和国内多个安全团队合作，把模型放到真实代码库上跑。经过专家复核、筛查、去重后：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>累计发现漏洞</strong></td>
+<td><strong>2,436</strong> 个</td>
+</tr>
+<tr>
+<td><strong>涉及开源项目</strong></td>
+<td><strong>269</strong> 个</td>
+</tr>
+<tr>
+<td><strong>已公开披露</strong></td>
+<td>53 个</td>
+</tr>
+<tr>
+<td><strong>仍在披露流程中（embargo）</strong></td>
+<td>2,383 个</td>
+</tr>
+<tr>
+<td><strong>中高危以上</strong></td>
+<td><strong>1,097</strong> 个</td>
+</tr>
+</tbody>
+</table>
+<p><strong>严重程度分布</strong> ✅（来自官方披露台账页面的原始数据）：</p>
+<table>
+<thead>
+<tr>
+<th>等级</th>
+<th>数量</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Critical（严重）</td>
+<td>107</td>
+<td>4.39%</td>
+</tr>
+<tr>
+<td>High（高危）</td>
+<td>990</td>
+<td>40.64%</td>
+</tr>
+<tr>
+<td>Medium（中危）</td>
+<td>1,286</td>
+<td>52.79%</td>
+</tr>
+<tr>
+<td>Low（低危）</td>
+<td>53</td>
+<td>2.18%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>一个口径细节值得记</strong>：博客正文写 <em>"1,097 medium-to-high severity issues"</em>，字面是"中到高危"，但 <strong>107 + 990 = 1,097 恰好等于 Critical + High</strong>，而台账页面上这个数字的标签就是 <strong>"CRITICAL &amp; HIGH"</strong>。⚠️ <strong>正文措辞和台账标签不一致，以台账为准：1,097 = 严重 + 高危</strong>。</p>
+</blockquote>
+<p><strong>漏洞的年龄分布</strong>，这是最有冲击力的一组数字：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Findings span 45 years of impact - the oldest flaw was introduced in 1981, and on average a vulnerability lived 26.6 years before discovery."</em>（跨越 45 年，最老的漏洞引入于 1981 年，平均一个漏洞在被发现前已经存活了 26.6 年。）</p>
+</blockquote>
+<p>引入年份直方图（部分）：1981: 20 个 · 1982: 21 · <strong>1987: 47（峰值）</strong> · 1999: 20 · 2003: 26 · <strong>2006: 39</strong> · 其余年份多为个位数到十几个。</p>
+<p>覆盖范围：系统内核、操作系统、浏览器引擎、开源基础设施、Web 应用、网络协议。</p>
+<blockquote>
+<p>🔑 <strong>为什么老代码里的洞这么多</strong>：1980~2000 年代的 C 代码大量使用无边界检查的字符串函数，且当时没有 fuzzing、没有静态分析、没有 ASan。这些代码今天还躺在 Linux、libc、各种解析器里。<strong>LLM 的价值在于它能"读懂意图"</strong>——它不像 fuzzer 那样盲撞，能理解"这个函数假设了什么、调用方是否保证了这个假设"。</p>
+<p>✅ 台账地址：<a href="https://cvd.z.ai">cvd.z.ai</a>（官方称持续更新）</p>
+<p>⚠️ <strong>权重延后开源的原因就在这里</strong>。官方原话：<em>"We will release the weights in two weeks after launch, once safety evaluation and hardening are complete."</em>（发布两周后开源权重，等安全评估和加固完成。）8/14 发布 → 权重预计 <strong>8/28</strong>。<strong>截至本文归档时（2026-08-27），<code>huggingface.co/zai-org/GLM-5.3</code> 仍未公开</strong>，已通过 HF API 确认返回空。</p>
+<p>这是<strong>中国实验室第一次因为网络安全能力而延后开源</strong>，本身就是一个值得记录的事件。</p>
+</blockquote>
+<hr />
+<h2 id="slime">四、slime：让"一直加环境"这件事在工程上成立</h2>
+<p>GLM-5.3 的后训练全部跑在智谱自研的开源 RL 框架 <strong>slime</strong> 上（训练侧 Megatron，rollout 侧 SGLang）。</p>
+<blockquote>
+<p>💡 <strong>小白提示：什么是 rollout？</strong><br />
+强化学习的一轮 = 让模型<strong>先去做一遍任务</strong>（生成一串动作/文本，这个过程叫 rollout / 采样）→ 打分 → 用分数更新权重。所以 RL 系统里永远有两套东西在跑：<strong>训练引擎</strong>（更新权重，Megatron）和<strong>推理引擎</strong>（生成轨迹，SGLang）。</p>
+</blockquote>
+<h3 id="41">4.1 设计哲学：环境是"数据生成"，不是"训练循环的改动"</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Its design keeps training, rollout, and the data buffer on a single dataflow, so math, code, sandboxes, verifiers, and long-horizon agentic environments plug in as data generation rather than as changes to the training loop."</em></p>
+</blockquote>
+<p><strong>这句话是 slime 的全部要义</strong>：数学题、代码沙盒、验证器、长程智能体环境——全都被抽象成"往 data buffer 里灌数据的东西"。加一个新环境不需要动训练代码。</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"That is what let us keep adding environments through GLM-5.2 and GLM-5.3 without rebuilding the training stack each time."</em></p>
+</blockquote>
+<h3 id="42">4.2 算法侧的新能力</h3>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>top-p mask</strong></td>
+<td>采样时把低概率尾部屏蔽，控制探索范围</td>
+</tr>
+<tr>
+<td><strong>top-k / 全词表 OPD</strong></td>
+<td>OPD = Off-Policy Distillation（离策略蒸馏），用更强的"教师模型"的分布来监督。全词表版本用完整词表分布而非只用 top-k，信号更密</td>
+</tr>
+<tr>
+<td><strong>R3-style 配置</strong></td>
+<td>⚠️ 博客未展开，无法从一手材料还原</td>
+</tr>
+<tr>
+<td><strong>训推数值全对齐</strong></td>
+<td>让训练路径和 rollout 路径的数值计算完全一致</td>
+</tr>
+</tbody>
+</table>
+<p><strong>最后一项给了硬数字</strong> ✅：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"the average difference in log probabilities (logprob) was controlled at the 1e-7 level, representing a reduction of more than 99.99% compared with previous setups."</em></p>
+<p>🔑 <strong>"训推一致性"为什么是 RL 的头号工程问题</strong>：</p>
+<p>训练引擎（Megatron）和推理引擎（SGLang）是<strong>两套独立实现</strong>——算子不同、并行策略不同、精度不同。同一份权重、同一个输入，两边算出的概率会有微小差异。</p>
+<p><code>rollout 时：SGLang 认为 "def" 这个 token 的概率是 0.312
+训练时  ：Megatron 认为 "def" 这个 token 的概率是 0.309</code></p>
+<p>RL 的更新公式里有一项是 <code>新策略概率 / 采样时概率</code>。这个比值本该反映"策略更新了多少"，<strong>但现在它混进了"两个引擎实现不一样"的噪声</strong>。噪声大到一定程度，梯度方向就是错的，训练会崩。</p>
+<p>把 logprob 差异压到 <strong>1e-7</strong>，等于把这个噪声源基本消掉了。⚠️ "减少 99.99%" 是相对智谱自己之前的设置，<strong>不是行业基线</strong>。</p>
+</blockquote>
+<h3 id="43-23">4.3 系统侧：三项优化，端到端吞吐 2.3×</h3>
+<table>
+<thead>
+<tr>
+<th>优化</th>
+<th>做法</th>
+<th>解决什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>本地存储做缓存层</strong></td>
+<td>把模型状态和数据分层放到本地盘，而不是全挤在 host 内存</td>
+<td>内存不够</td>
+</tr>
+<tr>
+<td><strong>多教师 OPD 的动态切换 + 预取</strong></td>
+<td>几个教师模型轮流用，靠预取隐藏切换开销，<strong>不用为每个教师常驻一个推理服务</strong></td>
+<td>多教师蒸馏的资源成本</td>
+</tr>
+<tr>
+<td><strong>router 与 slime 的联合调度 + 负载均衡</strong></td>
+<td>rollout 请求长度差异极大（有的几百 token，有的几十万），做长度感知的调度</td>
+<td>长尾请求把卡闲置</td>
+</tr>
+<tr>
+<td><strong>workload-aware 启发式</strong></td>
+<td>从每个环境的特征自动推导 prefill/decode 资源配比、并发数等吞吐关键参数</td>
+<td>手调参数不 scale</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"for long-horizon coding RL tasks, these system-level optimizations improved end-to-end RL training throughput by more than 2.3×"</em></p>
+<p>⚠️ 限定条件很明确：<strong>长程编程 RL 任务</strong>、<strong>端到端训练吞吐</strong>、<strong>相对自己的基线</strong>。不要当成通用加速比。</p>
+</blockquote>
+<hr />
+<h2 id="glm-53-flash">五、GLM-5.3-Flash：这一代真正的架构变化</h2>
+<blockquote>
+<p><strong>从这里开始换模型了</strong>。以下全部是 GLM-5.3-Flash，和上面的 GLM-5.3 没有任何权重关系。</p>
+</blockquote>
+<h3 id="51">5.1 设计目标：为"极低成本推理"重新设计</h3>
+<p>官方把对比锚点放在 GLM-4.5 而不是 5.2 上，因为它想强调"同等总参数下，激活和层数都砍半"：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Despite a similar total parameter count (320B vs. 355B), it nearly halves both the activated parameter count (18B vs. 32B) and the number of layers (45 vs. 92)."</em></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GLM-4.5</th>
+<th><strong>GLM-5.3-Flash</strong></th>
+<th>变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总参数</td>
+<td>355B</td>
+<td><strong>320B</strong></td>
+<td>≈ 持平</td>
+</tr>
+<tr>
+<td>激活参数</td>
+<td>32B</td>
+<td><strong>18B</strong></td>
+<td><strong>–44%</strong></td>
+</tr>
+<tr>
+<td>层数</td>
+<td>92</td>
+<td><strong>45</strong></td>
+<td><strong>–51%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>"层数砍半"比"激活砍半"更值得注意</strong>。激活参数少 → 每个 token 算得少；<strong>层数少 → 推理时的串行深度短</strong>。自回归解码是一层一层串着走的，45 层意味着每生成一个 token 只需要走 45 轮，延迟直接减半。这是 Flash 能做到低延迟的结构性原因，而不只是省算力。</p>
+</blockquote>
+<h3 id="52-configjson">5.2 骨干配置全表（来自 <code>config.json</code>，一手 ✅）</h3>
+<blockquote>
+<p>📌 以下每一项都可以在 <a href="https://huggingface.co/zai-org/GLM-5.3-Flash">huggingface.co/zai-org/GLM-5.3-Flash</a> 的 <code>config.json</code> 里逐字核对。</p>
+</blockquote>
+<p><strong>顶层</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>architectures</td>
+<td><code>Glm5NextForConditionalGeneration</code></td>
+</tr>
+<tr>
+<td>model_type</td>
+<td><code>glm5_next</code></td>
+</tr>
+<tr>
+<td>权重实测总参</td>
+<td><strong>321,323,031,390</strong>（≈321B；FP8 权重 314B + BF16 6.9B + FP32 0.3M）</td>
+</tr>
+<tr>
+<td>发布精度</td>
+<td>FP8（<code>e4m3</code>，block size 128×128）+ 单独的 BF16 版本</td>
+</tr>
+<tr>
+<td>许可</td>
+<td><strong>MIT</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>文本主干（<code>glm5_next_text</code>）</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>层数</td>
+<td><strong>45</strong></td>
+<td>其中 34 层 KDA + 11 层 DSA</td>
+</tr>
+<tr>
+<td>Hidden Dim</td>
+<td>4096</td>
+<td>对比 GLM-5.2 的 6144，窄了 1/3</td>
+</tr>
+<tr>
+<td>Dense 中间维</td>
+<td>12288</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>MoE 中间维</strong></td>
+<td><strong>2048</strong></td>
+<td></td>
+</tr>
+<tr>
+<td><strong>路由专家数</strong></td>
+<td><strong>288</strong></td>
+<td>GLM-5.2 是 256</td>
+</tr>
+<tr>
+<td>共享专家</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>每 token 激活专家</strong></td>
+<td><strong>8</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>Dense 层（不走 MoE）</td>
+<td><strong>前 3 层</strong></td>
+<td>和 GLM-5 系列一贯做法一致</td>
+</tr>
+<tr>
+<td>路由打分函数</td>
+<td>sigmoid + <code>noaux_tc</code></td>
+<td>无辅助损失的负载均衡</td>
+</tr>
+<tr>
+<td>路由缩放系数</td>
+<td>2.5</td>
+<td></td>
+</tr>
+<tr>
+<td>词表</td>
+<td>154880</td>
+<td>与 GLM-5 系列一致</td>
+</tr>
+<tr>
+<td>最大位置</td>
+<td><strong>1,048,576（1M）</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>MTP 层</td>
+<td>1</td>
+<td>投机解码用</td>
+</tr>
+<tr>
+<td>激活函数</td>
+<td>SiLU + SwiGLU（clip 上限 10.0）</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>mHC 相关</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mhc</code></td>
+<td><strong>true</strong></td>
+</tr>
+<tr>
+<td><code>hc_mult</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>hc_sinkhorn_iters</code></td>
+<td>20</td>
+</tr>
+</tbody>
+</table>
+<p><strong>视觉塔（<code>glm5_next_vision</code>）</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>层数</td>
+<td>24</td>
+</tr>
+<tr>
+<td>Hidden Dim</td>
+<td>1024</td>
+</tr>
+<tr>
+<td>注意力头</td>
+<td>16</td>
+</tr>
+<tr>
+<td>中间维</td>
+<td>4096</td>
+</tr>
+<tr>
+<td>图像尺寸 / patch</td>
+<td>448 / 14</td>
+</tr>
+<tr>
+<td>时间 patch（视频）</td>
+<td>2</td>
+</tr>
+<tr>
+<td>空间 merge</td>
+<td>2</td>
+</tr>
+<tr>
+<td>输出维 → 主干</td>
+<td>4096</td>
+</tr>
+<tr>
+<td>投影中间维</td>
+<td>10240</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-3-kda-1-dsa">5.3 混合注意力：3 层 KDA + 1 层 DSA</h3>
+<p><strong>官方的分工说明</strong> ✅：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Linear attention captures local dependencies through state modeling, while sparse attention retrieves relevant global context through a lightweight indexer."</em>（线性注意力通过状态建模捕获局部依赖，稀疏注意力通过轻量索引器召回全局上下文。）</p>
+</blockquote>
+<p><strong>具体排布</strong>（<code>config.json</code> 的 <code>layer_types</code> / <code>kda_layers</code> / <code>full_attn_layers</code> 三处互相印证 ✅）：</p>
+<div class="codehilite"><pre><span></span><code>层号  0    1    2    3     4    5    6    7    …   40   41   42   43   44
+     KDA  KDA  KDA  DSA   KDA  KDA  KDA  DSA   …  KDA  KDA  KDA  DSA  KDA
+     └────── block 1 ──┘  └────── block 2 ──┘         └── block 11 ──┘  ↑
+                                                                  多出的第 45 层
+
+kda_layers      = 0,1,2, 4,5,6, 8,9,10, … 44   （34 层）
+full_attn_layers= 3, 7, 11, 15, 19, …, 43      （11 层，间隔 4）
+</code></pre></div>
+
+<p><strong>顺序是先 KDA 后 DSA</strong>，DSA 落在每个 block 的第 4 位。</p>
+<blockquote>
+<p>📌 <strong>和 Kimi K3 的一处实质差异</strong>：K3 是 <code>3 KDA + 1 Gated MLA</code> 循环之后，<strong>在主干末尾额外补一层全局注意力</strong>，保证最后一层能看全局（见 <a href="Kimi-K3.html">Kimi-K3.md</a>）。GLM-5.3-Flash 的第 45 层反而是 KDA，<strong>最后一个全局层停在第 43 层</strong>。</p>
+<p>⚠️ 官方没有解释这个选择。⚠️ 我的推断：Flash 的全局层是 DSA（本身就带 top-k 检索），可能不需要 K3 那种"末层兜底"；但这是推断，<strong>无一手依据</strong>。</p>
+</blockquote>
+<h3 id="54-kda">5.4 KDA 到底是什么结构</h3>
+<p>⚠️ <strong>重要说明</strong>：<strong>官方博客和模型卡从头到尾只说 "linear attention"，从未点名 KDA</strong>。"KDA" 这个名字来自两处一手证据：</p>
+<ol>
+<li>✅ <code>config.json</code> 里的字段名就叫 <strong><code>kda_layers</code></strong></li>
+<li>✅ SGLang 官方文档在描述 GLM-5.3-Flash 部署时明确写作 <strong>KDA linear attention</strong></li>
+</ol>
+<p><strong>KDA = Kimi Delta Attention（Kimi 增量注意力）</strong>，出自 Kimi Linear 论文（arXiv:2510.26692）。它是 <strong>GDN（Gated DeltaNet，门控增量网络）</strong> 的改进版。</p>
+<blockquote>
+<p>💡 <strong>小白提示：线性注意力在干什么？</strong><br />
+标准注意力要把当前 token 和<strong>前面每一个</strong> token 都比一遍，长度 L 就是 L² 的开销，而且 KV cache 要存下所有历史。<br />
+线性注意力换了个思路：<strong>把所有历史压缩进一个固定大小的矩阵状态 S</strong>，来一个新 token 就更新一次 S。开销 O(L)，显存恒定。代价是<strong>会遗忘</strong>——压缩必然有损。<br />
+详见 <a href="大模型架构入门/08-高效注意力.html">大模型架构入门/08-高效注意力.md</a> §8.5。</p>
+</blockquote>
+<p><strong>KDA 的核心递推式</strong>：</p>
+<p>$$S_t = \left(I - \beta_t k_t k_t^\top\right)\,\mathrm{diag}(\alpha_t)\, S_{t-1} + \beta_t k_t v_t^\top$$</p>
+<p>拆开读：</p>
+<table>
+<thead>
+<tr>
+<th>部分</th>
+<th>名字</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$\mathrm{diag}(\alpha_t) S_{t-1}$</td>
+<td><strong>逐通道遗忘门</strong></td>
+<td>先让旧状态按<strong>每个维度各自的速率</strong>衰减</td>
+</tr>
+<tr>
+<td>$(I - \beta_t k_t k_t^\top)$</td>
+<td><strong>delta rule 的"擦除"</strong></td>
+<td>把 $k_t$ 方向上的旧内容<strong>减掉</strong></td>
+</tr>
+<tr>
+<td>$+\ \beta_t k_t v_t^\top$</td>
+<td><strong>"写入"</strong></td>
+<td>再把新内容写进去</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>KDA 相对 GDN 的唯一但关键的改进：门从"标量"变成"向量"</strong>。<br />
+- <strong>GDN</strong>：每个 head 一个标量遗忘门——整个 head 的记忆<strong>同步</strong>衰减<br />
+- <strong>KDA</strong>：$\alpha_t \in (0,1)^{d_k}$，<strong>每个特征维度一个门</strong>——有的通道慢衰减存长期事实，有的快衰减当工作记忆</p>
+<p>Qwen3-Next 用的是 GDN 式的标量门，Kimi Linear / GLM-5.3-Flash 用的是逐通道门。</p>
+</blockquote>
+<p><strong>Flash 的 KDA 层具体参数</strong>（<code>linear_attn_config</code>，一手 ✅）：</p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>num_heads</code></td>
+<td><strong>64</strong></td>
+<td>64 头 × 128 维 = 8192，是 hidden(4096) 的 <strong>2 倍</strong></td>
+</tr>
+<tr>
+<td><code>head_dim</code></td>
+<td><strong>128</strong></td>
+<td>每头的状态矩阵 S 是 128×128</td>
+</tr>
+<tr>
+<td><code>short_conv_kernel_size</code></td>
+<td><strong>4</strong></td>
+<td>Q/K/V 各过一个 kernel=4 的<strong>因果一维卷积</strong></td>
+</tr>
+<tr>
+<td><code>gate_lower_bound</code></td>
+<td><strong>–5.0</strong></td>
+<td><strong>衰减门的下界</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong><code>gate_lower_bound = -5.0</code> 是最值得记的一个数</strong>。门控在 log 空间被夹在 –5 以上，即每步衰减率不低于 $e^{-5} \approx 0.0067$。<strong>目的是防止某个通道把历史一次性清空</strong>——线性注意力的状态一旦被冲掉就永远找不回来了。这个下界机制来自 Kimi K3，GLM 原样沿用了同一个数值。</p>
+</blockquote>
+<p><strong>用 vLLM 源码交叉验证结构</strong> ✅（本地：<a href="推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py">推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py</a>，类 <code>KimiK3DeltaAttention(GatedDeltaNetAttention)</code>）：</p>
+<div class="codehilite"><pre><span></span><code>hidden_states
+   │
+   └─ in_proj_qkvgfab  ← 一个融合投影，一次算出 6 样东西：
+        ├─ mixed_qkv (3×projection_size) ─→ conv1d(kernel=4) ─→ q, k, v
+        ├─ g_proj_states (projection_size) ────────────→ g2  【输出门】
+        ├─ f_a (head_dim=128) ─→ f_b_proj ────────────→ g1  【逐通道遗忘门，低秩】
+        └─ beta (num_heads) ──────────────────────────→ β   【每头一个标量，delta 写入强度】
+   │
+   ├─ dt_bias / A_log  ← 门控的可学习偏置与衰减基（Mamba 系传统）
+   │
+   ├─ KDA 递推核（chunkwise 并行）
+   │
+   ├─ o_norm = FusedRMSNormGated(head_dim, activation=&quot;sigmoid&quot;)  【门控 RMSNorm 输出】
+   │
+   └─ o_proj
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>注意 <code>f_a</code> 的维度是 128（= head_dim），再由 <code>f_b_proj</code> 升回 8192</strong>。这正是 Kimi Linear 论文里的<strong>低秩门控分解</strong> $\mathbb{R}^{d} \to \mathbb{R}^{d_h} \to \mathbb{R}^{n_h d_h}$——如果每个通道的门都独立参数化，光门控就要 4096×8192 的矩阵，低秩分解把它压到 1/64。</p>
+<p>📌 <strong><code>beta</code> 是每头一个标量，<code>g1</code> 是每通道一个值</strong>——两个门的粒度不同，别搞混：<strong>β 控制"这次写多少"，α 控制"旧的忘多少"</strong>。</p>
+</blockquote>
+<h3 id="55">5.5 一个容易漏掉的设计：全局层不加位置编码</h3>
+<p><code>config.json</code> 里有一行：<strong><code>"mla_use_nope": true</code></strong>，且没有 <code>qk_rope_head_dim</code>。</p>
+<p><strong>NoPE = No Positional Encoding（不加位置编码）</strong>。也就是说，<strong>那 11 层 DSA 全局注意力里没有 RoPE</strong>。</p>
+<blockquote>
+<p>🔑 <strong>为什么敢这么做</strong>：KDA 的逐通道衰减 $\alpha$ <strong>本身就是一种学出来的位置衰减</strong>——越久远的 token 被衰减得越多，模型天然知道"谁离我近"。既然 34 层 KDA 已经把位置信息注入了残差流，全局层就不必再叠一遍 RoPE。</p>
+<p>✅ 这是 Kimi Linear 论文的原始设计，GLM 完整沿用。</p>
+<p>📌 <strong>但索引器仍然带 RoPE</strong>：<code>indexer_rope_interleave: true</code>。⚠️ 我的理解：索引器要判断"哪些历史 token 相关"，这个判断本身依赖相对位置，所以它需要显式位置信号；而主注意力拿到的是已经带位置信息的表示，可以不加。⚠️ 官方未解释。</p>
+</blockquote>
+<h3 id="56-indexpool">5.6 IndexPool：这一代唯一的原创增量</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"To further reduce the latency and memory overhead of the indexer at a 1M-token context length, we introduce IndexPool, which compresses four indexer key vectors into one through weighted pooling."</em>（为进一步降低 1M 上下文下索引器的延迟和显存开销，我们引入 IndexPool，通过加权池化把 4 个索引器 key 向量压成 1 个。）</p>
+</blockquote>
+<p><strong>要理解 IndexPool，得先明白 DSA 的老问题</strong>：</p>
+<div class="codehilite"><pre><span></span><code>DSA（DeepSeek Sparse Attention）分两步：
+  ① 轻量索引器给每个历史 token 打分  ← 每个 query 要和【所有】历史比一遍 → 仍是 O(L²)
+  ② 只对 top-2048 个 token 算真正的注意力  ← 这步是 O(L·k)，便宜
+
+主注意力省下来了，但【索引器本身还是平方复杂度】。
+上下文 200K 时索引器占 prefill 时间的 81%（见 GLM-5.2.md）。
+</code></pre></div>
+
+<p><strong>GLM 家族解决这个问题的两次尝试</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>代次</th>
+<th>方案</th>
+<th>思路</th>
+<th>压缩的对象</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GLM-5.2</td>
+<td><strong>IndexShare</strong></td>
+<td>一层算索引，<strong>后面 3 层复用同一批 token 选择</strong></td>
+<td><strong>层间</strong>冗余</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3-Flash</strong></td>
+<td><strong>IndexPool</strong></td>
+<td>4 个索引器 key 向量<strong>加权池化成 1 个</strong></td>
+<td><strong>序列长度</strong>方向</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>两者不是替代关系，压缩的维度不一样</strong>：IndexShare 省的是"算几次索引"，IndexPool 省的是"每次索引要比多少个向量"。</p>
+<p><code>config.json</code> 印证 ✅：<code>index_kpool: 4</code>、<code>index_kpool_compress: true</code>、<code>index_kpool_always_select_tail: true</code>。</p>
+<p>📌 <strong><code>always_select_tail</code> 这个开关很重要</strong>：4 个 token 压成 1 个会丢失细粒度，但<strong>最近的 token 不能丢</strong>——它们是当前推理最需要的。所以尾部（最新的那些）<strong>始终原样选中，不参与池化</strong>。这和 <a href="大模型架构入门/08-高效注意力.html">08-高效注意力.md</a> 里讲的 attention sink 是同一类"必备补丁"思路：<strong>稀疏方案总要给某些位置开后门</strong>。</p>
+</blockquote>
+<p><strong>索引器完整配置</strong> ✅：</p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>index_n_heads</code></td>
+<td>32</td>
+</tr>
+<tr>
+<td><code>index_head_dim</code></td>
+<td>128</td>
+</tr>
+<tr>
+<td><code>index_topk</code></td>
+<td><strong>2048</strong></td>
+</tr>
+<tr>
+<td><code>index_kpool</code></td>
+<td><strong>4</strong></td>
+</tr>
+<tr>
+<td><code>index_kpool_compress</code></td>
+<td>true</td>
+</tr>
+<tr>
+<td><code>index_kpool_always_select_tail</code></td>
+<td>true</td>
+</tr>
+<tr>
+<td><code>index_share_for_mtp_iteration</code></td>
+<td>true（MTP 迭代间复用索引）</td>
+</tr>
+<tr>
+<td><code>indexer_types</code></td>
+<td>45 层全部 <code>"full"</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="57-mhc">5.7 mHC：残差流上的改动</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"It also adopts Manifold-Constrained Hyper-Connections (mHC) to further improve scaling efficiency."</em></p>
+</blockquote>
+<p><strong>mHC = Manifold-Constrained Hyper-Connections（流形约束超连接）</strong>。</p>
+<blockquote>
+<p>💡 <strong>小白提示</strong>：普通 Transformer 每层是 <code>x_out = x_in + f(x_in)</code>，一条残差流从头贯到尾（见 <a href="大模型架构入门/03-残差流.html">03-残差流.md</a>）。<strong>超连接（Hyper-Connections）</strong> 把这一条流扩成<strong>多条并行的流</strong>，层与层之间用一个可学习的矩阵决定"怎么混合"。好处是信息通路更多，训得更深更稳。</p>
+<p><code>config.json</code> 里 <strong><code>hc_mult: 4</code></strong> 说明扩成了 <strong>4 条流</strong>；<strong><code>hc_sinkhorn_iters: 20</code></strong> 说明混合矩阵用 <strong>Sinkhorn 迭代 20 步</strong>归一化——Sinkhorn 是把一个矩阵反复行归一化、列归一化，逼近成<strong>双随机矩阵</strong>（每行每列都和为 1）的算法。<strong>这就是"流形约束"的含义：混合权重被约束在双随机矩阵这个流形上，保证多条流之间不会有一条把其他的吞掉</strong>。</p>
+<p>⚠️ 官方只有一句话，<strong>没有给 mHC 的消融实验或收益数字</strong>。这是 Flash 架构里最缺一手材料的一项。</p>
+</blockquote>
+<h3 id="58">5.8 效率收益：官方给的对比方法与数字</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"For a fair comparison among different scales, we calculate the attention compute per head per layer and average KV cache size per layer (BF16). Compared with GLM-5.3, GLM-5.3-Flash reduces the attention compute and KV cache size by factors of 3.0x and 4.4x."</em></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>对比项</th>
+<th>相对 GLM-5.3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注意力计算量</td>
+<td><strong>↓ 3.01×</strong></td>
+</tr>
+<tr>
+<td>KV cache 大小</td>
+<td><strong>↓ 4.44×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>官方的自我批评值得原样保留</strong> ✅：</p>
+<p><em>"GLM-5.3-Flash has the lowest attention compute among all models compared. The KV cache size is still slightly larger than Kimi-K3 and DeepSeek-V4-Flash, leaving further room for improvement."</em></p>
+<p><strong>注意力计算量是全场最低，但 KV cache 仍略大于 Kimi K3 和 DeepSeek-V4-Flash。</strong> 一个厂商在自己的发布博客里承认某项指标输给对手，这个坦诚度值得记一笔。</p>
+<p>⚠️ <strong>口径提醒</strong>：这是 <strong>per head per layer</strong> 的归一化对比，<strong>不是端到端加速比</strong>，也不是整机显存占用。跨模型比较时必须带上这个限定。</p>
+</blockquote>
+<h3 id="59">5.9 基座模型的评测</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"GLM-5.3-Flash-Base outperforms GLM-4.5-Base overall and remains competitive with GLM-5-Base across most benchmarks."</em></p>
+<p>✅ 脚注：<em>"Results for DeepSeek-V4-Flash-Base were evaluated using our internal evaluation framework to control for implementation differences."</em></p>
+</blockquote>
+<p>⚠️ <strong>具体分数是图片，无法文本核对</strong>。可核对的只有这句定性结论：<strong>18B 激活的 Flash 基座，总体优于 32B 激活的 GLM-4.5 基座，在多数基准上与 40B 激活的 GLM-5 基座可比</strong>。</p>
+<blockquote>
+<p>🔑 <strong>如果这个结论成立，它才是 Flash 最重要的一句话</strong>：架构改进（KDA+DSA+mHC）+ 30T 多模态语料，让<strong>激活参数减半的基座追平了上一代旗舰基座</strong>。所有的成本优势最终都是从这里来的。⚠️ 但没有可核对的数字支撑。</p>
+</blockquote>
+<hr />
+<h2 id="_3">六、原生多模态：视觉进入编程回路</h2>
+<p>这是 GLM-5 系列第一个原生多模态模型（不是外挂一个视觉编码器，而是预训练阶段就是多模态的）。官方对"为什么编程模型需要视觉"的论证很具体：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"For tasks such as frontend development, game development, and 3D simulation, the final output is not code alone, but an interface, an interaction, or a world experienced by the user. Many failures only surface through rendering, interaction, or playtesting."</em>（前端、游戏、3D 仿真这类任务，最终产物不是代码本身，而是界面、交互、或用户体验到的世界。很多失败只有在渲染、交互、试玩时才暴露出来。）</p>
+</blockquote>
+<p><strong>核心主张</strong>：</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Vision therefore needs to be natively integrated into the model, enabling it to decide when to observe and use visual feedback to guide subsequent actions."</em>（视觉需要原生集成进模型，让它自己决定<strong>何时去看</strong>，并用视觉反馈引导后续动作。）</p>
+</blockquote>
+<p><strong>训练方法</strong> ✅：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据合成流水线</td>
+<td>面向视觉编程，重点是 <strong>self-visual judgment（自我视觉判断）</strong> 与 test-time improvement</td>
+</tr>
+<tr>
+<td>轨迹形态</td>
+<td>要求模型与环境交互 → <strong>检查自己的输出</strong> → 迭代改进</td>
+</tr>
+<tr>
+<td>前端方向</td>
+<td>用<strong>环境反馈的强化学习</strong>；再用基于真实用户流程的 agent 验证来强化 GUI 判断</td>
+</tr>
+<tr>
+<td>验证范围的扩展</td>
+<td><em>"beyond functional correctness to the rendered and interactive product"</em>（从功能正确性扩展到渲染结果和可交互产物）</td>
+</tr>
+</tbody>
+</table>
+<p>官方给的演示是一组前后对比图：<strong>"Initial Version with Layout Issues"（初版有布局问题）→ "After Visual Self-Verification"（视觉自检后）</strong>。</p>
+<p><strong>超出编程的部分</strong>：官方还主张视觉能力让模型进入"知识工作"——文档、表格、演示稿、仪表盘、界面、会议材料。</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Rather than requiring users to explicitly translate their working environment into textual instructions, the model can directly interpret the artifacts associated with a task."</em>（不必让用户把工作环境翻译成文字指令，模型可以直接读任务相关的产物。）</p>
+</blockquote>
+<p><strong>多模态评测覆盖的基准</strong>（从脚注可见 ✅）：BabyVision、Treasury Bulletin PDF 语料（不给内嵌文本，纯靠看）、MVBench、MMVU 等。视频输入策略：原生支持视频的模型直接喂原视频，不支持的按 <strong>1 fps 抽帧</strong>、超限则均匀采样。</p>
+<p>⚠️ 多模态评测的具体分数同样是图片，无法核对。</p>
+<hr />
+<h2 id="_4">七、国产芯片上的大规模部署</h2>
+<p>这是 Flash 发布里最有产业信号意义的一段。</p>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Over the past week, we have served GLM-5.3-Flash on a large-scale cluster of Chinese AI chips."</em></p>
+<p>✅ 发布前它以匿名代号 <strong>ox-alpha</strong> 在 OpenCode 和 OpenRouter 上做公测，<em>"It quickly became the most popular model of the week — with all of this traffic served on Chinese AI chips."</em>（一周内成为最受欢迎的模型——<strong>全部流量都跑在国产芯片上</strong>。）</p>
+<p>🔑 <strong>匿名公测这个做法值得记</strong>：用户在不知道是谁家模型、也不知道跑在什么硬件上的情况下选择了它。<strong>这比任何 benchmark 都更能说明"国产芯片推理是否已经可用"</strong>。</p>
+</blockquote>
+<h3 id="71">7.1 单卡层面：为架构定制的推理引擎</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"To overcome the relatively limited compute and memory capacity of individual chips, we built a dedicated inference engine for this architecture on top of SGLang."</em></p>
+</blockquote>
+<p><strong>优化手段清单</strong> ✅：</p>
+<table>
+<thead>
+<tr>
+<th>技术</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Linear Attention 与 LM head 的节点内张量并行</strong></td>
+<td>把 KDA 层和最后的输出层切到多卡</td>
+</tr>
+<tr>
+<td><strong>ReplaySSM</strong></td>
+<td>⚠️ 官方未展开。⚠️ 我的推断：与线性注意力的循环状态重放有关——SGLang 的命令行里确实有 <code>--enable-linear-replayssm-spec</code> / <code>--linear-replayssm-cache-len</code> 这组开关，看名字是<strong>在投机解码时重放/回滚 SSM 状态</strong>。线性注意力的状态是<strong>串行更新</strong>的，投机解码一旦回滚就必须把状态也退回去，这是纯线性层模型做投机解码的固有难点</td>
+</tr>
+<tr>
+<td><strong>W8A8 量化</strong></td>
+<td>权重 8bit、激活 8bit</td>
+</tr>
+<tr>
+<td><strong>INT8 / FP8 / BF16 混合 cache 量化</strong></td>
+<td>不同的 cache 用不同精度</td>
+</tr>
+<tr>
+<td><strong>Layer Split</strong></td>
+<td>层切分</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>一个有意思的自指细节</strong>：<em>"this effort was accelerated by our GLM-5.3-powered infrastructure agent, which assisted engineers in developing and optimizing kernels, diagnosing performance bottlenecks, and improving the serving stack — creating a feedback loop in which the model helped optimize the system serving the model itself."</em></p>
+<p><strong>用 GLM-5.3 写 kernel、调性能，来优化跑 GLM-5.3-Flash 的系统。</strong> 这个闭环第一次被一家厂商写进发布博客里。</p>
+<p>🔑 <strong>为什么国产芯片的瓶颈是"显存和带宽"而不是算力</strong>：</p>
+<p>✅ 官方点明：<em>"These chips are primarily constrained by memory capacity and bandwidth, especially when supporting context lengths of up to one million tokens."</em></p>
+<p>所以优化方向是 <strong>compute-for-bandwidth（用算力换带宽）</strong> 和 <strong>communication-for-bandwidth（用通信换带宽）</strong>——宁可多算几次、多传几次，也不要多读显存。这和 <a href="大模型架构入门/06-KV-cache.html">06-KV-cache.md</a> 里"decode 是访存受限"的主线完全一致，<strong>也正是为什么这颗模型要选线性注意力</strong>：KV cache 小 4.44×，等于直接把最紧的那根弦松了。</p>
+</blockquote>
+<h3 id="72-epd">7.2 集群层面：EPD 分离</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"our production-grade Encode–Prefill–Decode (EPD) disaggregated architecture separates multimodal encoding, prompt prefill, and token-by-token decoding into independently scheduled and scalable worker pools, enabling efficient and reliable serving across tens of thousands of domestically developed accelerators."</em></p>
+</blockquote>
+<p><strong>EPD = Encode–Prefill–Decode（编码–预填充–解码）三段分离</strong>：</p>
+<div class="codehilite"><pre><span></span><code>传统 PD 分离（两段）：      Prefill 池  →  Decode 池
+GLM-5.3-Flash 的 EPD：Encode 池 → Prefill 池 → Decode 池
+                        ↑
+                   多模态编码（图/视频过视觉塔）单独成池
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么多模态一定要拆出第三段</strong>：视觉编码是<strong>纯计算密集</strong>的（过 24 层 ViT），prefill 是<strong>计算密集但要 KV</strong>，decode 是<strong>访存密集</strong>。三者的硬件需求完全不同。挤在一起的话，一张图片的编码会把 decode 的卡堵住。<strong>拆开后每一段可以独立扩缩容</strong>。</p>
+<p>✅ 规模口径：<em>"tens of thousands of domestically developed accelerators"</em>（数万张国产加速卡）。</p>
+</blockquote>
+<h3 id="73">7.3 结果</h3>
+<blockquote>
+<p>✅ <strong>官方原文</strong>：<em>"Compared with our initial baseline on the same hardware, we achieved a 3× improvement in end-to-end serving performance, reaching hardware efficiency and per-token cost comparable to mainstream NVIDIA GPUs."</em></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>端到端服务性能</td>
+<td><strong>3×</strong>（相对同硬件上的初始基线）</td>
+</tr>
+<tr>
+<td>单 token 成本</td>
+<td><strong>达到主流 NVIDIA GPU 水平</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>口径必须看清</strong>：3× 是<strong>相对自己在同一批国产硬件上的初始基线</strong>，不是相对 NVIDIA。真正的对标声明是第二句——<strong>单 token 成本追平主流 N 卡</strong>。⚠️ 这个说法没有给出具体的卡型、功耗、集群规模，<strong>无法独立验证</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="glm-53-flash_1">八、GLM-5.3-Flash 的评测</h2>
+<p>⚠️ 同样地，官方评测大表是图片。以下是博客正文明确写出的数字 ✅：</p>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>GLM-5.2</th>
+<th><strong>GLM-5.3-Flash</strong></th>
+<th>Claude Opus 4.8</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSWE v1.1</strong></td>
+<td>46.2</td>
+<td><strong>63.4</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>AutomationBench</strong></td>
+<td>26.2</td>
+<td><strong>48.8</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Z.ai Code Bench v1.0</strong>（max effort）</td>
+<td>—</td>
+<td><strong>29.0</strong></td>
+<td><strong>29.5</strong></td>
+</tr>
+<tr>
+<td><strong>AA Intelligence Index v4.1.1</strong></td>
+<td>—</td>
+<td><strong>57</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>成本-智能的官方主张</strong>：<em>"GLM-5.3-Flash pushes the Pareto frontier of the Artificial Analysis Intelligence Index v4.1.1, scoring 57 at just $0.045 per task (discounted) — a level of intelligence previously only available at roughly 10× the cost."</em>（在 AA 智能指数 v4.1.1 上拿 57 分，每任务成本仅 $0.045（折后）——这个智能水平此前大约要 10 倍的价钱。）</p>
+<p>📌 <strong>Z.ai Code Bench 上的 29.0 vs 29.5 这一行，是这次发布的"题眼"</strong>。同一个内部基准上：<br />
+- GLM-5.3（744B/40B，$4.4/M 输出）max 档 <strong>34.5</strong><br />
+- GLM-5.3-Flash（320B/18B，$0.50/M 输出）max 档 <strong>29.0</strong><br />
+- Claude Opus 4.8 最高档 <strong>29.5</strong></p>
+<p><strong>Flash 用 GLM-5.3 约 1/9 的输出价格，拿到了它 84% 的分数，并追平 Opus 4.8。</strong></p>
+<p>⚠️ 但注意 GLM-5.3 是 Z.ai Code Bench <strong>v?</strong> 、Flash 是 <strong>v1.0</strong>，博客对前者未标版本号，<strong>严格说这两组数字是否同版本可比，无法确认</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="_5">九、开源、定价与生态</h2>
+<h3 id="91">9.1 开源状态</h3>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>权重</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GLM-5.3-Flash</strong></td>
+<td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">zai-org/GLM-5.3-Flash</a>（FP8，320B-A18B）</td>
+<td>✅ <strong>已开源，MIT</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5.3-Flash-BF16</strong></td>
+<td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash-BF16">zai-org/GLM-5.3-Flash-BF16</a></td>
+<td>✅ 已开源</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3</strong></td>
+<td><code>zai-org/GLM-5.3</code></td>
+<td>⚠️ <strong>截至 2026-08-27 仍未公开</strong>（HF API 返回空）。官方承诺"发布后两周"，即约 8/28</td>
+</tr>
+</tbody>
+</table>
+<p>✅ HF 仓库元数据：GLM-5.3-Flash 创建于 <strong>2026-08-25</strong>，最后更新 <strong>2026-08-26</strong>，实测权重总量 <strong>321,323,031,390</strong> 参数。</p>
+<h3 id="92-api-docszai-usd-1m-tokens">9.2 API 定价（官方 <a href="https://docs.z.ai/guides/overview/pricing">docs.z.ai 定价页</a>，单位 USD / 1M tokens）✅</h3>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>输入</th>
+<th>缓存输入</th>
+<th>缓存存储</th>
+<th>输出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GLM-5.3-Flash</strong></td>
+<td>$0.15 → <strong>$0.075</strong></td>
+<td>$0.03 → <strong>$0.015</strong></td>
+<td>限时免费</td>
+<td>$0.50 → <strong>$0.25</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5.3</strong></td>
+<td>$1.4</td>
+<td>$0.26</td>
+<td>限时免费</td>
+<td>$4.4</td>
+</tr>
+<tr>
+<td>GLM-5.2</td>
+<td>$1.4</td>
+<td>$0.26</td>
+<td>限时免费</td>
+<td>$4.4</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ GLM-5.3-Flash 五折优惠至 <strong>2026-09-09 24:00（UTC+8）</strong>，箭头前为原价。</p>
+<p>📌 <strong>原价口径下 Flash 是 GLM-5.3 的 1/9（输入）到 1/8.8（输出）</strong>；折后接近 <strong>1/18</strong>。官方博客说的 "one-tenth the price" 对应的是原价口径 ✅。</p>
+</blockquote>
+<h3 id="93">9.3 思考档位（两个模型一致）✅</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>取值</th>
+<th>默认</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>thinking.type</code></td>
+<td><strong>只接受 <code>enabled</code></strong></td>
+<td>enabled</td>
+</tr>
+<tr>
+<td><code>reasoning_effort</code></td>
+<td><code>low</code> / <code>high</code> / <code>max</code></td>
+<td><strong>max</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>破坏性变更，迁移必看</strong>：<code>thinking.type: "disabled"</code> <strong>不再支持</strong>。官方原文：<em>"If your application currently uses <code>thinking.type: "disabled"</code>, change it to <code>enabled</code> and set <code>reasoning_effort</code> to <code>low</code>. Otherwise, the request will fail."</em>（否则请求会直接失败。）</p>
+<p>三档含义：low = 轻量推理，high = 增强推理，max = 深度推理。<strong>编程任务官方推荐 max</strong>。</p>
+</blockquote>
+<h3 id="94">9.4 部署框架 ✅</h3>
+<p>GLM-5.3-Flash 已支持：<strong>SGLang</strong>（<a href="https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3-Flash">cookbook</a>）、<strong>vLLM</strong>（<a href="https://recipes.vllm.ai/zai-org/GLM-5.3-Flash">recipes</a>）、<strong>TokenSpeed</strong>、<strong>KTransformers</strong>。</p>
+<p>⚠️ SGLang 官方文档注明：这个混合架构的 <strong>PD 分离（prefill/decode 分离）需要同时搬运分页的 DSA KV 和 KDA 的循环状态</strong>，目前仅在 4×GB300 上用 dummy weights 做过机械验证，<strong>未做压测与精度测试，应视为预览特性</strong>。</p>
+<hr />
+<h2 id="_6">十、这一代给架构演进留下的三个判断</h2>
+<p><strong>① "后训练还没到头"这件事被证明了一次</strong></p>
+<p>GLM-5.3 是一个干净的对照实验：<strong>基座完全冻结，只加后训练，编程能力 +50%，并且长出了预期外的网络安全能力</strong>。⚠️ 但要注意，这个结论的前提是<strong>基座本身足够强且未被榨干</strong>——它不能推广成"任何模型加后训练都能 +50%"。</p>
+<p><strong>② 线性注意力的地位，从"廉价配角"升到了"主力层"</strong></p>
+<p>对照 <a href="大模型架构入门/08-高效注意力.html">08-高效注意力.md</a> 里记录的判断——<em>"这一代线性注意力的地位是：作为混合方案里的廉价层可以，作为主力不行"</em>，以及 MiniMax 在 M2 里从线性注意力<strong>退回</strong>全注意力的反例：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>线性层占比</th>
+<th>全局层</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MiniMax M2</td>
+<td><strong>0%</strong>（退回了）</td>
+<td>全注意力</td>
+</tr>
+<tr>
+<td>Kimi K3</td>
+<td>69/93 ≈ 74%</td>
+<td>Gated MLA</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3-Flash</strong></td>
+<td><strong>34/45 ≈ 76%</strong></td>
+<td><strong>DSA（top-2048 + IndexPool）</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>这个判断需要更新</strong>：GLM 是<strong>第一个把线性注意力和稀疏注意力叠在一起</strong>的开源前沿模型——之前几家都是二选一。<strong>混合的两条腿都变便宜了</strong>（线性层省 KV，稀疏层省计算），而不是像 K3 那样"便宜的线性层 + 昂贵的全注意力层"。</p>
+<p>⚠️ 但仍然<strong>没有任何一家纯用线性注意力</strong>。76% 的比例和 K3 的 74% 几乎一样——<strong>3:1 看起来是这一代的共识配比</strong>。</p>
+<p><strong>③ 成本竞争的战场从"参数量"转移到了"注意力结构 + 硬件协同"</strong></p>
+<p>官方自己的总结值得原样保留 ✅：</p>
+<blockquote>
+<p><em>"This is not the result of any single trick, but of three layers working together: an architecture that delivers stronger capability from less compute, a richer multimodal pre-training corpus, and infrastructure co-designed with inference hardware."</em>（这不是任何单一技巧的结果，而是三层共同作用：用更少算力产出更强能力的架构、更丰富的多模态预训练语料、以及与推理硬件协同设计的基础设施。）</p>
+<p>✅ 并且他们明说了下一步：<em>"We are now scaling this recipe to larger models."</em>（我们正在把这套配方放大到更大的模型上。）<strong>Flash 是试验田，下一个旗舰会是这套架构的放大版。</strong></p>
+</blockquote>
+<hr />
+<h2 id="_7">十一、可靠性说明</h2>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>来源</th>
+<th>可信度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GLM-5.3-Flash 的全部架构参数</strong>（45 层、3:1 排布、KDA 64×128、conv=4、gate 下界 –5.0、288 专家、IndexPool 配置、mHC 参数、NoPE、视觉塔）</td>
+<td><strong>HF <code>config.json</code></strong></td>
+<td><strong>一手，可逐字复核</strong></td>
+</tr>
+<tr>
+<td>KDA 的递推式与实现结构</td>
+<td>Kimi Linear 论文 + <strong>本地 vLLM <code>kimi_k3/amd/kda.py</code> 源码</strong></td>
+<td>一手（论文 + 可运行代码）</td>
+</tr>
+<tr>
+<td>GLM-5.3 后训练方法、环境合成、网络安全三基准、漏洞台账、slime 优化</td>
+<td><strong>官方博客正文</strong>（逐段核对）</td>
+<td>一手措辞，但<strong>厂商自述，无论文</strong></td>
+</tr>
+<tr>
+<td>GLM-5.3-Flash 的效率倍数、部署栈、国产芯片 3×</td>
+<td>官方博客正文</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>API 定价、思考档位</td>
+<td>官方文档页</td>
+<td>一手</td>
+</tr>
+<tr>
+<td><strong>所有评测大表的完整数字</strong></td>
+<td><strong>缺失（官方全部做成图片）</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>SGLang PD 分离的预览状态</td>
+<td>SGLang 官方 cookbook</td>
+<td>一手</td>
+</tr>
+</tbody>
+</table>
+<p><strong>最需要保留怀疑的六处</strong>：</p>
+<ol>
+<li>⚠️ <strong>ExploitGym 的时间预算折算，独独缺了对标模型 Mythos 5 的缩放系数</strong>，而 GLM-5.3 拿到的 115 TPS 是列出模型中最高的。这个折算对自己有利且无法复核。</li>
+<li>⚠️ <strong>Z.ai Code Bench 是私有基准</strong>。防污染的理由成立，但代价是第三方无法复现；且 GLM-5.3 与 Flash 的分数是否同版本可比，博客未标明。</li>
+<li>⚠️ <strong>"3.01× / 4.44×" 是 per-head-per-layer 归一化口径</strong>，不是端到端加速，也不是整机显存。跨模型引用必须带限定。</li>
+<li>⚠️ <strong>国产芯片的 3× 是相对自己的初始基线</strong>，"单 token 成本追平主流 N 卡"没有给卡型、功耗、集群规模，无法独立验证。</li>
+<li>⚠️ <strong>mHC 只有一句话</strong>，没有消融、没有收益数字。这是 Flash 架构里一手材料最薄的一项。</li>
+<li>⚠️ <strong>基座评测（"18B 激活追平 GLM-5-Base"）只有定性结论</strong>，支撑它的表是图片。而这恰恰是整个成本优势叙事的地基。</li>
+</ol>
+<p><strong>另外两处口径不一致，已在正文标注</strong>：</p>
+<ul>
+<li>漏洞数 <strong>1,097</strong> 在正文被描述为 "medium-to-high"，但台账标签是 <strong>"CRITICAL &amp; HIGH"</strong>，且 107+990 正好等于 1,097。<strong>以台账为准</strong>。</li>
+<li>官方博客与模型卡<strong>从未点名 KDA</strong>，只说 "linear attention"。KDA 之名来自 <code>config.json</code> 的字段名与 SGLang 文档。</li>
+</ul>
+<hr />
+<h2 id="_8">参考来源</h2>
+<ul>
+<li><a href="https://z.ai/blog/glm-5.3">GLM-5.3: Frontier Coding with Emergent Cyber Capabilities（官方博客，2026-08-14）</a></li>
+<li><a href="https://z.ai/blog/glm-5.3-flash">GLM-5.3-Flash（官方博客，2026-08-26）</a></li>
+<li><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">zai-org/GLM-5.3-Flash (Hugging Face)</a> — 架构一手来源 <code>config.json</code></li>
+<li><a href="https://cvd.z.ai">Z.ai Security Disclosure Ledger（漏洞披露台账）</a></li>
+<li><a href="https://arxiv.org/abs/2602.15763">GLM-5: from Vibe Coding to Agentic Engineering (arXiv:2602.15763)</a> — 本地：<a href="papers/GLM-5-from-Vibe-Coding-to-Agentic-Engineering-arXiv-2602.15763.pdf">papers/GLM-5-...pdf</a></li>
+<li><a href="https://arxiv.org/abs/2510.26692">Kimi Linear: An Expressive, Efficient Attention Architecture (arXiv:2510.26692)</a> — KDA 的原始论文</li>
+<li><a href="https://github.com/zai-org/GLM-5">zai-org/GLM-5 (GitHub)</a></li>
+<li><a href="https://docs.z.ai/guides/llm/glm-5.3">Z.ai 开发者文档 — GLM-5.3</a> ｜ <a href="https://docs.z.ai/guides/llm/glm-5.3-flash">GLM-5.3-Flash</a> ｜ <a href="https://docs.z.ai/guides/overview/pricing">定价页</a></li>
+<li><a href="https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3-Flash">SGLang Cookbook — GLM-5.3-Flash</a></li>
+<li>本地源码交叉验证：<a href="推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py">推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py</a></li>
+</ul>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

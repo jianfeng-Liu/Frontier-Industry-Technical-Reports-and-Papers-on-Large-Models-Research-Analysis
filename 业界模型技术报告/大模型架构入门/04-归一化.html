@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · 归一化：一个除法，和它放在哪</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="03-残差流.html">← 03 残差流</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="05-注意力机制.html">05 注意力机制</a></p>
+</blockquote>
+<h1 id="04">04 · 归一化：一个除法，和它放在哪</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：讲清 <code>Norm(x)</code> 是什么、为什么必须有、放在残差前面还是后面为什么是个大问题。<br />
+读完你应该能回答：RMSNorm 的公式为什么长这样？Pre-Norm 和 Post-Norm 的分歧点在哪？openPangu 的"门控塌陷"是怎么回事？</p>
+</blockquote>
+<hr />
+<h2 id="41">4.1 先看公式：它就是一个除法</h2>
+<p>现在所有大模型用的是 <strong>RMSNorm</strong>（Root Mean Square Normalization）：</p>
+<p>$$y_i = \frac{x_i}{\sqrt{\frac{1}{d}\sum_{j=1}^{d} x_j^2 + \varepsilon}}\cdot g_i$$</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rmsnorm</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">g</span><span class="p">,</span> <span class="n">eps</span><span class="o">=</span><span class="mf">1e-6</span><span class="p">):</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">x</span><span class="o">**</span><span class="mi">2</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">+</span> <span class="n">eps</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">x</span> <span class="o">/</span> <span class="n">rms</span> <span class="o">*</span> <span class="n">g</span>        <span class="c1"># g 是可学习的缩放，形状 [d]</span>
+</code></pre></div>
+
+<p>拆开看只有三步：</p>
+<div class="codehilite"><pre><span></span><code>① 算这个向量的&quot;平均能量&quot;          mean(x²)
+② 开根号，得到一个标量 rms         √(mean(x²) + ε)     ← ε 防除零，通常 1e-5 或 1e-6
+③ 整个向量除以它，再逐维乘 g       x / rms * g
+</code></pre></div>
+
+<p><strong>做完之后，向量的长度被拉到固定值</strong>（不管 $g$ 的话，$|y| = \sqrt{d}$），<strong>但方向完全不变</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    归一化前              归一化后
+        ↗ x                  ↗ y      方向一样
+       ╱  长度=37           ╱   长度=√d，固定
+      ╱                    ╱
+     ●                    ●
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话理解</strong>：RMSNorm <strong>只管长度，不管方向</strong>。它是在说"我不关心这个向量有多大，我只关心它指向哪"。</p>
+</blockquote>
+<h3 id="layernorm">和老的 LayerNorm 差在哪</h3>
+<p>$$\text{LayerNorm}:\quad y = \frac{x - \mu}{\sqrt{\sigma^2 + \varepsilon}}\cdot g + b,\qquad \mu = \tfrac{1}{d}\textstyle\sum x_j$$</p>
+<div class="codehilite"><pre><span></span><code>LayerNorm   =  减均值 + 除标准差 + 缩放 g + 平移 b
+RMSNorm     =           除 RMS   + 缩放 g          ← 去掉了减均值和平移
+</code></pre></div>
+
+<p><strong>为什么可以去掉减均值</strong>：实验发现减均值这一步对 Transformer 的效果几乎没贡献，而它<strong>需要多一遍归约</strong>（先算均值、再算方差），在 GPU 上是实打实的开销。</p>
+<div class="codehilite"><pre><span></span><code>✅ RMSNorm 比 LayerNorm 快 7~64%（论文报告的范围），效果持平
+✅ 五家【全部】用 RMSNorm，无一例外。这个已经没有争议了
+</code></pre></div>
+
+<hr />
+<h2 id="42">4.2 为什么必须有归一化</h2>
+<h3 id="_1">表面理由：防止数值失控</h3>
+<p>回忆 <a href="03-残差流.html">03 章 §3.4</a>：残差流的范数会随层数增长。如果不归一化：</p>
+<div class="codehilite"><pre><span></span><code>第 1 层输入 ‖x‖ ≈ 1
+第 50 层输入 ‖x‖ ≈ 7    → 送进 softmax 之前 QK 内积会大 49 倍
+                        → softmax 饱和（见 §4.5），梯度趋近 0
+</code></pre></div>
+
+<p><strong>归一化保证每个子层看到的输入尺度是固定的</strong>，无论它在第 1 层还是第 50 层。这样：</p>
+<div class="codehilite"><pre><span></span><code>① 每层可以用【同一套超参】（初始化、学习率）
+② 激活值不会溢出低精度格式（BF16 的动态范围虽大，FP16/FP8 就很吃紧）
+   → 直接关系到 [14 量化](14-量化.md)
+</code></pre></div>
+
+<h3 id="_2">更深的理由：它让损失曲面变平滑</h3>
+<p>早期的解释是"减少 internal covariate shift"（内部协变量偏移），<strong>这个解释后来被实验推翻了</strong>——人为往归一化后注入协变量偏移，训练依然稳定。</p>
+<p><strong>目前更被接受的解释</strong>（Santurkar et al. 2018）：<strong>归一化让损失曲面的 Lipschitz 常数变小，梯度更可预测</strong>。</p>
+<div class="codehilite"><pre><span></span><code>无归一化的损失曲面：           有归一化：
+
+     ╱╲    ╱╲                     ╱‾‾‾╲
+    ╱  ╲__╱  ╲                   ╱     ╲
+   ╱  陡峭、多尖峰                ╱  平滑、可用大学习率
+   走一大步可能直接跳到           走一大步大概率还在下坡
+   一个更糟的地方
+</code></pre></div>
+
+<p><strong>一个直观的机制</strong>：归一化让权重的<strong>尺度</strong>变得无关紧要。</p>
+<p>$$\text{RMSNorm}(\alpha \cdot x) = \text{RMSNorm}(x)\quad\text{对任意 } \alpha &gt; 0$$</p>
+<p>所以如果把某层权重整体乘 10，归一化会把它除回来 —— <strong>模型只能通过改变"方向"来学习，不能靠"变大"来作弊</strong>。这消掉了一整个无用的自由度。</p>
+<blockquote>
+<p>📌 <strong>副作用</strong>：这也意味着权重的模长会自由漂移（因为它不影响输出）。这正是<strong>权重衰减在有归一化的网络里仍然重要</strong>的原因——它把模长拉回来，从而间接控制有效学习率。这条线索会在 <a href="13-优化器与Muon.html">13 优化器</a>里再出现。</p>
+</blockquote>
+<hr />
+<h2 id="43">4.3 放哪里：三种选择</h2>
+<p>这是本章真正有分量的部分。<strong>同一个 RMSNorm，放的位置不同，训练行为天差地别。</strong></p>
+<div class="codehilite"><pre><span></span><code>┌─── Post-Norm（原始 Transformer, 2017）──────────────────┐
+│                                                          │
+│     x ──┬─────────────────────┐                          │
+│         └──[ 子层 F ]──────────┤                          │
+│                              ( + )                       │
+│                                │                         │
+│                            [ Norm ]  ← 归一化在【残差相加之后】│
+│                                │                         │
+│                                ▼                         │
+│     x_{l+1} = Norm( x_l + F(x_l) )                       │
+└──────────────────────────────────────────────────────────┘
+
+┌─── Pre-Norm（现在的主流）────────────────────────────────┐
+│                                                          │
+│     x ──┬────────────────────────────┐                   │
+│         │                            │                   │
+│     [ Norm ]  ← 归一化在【子层之前】   │                   │
+│         │                            │                   │
+│      [ 子层 F ]───────────────────────┤                   │
+│                                    ( + )                 │
+│                                      ▼                   │
+│     x_{l+1} = x_l + F( Norm(x_l) )                       │
+└──────────────────────────────────────────────────────────┘
+
+┌─── Sandwich-Norm（两边都放）─────────────────────────────┐
+│                                                          │
+│     x_{l+1} = x_l + Norm₂( F( Norm₁(x_l) ) )             │
+│                       ↑ 子层输出【也】归一化再写回残差流    │
+└──────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<h3 id="_3">分歧的关键：那条恒等通路有没有被打断</h3>
+<p>回到 <a href="03-残差流.html">03 章 §3.2</a> 的核心——<strong>梯度能不能沿一条"什么都不做"的路径直达浅层</strong>。</p>
+<div class="codehilite"><pre><span></span><code>Post-Norm:  x_{l+1} = Norm(x_l + F(x_l))
+            ↑ 恒等路径【经过了 Norm】，梯度被 1/rms 反复缩放 N 次
+            → §3.2 的连乘问题【部分回来了】
+            → 深层网络必须靠【warmup】才能训起来，超过 ~20 层非常难训
+
+Pre-Norm:   x_{l+1} = x_l + F(Norm(x_l))
+            ↑ 恒等路径【完全干净】，∂x_{l+1}/∂x_l = I + ...
+            → 可以不用 warmup、可以堆到 100 层
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Post-Norm</th>
+<th>Pre-Norm</th>
+<th>Sandwich</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>恒等通路</td>
+<td>❌ 被 Norm 打断</td>
+<td>✅ 干净</td>
+<td>✅ 干净</td>
+</tr>
+<tr>
+<td>训练稳定性</td>
+<td>差，需要 warmup + 小学习率</td>
+<td><strong>好</strong></td>
+<td><strong>更好</strong></td>
+</tr>
+<tr>
+<td>深度上限</td>
+<td>~20 层就很吃力</td>
+<td>100+ 层 OK</td>
+<td>100+ 层 OK</td>
+</tr>
+<tr>
+<td>最终效果</td>
+<td><strong>略好</strong>（如果训得起来）</td>
+<td>略差</td>
+<td>介于之间</td>
+</tr>
+<tr>
+<td>残差范数</td>
+<td>每层被压回固定值</td>
+<td><strong>按 √N 增长</strong>（<a href="03-残差流.html">§3.4</a>）</td>
+<td>增长被抑制</td>
+</tr>
+<tr>
+<td>额外开销</td>
+<td>0</td>
+<td>0</td>
+<td>多一次 Norm</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>Pre-Norm 用一点点最终效果，换到了"能训起来"。</strong> 这个交易在 100B+ 规模上根本没得选——一次训练几千万美元，训崩了就全没了。</p>
+<p><strong>五家【全部】是 Pre-Norm 基础</strong>（Sandwich 是在此之上的加固）。</p>
+</blockquote>
+<h3 id="pre-norm">Pre-Norm 的那个代价，具体是什么</h3>
+<p>$$x_{l+1} = x_l + F(\text{Norm}(x_l)),\qquad |x_l| \approx \sqrt{l}$$</p>
+<p>因为 $F$ 的输入被归一化了，$|F(\cdot)|$ 大致是常数，而 $|x_l|$ 在长大：</p>
+<p>$$\frac{|F_l|}{|x_l|} \approx \frac{1}{\sqrt{l}}$$</p>
+<div class="codehilite"><pre><span></span><code>第 1 层：子层的贡献占残差流的 100%
+第 50 层：子层的贡献占 1/7
+
+→ 深层的子层【实际上在做很小的修正】，表达力被浪费了
+→ 这就是 Pre-Norm &quot;最终效果略差&quot; 的机制性解释
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>Sandwich-Norm 正是针对这一点的补丁</strong>：给子层输出也加一个 Norm，让每层写入的幅度<strong>受控且可比</strong>，缓解深层被稀释。</p>
+</blockquote>
+<hr />
+<h2 id="44-openpangu">4.4 openPangu 的门控塌陷：一个真实的故障与修复</h2>
+<p>这是本章唯一一个五家里有明确一手记录的故障案例，<strong>值得完整看一遍</strong>，因为它把 <a href="03-残差流.html">03 章</a>和本章连在了一起。</p>
+<h3 id="_4">背景</h3>
+<p>openPangu-2.0-Pro 用了 mHC（<a href="03-残差流.html">§3.5</a>）。mHC 引入了 $A_l$（读门控）和 $C_l$（写门控）。</p>
+<h3 id="_5">故障</h3>
+<blockquote>
+<p>✅ <strong>华为报告明确记录</strong>：训练早期，<strong>早期层的 mHC 门控出现塌陷</strong>——报告中记为 $H_{\text{pre}}$、$H_{\text{post}}$ 趋近于 0。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>门控 → 0 意味着什么：
+
+    x_{l+1} = B_l x_l + C_l F_l(A_l x_l)
+                        ↑ 这一项被门控乘成了 0
+
+    → 子层【完全不起作用】，那一层退化成纯粹的 B_l x_l（只是流间混合）
+    → 参数白白浪费，而且是发生在【最该学基础特征的浅层】
+</code></pre></div>
+
+<h3 id="_6">为什么恰好在早期层</h3>
+<p><strong>⚠️ 以下是我的推断，华为报告没有给出机制解释。</strong></p>
+<div class="codehilite"><pre><span></span><code>回忆 §4.3：Pre-Norm 下 ‖x_l‖ ≈ √l
+
+    浅层 l 小  →  ‖x_l‖ 小  →  归一化的除数小  →  子层输出相对【偏大】
+    → 早期层的子层输出更容易冲击残差流
+    → 优化器为了稳定，最简单的办法就是【把门控关掉】
+
+    这是一个【局部最优陷阱】：门控一旦接近 0，梯度也趋近 0，就再也出不来了
+</code></pre></div>
+
+<p>并且这和 <a href="01-鸟瞰全景.html">01 章 §1.3</a> 的分层现象一致：<strong>浅层做的事最简单</strong>，所以"关掉也不太掉 loss"，优化器就真的关掉了。</p>
+<h3 id="_7">修复</h3>
+<blockquote>
+<p>✅ <strong>华为报告给出的两条措施</strong>：</p>
+<p><strong>① Sandwich Norm</strong> —— 给子层输出也加归一化，控制它写回残差流的幅度<br />
+<strong>② 块级后归一化</strong> —— 在<strong>第 1 层之后</strong>、以及<strong>每 5 层的块之后</strong>，各加一次归一化</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    层 1  ──[Sandwich Norm 的 block]──  ← 后面加一次块级归一化 ★
+    层 2~5 ─────────────────────────────  ← 第 5 层后加一次 ★
+    层 6~10 ────────────────────────────  ← 第 10 层后加一次 ★
+    ⋮
+    层 46~50 ───────────────────────────  ← 第 50 层后 ★
+</code></pre></div>
+
+<p><strong>为什么这管用</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Sandwich Norm 保证子层输出【尺度受控】
+    → 它不会因为浅层 ‖x‖ 小就相对过大
+    → 优化器不再有&quot;必须关掉门控&quot;的压力
+
+块级后归一化【周期性地把残差流范数压回来】
+    → 直接对治 §3.4 的 √N 增长
+    → 深层的相对话语权被恢复
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这个案例的价值</strong>：它说明 <a href="03-残差流.html">03 章</a>那些"改残差"的方案<strong>不是免费午餐</strong>。mHC 带来的不只是 +6.7% 墙钟，还带来了新的、需要额外补丁才能压住的训练不稳定性。<strong>这是"三家改、两家不改"这个分歧的一条实证注脚。</strong></p>
+</blockquote>
+<hr />
+<h2 id="45-qk-norm">4.5 另一个位置：QK-Norm</h2>
+<p>除了残差前后，还有第三个常放归一化的地方——<strong>注意力内部的 Q 和 K</strong>。</p>
+<p>$$\text{score} = \frac{\text{RMSNorm}(q)\cdot \text{RMSNorm}(k)^\top}{\sqrt{d_h}}$$</p>
+<h3 id="softmax">动机：softmax 饱和</h3>
+<p><a href="05-注意力机制.html">05 章</a>会详讲 softmax，这里只需要知道结论：</p>
+<div class="codehilite"><pre><span></span><code>如果 q·k 的数值变得很大（比如 200），softmax 会变成【近乎 one-hot】：
+
+    softmax([200, 5, 3]) ≈ [1.0, 0.0, 0.0]
+
+    → 梯度几乎全是 0（softmax 在饱和区导数趋近 0）
+    → 这个注意力头【卡死了】，再也学不动
+    → 训练日志上表现为【loss spike】或者干脆发散
+</code></pre></div>
+
+<p><strong>而 $q\cdot k$ 变大是很容易发生的</strong>：$q$ 和 $k$ 都是无约束的线性投影输出，训练中它们的范数会自由漂移。</p>
+<h3 id="qk-norm">QK-Norm 的修复</h3>
+<p><strong>先把 $q$ 和 $k$ 归一化到固定长度，再算内积。</strong> 这样内积被<strong>硬性限制在有界范围内</strong>，softmax 永远不会饱和。</p>
+<blockquote>
+<p>✅ <strong>DeepSeek-V4 明确使用 QK-RMSNorm</strong>（报告有记）。<br />
+⚠️ 其他几家报告中我没有找到明确记载，<strong>不代表没用</strong>——这是个很常规的稳定化手段。</p>
+<p>📌 <strong>这条"softmax 会饱和"的线索非常重要</strong>，它在教程里出现三次：<br />
+<code>这里（§4.5）      → 训练不稳定的一个来源，用 QK-Norm 治
+[05 章 §5.x]     → softmax 和必须为 1，模型没有"什么都不看"的选项
+[14 章 §14.6]    → 上一条导致模型自造巨大激活当泄压阀 = 离群值
+                   这是低比特量化最大的敌人</code></p>
+</blockquote>
+<hr />
+<h2 id="46">4.6 挂回五家</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>归一化类型</th>
+<th>位置</th>
+<th>特别的地方</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>RMSNorm</td>
+<td>Pre-Norm</td>
+<td>✅ <strong>QK-RMSNorm</strong></td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>RMSNorm</td>
+<td>Pre-Norm</td>
+<td>AttnRes 内部对 $k_i$ 用 RMSNorm（<a href="03-残差流.html">§3.6</a>）</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>RMSNorm</td>
+<td>Pre-Norm</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>RMSNorm</td>
+<td>Pre-Norm</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>RMSNorm</td>
+<td><strong>Pre + Sandwich</strong></td>
+<td>✅ <strong>块级后归一化（第1层后 + 每5层），修 mHC 门控塌陷</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>归一化这一格，是五家最一致的地方之一</strong>：全部 RMSNorm、全部 Pre-Norm。<strong>唯一的差异都是"因为改了别的东西，所以不得不在这里打补丁"</strong> —— openPangu 是因为 mHC，V4 的 QK-Norm 是因为要压 softmax。</p>
+<p>这本身就是个有用的判断：<strong>归一化不是创新点，它是稳定器。谁在这里做了额外动作，说明谁在别处冒了额外的险。</strong></p>
+</blockquote>
+<hr />
+<h2 id="47">4.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① RMSNorm = 除以 RMS 再乘可学习的 g。只改长度，不改方向
+   比 LayerNorm 少了减均值和平移，快 7~64%，效果持平。五家全用
+② 它有效的原因不是&quot;减少协变量偏移&quot;（已被推翻），
+   而是【让损失曲面变平滑】+【消掉权重尺度这个无用自由度】
+③ Pre-Norm vs Post-Norm 的分歧点只有一个：
+   恒等通路有没有被 Norm 打断 → 决定了能不能堆到 100 层
+   五家全部 Pre-Norm，用一点最终效果换&quot;能训起来&quot;
+④ Pre-Norm 的代价：深层贡献被稀释成 1/√l → Sandwich Norm 是补丁
+⑤ openPangu 的门控塌陷：mHC 的门控在早期层塌到 0
+   修复 = Sandwich Norm + 第1层后及每5层的块级后归一化
+   这是&quot;改残差不是免费午餐&quot;的实证
+⑥ QK-Norm：防 softmax 饱和。这条&quot;softmax 饱和&quot;的线索会一路通到量化章
+</code></pre></div>
+
+<p><strong>下一章</strong>进入正题：注意力。这是 Transformer 里唯一真正"新"的东西，也是后面 08 章五家主战场的基础。</p>
+<hr />
+<blockquote>
+<p><a href="03-残差流.html">← 03 残差流</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="05-注意力机制.html">05 注意力机制</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

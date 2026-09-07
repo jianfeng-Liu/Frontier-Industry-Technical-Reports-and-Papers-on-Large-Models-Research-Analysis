@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>15 · ⭐ 后训练数据格式：从"纯文本"到"结构化对话"</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="14-采样-shuffle-与断点续训.html">← 14 采样、shuffle 与断点续训</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="16-五家报告的数据章节.html">16 五家报告的数据章节</a></p>
+</blockquote>
+<h1 id="15">15 · ⭐ 后训练数据格式：从"纯文本"到"结构化对话"</h1>
+<blockquote>
+<p><strong>前面 14 章讲的都是【预训练】的数据。</strong><br />
+<strong>这一章讲【后训练】——也就是把一个"只会续写"的模型变成"能对话、会用工具"的模型时，数据长什么样。</strong></p>
+<p>★ 这一章几乎不涉及大规模清洗，但<strong>格式细节出错的代价极高</strong>，<br />
+而且<strong>每一个坑都不会报错，只会让模型行为变得莫名其妙</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="151">15.1 先说清楚：预训练数据和后训练数据的根本区别</h2>
+<div class="codehilite"><pre><span></span><code>预训练数据：
+   { &quot;text&quot;: &quot;北京是中国的首都，位于华北平原北部……&quot; }
+   ★ 一整篇纯文本，【每一个 token 都要算 loss】
+   ★ 训练目标：预测下一个词
+   ★ 规模：万亿 token
+
+后训练数据（SFT）：
+   {
+     &quot;messages&quot;: [
+       {&quot;role&quot;: &quot;system&quot;,    &quot;content&quot;: &quot;你是一个helpful的助手&quot;},
+       {&quot;role&quot;: &quot;user&quot;,      &quot;content&quot;: &quot;北京在哪？&quot;},
+       {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;北京位于华北平原北部……&quot;}
+     ]
+   }
+   ★ 有【角色结构】
+   ★★★ 训练目标：只学【assistant 说的话】，不学 user 说的话
+   ★ 规模：几万 ~ 几百万条（★ 比预训练小【六个数量级】）
+</code></pre></div>
+
+<blockquote>
+<p><strong>SFT</strong> = <strong>Supervised Fine-Tuning</strong>（有监督微调），指用"问题—标准回答"配对数据继续训练模型。<br />
+它是后训练的第一步，后面通常还有 <strong>RLHF</strong>（Reinforcement Learning from Human Feedback，基于人类反馈的强化学习）或 <strong>DPO</strong>（Direct Preference Optimization，直接偏好优化）等偏好对齐阶段（15.7）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★★ 核心认知：底层训练机制【完全没变】，还是&quot;预测下一个 token&quot;。
+   变的只有两件事：
+     ① 输入被套进了一个【固定的结构化模板】
+     ② ★★★ loss 只在一部分位置上计算
+</code></pre></div>
+
+<hr />
+<h2 id="152-chatml-token">15.2 ChatML：把对话拍平成一串 token</h2>
+<p>模型只认 token 序列。所以那个 JSON 必须先被<strong>拍平（flatten）</strong>成纯文本。</p>
+<p><strong>ChatML</strong>（Chat Markup Language，对话标记语言）是目前最通用的一种拍法：</p>
+<div class="codehilite"><pre><span></span><code>&lt;|im_start|&gt;system
+你是一个helpful的助手&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+北京在哪？&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+北京位于华北平原北部……&lt;|im_end|&gt;
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 三个要点：
+  ① &lt;|im_start|&gt; / &lt;|im_end|&gt; 是【特殊 token】—— 09 章说过要在训 tokenizer 时
+     就【预留】好，它们在词表里是单独的 id，不是几个字符拼出来的
+  ② 角色名（system/user/assistant）是【普通文本】，跟在 &lt;|im_start|&gt; 后面
+  ③ ★★ 生成时，模型看到的最后是：
+        &lt;|im_start|&gt;assistant\n
+     ⟹ 这叫【生成提示 generation prompt】，是在&quot;请你现在开始说话&quot;
+</code></pre></div>
+
+<h3 id="chat-template">★ chat template：一个必须知道的实践细节</h3>
+<div class="codehilite"><pre><span></span><code>每家模型的模板都【不一样】：
+   ChatML 用 &lt;|im_start|&gt;...&lt;|im_end|&gt;
+   Llama 系用 [INST] ... [/INST] 或 &lt;|start_header_id|&gt;
+   还有各种各样的变体
+
+★★ 所以现在的开源模型会在 tokenizer 配置里带一个 chat_template
+   （一段 Jinja2 模板），由框架统一渲染。
+
+⚠️⚠️ 最常见的线上事故：
+   训练时用模板 A 拼数据，推理时框架用模板 B 渲染
+   → ★ 模型看到的格式和训练时不一样
+   → 现象：模型开始自问自答、不停止、或者回答质量断崖式下跌
+   ★ 自检：把一条训练样本用【推理时的那条代码路径】渲染一遍，
+          和训练时拼出来的字符串做【逐字符 diff】
+</code></pre></div>
+
+<hr />
+<h2 id="153-loss">15.3 ★★★ loss 掩码：本章最重要的一件事</h2>
+<div class="codehilite"><pre><span></span><code>拍平之后是一串 token。但【不是每个 token 都该算 loss】。
+
+&lt;|im_start|&gt;user\n北京在哪？&lt;|im_end|&gt;\n&lt;|im_start|&gt;assistant\n北京位于……&lt;|im_end|&gt;
+└───────────── loss_mask = 0 ─────────────┘└──────── loss_mask = 1 ────────┘
+             ★ 不学（这是别人说的）              ★ 学（这是你该说的）
+</code></pre></div>
+
+<p><strong>为什么必须这样？</strong></p>
+<div class="codehilite"><pre><span></span><code>如果对 user 部分也算 loss：
+   → ★★ 模型在学&quot;怎么提问&quot;
+   → 现象：★ 你问它一个问题，它回答完之后【自己又编了一个新问题】，
+          然后自问自答下去，停不下来
+   —— 这是新手做 SFT 最常见的失败现象，而且往往找不到原因
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">build_sft_sample</span><span class="p">(</span><span class="n">messages</span><span class="p">,</span> <span class="n">tok</span><span class="p">,</span> <span class="n">max_len</span><span class="o">=</span><span class="mi">4096</span><span class="p">):</span>
+    <span class="n">ids</span><span class="p">,</span> <span class="n">mask</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">messages</span><span class="p">:</span>
+        <span class="n">head</span> <span class="o">=</span> <span class="n">tok</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;&lt;|im_start|&gt;</span><span class="si">{</span><span class="n">m</span><span class="p">[</span><span class="s1">&#39;role&#39;</span><span class="p">]</span><span class="si">}</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">add_special_tokens</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="n">tok</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">m</span><span class="p">[</span><span class="s2">&quot;content&quot;</span><span class="p">],</span> <span class="n">add_special_tokens</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">tail</span> <span class="o">=</span> <span class="n">tok</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;&lt;|im_end|&gt;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">add_special_tokens</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+        <span class="n">learn</span> <span class="o">=</span> <span class="p">(</span><span class="n">m</span><span class="p">[</span><span class="s2">&quot;role&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;assistant&quot;</span><span class="p">)</span>          <span class="c1"># ★★ 只有 assistant 要学</span>
+        <span class="n">ids</span>  <span class="o">+=</span> <span class="n">head</span> <span class="o">+</span> <span class="n">body</span> <span class="o">+</span> <span class="n">tail</span>
+        <span class="n">mask</span> <span class="o">+=</span> <span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">*</span><span class="nb">len</span><span class="p">(</span><span class="n">head</span><span class="p">)</span> <span class="o">+</span> <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">learn</span><span class="p">)]</span><span class="o">*</span><span class="nb">len</span><span class="p">(</span><span class="n">body</span><span class="p">)</span> <span class="o">+</span> <span class="p">[</span><span class="nb">int</span><span class="p">(</span><span class="n">learn</span><span class="p">)]</span><span class="o">*</span><span class="nb">len</span><span class="p">(</span><span class="n">tail</span><span class="p">)</span>
+        <span class="c1">#        ↑ 角色头永远不学    ↑ 正文按角色决定   ↑ ★ 结束符【要学】！</span>
+    <span class="k">return</span> <span class="n">ids</span><span class="p">[:</span><span class="n">max_len</span><span class="p">],</span> <span class="n">mask</span><span class="p">[:</span><span class="n">max_len</span><span class="p">]</span>
+</code></pre></div>
+
+<blockquote>
+<p>★★★ <strong>注意上面那个 <code>tail</code> 的掩码是 1，不是 0。</strong><br />
+<code>&lt;|im_end|&gt; 是【停止信号】。
+如果不对它算 loss → 模型永远学不会"什么时候该停"
+→ ⚠️ 现象：回答完了继续往下胡说，直到撞上最大长度
+★ 这是 loss 掩码里最容易写错的一个位置。</code></p>
+</blockquote>
+<h3 id="shift">★ 移位（shift）：一个差一错误的重灾区</h3>
+<div class="codehilite"><pre><span></span><code>语言模型的训练目标是&quot;用位置 i 预测位置 i+1&quot;，所以：
+
+   logits[i]  ←→  labels[i+1]
+
+⟹ ★ 你的 loss_mask 也必须跟着移一位，否则整体错开一格：
+   模型会用&quot;assistant 的最后一个 token&quot;去预测&quot;下一轮 user 的第一个字&quot;
+
+★ 自检方法（强烈建议每次改完格式都跑一遍）：
+   把 loss_mask == 1 的位置对应的 token 【解码回文本打印出来】，
+   ⟹ 肉眼确认：★ 打出来的应该【正好就是 assistant 说的话 + 结束符】，
+     不多一个字，不少一个字。
+</code></pre></div>
+
+<hr />
+<h2 id="154">15.4 多轮对话怎么展开</h2>
+<p>一条 5 轮的对话，有两种做法：</p>
+<div class="codehilite"><pre><span></span><code>① ★ 一条样本，多段 loss（推荐）
+   把 5 轮全部拼成一条序列，
+   ★ 其中 3 段 assistant 的位置 mask=1，其余为 0
+   ✅ 优点：只算一遍前向，效率高；★ 且模型能看到完整的对话历史
+
+② 拆成 3 条样本
+   第 1 条：轮1 → 答1
+   第 2 条：轮1+答1+轮2 → 答2
+   第 3 条：轮1+答1+轮2+答2+轮3 → 答3
+   ❌ 前缀被重复计算多次，★ 算力浪费严重
+   ✅ 但在某些框架里实现更简单
+
+★★ 现在几乎都用①。这也是为什么 15.3 的 mask 要写成【逐段】的，
+   而不是简单的&quot;最后一段是答案&quot;。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>和 <a href="13-打包与文档掩码.html">13 章</a>的联动</strong>：SFT 样本普遍很短（几百 token），<br />
+所以一条 4096 的序列里会塞进<strong>十几条不同的对话</strong>。<br />
+★ 此时 <strong>13 章的文档掩码是【必须】的</strong>，而且 <strong>loss_mask 要跟着打包一起重排</strong> ——<br />
+这两件事任何一个漏了，都不会报错，只会让模型变怪。</p>
+</blockquote>
+<hr />
+<h2 id="155">15.5 工具调用的数据格式</h2>
+<p>要让模型会用工具（function calling），训练数据里就得有工具调用的样本。</p>
+<div class="codehilite"><pre><span></span><code>一次完整的工具调用，在数据里是【四段】：
+
+  ① user       &quot;北京今天天气怎么样？&quot;
+  ② assistant  ★ 发起调用（这一段【要学】）
+                 &lt;tool_call&gt;{&quot;name&quot;:&quot;get_weather&quot;,&quot;arguments&quot;:{&quot;city&quot;:&quot;北京&quot;}}&lt;/tool_call&gt;
+  ③ tool       ★ 工具返回结果（这一段【不学】—— 是环境给的，不是模型说的）
+                 {&quot;temp&quot;: 28, &quot;condition&quot;: &quot;晴&quot;}
+  ④ assistant  &quot;北京今天晴，28 度。&quot;（这一段【要学】）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★★ 掩码规则的推广（比&quot;只学 assistant&quot;更准确的说法）：
+
+   【只学【模型自己产生】的 token，不学【环境或对方产生】的 token】
+
+   user 说的        → 不学
+   tool 返回的      → ★ 不学（新手最容易在这里出错）
+   system 提示      → 不学
+   assistant 说的   → 学
+   assistant 发起的工具调用 → ★ 学（这是模型的决策！）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>⚠️ 三个实践细节：
+  ① 工具定义（有哪些工具、参数是什么）通常放在 system 里，★ 不学
+  ② ★ 参数必须是【严格合法的 JSON】—— 训练数据里如果有格式错的样本，
+     模型会学会输出格式错的 JSON，而下游解析器会直接崩
+     ★ 建议：入库前对每一条 tool_call 做 json.loads() 校验，不通过就丢
+  ③ ★ 要有【负样本】：不需要调工具的问题，模型应该直接回答
+     否则模型会学成&quot;什么问题都先调一次工具&quot;
+</code></pre></div>
+
+<hr />
+<h2 id="156">15.6 推理数据：思维链要不要学、怎么学</h2>
+<p>现在的模型普遍有"先想后答"的能力，数据格式上体现为：</p>
+<div class="codehilite"><pre><span></span><code>&lt;|im_start|&gt;assistant
+&lt;think&gt;
+用户问的是……我需要先算……所以答案是……
+&lt;/think&gt;
+北京位于华北平原北部。&lt;|im_end|&gt;
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 三个设计问题（各家做法不同）：
+
+① &lt;think&gt; 里的内容要不要算 loss？
+   ★ 要学 —— 否则模型学不会怎么思考。
+   ⚠️ 但有些做法会给思维链一个【更低的 loss 权重】。
+
+② 多轮对话里，上一轮的 &lt;think&gt; 要不要保留在上下文里？
+   ★ 多数做法是【不保留】—— 下一轮只看到上一轮的最终答案。
+     理由：思维链很长，保留会迅速吃光上下文
+   ⟹ ★★ 于是训练数据的拼接方式必须和推理时【严格一致】，
+        否则又是 15.2 那个模板不一致的坑
+
+③ 思维链数据从哪来？
+   ★ 主要靠 [12 章](12-合成数据.md)的合成 + 拒绝采样：
+     让模型对同一道题采样 N 次 → ★ 只保留【最终答案正确】的那些轨迹
+   ⟹ 这正是 12.7 说的【可验证领域】的做法
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个诚实的说明</strong>：思维链数据的具体构造方法是当前各家<strong>披露最少</strong>的部分之一。<br />
+★ 上面写的是公开可见的通行做法，<strong>不代表任何一家的具体实现</strong>。详见 <a href="16-五家报告的数据章节.html">16 章</a>。</p>
+</blockquote>
+<hr />
+<h2 id="157">15.7 偏好数据：给"哪个回答更好"打标</h2>
+<p>SFT 之后的对齐阶段，需要的是<strong>另一种格式</strong>的数据：</p>
+<div class="codehilite"><pre><span></span><code>{
+  &quot;prompt&quot;:   &quot;写一首关于秋天的诗&quot;,
+  &quot;chosen&quot;:   &quot;……（人类/模型评判为更好的回答）&quot;,
+  &quot;rejected&quot;: &quot;……（更差的回答）&quot;
+}
+
+★ 注意它是【成对】的，而且共享同一个 prompt。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>两种用法：
+
+① 训一个【奖励模型 RM】（Reward Model）
+   目标：让 RM 给 chosen 打的分 &gt; 给 rejected 打的分
+   损失：L = −log σ( r(chosen) − r(rejected) )
+              └─ σ 是 sigmoid，把分差压到 (0,1) 当概率看 ─┘
+   ★ 然后用这个 RM 去做强化学习（PPO 等）
+
+② ★ 直接偏好优化 DPO
+   跳过 RM，★ 直接用这对数据去优化模型本身
+   ⟹ 少训一个模型、少一个环节，工程上简单得多
+   ⟹ ★ 这是它这两年被广泛采用的主要原因
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★★ 偏好数据的三个来源（成本递减、噪声递增）：
+  ① 人工标注          —— 最贵、最准
+  ② ★ 模型评判（LLM-as-a-judge）—— 用一个强模型来打分
+  ③ ★ 规则/验证器自动构造 —— 数学题：对的当 chosen，错的当 rejected
+     ⟹ 又回到 12.7 的【可验证领域】
+
+⚠️ 偏好数据最大的陷阱：★【长度偏置】
+   人类和模型评判都倾向于给【更长的回答】更高分
+   → 模型学会了&quot;把话说长&quot;而不是&quot;把话说好&quot;
+   ★ 缓解：构造数据时控制 chosen/rejected 的长度分布，
+          或在训练目标里做长度归一化
+</code></pre></div>
+
+<hr />
+<h2 id="158-vs">15.8 ★ 后训练数据：少而精 vs 多而杂</h2>
+<div class="codehilite"><pre><span></span><code>预训练的逻辑是【越多越好】（11 章的 scaling law）。
+★★ 后训练的逻辑【完全不同】：
+
+  · SFT 数据的作用更像是&quot;教格式和风格&quot;，而不是&quot;教知识&quot;
+    ——知识在预训练阶段就已经在模型里了
+  · ⟹ 少量高质量数据就能激活出很好的对话能力
+
+⚠️ LIMA（Less Is More for Alignment）这篇工作是这个观点的代表，
+   它用【约一千条】精心挑选的样本就做出了很强的对话能力。
+   ⚠️ 该论文不在本目录 papers/ 内，具体数字与结论请以原文为准。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 所以后训练数据的工作重心和预训练【正好相反】：
+
+   预训练：★ 规模优先 —— 工作量在【大规模自动化清洗】
+   后训练：★ 质量优先 —— 工作量在【逐条人工审核和构造】
+
+⚠️ 但要注意：这个&quot;少而精&quot;的结论主要针对【通用对话能力】。
+   ★ 要教会模型【具体的新技能】（工具调用、特定格式、长思维链），
+     数据量还是要上去的 —— 因为那确实是在教新东西。
+</code></pre></div>
+
+<hr />
+<h2 id="159">15.9 ⚠️ 六个坑</h2>
+<div class="codehilite"><pre><span></span><code>① ★★★ loss 掩码写错，把 user 的部分也学了
+   → 模型自问自答、停不下来。★ 这是最经典的 SFT 失败现象
+
+② ★★ 忘了对 &lt;|im_end|&gt; 算 loss
+   → 模型不知道什么时候停，回答完继续胡说到最大长度
+
+③ ★★ 移位差一：loss_mask 没跟着 labels 一起移一位
+   ★ 自检：把 mask==1 的位置解码打印出来，肉眼比对是不是正好是 assistant 的话
+
+④ ★★ 训练模板和推理模板不一致（15.2）
+   ★ 自检：用推理那条代码路径渲染一条训练样本，做逐字符 diff
+
+⑤ ★ tool 返回的内容被当成 assistant 学了
+   → 模型学会【自己编造工具返回结果】，而不是等工具真的返回
+   ⚠️ 这个现象特别隐蔽，因为编出来的结果往往看着挺合理
+
+⑥ ★ SFT 打包后 loss_mask 没跟着重排（13 章坑④）
+   一条 4096 的序列里塞了十几条对话，每条的 mask 边界都要重新对齐
+</code></pre></div>
+
+<hr />
+<h2 id="1510">15.10 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 预训练数据 = 纯文本、每个 token 都算 loss、万亿规模
+   后训练数据 = 结构化对话、★★★ 只对一部分位置算 loss、几万~几百万条
+   ★★ 底层机制没变（还是预测下一个 token），变的只有【模板】和【loss 掩码】
+
+② ChatML 把对话拍平成 token 串：&lt;|im_start|&gt;role\n内容&lt;|im_end|&gt;
+   ★ 特殊 token 要在 09 章训 tokenizer 时就预留好
+   ★ 结尾的 &lt;|im_start|&gt;assistant\n 叫【生成提示】
+   ⚠️⚠️ 最常见线上事故：训练模板 ≠ 推理模板
+      → 自问自答 / 不停止 / 质量断崖
+      ★ 自检：用推理代码路径渲染训练样本，逐字符 diff
+
+③ ★★★ loss 掩码是本章最重要的一件事：
+   ★ 准确的规则不是&quot;只学 assistant&quot;，而是
+     【只学模型自己产生的 token，不学环境/对方产生的】
+     user 不学 / system 不学 / ★ tool 返回不学 / assistant 学 /
+     ★ assistant 发起的工具调用【要学】（那是模型的决策）
+   ★ &lt;|im_end|&gt; 结束符【必须学】—— 否则模型不知道何时停
+   ★ 移位差一是重灾区：自检办法是把 mask==1 的 token 解码打印出来看
+
+④ 多轮对话：★ 一条样本多段 loss（推荐，前向只算一遍）
+   而不是拆成 N 条（前缀被重复计算）
+
+⑤ 工具调用数据是四段：user / ★assistant 发起调用（学）/
+   ★tool 返回（不学）/ assistant 总结（学）
+   ⚠️ 参数必须是严格合法 JSON（入库前 json.loads 校验）
+   ⚠️ 要有【不需要调工具】的负样本，否则模型逢问必调工具
+
+⑥ 推理数据：&lt;think&gt; 内容★要学；多轮里上一轮的 think ★通常不保留
+   （于是训练拼接必须和推理严格一致）；
+   来源主要是★合成 + 拒绝采样（只留最终答案正确的轨迹）—— 即 12.7 的可验证领域
+
+⑦ 偏好数据是【成对】的 (prompt, chosen, rejected)
+   → 训 RM（L = −log σ(r_chosen − r_rejected)）或 ★ 直接用 DPO
+   三个来源：人工 / 模型评判 / ★ 验证器自动构造
+   ⚠️ 最大陷阱是【长度偏置】：评判者偏爱长回答 → 模型学会把话说长
+
+⑧ ★ 后训练的逻辑和预训练【相反】：不是越多越好，而是少而精
+   （SFT 主要教格式与风格，知识来自预训练）
+   ⚠️ 但教【新技能】（工具、长思维链）时数据量还是要上去
+
+⑨ ⚠️ 六个坑全部【不报错】：学了 user / 没学结束符 / 移位差一 /
+   模板不一致 / 学了 tool 返回（★ 模型编造工具结果）/ 打包后 mask 没重排
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><a href="14-采样-shuffle-与断点续训.html">← 14 采样、shuffle 与断点续训</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="16-五家报告的数据章节.html">16 五家报告的数据章节</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

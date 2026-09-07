@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · ⭐ 幻觉与多模态后训练：落地路上最大的一堵墙</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="07-多模态数据.html">← 07 多模态数据</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-生成侧-图像与统一模型.html">09 生成侧：图像与统一模型</a></p>
+</blockquote>
+<h1 id="08">08 · ⭐ 幻觉与多模态后训练：落地路上最大的一堵墙</h1>
+<blockquote>
+<p>📖 <strong>前置</strong>：本章大量借用纯文本后训练的概念（SFT / DPO / RLVR / GRPO）。<br />
+不熟的话先扫一眼 <a href="../后训练/README.html">../后训练/README.md</a> 的那张地图，<strong>这里只讲多模态特有的部分</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="81">8.1 先看它错成什么样</h2>
+<div class="codehilite"><pre><span></span><code>    [一张只有一只猫的照片]
+    问：图里的狗是什么品种？
+    答：⚠️ &quot;这是一只金毛寻回犬，毛色偏浅……&quot;    ← ★ 图里根本没有狗
+
+    [一张手写的 &quot;3 + 5 = 8&quot;]
+    问：这个算式对吗？
+    答：⚠️ &quot;对的，3 + 5 = 8。&quot;（图里其实写的是 3 + 5 = 9）
+
+    [一张会议室照片]
+    问：桌上有几台笔记本电脑？
+    答：⚠️ &quot;三台。&quot;（实际是两台）
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>多模态幻觉</strong>：模型给出的描述<strong>在图里没有依据</strong>。常见四类：<br />
+<strong>物体幻觉</strong>（说了不存在的东西）、<strong>属性幻觉</strong>（颜色/数量说错）、<br />
+<strong>关系幻觉</strong>（左右、上下、包含关系说反）、<strong>OCR 幻觉</strong>（把不认识的字"脑补"成常见词）。</p>
+</blockquote>
+<hr />
+<h2 id="82">8.2 ★★ 病根：语言先验压过了视觉证据</h2>
+<p>这是本章最重要的一段。<strong>幻觉不是 bug，是训练目标的必然产物。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① 主干是个语言模型，它 99% 的参数是在【纯文本】上训出来的
+       ⟹ 它对&quot;什么话说出来像话&quot;的先验，远强于对&quot;图里有什么&quot;的证据
+
+    ② 训练数据里，&quot;厨房&quot;这个词后面高概率跟着&quot;冰箱、水槽、微波炉&quot;
+       ⟹ 给它一张厨房照片，即使画面里没有微波炉，
+         ★ 模型顺着语言概率往下滑，就把微波炉&quot;说&quot;出来了
+
+    ③ ⚠️ 更要命的：训练数据【几乎从不说&quot;图里没有什么&quot;】
+       所有的图片描述都在描述【存在的东西】
+       ⟹ 模型从没学过&quot;否认&quot;这个动作
+       ⟹ ★★ 这解释了那个著名的【yes 偏置】：
+         问&quot;图里有 X 吗&quot;，不管有没有，模型都倾向答&quot;有&quot;
+
+    ④ SFT 数据奖励【详细的长描述】
+       ⟹ 模型学到&quot;说得越细越像好答案&quot; ⟹ 细节不够就编
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话</strong>：<strong>幻觉的本质是"模型在语言概率和视觉证据冲突时，选了语言"。</strong><br />
+⟹ ⚠️ 所以那些"提高分辨率就能解决幻觉"的说法是错的——<br />
+看清了也可能编，因为<strong>问题出在它更信自己的语言直觉</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="83">8.3 四类缓解手段</h2>
+<h3 id="1">手段① 数据侧：教模型说"没有"</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 造【负样本】：
+      图里没有狗 → 造一条 &quot;问：有狗吗？ 答：没有，画面中只有一只猫。&quot;
+    ★ 造【反事实对】：
+      同一张图，一个正确描述 + 一个只改了一处的错误描述
+
+    ✅ 最直接、最有效，也最枯燥
+    ⚠️ 副作用：造多了模型会【过度保守】，什么都说&quot;看不清、不确定&quot;
+</code></pre></div>
+
+<h3 id="2">手段② 训练侧：用偏好对齐去压幻觉</h3>
+<div class="codehilite"><pre><span></span><code>    造偏好对：  chosen = 无幻觉的描述
+              rejected = 有幻觉的描述（可以【故意让模型不看图去生成】来批量造）
+    然后跑 DPO ⟹ 机制和纯文本完全一样
+    ⟹ 见 ../后训练/04-偏好对齐-RLHF与DPO.md
+
+    ★ 一个巧妙的造数据技巧：
+      让模型【蒙着眼】（不给图）回答同一个问题
+      ⟹ 它答出来的东西，必然全是语言先验 ⟹ 天然的 rejected 样本
+</code></pre></div>
+
+<h3 id="3">手段③ 解码侧：对比解码</h3>
+<div class="codehilite"><pre><span></span><code>    同一个问题跑两遍：
+      logits_有图  −  α × logits_无图（或图被加噪）
+      ⟹ 差值放大了【真正来自视觉的那部分证据】
+      ⟹ 削弱纯语言先验
+
+    ✅ 不用训练，推理时即插即用
+    ⚠️ 推理成本 ×2，且 α 要调；生产上用得不多
+</code></pre></div>
+
+<h3 id="4-grounding">手段④ ★★ Grounding：逼模型给出"证据坐标"</h3>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 普通问法：  &quot;图里有几个人？&quot;  → &quot;三个&quot;   ← 无法核实
+    ★ grounding：  &quot;图里有几个人？请给出每个人的框&quot;
+                   → &quot;三个：[0.12,0.34,0.28,0.71] [0.55,...] [0.81,...]&quot;
+                   ⟹ ★ 现在你可以【把框画回图上，一眼看出它是不是在编】
+
+    🔑 这是我认为最有价值的一条路线：
+       它把幻觉从【不可验证】变成了【可验证】
+       ⟹ 而&quot;可验证&quot;是能上 RL 的前提（下一节）
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>grounding（视觉定位）</strong>：让模型输出坐标框，把回答"锚"在画面的具体位置上。<br />
+坐标一般被归一化到 0~1 后<strong>当成普通文本 token 输出</strong>（比如直接写 <code>[0.12,0.34,...]</code>），<br />
+⟹ ⚠️ 所以它的精度受限于<strong>数字 token 的分词方式</strong>，这是一个真实存在的、很少被讨论的精度上限。</p>
+</blockquote>
+<hr />
+<h2 id="84-rl">8.4 ★ 多模态 RL：奖励从哪来</h2>
+<p>纯文本 RL 之所以在 2025 年爆发，是因为找到了<strong>可验证奖励</strong>（数学题对不对、单测过不过）。<br />
+多模态的对应问题是：<strong>看图这件事，怎么自动判分？</strong></p>
+<div class="codehilite"><pre><span></span><code> 来源① 有唯一答案的多模态题
+      多模态数学题、图表读数、OCR 精确匹配
+      ✅ 直接复用 RLVR，见 ../后训练/05-RLVR-可验证奖励.md
+
+ 来源② ★★ 渲染回环（render loop）—— 多模态独有
+      让模型写前端代码 → 真的渲染出来 → 【把渲染结果截图给模型自己看】
+      → 和目标图对比 → 差异就是奖励
+      ✅ 一手证据：GLM-5.3 用【环境反馈的强化学习】做前端方向，
+         并把验证范围 &quot;beyond functional correctness to the rendered
+         and interactive product&quot;（从功能正确性扩展到渲染结果和可交互产物）
+         官方演示是 &quot;Initial Version with Layout Issues&quot; →
+         &quot;After Visual Self-Verification&quot; 的前后对比
+         出处：../业界模型技术报告/GLM-5.3.md §六
+
+ 来源③ GUI 任务成功率
+      &quot;在这个 App 里把飞机票退掉&quot; → 环境返回成功/失败
+      ⟹ ★ 这是标准的 Agentic RL，瓶颈在【环境】不在算法
+      ⟹ 见 ../后训练/07-AgenticRL-环境成为瓶颈.md
+
+ 来源④ 幻觉惩罚
+      用一个检测器核对描述里的每个物体是否真的在图里 → 扣分
+      ⚠️ 检测器本身会错 ⟹ 奖励噪声大 ⟹ 容易被【奖励攻击】
+      ⟹ 见 ../后训练/06-奖励从哪来.md
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>来源②值得单独强调</strong>：它是多模态版的"单元测试"。<br />
+<strong>代码能被跑，界面能被渲染，渲染结果能被自己看</strong> ⟹ <strong>闭环成立</strong> ⟹ 可以无限自我改进。<br />
+⟹ 🔑 <strong>这就是 GLM-5.3 那句"视觉需要原生集成进模型，让它自己决定何时去看"的真正分量</strong>（✅ 官方原话）：<br />
+<strong>视觉在这里不是一个输入模态，而是一个 agent 的"传感器 + 验证器"。</strong></p>
+</blockquote>
+<hr />
+<h2 id="85">8.5 多模态长思维链：先看，再想，再看一眼</h2>
+<p>纯文本的推理模型会写很长的思考过程。搬到多模态上，出现了一个新动作：<strong>回头再看</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 传统流程（一次性）：
+       图 → 一次编码 → 全程只能靠这一次编码的记忆去推理
+       ⟹ 图里那行小字如果第一次没看清，后面想破头也没用
+
+    ★ agentic 视觉（2025~2026 的方向）：
+       图 → 想 → &quot;我需要看清右下角&quot; → 【调工具裁剪+放大】→ 再编码 → 接着想
+       ⟹ ★★ 把&quot;看&quot;变成一个【可以重复调用的动作】，而不是一次性的输入
+       ⟹ 这和纯文本 agent 调用搜索工具是同一个结构
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这可能是理解型多模态未来两年最重要的一条线</strong>：<br />
+<strong>从"把图喂给模型"变成"让模型自己决定看哪、看几次"。</strong><br />
+⚠️ 这是我的判断。可以对照的一手材料是 GLM-5.3 那句<br />
+<em>"enabling it to decide </em><em>when to observe</em><em> and use visual feedback to guide subsequent actions"</em> ✅——<br />
+官方说的是"何时去看"，和这里说的"看哪里"是同一个思想的两个面。</p>
+</blockquote>
+<hr />
+<h2 id="86">8.6 ⚠️ 一个必须说的坏消息</h2>
+<div class="codehilite"><pre><span></span><code>    幻觉【没有被解决】，只是被压到了&quot;日常使用中不太容易撞见&quot;的水平。
+
+    · 榜单上的幻觉指标（POPE 等）已经刷得很高
+    · 但那些榜单问的是&quot;图里有没有 X&quot;这类【简单存在性】问题
+    · 真实场景里的幻觉是：★ 把发票金额看错一位、把合同条款的否定词漏掉
+
+    ⟹ ⚠️ 而这类错误的共同特征是：【它看起来完全合理】
+       —— 你不逐字核对，根本发现不了
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>给使用者的一条硬建议</strong>：<br />
+<strong>凡是"从图里读出一个数字/名字/条款"并且这个值会被下游用掉的场景，<br />
+都必须有人工或程序复核。</strong> 这不是保守，这是当前技术水平的客观边界。</p>
+</blockquote>
+<hr />
+<h2 id="87">8.7 🔑 这一章的五句话</h2>
+<ol>
+<li><strong>多模态幻觉的病根是"语言先验压过视觉证据"</strong>，不是"看不清"。提高分辨率解决不了它。</li>
+<li><strong>训练数据里几乎没有"图里没有 X"这样的句子</strong> ⟹ 模型没学过否认 ⟹ 著名的 <strong>yes 偏置</strong>。</li>
+<li>四类手段里，<strong>grounding（输出坐标）最有价值</strong>——它把幻觉从不可验证变成可验证。</li>
+<li>★★ <strong>多模态 RL 最有前途的奖励来源是"渲染回环"</strong>：写代码→渲染→自己看→对比。✅ GLM-5.3 已经这么做了。</li>
+<li>⚠️ <strong>幻觉没有被解决</strong>，只是被压到了不容易撞见的水平。<strong>读数字的场景必须复核。</strong></li>
+</ol>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="09-生成侧-图像与统一模型.html">09 生成侧：让模型不只是看懂，还要画出来</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

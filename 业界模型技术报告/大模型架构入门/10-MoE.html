@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · MoE：把一个 FFN 拆成很多个专家</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="09-FFN与激活函数.html">← 09 FFN 与激活函数</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="11-位置编码RoPE.html">11 位置编码 RoPE</a></p>
+</blockquote>
+<h1 id="10-moe-ffn">10 · MoE：把一个 FFN 拆成很多个专家</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：讲清"505B / 18B"这两个数字的由来，以及它背后一整套没那么显然的工程问题。<br />
+读完你应该能回答：MoE 为什么能"参数多但算得少"？路由器怎么选专家、为什么它会不平衡、怎么治？为什么 top-k 的不可微不是问题？五家的专家配置差异说明了什么？</p>
+</blockquote>
+<hr />
+<h2 id="101">10.1 出发点：一个反常识的观察</h2>
+<div class="codehilite"><pre><span></span><code>    模型能力 ∝ 参数量        （规模定律，Scaling Law）
+    推理成本 ∝ 参数量        （[06 章] roofline：每 token 要把权重读一遍）
+
+    ★ 这两者被绑死了。想更强，就必须更贵。
+</code></pre></div>
+
+<p><strong>MoE 的全部价值，就是把这两者【解绑】。</strong></p>
+<div class="codehilite"><pre><span></span><code>┌───────────────────────────────────────────────────────────┐
+│  观察：一个 token 真的需要用到【全部】参数吗？                │
+│                                                            │
+│    处理 &quot;def&quot; 这个 token 时，                                │
+│    模型里那些负责&quot;唐诗格律&quot;的参数，真的有用吗？               │
+│                                                            │
+│  → 不如把 FFN 拆成很多份，每次【只用相关的那几份】            │
+└───────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="102">10.2 结构</h2>
+<div class="codehilite"><pre><span></span><code>    普通 FFN：                        MoE：
+
+    x ──→ [ 一个大 FFN ] ──→ y        x ──→ [路由器 Router] 打分
+                                       │        │
+                                       │        ▼
+                                       │    选出 top-8（从 384 个里）
+                                       │        │
+                                       │   ┌────┼────┬────┐
+                                       │   ▼    ▼    ▼    ▼
+                                       │  E_17  E_92 E_203 E_311  ← 只算这 8 个
+                                       │   │    │    │    │
+                                       │   └────┴────┴────┘
+                                       │        │ 按门控权重加权求和
+                                       └────────┴──→ y
+
+                                      E_1 ... E_384 全部存在显存里，
+                                      但这一步只有 8 个被计算 ★
+</code></pre></div>
+
+<p>$$y = \sum_{i\in\text{TopK}} \frac{s_i}{\sum_{j\in\text{TopK}}s_j}\cdot E_i(x),\qquad s = \text{路由分数}$$</p>
+<p><strong>路由器就是一个很小的线性层</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moe_forward</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">router_W</span><span class="p">,</span> <span class="n">experts</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">8</span><span class="p">):</span>
+    <span class="n">logits</span> <span class="o">=</span> <span class="n">x</span> <span class="o">@</span> <span class="n">router_W</span>                       <span class="c1"># [n_experts]，n=384</span>
+    <span class="n">scores</span> <span class="o">=</span> <span class="n">softmax</span><span class="p">(</span><span class="n">logits</span><span class="p">)</span>                    <span class="c1"># 或 sigmoid，见 §10.6</span>
+    <span class="n">topk_idx</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="n">scores</span><span class="p">)[</span><span class="o">-</span><span class="n">k</span><span class="p">:]</span>          <span class="c1"># 选分数最高的 k 个</span>
+    <span class="n">w</span> <span class="o">=</span> <span class="n">scores</span><span class="p">[</span><span class="n">topk_idx</span><span class="p">]</span> <span class="o">/</span> <span class="n">scores</span><span class="p">[</span><span class="n">topk_idx</span><span class="p">]</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>   <span class="c1"># 重新归一化</span>
+    <span class="k">return</span> <span class="nb">sum</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="n">j</span><span class="p">]</span> <span class="o">*</span> <span class="n">experts</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">j</span><span class="p">,</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">topk_idx</span><span class="p">))</span>
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意路由是【逐 token】的</strong>。同一句话里，"def" 和 "唐诗" 会被路由到完全不同的专家。</p>
+</blockquote>
+<hr />
+<h2 id="103">10.3 那两个数字</h2>
+<p>$$\begin{aligned}\text{总参数} &amp;= \text{Embedding} + N\times\big(\text{Attention} + \textbf{全部 384 个专家}\big)\ \text{激活参数} &amp;= \text{Embedding} + N\times\big(\text{Attention} + \textbf{被选中的 8 个专家}\big)\end{aligned}$$</p>
+<div class="codehilite"><pre><span></span><code>    openPangu-2.0-Pro：  505B 总参数  /  18B 激活参数
+                          ↑              ↑
+                     决定【显存】      决定【计算量和延迟】
+
+    稀疏度 = 384 / 8 = 48×
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>由谁决定</th>
+<th>openPangu</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>显存占用</td>
+<td><strong>总参数</strong></td>
+<td>505B × 2 字节 = <strong>1009 GB</strong>（报告实测 ✅）</td>
+</tr>
+<tr>
+<td>每 token 计算量</td>
+<td><strong>激活参数</strong></td>
+<td>相当于一个 18B 的稠密模型</td>
+</tr>
+<tr>
+<td>能力上限</td>
+<td>更接近<strong>总参数</strong>（但不完全）</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>一句话</strong>：<strong>MoE 用"显存"换"计算"。</strong> 显存是可以靠堆卡解决的（虽然贵），而计算量直接决定用户体验（延迟）。<strong>这个交易在推理为主的场景下非常划算。</strong></p>
+</blockquote>
+<h3 id="moe">⚠️ 但 MoE 不是免费的</h3>
+<div class="codehilite"><pre><span></span><code>① 显存：505B 的权重必须全部驻留，成本极高
+② 通信：专家分布在不同 GPU 上 → 每层都要做 all-to-all 通信
+        ★ 这在大规模训练里常常是【真正的瓶颈】，比计算还贵
+③ 负载不均：某些专家被抢爆，某些专家闲着 → §10.5
+④ 能力不等价：505B 的 MoE ≠ 505B 的稠密模型
+   经验上大约相当于 √(总参数 × 激活参数) 量级的稠密模型
+   → √(505 × 18) ≈ 95B    ⚠️ 这是个粗糙的经验公式，不是定论
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>Kimi K3 专门做了 MoonEP</strong>（专家并行通信库），<strong>openPangu 开源了训练算子</strong> —— <strong>两家都在这个 ② 上花了大力气，说明通信确实是主要矛盾。</strong></p>
+</blockquote>
+<hr />
+<h2 id="104-top-k">10.4 top-k 不可微，为什么不是问题</h2>
+<p><strong>这是一个常见的困惑。</strong> <code>argsort</code> + 取前 k 个是<strong>离散</strong>操作，梯度传不过去。</p>
+<p><strong>但注意梯度实际走的路径</strong>：</p>
+<p>$$y = \sum_{i\in\text{TopK}}\underbrace{w_i}<em _text_可微="\text{可微">{\text{可微}}\cdot\underbrace{E_i(x)}</em>$$}</p>
+<div class="codehilite"><pre><span></span><code>    ★ 被选中的那 k 个专家，它们的门控权重 w_i 是【可微】的
+    → 梯度能回传到路由器，告诉它&quot;这个专家选对了/选错了&quot;
+
+    ✗ 没被选中的专家，梯度是 0
+    → 它们这一步完全不更新
+
+    → 路由器学到的是&quot;在已选的这几个里，谁该多分点权重&quot;
+      而不是&quot;该不该换一个专家&quot;
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这带来一个真实的病理：马太效应。</strong><br />
+```<br />
+某个专家一开始（随机地）分数略高<br />
+    → 被选中的次数更多<br />
+    → 得到更多梯度更新，变得更好<br />
+    → 分数更高，被选中更多<br />
+    → ★ 正反馈循环</p>
+<p>最终：少数几个专家被用爆，大多数专家【从未被选中，因而从未被训练】<br />
+      → 505B 参数里可能有一大半是死的<br />
+```<br />
+<strong>这就是下一节要治的问题。</strong></p>
+</blockquote>
+<hr />
+<h2 id="105-moe">10.5 负载均衡：MoE 最大的工程问题</h2>
+<h3 id="_1">有多严重</h3>
+<div class="codehilite"><pre><span></span><code>    理想：384 个专家，每个承担 1/384 的 token
+
+    实际（不做任何处理）：
+        专家 17：  35% 的 token       ← 爆了
+        专家 92：  22%
+        ⋮
+        专家 200~384： 0%             ← 死了，参数白占显存
+
+    后果：
+      ① 参数浪费（显存花了，能力没得到）
+      ② ★ 训练速度崩溃：专家并行下，每个 GPU 负责一批专家
+         有的 GPU 累死，有的闲死，全靠最慢的那个 → 整体效率极低
+</code></pre></div>
+
+<h3 id="auxiliary-loss">解法一：辅助损失（auxiliary loss）</h3>
+<p><strong>经典做法</strong>：在主损失外加一项，惩罚不均衡。</p>
+<p>$$\mathcal{L}<em _text_experts="\text{experts">{\text{aux}} = \alpha\cdot n</em> f_i \cdot P_i$$}}\sum_{i=1}^{n</p>
+<ul>
+<li>$f_i$ = 实际被路由到专家 $i$ 的 token 比例</li>
+<li>$P_i$ = 路由器给专家 $i$ 的平均分数</li>
+</ul>
+<div class="codehilite"><pre><span></span><code>    当分布均匀时，Σ f_i·P_i 取最小值 → 损失最小
+    当集中在少数专家时 → 损失变大 → 梯度把路由器推回均匀
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>❌ 致命缺点：它和主损失【打架】
+   主损失说&quot;这个 token 应该给专家 17&quot;，辅助损失说&quot;专家 17 用太多了，别给&quot;
+   → α 太小不起作用，α 太大伤害模型质量
+   → 调 α 是个非常痛苦的活
+</code></pre></div>
+
+<h3 id="_2">解法二：无辅助损失的偏置调整 ⭐</h3>
+<p><strong>这是这一代的主流做法，思路非常漂亮：不动梯度，只动路由分数上的一个偏置。</strong></p>
+<p>$$\text{路由分数}_i \leftarrow s_i + b_i,\qquad b_i\ \text{不参与梯度，由一条独立规则更新}$$</p>
+<blockquote>
+<p>✅ <strong>openPangu 报告给出的更新规则</strong>：<br />
+$$b_i \leftarrow b_i - \gamma\cdot\frac{F_i - Q_i}{\text{RMS}(F - Q)}$$<br />
+- $F_i$ = 专家 $i$ 实际收到的负载<br />
+- $Q_i$ = 目标负载（均匀时就是 $1/n$）<br />
+- $\gamma$ = 更新步长<br />
+- <strong>除以 $\text{RMS}(F-Q)$ 是归一化</strong>，让更新幅度不随不均衡程度剧烈变化</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    专家 17 超载了（F &gt; Q）  →  b_17 【下调】  →  下一步它的分数变低，少被选
+    专家 200 没人用（F &lt; Q） →  b_200 【上调】 →  下一步更容易被选中
+
+    ★★ 关键：b 只影响【选谁】，不影响【选中后的权重 w_i】★★
+    → 主损失的梯度完全不受污染
+    → 没有 α 要调，也不会伤害模型质量
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是"无辅助损失负载均衡"（auxiliary-loss-free load balancing）的核心洞察</strong>：<br />
+<strong>均衡是一个"分配"问题，不是一个"学习"问题。用一个反馈控制器去解，比用梯度去解干净得多。</strong><br />
+这本质上是一个<strong>积分控制器</strong>（I 控制器）：误差累积驱动偏置调整。</p>
+</blockquote>
+<h3 id="kimi-k3-quantile-balancingqb">✅ Kimi K3 的 Quantile Balancing（QB）——把超参直接解掉</h3>
+<blockquote>
+<p>⚠️ <strong>记号提醒</strong>：下面沿用报告的记号，其中 $\alpha_i$ 是<strong>门槛</strong>，和本节前面辅助损失里那个系数 $\alpha$ <strong>毫无关系</strong>。<br />
+<code>m = 一个 batch 的 token 数      n = 专家数      k = 每 token 选几个专家
+q = mk/n = 目标负载（每个专家"应该"收到多少 token）</code></p>
+</blockquote>
+<h4 id="gamma">先说它要解决什么：上一节那个 $\gamma$</h4>
+<p>上一节的偏置更新有个固定步长 $\gamma$。✅ <strong>报告原话</strong>：<em>"$\gamma$ 在「适应太慢」和「负载震荡」之间做权衡。"</em></p>
+<div class="codehilite"><pre><span></span><code>    γ 太小 → 追不上分布变化，长期不均衡
+    γ 太大 → 来回过冲，负载在专家之间震荡
+    ★ 而 K3 的 LatentMoE 把每层路由专家扩到 896 个 → 这个平衡更难找
+</code></pre></div>
+
+<p>✅ <strong>报告点名了不均衡的两个后果</strong>（注意第二个常被忽略）：</p>
+<div class="codehilite"><pre><span></span><code>    ① 拖慢专家并行训练（快的等慢的）
+    ② ★ 有些专家【始终训练不足】—— 不只是慢，是这部分参数根本没长好
+</code></pre></div>
+
+<h4 id="_3">★★ 关键转折：均衡其实是个「指派问题」，有精确解</h4>
+<p><strong>QB 最值得理解的一点是：它不是一个更聪明的启发式，而是把均衡写成了一个有闭式解的最优化问题。</strong></p>
+<p>✅ <strong>报告附录 C，式 (20)</strong>——「<strong>最大得分的均衡指派</strong>」：</p>
+<p>$$\max_{x_{i,j}\in{0,1}}\ \sum_{i,j}x_{i,j}\,s_{i,j}\qquad\text{s.t.}\quad \underbrace{\sum_j x_{i,j}=k}<em i_j="i,j">{\text{每个 token 恰好选 }k\text{ 个专家}},\quad \underbrace{\sum_i x</em>$$}=\tfrac{mk}{n}}_{\text{每个专家恰好收 }q\text{ 个 token}</p>
+<div class="codehilite"><pre><span></span><code>    翻译：在&quot;人人有饭吃&quot;的硬约束下，让总路由得分最大
+         —— 也就是【在均衡的前提下，尽量尊重路由器的意愿】
+</code></pre></div>
+
+<p><strong>接下来是三步，每一步都恰好成立，没有近似</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 松弛：把 x ∈ {0,1} 放松成 x ∈ [0,1]，问题变成线性规划
+   ★ 这一步【不损失任何东西】：这是二部图 b-matching，
+     它的多面体是整的，LP 的最优解自动就是 0/1 整数解
+     ✅ 报告原话：&quot;the relaxation is therefore exact&quot;
+
+② 对偶：给两条约束各配一个拉格朗日乘子
+        α_i ← token 侧（第 i 个 token 的&quot;门槛&quot;）
+        β_j ← 专家侧（第 j 个专家的&quot;门槛&quot;）
+   目标线性、可行集凸 → 极小极大定理允许交换 max/min 的顺序
+   内层 max 按元素可分：x*_{ij} = 1 当且仅当 s_ij − α_i − β_j &gt; 0
+   得到凸对偶目标（式 23）：
+        L(α,β) = Σ_ij max(0, s_ij − α_i − β_j) + k Σ_i α_i + (mk/n) Σ_j β_j
+
+③ 交替坐标最小化：固定一个解另一个，★【两个子问题都有闭式精确解】
+</code></pre></div>
+
+<p><strong>第 ③ 步是名字的由来，值得逐字看</strong>：</p>
+<div class="codehilite"><pre><span></span><code>固定 β，对第 i 个 token 解：   min_α  kα + Σ_j max(0, s_ij − β_j − α)
+
+    这个函数【分段线性】，它对 α 的斜率 =  k − (超过 α 的 margin 个数)
+                                            ↑ α 变大，超过它的个数变少，斜率由负转正
+    → 斜率变号的地方就是最小值
+    → 即&quot;恰好有 k 个 margin 在 α 之上&quot;的位置
+    → α* = s_i − β 里第 (k+1) 大的那个值
+    ★ 而&quot;第 (k+1) 大&quot;换成分位数说法，正是 (1 − k/n) 分位数
+
+对称地，固定 α，第 j 个专家解出：
+    β* = s_{:,j} − α 里第 (mk/n + 1) 大的值，★ 同样是 (1 − k/n) 分位数
+</code></pre></div>
+
+<blockquote>
+<p>🔑 ✅ <strong>报告原话</strong>：<em>"两个更新因此是【同一个分位数】，只不过分别沿 token 轴和专家轴——</em><em>方法的名字就由此而来</em><em>。"</em></p>
+<p><code>α ：沿【每一行】（一个 token 对所有专家的分数）取分位数
+     β ：沿【每一列】（一个专家对所有 token 的分数）取分位数
+     ★ 一横一竖，交替做 —— 这就是 Quantile Balancing</code></p>
+</blockquote>
+<h4 id="_4">训练时怎么用：不跑交替求解器，只做一次前向</h4>
+<p><strong>上面那个交替算法每步要迭代 T 次，训练里跑不起。K3 的做法是把它压成【一次前向】。</strong></p>
+<p>✅ <strong>报告式 (13)(14)，逐步拆开</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 路由时把 Top-k 换成 Top-(k+1)，作用在【加过偏置的分数】 s_i + b 上
+
+       前 k 名  → 真正被选中的专家
+       第 k+1 名 → ★ 就是门槛 α_i
+                  &quot;一个专家要挤进 token i 的 Top-k，分数得超过它&quot;
+
+   ★ 为什么非要 Top-(k+1)？
+     ✅ 报告：这样就【不用再单独算一次 token 侧的分位数】——
+        α 本来要解一个子问题，现在顺手从排序里就读出来了，白捡
+
+② margin_{i,j} = s_{i,j} − α_i      &quot;专家 j 对 token i 还差多少能进&quot;
+   ⚠️ 注意：α_i 来自【加偏置后】的分数，而 s_ij 是【原始】分数
+      ✅ 报告点明其用意：旧的偏置只通过门槛 α 进入更新，不会被重复计入
+
+③ ★ 现在问：把 b̂_j 设成多少，专家 j 恰好收到 q 个 token？
+   专家 j 在候选偏置 b̂_j 下收到的 token 数 = Σ_i 1[ s_ij + b̂_j &gt; α_i ]
+                                          = 【margin 超过 −b̂_j 的个数】
+   这个计数关于阈值 −b̂_j 是【单调递减】的 → 解唯一
+   要它等于 q，就让 −b̂_j 恰好是第 (q+1) 大的 margin
+   → 正好 q 个 margin 留在门槛之上，一个不多一个不少
+   而 q/m = k/n，所以：
+
+       b̂_j ← − quantile_{1−k/n}( s_{:,j} − α )        ← ★ 式 (14) 第一行
+
+④ b ← b̂ − mean(b̂)     统一减去均值
+   ★ 全体同加同减不改变任何一个 Top-k 的结果，所以这一步是&quot;免费&quot;的规范化
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>报告的图 5 给了一个能手算的例子</strong>：$m=8$ 个 token、$n=4$ 个专家、$k=1$，<br />
+于是目标负载 $q = mk/n = 8\times1/4 = \mathbf{2}$，每个专家恰好收 2 个 token。</p>
+<p>⚠️ <strong>一个必须有的细节：因果性</strong>。<br />
+✅ 报告：<em>"更新只在【下一步】生效——</em><em>一个 batch 永远不会用从它自己身上算出来的偏置去路由</em><em>。"</em><br />
+否则就是拿答案去凑答案，训练和推理的行为会对不上。</p>
+</blockquote>
+<h4 id="sign">★★ 和上一节 sign 更新的关系：同一个目标的两种解法</h4>
+<p><strong>这是整段最漂亮的地方。</strong> ✅ 报告附录 C 式 (27)——对专家侧那个子目标求（次）梯度：</p>
+<p>$$\frac{\partial L}{\partial \beta_j} = \underbrace{\frac{mk}{n}}<em i="1">{\text{目标负载}} - \underbrace{\sum</em>$$}^{m}\mathbb{1}\left[s_{i,j}-\alpha_i-\beta_j&gt;0\right]}_{\text{实际负载}</p>
+<div class="codehilite"><pre><span></span><code>    ★ 梯度恰好就是 &quot;目标负载 − 实际负载&quot; —— 也就是上一节那个负载误差！
+
+    于是：
+      上一节的 sign 更新 = 对这个目标做 SignSGD
+                          （Sign Stochastic Gradient Descent，符号随机梯度下降：
+                            只用梯度的【正负号】更新，不用它的大小）
+                          【只保留误差的方向，扔掉大小】→ 所以必须配一个步长 γ
+      QB                = 直接跳到【同一个目标的精确坐标最小值】
+                          【方向和大小一起给出】→ 所以根本不需要 γ
+
+    ✅ 报告说这一个视角同时解释了两件事：
+       ① 为什么 QB 没有任何&quot;类似学习率&quot;的超参
+       ② 为什么接近 10³ 个专家也能在【几步之内】平衡下来
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>回头看本节的两个解法，它们不是并列关系</strong>：<br />
+<code>辅助损失     ：用【主梯度】去解 → 和主损失打架，要调 α
+sign 偏置更新：用【一阶方向】去解 → 不打架了，但要调 γ    ← 上一节的积分控制器
+QB          ：★ 直接解出【闭式最优】 → 什么都不用调</code><br />
+<strong>三者是"越来越贴近那个真正的对偶问题"的三个台阶。</strong></p>
+</blockquote>
+<h4 id="token">为什么只保留专家侧的 β，把 token 侧的 α 扔掉</h4>
+<div class="codehilite"><pre><span></span><code>    最优解满足   x*_ij = 1 ⟺ s_ij − α*_i − β*_j &gt; 0
+    再结合&quot;每个 token 恰好选 k 个&quot;这条约束
+    → 选中的专家【恰好就是 s_i − β* 的 Top-k】
+      ★ α 在这里被消掉了：它对同一个 token 的所有专家是同一个常数，
+        不影响这一行内部的排序
+
+    ⟹ 路由只需要专家侧的 n 个阈值 β（也就是偏置 b = −β）
+       token 侧的 m 个 α 是绑在【当前训练 batch】上的中间变量，用完即弃
+</code></pre></div>
+
+<blockquote>
+<p>⭐ ✅ <strong>报告明说这个不对称正是训推一致的来源</strong>：<br />
+<strong>部署时路由就是"固定 Top-k + 一个冻结的偏置"，不需要算任何分位数、也不需要看 batch 里的其他 token。</strong><br />
+这一点很关键——很多均衡方案在推理时行为会变，QB 不会。</p>
+</blockquote>
+<h4 id="margin">工程：几百万个 margin，分位数怎么算得起</h4>
+<div class="codehilite"><pre><span></span><code>    问题：m 是【百万级】，而且 margin 散在各个数据并行 rank 和梯度累积步上
+          精确分位数要收集 O(mn) 个数 —— 训练循环里不可行
+
+    ✅ 报告的关键观察：更新【根本不需要 margin 本身】，只需要它的【分布】
+       → 而分布可以用一个【固定大小的直方图】概括
+</code></pre></div>
+
+<p><strong>三个细节值得看</strong>（✅ 均来自报告附录 D）：</p>
+<div class="codehilite"><pre><span></span><code>① 直方图统计的不是 margin，而是&quot;所需偏置&quot; r_ij := α_i − s_ij
+   （取负把顺序反过来，于是目标从 (1−k/n) 分位数变成 (k/n) 分位数）
+   ★ 好处是【分箱范围可以推出来】：
+       路由分是 sigmoid 输出        → s_ij ∈ (0, 1)
+       门槛 α_i 是某个&quot;分数+偏置&quot;   → α_i ∈ (b_min, 1 + b_max)
+       ⟹ r_ij ∈ [b_min − 1, b_max + 1]     ← 边界确定，不用猜
+     而且每步重算范围，箱宽随偏置的展开自动适应
+
+② 通信：每个 rank 本地 scatter-add 自己的计数（跨 micro-batch 零通信），
+   步末【一次整数 all-reduce】把 n×B 个计数加起来
+   ★ 通信量与 m 无关。报告称 B = 1000 时，这不到&quot;每个 micro-batch
+     交换原始 margin&quot;（最自然的替代方案）的 1%
+
+③ ★★ 计数是【可加】的 → 全局直方图对&quot;token 怎么切分到各卡&quot;严格不变
+   ✅ 报告特意点出对比：
+       正确 = 【汇总后的全局 batch】的分位数
+       错误 = 各 rank 各算分位数再平均   ← 两者一般【不相等】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>误差：累积计数在箱边界上是精确的 → 真值和估计值必落在【同一个箱】里
+      → 误差 ≤ 箱宽。B = 1000 时最多几个 10⁻³
+      ✅ 报告：实测&quot;观察不到可测量的残余负载不均衡&quot;
+      ⭐ 额外技巧：对逐步估出的分位数再做一次 EMA
+         （Exponential Moving Average，指数滑动平均），
+         压掉 batch 之间的采样噪声，均衡还能更好
+</code></pre></div>
+
+<h4 id="_5">⚠️ 报告自己给的一个负面结果</h4>
+<p><strong>同一个指派问题，把等式约束换成不等式约束（$\sum_j x_{i,j}\le k$、$\sum_i x_{i,j}\le mk/n$，即 BIP 的做法）会怎样？</strong></p>
+<div class="codehilite"><pre><span></span><code>    不等式约束 → 诱导出 α、β 的非负约束 → 两个更新都要多套一层 max(0, ·) 截断
+
+    后果（✅ 报告实验结论）：
+        截断【只能压制过度选中的专家，不能提拔选中不足的专家】
+        → 平衡速度明显变慢
+
+    ★ 一个很典型的例子：约束写成 ≤ 还是 =，看着差不多，
+      解的行为却完全不同。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>谱系</strong>：把负载均衡看成指派问题这条线来自 <strong>BASE Layers</strong> 和 <strong>BIP</strong>；QB 是在这条线上把对偶解精确写出来。<br />
+另需区分 <strong>Expert Threshold routing</strong>：它维护 EMA 阈值、且<strong>每个 token 选中的专家数是可变的</strong>；QB 始终是固定 Top-k。</p>
+</blockquote>
+<hr />
+<h2 id="106-softmax">10.6 路由函数：softmax 还是别的</h2>
+<div class="codehilite"><pre><span></span><code>    softmax：  s = softmax(logits)     ← 分数【互相竞争】，和为 1
+    sigmoid：  s = σ(logits)           ← 每个专家【独立】打分，不竞争
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>DeepSeek-V4 用的是 <code>Sqrt(Softplus)</code></strong>：<br />
+$$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+e^z)$$</p>
+</blockquote>
+<p><strong>⚠️ 为什么可能这样选（我的分析，V4 报告未给理由）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① softplus 保证 s &gt; 0，且是【平滑版的 ReLU】
+② 取平方根 → 压缩动态范围
+   logit 从 1 涨到 100，softplus 从 1.3 涨到 100，开根号后只从 1.14 涨到 10
+   → ★ 抑制了 §10.4 的马太效应：分数高的专家优势被【开方削弱】
+③ 不用 softmax → 专家之间不互相压制，每个独立评估&quot;我适不适合这个 token&quot;
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>这和 <a href="05-注意力机制.html">05 章 §5.5</a> 的"softmax 和必须为 1"是同一类思考</strong>：<br />
+<strong>凡是用了 softmax 的地方，都会引入"竞争"这个未必想要的约束。</strong> 这一代在好几个位置都在摆脱它。</p>
+</blockquote>
+<h3 id="deepseek-v4">✅ DeepSeek-V4 的浅层哈希路由</h3>
+<blockquote>
+<p><strong>V4 在浅层用【哈希路由】代替可学习路由</strong>（报告明确记载）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    哈希路由：expert_id = hash(token_id) % n_experts
+              ★ 完全确定、零参数、【天然完美均衡】、零通信开销去算路由
+</code></pre></div>
+
+<p><strong>为什么浅层可以这样做</strong>——这直接呼应 <a href="01-鸟瞰全景.html">01 章 §1.3</a>：</p>
+<div class="codehilite"><pre><span></span><code>    浅层（1~10 层）做的是：语法、词性、局部搭配
+    这些任务【和 token 本身高度相关，和上下文关系不大】
+        ↓
+    那么&quot;按 token ID 固定分配专家&quot;就是一个足够好的策略
+    根本不需要一个学出来的路由器
+        ↓
+    ★ 白赚：完美均衡 + 省掉路由器的参数和计算
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这是一个很好的例子，说明"知道模型分层专精"这件事能直接换成架构收益。</strong></p>
+</blockquote>
+<hr />
+<h2 id="107">10.7 共享专家</h2>
+<p><strong>很多 MoE 里有 1~2 个"共享专家"，它对【所有】token 都激活，不参与路由。</strong></p>
+<div class="codehilite"><pre><span></span><code>    y = E_shared(x) + Σ_{i∈TopK} w_i · E_i(x)
+        ↑ 永远激活
+</code></pre></div>
+
+<p><strong>为什么</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    有些知识是【所有 token 都需要的】（基本语法、通用语义）
+    如果没有共享专家，这些知识必须在【每一个】路由专家里重复存一份
+        → 384 份冗余，极大浪费
+
+    有了共享专家 → 通用知识存一份，路由专家专注于【差异化】的部分
+</code></pre></div>
+
+<hr />
+<h2 id="108">10.8 挂回五家：专家配置的分歧</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>专家数</th>
+<th>选几个</th>
+<th>稀疏度</th>
+<th>总/激活</th>
+<th>每专家规模</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>384</td>
+<td><strong>6</strong></td>
+<td>64×</td>
+<td>1.6T / 49B</td>
+<td>大</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>896</strong></td>
+<td><strong>16</strong></td>
+<td>56×</td>
+<td>2.78T / 104B</td>
+<td>中（<strong>latent 3584</strong>）</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>256</td>
+<td>8</td>
+<td>32×</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>128</td>
+<td>4</td>
+<td>32×</td>
+<td>230B / 10B</td>
+<td>小</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>384</td>
+<td>8</td>
+<td>48×</td>
+<td><strong>505B / 18B</strong></td>
+<td><strong>小</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">三个可以下手的旋钮</h3>
+<div class="codehilite"><pre><span></span><code>① 专家【数量】多  →  更细的分工，但通信和均衡更难
+② 每个专家【多大】 →  小专家 = 更细粒度的知识划分
+③ 选【几个】     →  选得多，激活参数就多
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>openPangu 的四个"最"，在这里凑齐了后两个</strong>：<br />
+<code>最浅（50 层）        ← [01 章]
+最窄（d=5120）       ← [02 章]
+多专家（384）        ← 本章
+小专家              ← 本章
+         ↓
+★ 四个方向【同时】压激活参数 → 18B，五家最低</code><br />
+<strong>这是一个非常明确的"推理成本优先"取向</strong>，和它 <strong>1727 TPS/NPU</strong>（TPS = Tokens Per Second，每秒吐字的<strong>吞吐量</strong>）、<strong>9.53 ms TPOT</strong>（Time Per Output Token，每吐一个字的<strong>延迟</strong>）这两项指标是一致的（两个词见 <a href="06-KV-cache.html">06 章 §6.1</a>）。</p>
+</blockquote>
+<h3 id="kimi-k3-stable-latentmoe">✅ Kimi K3 的 Stable LatentMoE</h3>
+<blockquote>
+<p>✅ <strong>K3 的配置</strong>：<strong>896 个路由专家、每 token 选 16</strong>（稀疏度 896/16 = <strong>56×</strong>，报告明写）、<strong>外加 2 个全宽共享专家</strong>，路由专家的工作宽度 $\ell = 3584$，<strong>正好是模型宽度 $d = 7168$ 的一半</strong>。</p>
+</blockquote>
+<h4 id="_7">先纠正一个直觉：省的不是参数量，是【流量】</h4>
+<p><strong>这里很容易想当然地以为"专家太多、参数放不下"。报告说的不是这件事。</strong></p>
+<div class="codehilite"><pre><span></span><code>    普通 MoE：每选中一个专家，就要把【完整的 d = 7168 维 token】发给它
+              K3 每个 token 选 16 个
+              → 通信量 ×16，专家权重的读取流量也 ×16
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>报告原话</strong>：<em>"在传统 MoE 里每个被选中的专家都收到完整的 $d$ 维 token 表示，</em><em>因此通信量和专家权重流量随路由重数增长</em><em>。"</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 也就是说：卡住扩专家数的是【带宽】，不是显存
+       —— 回到 [06 章](06-KV-cache.md) 那条主线：这一代的瓶颈普遍在访存
+</code></pre></div>
+
+<h4 id="_8">做法：把「模型宽度」和「路由专家宽度」解耦</h4>
+<div class="codehilite"><pre><span></span><code>    共享专家：吃【全宽 d = 7168】的 x        ← 人人都要的通用变换，不能省
+    路由专家：先降到【latent ℓ = 3584】再分发  ← 专门化，在窄空间里干活
+</code></pre></div>
+
+<p>✅ <strong>报告式 (11)</strong>：</p>
+<p>$$u = \sum_{i\in\mathcal{T}<em _downarrow="\downarrow">k(x)} p_i\,E_i^{\text{routed}}(W</em>(u)$$}x),\qquad y = \sum_{j=1}^{N_s}E_j^{\text{shared}}(x) + W_{\uparrow}\,\mathrm{RMSNorm</p>
+<div class="codehilite"><pre><span></span><code>★ 把形状钉住：
+    x                    [d]      = [7168]
+    W↓ x                 [ℓ]      = [3584]      ← 只在【路由分支】上降维
+    E^routed : R^ℓ → R^ℓ           ← 专家【整个都活在窄空间里】，进出都是 3584
+    u（加权聚合结果）      [ℓ]      = [3584]
+    W↑ · RMSNorm(u)      [d]      = [7168]      ← 升回全宽再和共享分支相加
+    E^shared : R^d → R^d           ← 共享专家【始终全宽】，没有降维
+
+    ✅ N_s = 2，报告写明【每一层都固定 2 个全宽共享专家】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话</strong>：<strong>通信量和专家权重流量直接减半，省下来的预算换成了专家数翻倍</strong>（K2 的 384 → K3 的 896）。<br />
+<strong>这就是 K3 敢用 896 个专家的原因</strong>——五家里最多，是第二名的 2.3 倍。</p>
+</blockquote>
+<h4 id="stable">★★ "Stable" 不是个形容词，是三个具体的补丁</h4>
+<p><strong>这是原来最含糊的地方。报告没有笼统说"我们让它更稳定"，而是点名了极端稀疏放大的【两个失效模式】，再给三个对应组件。</strong></p>
+<div class="codehilite"><pre><span></span><code>✅ 失效模式 ①：路由分支的激活爆炸
+    路由路径是   W↓  →  门控多分支专家 FFN  →  W↑
+    ✅ 报告原话：&quot;构成一条【近乎四次连续矩阵乘】的链条&quot;，
+       这个结构是【病态的】(ill-conditioned)
+    再配上 2.8T 的参数规模  →  路由分支内部激活爆炸
+
+✅ 失效模式 ②：负载均衡失灵
+    ✅ 报告原话：均衡接近 10³ 个专家，
+       &quot;【超出了】现有 auxiliary-loss-free 偏置更新仍能正常工作的范围&quot;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>失效模式</th>
+<th>解药</th>
+<th>在哪儿讲</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 激活爆炸</td>
+<td><strong>up-projection 前插一个 RMSNorm</strong></td>
+<td>⬇️ 下面</td>
+</tr>
+<tr>
+<td>① 激活爆炸</td>
+<td><strong>SiTU-GLU</strong>（给 SwiGLU 两个分支都加软上限）</td>
+<td><a href="09-FFN与激活函数.html">09 章</a></td>
+</tr>
+<tr>
+<td>② 均衡失灵</td>
+<td><strong>Quantile Balancing</strong></td>
+<td>⬆️ <a href="#105-负载均衡moe-最大的工程问题">§10.5</a></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>"Stable LatentMoE" = LatentMoE + 这三样。</strong> 名字里的 Stable 指的就是这三个组件，不是泛泛的"训练更稳"。</p>
+</blockquote>
+<h4 id="1-rmsnorm">① 为什么 RMSNorm 必须插在【那个】位置</h4>
+<p><strong>位置很讲究：不是插在专家前面，也不是插在最后，而是恰好夹在「专家聚合」和「升维」之间。</strong></p>
+<div class="codehilite"><pre><span></span><code>    原版 LatentMoE：  u  ──直接──▶  W↑  ──▶ 和共享分支相加
+    K3：             u  ──RMSNorm──▶  W↑  ──▶ 和共享分支相加
+                        ↑ 就加在这一处
+</code></pre></div>
+
+<p><strong>理由是 $u$ 的尺度不受控</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    u = Σ p_i · E_i(W↓x)     这个和的大小取决于两件事：
+        ① 这个 token【恰好选中了哪 16 个专家】
+        ② 它们的路由权重 p_i 怎么分布
+
+    ★ 而每个 token 选中的专家都不一样
+      → u 的尺度【逐 token 抖动】，而且抖动幅度不可控
+      → 直接过 W↑ 升回 7168 维，再和【全宽共享分支】相加
+      → 两条分支的尺度对不齐 → 训练不稳
+
+    ✅ 报告原话：这个归一化&quot;降低了路由分支对尺度变化的敏感性，
+       【在它与全宽共享分支合并之前】&quot;
+</code></pre></div>
+
+<blockquote>
+<p>⭐ <strong>一个容易被跳过、但很重要的补充</strong>：<br />
+✅ 报告明说这个 RMSNorm <strong>"不只是稳定训练——它还一致地改善了验证 loss 和下游 benchmark"</strong>。<br />
+<strong>换句话说这不是一个"用效果换稳定"的取舍，是白捡的。</strong> 这在架构改动里并不常见，值得单独记一笔。</p>
+</blockquote>
+<hr />
+<h2 id="109">10.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① MoE 把&quot;能力 ∝ 参数量&quot;和&quot;成本 ∝ 参数量&quot;【解绑】
+   总参数决定显存和能力上限，激活参数决定计算量和延迟
+② y = Σ_{i∈TopK} (s_i/Σs)·E_i(x)，路由器是一个小线性层，逐 token 决策
+③ top-k 不可微不是问题（梯度走 w_i），但它导致【马太效应】：
+   分数高 → 选得多 → 训得好 → 分数更高 → 大量专家从未被训练
+④ ★ 负载均衡是 MoE 最大的工程问题，三个台阶越来越贴近同一个问题：
+   老办法：辅助损失，和主损失打架，α 极难调
+   中间办法：无辅助损失的偏置调整 b_i ← b_i − γ(F_i−Q_i)/RMS(F−Q)
+           b 只影响【选谁】不影响【权重】→ 主损失梯度不被污染
+           本质是一个积分控制器，但引入了新超参 γ
+   ★ K3 的 QB：把均衡写成&quot;最优均衡指派&quot;这个线性规划，
+           取对偶后交替坐标下降，两个子问题的解【都是 (1−k/n) 分位数】
+           （一个沿 token 轴、一个沿专家轴 —— 名字由此而来）
+           ★★ 对偶目标的梯度恰好 = 目标负载 − 实际负载
+              ⟹ 上面的 sign 更新就是它的 SignSGD 版（只留方向，故需 γ）
+                 QB 直接跳到精确坐标最小值 ⟹ 无超参、10³ 专家几步即平
+           训推一致：只留专家侧阈值，推理就是固定 Top-k + 冻结 bias
+⑤ 路由函数：V4 用 Sqrt(Softplus) —— 开方压缩动态范围，抑制马太效应，
+   且避开 softmax 强加的&quot;竞争&quot;约束
+⑥ V4 浅层用【哈希路由】：零参数、完美均衡
+   理由直接来自&quot;浅层做的事简单且和 token 强相关&quot;这个分层观察
+⑦ 共享专家：通用知识存一份，避免在 384 个专家里重复
+⑧ openPangu 的&quot;最浅+最窄+多专家+小专家&quot;四连压，把激活参数做到 18B
+   ★ K3 的 Stable LatentMoE：卡住扩专家数的是【带宽】不是显存 ——
+     普通 MoE 每选中一个专家就要发完整的 d=7168 维 token，选 16 个 → 流量 ×16
+     解法是【解耦宽度】：共享专家保持全宽 d，路由专家只在 latent ℓ=d/2 里干活
+        y = Σ_j E_j^shared(x) + W↑·RMSNorm( Σ_i p_i·E_i^routed(W↓x) )
+     流量减半 → 换成专家数翻倍（384 → 896，稀疏度 56×）
+     ★★ &quot;Stable&quot;不是形容词，是三个补丁，对应报告点名的两个失效模式：
+        失效① 路由路径近乎四次连乘 → 病态 → 激活爆炸
+              → 补丁 a：W↑ 之前插 RMSNorm（u 的尺度随选中专家而抖）
+              → 补丁 b：SiTU-GLU（见 09 章）
+        失效② 近 10³ 专家超出 aux-loss-free 偏置更新的适用范围
+              → 补丁 c：QB（见上面 ④）
+⑨ ⚠️ MoE 不是免费的：显存、all-to-all 通信、均衡、以及
+   505B MoE ≠ 505B 稠密（经验上约等于 √(总×激活) 量级）
+</code></pre></div>
+
+<p><strong>下一章</strong>讲最后一块基础积木：模型怎么知道"第 1 个词"和"第 100 万个词"的区别。</p>
+<hr />
+<blockquote>
+<p><a href="09-FFN与激活函数.html">← 09 FFN 与激活函数</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="11-位置编码RoPE.html">11 位置编码 RoPE</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

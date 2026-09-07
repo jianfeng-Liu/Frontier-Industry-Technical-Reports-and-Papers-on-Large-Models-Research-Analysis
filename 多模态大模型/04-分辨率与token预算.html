@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · ⭐ 分辨率与 token 预算：这个领域一半的工程量</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="03-连接器.html">← 03 连接器</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="05-位置编码与视频.html">05 位置编码与视频</a></p>
+</blockquote>
+<h1 id="04-token">04 · ⭐ 分辨率与 token 预算：这个领域一半的工程量</h1>
+<blockquote>
+<p><strong>如果你只读本教程的一章，读这一章。</strong><br />
+2023→2026 年多模态能力的提升，<strong>来自"看得更清"的部分，很可能大于来自"想得更明白"的部分。</strong></p>
+</blockquote>
+<hr />
+<h2 id="41-2021">4.1 病根：一个 2021 年留下的历史包袱</h2>
+<p>CLIP 是在 <strong>224×224</strong> 上训练的。ViT 的位置编码是<strong>为固定块数写死的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    224 ÷ 14 = 16  ⟹  16×16 = 256 个 patch  ⟹  位置编码表就只有 256 行
+    ⟹ 你喂一张 1000×1000 的图进去？位置编码表不够用，直接报错
+    ⟹ 所以只能【先把图缩小到 224×224】
+</code></pre></div>
+
+<p><strong>这意味着什么，看一眼就懂</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    你的 1920×1080 截图  ──缩到 336×336──→  一张糊得看不清任何字的小图
+
+    ⟹ 🔑 2023 年多模态模型&quot;看不懂截图、读不了 PDF&quot;，
+       ★ 根本原因不是模型笨，是【它压根没看见】。
+</code></pre></div>
+
+<hr />
+<h2 id="42">4.2 ★★ 三代解法</h2>
+<h3 id="2023">第一代：插值 + 高分辨率微调（2023）</h3>
+<p>把 256 行的位置编码表<strong>插值</strong>成 576 行（对应 336×336），然后在高分辨率数据上微调。</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 简单，直接有效
+    ⚠️ 但 336×336 依然不够看 PDF；而且分辨率每提一档，
+       token 数按【平方】涨、注意力按【四次方】涨（02.7 节那笔账）
+</code></pre></div>
+
+<h3 id="anyres-2024">第二代：★ AnyRes / 动态切图（2024，主流）</h3>
+<blockquote>
+<p>📖 <strong>AnyRes / dynamic tiling / 动态切图</strong>：把大图切成若干块<strong>标准尺寸的小图</strong>，<br />
+每块<strong>分别</strong>过视觉塔，再把结果拼起来；另外<strong>额外过一张缩略图</strong>保留全局视野。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    原图 1920×1080
+      │
+      ├─→ 切成 4×2 = 8 块，每块 448×448    ← 局部细节：小字能看清了
+      │      每块过塔 → (448/14)² = 1024 patch → 2×2 合并 → 256 token
+      │      8 块 × 256 = 2048 token
+      │
+      └─→ 整图缩略成一张 448×448           ← ★ 全局视野：不然模型看不出整体布局
+             → 256 token
+
+    ⟹ 合计 2304 token
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>那张缩略图（thumbnail）是这个方案的灵魂</strong>。没有它，模型只能看到八块碎片，<br />
+<strong>"这个按钮在页面的哪个位置"这类问题会全错。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ✅ 优点：复用 224/448 训好的视觉塔，不用改位置编码 ⟹ 工程代价极小
+    ⚠️ 缺点①：★ 切块的边界会把一个字、一个表格单元格【切成两半】
+    ⚠️ 缺点②：块与块之间【看不见彼此】（各自独立过塔），跨块的表格关系要靠 LLM 去缝
+    ⚠️ 缺点③：长宽比被强行凑成网格，会有形变或留白
+</code></pre></div>
+
+<p><strong>代表</strong>：LLaVA-NeXT（LLaVA-1.6）、InternVL 的 dynamic tiling。</p>
+<h3 id="2024">第三代：★ 原生分辨率 / 变长（2024 末～，前沿路线）</h3>
+<blockquote>
+<p>📖 <strong>原生分辨率（native resolution）</strong>：不切、不缩，<strong>图多大就切多少块</strong>，<br />
+视觉塔直接处理<strong>变长</strong>的 patch 序列。位置编码换成能外推的形式（05 章的 2D RoPE）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    1920×1080 直接切：(1920/14) × (1080/14) ≈ 137 × 77 = 10549 patch
+                      → 2×2 合并 → ≈ 2637 token
+
+    ✅ 优点：★ 无切块伪影、无形变、全图 patch 互相可见（一趟注意力全看到）
+    ⚠️ 代价：视觉塔必须支持【变长 batch】——每张图 token 数都不同
+             ⟹ 训练时要做 patch packing（把多张图打包成一条长序列 + 掩码隔开）
+             ⟹ ★ 这正是纯文本训练里&quot;样本打包&quot;的同一套技术
+                见 ../数据格式和数据处理/13-打包与文档掩码.md
+</code></pre></div>
+
+<p><strong>思想源头</strong>：NaViT / <em>Patch n' Pack</em>（Google，2023，arXiv 2307.06304）；<br />
+<strong>工程落地</strong>：Qwen2-VL 的"naive dynamic resolution"（arXiv 2409.12191）等。</p>
+<blockquote>
+<p>✅ <strong>2026 年的一手证据</strong>：Kimi K3 的 MoonViT-V2 支持到 <strong>3584×3584</strong> 输入<br />
+（65536 个 patch → pixel shuffle 后 16384 token），MiniMax M3 的 ViT 输入尺寸为 <strong>2016²</strong>。<br />
+<strong>这个量级已经不是"能看清字"，而是"能看清一整页 PDF 的字"。</strong><br />
+⟹ 出处：<a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a>、<a href="../业界模型技术报告/MiniMax-M3.html">../业界模型技术报告/MiniMax-M3.md</a></p>
+</blockquote>
+<hr />
+<h2 id="43-token">4.3 ★ 同一张截图，四种方案的 token 账</h2>
+<p><strong>这张表是本章的核心。</strong> 1920×1080 的截图：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>实际看到的分辨率</th>
+<th>视觉 token 数</th>
+<th>能读小字吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>固定 336（2023）</td>
+<td>336×336（严重形变+模糊）</td>
+<td><strong>576</strong></td>
+<td>❌ 完全不行</td>
+</tr>
+<tr>
+<td>AnyRes 2 块 + 缩略</td>
+<td>672×336 + 全局</td>
+<td><strong>1728</strong></td>
+<td>⚠️ 大字可以</td>
+</tr>
+<tr>
+<td>动态切图 8 块 + 缩略</td>
+<td>≈1792×896 + 全局</td>
+<td><strong>2304</strong></td>
+<td>✅ 可以</td>
+</tr>
+<tr>
+<td>原生分辨率</td>
+<td>1920×1080</td>
+<td><strong>≈2637</strong></td>
+<td>✅ 可以，且无切块伪影</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 表中数字是我按"patch 14 + 2×2 合并"这一组常见口径算的，<strong>具体模型会有出入</strong>。</p>
+</blockquote>
+<p><strong>三条结论</strong>：</p>
+<div class="codehilite"><pre><span></span><code> ① 从 576 → 2637，token 涨了 4.6 倍 ⟹ ★ 钱和延迟也涨了这么多
+ ② 但&quot;能不能读小字&quot;是【0 或 1】的差别 —— 这钱必须花
+ ③ ⟹ 🔑 所以真正的战场不是&quot;要不要高分辨率&quot;，而是
+    ★★【怎么在同样的 token 预算下，把预算花在真正有信息的地方】
+</code></pre></div>
+
+<hr />
+<h2 id="44-token">4.4 于是有了 token 预算控制</h2>
+<p>生产环境里，模型一般会暴露两个参数（Qwen-VL 系列的 <code>min_pixels</code> / <code>max_pixels</code> 是典型）：</p>
+<div class="codehilite"><pre><span></span><code>    max_pixels = 1,003,520   （≈ 1024×980）
+      ⟹ 图片超过这个像素数就等比缩小，保证 token 数有上限
+      ⟹ ★ 这是你控制多模态成本最直接的旋钮
+
+    min_pixels = 3,136       （= 56×56）
+      ⟹ 太小的图也垫到这个尺寸，否则 token 太少模型看不出东西
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>实操建议（⚠️ 我的经验判断，不是论文结论）</strong>：<br />
+- <strong>看图说话、判断氛围</strong> → 低分辨率足够，别浪费钱<br />
+- <strong>读表格、发票、PDF、代码截图</strong> → 一定要拉满，<strong>这是省不得的钱</strong><br />
+- <strong>一张大图不如裁成关键区域的小图</strong>——你自己知道该看哪，模型不知道</p>
+</blockquote>
+<hr />
+<h2 id="45-token">4.5 推理侧的另一条路：把已经生成的视觉 token 扔掉</h2>
+<p>前面都是"进模型前"少生成一点。还有一条路是<strong>"进了模型后再扔"</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    观察（有多篇工作报告过类似现象）：
+      在 LLM 的【前几层】之后，绝大多数视觉 token 得到的注意力已经极低
+      ⟹ ⚠️ 意味着信息已经被&quot;吸收&quot;进少数几个 token 和文本 token 里了
+      ⟹ 那就在第 K 层之后，把注意力最低的一大半视觉 token 直接【删掉】
+
+    ✅ 收益：后续所有层的开销直接砍半，几乎不掉分
+    ⚠️ 风险：删错了就是永久性失明，而且【你无法从输出看出它删错了】
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这条路线（FastV 等一类工作）在学术上很热，在生产上要谨慎</strong>：<br />
+它对"通用看图问答"友好，对"找图里那一行小字"是灾难——<br />
+<strong>因为那一行小字对应的 token，在早期层的注意力可能恰好就很低。</strong></p>
+</blockquote>
+<hr />
+<h2 id="46">4.6 ⚠️ 一个反直觉的现象：分辨率不是越高越好</h2>
+<div class="codehilite"><pre><span></span><code>    实践中常见的一条曲线：
+      分辨率 ↑  ⟹  分数 ↑↑  ⟹  分数 ↑  ⟹  ★ 分数【持平甚至下降】
+
+    ⚠️ 可能的原因（我的解读，不同工作给的归因不完全一致）：
+      ① token 太多，稀释了注意力：真正有用的那几个 token 被淹没
+      ② 训练数据里根本没有那么高分辨率的样本 ⟹ 推理时超出了训练分布
+      ③ 高分辨率下的位置编码要外推，外推得不好就乱（05 章）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以"支持 4K 输入"这种宣传要打个问号</strong>：<strong>问它是不是真的在 4K 数据上训过。</strong><br />
+支持 ≠ 训过 ≠ 有效。</p>
+</blockquote>
+<hr />
+<h2 id="47">4.7 🔑 这一章的五句话</h2>
+<ol>
+<li>2023 年多模态"看不懂文档"的根因是 <strong>CLIP 224×224 的历史包袱</strong>，不是模型笨。</li>
+<li>三代解法：<strong>插值高清 → 切块 AnyRes（+缩略图）→ 原生变长分辨率</strong>。2026 年的旗舰走的是第三代。</li>
+<li><strong>一张 1080p 截图，从 576 token 涨到 2600+ token</strong>——<strong>贵了 4.6 倍，但"能不能读字"是 0/1 的差别。</strong></li>
+<li>✅ <strong>"2×2 合并"是所有方案的公共底座</strong>（K3、M3 都用），因为它无损、便宜、直接把注意力开销除以 16。</li>
+<li>⚠️ <strong>分辨率不是越高越好</strong>，也<strong>不要相信"支持 XX 分辨率"的宣传</strong>——要问它在什么分辨率上<strong>训过</strong>。</li>
+</ol>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="05-位置编码与视频.html">05 位置编码与视频：一维序列怎么装下二维的图和三维的视频</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

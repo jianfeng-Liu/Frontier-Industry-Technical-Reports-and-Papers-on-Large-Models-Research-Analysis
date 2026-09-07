@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · 张量并行 TP：把一个矩阵切开</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="05-ZeRO与FSDP.html">← 05 ZeRO 与 FSDP</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="07-流水线并行PP.html">07 流水线并行 PP</a></p>
+</blockquote>
+<h1 id="06-tp">06 · 张量并行 TP：把一个矩阵切开</h1>
+<blockquote>
+<p><strong>这一章是 Megatron 的立身之本，也是全教程最需要动笔算一遍的一章。</strong><br />
+读完你应该能回答：一个矩阵有两种切法（按列 / 按行），为什么 Megatron 要按"先列后行"的顺序配对？为什么一层 transformer 恰好只需要 <strong>2 次 all-reduce</strong>？为什么 TP 度数最多只能到 8？</p>
+<p>📌 <strong>TP</strong> = <strong>T</strong>ensor <strong>P</strong>arallel，张量并行。也叫 <strong>intra-layer model parallelism</strong>（层内模型并行）。</p>
+</blockquote>
+<hr />
+<h2 id="61">6.1 先回到最朴素的事实：矩阵乘法可以分块</h2>
+<p><strong>Transformer 里 99% 的计算就是 <code>Y = X W</code>。</strong> 张量并行的全部内容，就是把这个 <code>W</code> 切开。</p>
+<p><strong>而这件事只有两种切法</strong>：</p>
+<h3 id="acolumn-parallel">切法 A：按列切（Column Parallel）</h3>
+<p>$$W = [W_1 \mid W_2], \qquad XW = [XW_1 \mid XW_2]$$</p>
+<div class="codehilite"><pre><span></span><code>         W  [d, 4d]                 切成两半
+    ┌──────────────┐          ┌───────┐ ┌───────┐
+    │              │    ──►   │  W₁   │ │  W₂   │
+    │              │          │[d,2d] │ │[d,2d] │
+    └──────────────┘          └───────┘ └───────┘
+                                 卡0        卡1
+
+    X [b, d] ★ 两张卡都需要【完整的 X】
+
+    卡0 算 XW₁ → Y₁ [b, 2d]
+    卡1 算 XW₂ → Y₂ [b, 2d]
+
+    ★★ 关键：Y = [Y₁ | Y₂]  —— 只要【拼起来】就是正确答案，不需要相加 ★★
+       → 如果下一步能接受&quot;切开的 Y&quot;，那就【一次通信都不用】
+</code></pre></div>
+
+<h3 id="brow-parallel">切法 B：按行切（Row Parallel）</h3>
+<p>$$W = \begin{bmatrix}W_1\ W_2\end{bmatrix},\quad X = [X_1 \mid X_2], \qquad XW = X_1W_1 + X_2W_2$$</p>
+<div class="codehilite"><pre><span></span><code>         W [4d, d]                切成上下
+    ┌──────────┐            ┌──────────┐
+    │          │            │    W₁    │  卡0
+    │          │    ──►     ├──────────┤
+    │          │            │    W₂    │  卡1
+    └──────────┘            └──────────┘
+
+    X 也必须按对应方向切开：X = [X₁ | X₂]
+
+    卡0 算 X₁W₁ → 一个 [b, d] 的【部分和】
+    卡1 算 X₂W₂ → 另一个 [b, d] 的【部分和】
+
+    ★★ 关键：Y = X₁W₁ + X₂W₂  —— 必须【相加】才是正确答案 ★★
+       → 需要一次 All-Reduce
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>★★ 全章的核心洞察在这里 ★★</strong>：<br />
+```<br />
+按列切  →  输出是【拼接】关系  →  可以直接喂给下一个"按行切"的矩阵，不用通信<br />
+按行切  →  输出是【求和】关系  →  必须 All-Reduce</p>
+<p>★ 所以：把「列切」和「行切」【配成一对】，中间那次通信就省掉了！<br />
+```</p>
+</blockquote>
+<hr />
+<h2 id="62-megatron-ffn">6.2 ★ Megatron 的 FFN：先列后行</h2>
+<p><strong>FFN</strong>（<strong>F</strong>eed-<strong>F</strong>orward <strong>N</strong>etwork，前馈网络）是 transformer 两大块之一，形式是：</p>
+<p>$$Y = \text{GELU}(X W_1)\, W_2$$</p>
+<p><strong>Megatron 的切法</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────────────── 卡 0 ────────────────────────┐
+   │  X ──► XW₁⁽⁰⁾ ──► GELU ──► [·] W₂⁽⁰⁾ ──► 部分和 Y⁽⁰⁾ │
+   │        ↑ 列切              ↑ 行切                     │
+   ├──────────────────────── 卡 1 ────────────────────────┤
+   │  X ──► XW₁⁽¹⁾ ──► GELU ──► [·] W₂⁽¹⁾ ──► 部分和 Y⁽¹⁾ │
+   └──────────────────────────────────────────────────────┘
+                              ↓
+                    ★ All-Reduce：Y = Y⁽⁰⁾ + Y⁽¹⁾
+                              ↓
+                  ★★ 整个 FFN 只用了【1 次】通信 ★★
+</code></pre></div>
+
+<h3 id="w1">为什么 W₁ 必须按列切（而不是按行切）</h3>
+<p><strong>这一步是 Megatron 论文最漂亮的地方，值得单独说。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 因为中间夹了一个 GELU 这样的【逐元素非线性函数】。
+
+    如果 W₁ 按【行】切：
+        中间结果 = 部分和，必须先 All-Reduce 才是真正的 XW₁
+        因为   GELU(a + b) ≠ GELU(a) + GELU(b)   ← ★ 非线性不能拆！
+        → 被迫在 GELU 之前插一次 All-Reduce
+
+    如果 W₁ 按【列】切：
+        中间结果 = [XW₁⁽⁰⁾ | XW₁⁽¹⁾]，是【拼接】不是【求和】
+        每一列都是【完整的、最终的】值
+        → ★ GELU 可以直接逐元素作用在各自那一半上，完全不用通信
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话</strong>：<strong>非线性函数不能作用在"部分和"上，只能作用在"完整值"上。</strong><br />
+<strong>列切给的正是完整值，所以非线性必须跟在列切后面。</strong><br />
+<strong>这个约束决定了 Megatron 所有的切分方向。</strong></p>
+</blockquote>
+<hr />
+<h2 id="63">6.3 注意力：按头切</h2>
+<p><strong>多头注意力天然就是"并行的几个头"，切起来更自然。</strong></p>
+<div class="codehilite"><pre><span></span><code>   假设 16 个头，TP=2：
+
+   ┌─────────── 卡 0：负责第 0~7 号头 ────────────┐
+   │  W_Q⁽⁰⁾ W_K⁽⁰⁾ W_V⁽⁰⁾  【列切】(切的是头这一维)│
+   │  → 完整地算出第 0~7 号头的注意力输出           │
+   │  → W_O⁽⁰⁾ 【行切】 → 部分和                   │
+   ├─────────── 卡 1：负责第 8~15 号头 ───────────┤
+   │  W_Q⁽¹⁾ W_K⁽¹⁾ W_V⁽¹⁾  【列切】               │
+   │  → 完整地算出第 8~15 号头的注意力输出          │
+   │  → W_O⁽¹⁾ 【行切】 → 部分和                   │
+   └───────────────────────────────────────────────┘
+                          ↓
+              ★ All-Reduce → 注意力模块也只用【1 次】通信
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意力这里更"干净"</strong>：因为不同的头之间<strong>本来就没有任何计算依赖</strong>——每个头独立地做 softmax、独立地做加权求和。<strong>softmax 的非线性完全发生在单个头内部，不跨卡。</strong></p>
+</blockquote>
+<hr />
+<h2 id="64-transformer-2-all-reduce">6.4 ★ 结论：一层 transformer = 2 次 All-Reduce</h2>
+<div class="codehilite"><pre><span></span><code>    ┌─────────────────────────────────────────────────┐
+    │   一层 transformer（前向）                        │
+    │                                                 │
+    │    注意力模块  ──► All-Reduce  ①                 │
+    │         │                                       │
+    │    FFN 模块    ──► All-Reduce  ②                 │
+    └─────────────────────────────────────────────────┘
+
+    反向传播对称，也是 2 次。
+
+    ★★ 一层 = 前向 2 次 + 反向 2 次 = 4 次 All-Reduce ★★
+       80 层的模型，一次迭代 = 320 次 All-Reduce
+</code></pre></div>
+
+<p><strong>每次 all-reduce 传多少</strong>：一个 <code>[b, s, d]</code> 的激活张量。</p>
+<div class="codehilite"><pre><span></span><code>    举例：b=1, s=4096, d=8192, BF16
+       每次 = 1 × 4096 × 8192 × 2 字节 = 67 MB
+       一层 4 次 = 268 MB
+       80 层     = 21 GB   ★★ 每一步迭代要传 21 GB！
+
+    ⚠️ 我的算例。走 NVLink（900 GB/s）需要 23 ms —— 可以接受。
+       走 InfiniBand（50 GB/s）需要 429 ms —— ★★ 完全不可接受 ★★
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>★★ 这就是"TP 不能跨机"这条铁律的全部来源 ★★</strong><br />
+✅ Megatron-3 论文原文：<em>"tensor-level model parallelism is typically limited to a relatively small group of GPUs that are connected with high speed bandwidth, such as GPUs connected with NVLink inside a DGX server."</em><br />
+✅ PipeDream-2BW 论文也说：<em>"Tensor (intra-layer) model parallelism leads to expensive all-to-all communication in the critical path, limiting the number of model partitions to the number of GPUs in a single server."</em></p>
+<p><code>★ 实践铁律：TP ≤ 8（一台机器 8 张卡），几乎从不例外。</code></p>
+</blockquote>
+<hr />
+<h2 id="65-megatron">6.5 ✅ 效果：Megatron 第一篇论文的成绩单</h2>
+<blockquote>
+<p>✅ <a href="../papers/Megatron-1-LM-Model-Parallelism-arXiv-1909.08053.pdf">papers/Megatron-1-...-arXiv-1909.08053.pdf</a> 摘要原文：<br />
+<em>"We illustrate this approach by converging transformer based models up to 8.3 billion parameters using 512 GPUs. We sustain 15.1 PetaFLOPs across the entire application with 76% scaling efficiency when compared to a strong single GPU baseline that sustains 39 TeraFLOPs, which is 30% of peak FLOPs."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ✅ 单卡基线：  1.2B 模型，单张 V100 32GB，39 TFLOP/s（峰值的 30%）
+    ✅ 扩展后：    8.3B 模型，512 张 GPU，8 路张量并行，15.1 PFLOP/s
+    ✅ 扩展效率：  76%
+
+    ⚠️ 验算：512 × 39 TFLOP/s = 19.97 PFLOP/s（理想线性扩展）
+             15.1 ÷ 19.97 = 75.6%  ✅ 和论文的 76% 对上了
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>"扩展效率 76%" 是什么意思</strong>：如果 512 张卡是完美的，应该有 512 倍的吞吐。实际拿到了 76%，剩下 24% 被通信和其他开销吃掉了。<strong>这是 2019 年的水平。</strong></p>
+</blockquote>
+<hr />
+<h2 id="66">6.6 源码里长什么样</h2>
+<p><strong>Megatron 把这两种切法做成了两个类</strong>，就在 <a href="../源码/Megatron-LM/megatron/core/tensor_parallel/layers.py">../源码/Megatron-LM/megatron/core/tensor_parallel/layers.py</a>（Megatron-Core 0.20.0）：</p>
+<div class="codehilite"><pre><span></span><code>✅ ColumnParallelLinear 的 docstring 原文：
+    &quot;&quot;&quot;Linear layer with column parallelism.
+    The linear layer is defined as Y = XA + b. A is parallelized along
+    its second dimension as A = [A_1, ..., A_p].&quot;&quot;&quot;
+                                  ↑ 第二维 = 列 ✅ 就是 §6.1 的切法 A
+
+✅ RowParallelLinear 的 docstring 原文：
+    &quot;&quot;&quot;Linear layer with row parallelism.
+    The linear layer is defined as Y = XA + b. A is parallelized along its
+    first dimension and X along its second dimension.
+    A = transpose([A_1 .. A_p])   X = [X_1, ..., X_p]&quot;&quot;&quot;
+                                  ↑ 第一维 = 行 ✅ 就是 §6.1 的切法 B
+                                  ↑ 注意 X 也要跟着切
+</code></pre></div>
+
+<p><strong>两个关键参数，正好对应本章的两个洞察</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>类</th>
+<th>参数</th>
+<th>含义</th>
+<th>对应本章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ColumnParallelLinear</code></td>
+<td><code>gather_output</code></td>
+<td>是否把切开的输出拼回完整的</td>
+<td><strong>设成 <code>False</code> 就省掉了那次通信</strong>（§6.1 的核心）</td>
+</tr>
+<tr>
+<td><code>RowParallelLinear</code></td>
+<td><code>input_is_parallel</code></td>
+<td>输入是否已经是切开的</td>
+<td><strong>设成 <code>True</code> 表示"上一层是列切，直接接上"</strong>（§6.2 的配对）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <code>gather_output</code> 的 docstring 原文：<em>"If true, call all-gather on output and make Y available to all GPUs, otherwise, every GPU will have its output which is Y_i = XA_i"</em><br />
+✅ <code>input_is_parallel</code> 的 docstring 原文：<em>"If true, we assume that the input is already split across the GPUs and we do not split again."</em></p>
+<p>🔑 <strong>★ Megatron 的 FFN 就是 <code>ColumnParallelLinear(gather_output=False)</code> 后面直接接 <code>RowParallelLinear(input_is_parallel=True)</code>。这两个参数一开一关，中间那次 all-gather 就被省掉了 —— §6.1 的洞察在源码里就是这两行。</strong></p>
+</blockquote>
+<p><strong>还有一个类专门处理词表</strong>：<code>VocabParallelEmbedding</code>。因为词表很大（15 万左右 × d），embedding 表也值得切开。</p>
+<hr />
+<h2 id="66b-gtp">6.6b ⚠️ 一个新东西：GTP</h2>
+<p>Megatron-Core 0.20.0 里出现了一个之前没有的并行维度，值得一提：</p>
+<div class="codehilite"><pre><span></span><code>✅ parallel_state.py 里的原文注释（关于 GTP，Generalized Tensor Parallelism）：
+   它沿 out_features 维切分权重，前向【和反向都】做逐权重的异步 all-gather；
+   ✅ 原注释特意提醒：
+      &quot;NOTE: &#39;remat&#39; here is NOT activation recomputation/checkpointing.&quot;
+      （这里的 remat 指的是【权重】重物化，不是激活重计算）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>我没有在 papers/ 里找到对应的公开论文</strong>，它看起来是 Megatron-Core 较新的实验特性。<strong>初学阶段可以完全忽略它</strong>，知道"TP 还在演化"就够了。</p>
+</blockquote>
+<hr />
+<h2 id="67-tp">6.7 TP 省了什么、代价是什么</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>TP=8 的效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 参数</td>
+<td>✅ <strong>÷8</strong></td>
+</tr>
+<tr>
+<td>② 梯度</td>
+<td>✅ <strong>÷8</strong></td>
+</tr>
+<tr>
+<td>③ 优化器状态</td>
+<td>✅ <strong>÷8</strong></td>
+</tr>
+<tr>
+<td>④ 激活值</td>
+<td>⚠️ <strong>部分 ÷8</strong>——但有几块切不掉！</td>
+</tr>
+<tr>
+<td><strong>代价</strong></td>
+<td>★ 每层 4 次 all-reduce，<strong>必须在机器内</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>★ 那个"⚠️ 部分"非常重要，是下一章之后 08 章存在的理由</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    一层 transformer 里，有几个地方是【不切】的：
+
+        LayerNorm（归一化）的输入输出
+        Dropout
+        残差连接
+
+    因为这些操作 Megatron 让【每张卡都做一遍完整的】（更简单）。
+    → ★ 这几块激活值在所有 TP 卡上是【重复存储】的，一点没省。
+
+    ✅ Megatron-3 论文原文点名了这件事：
+       &quot;In this approach, there are parts of the transformer where activations
+        are not split across tensor parallel ranks, adding to activation
+        memory overhead.&quot;
+
+    → 08 章的【序列并行 SP】就是专门来补这个洞的。
+</code></pre></div>
+
+<hr />
+<h2 id="68">6.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 一个矩阵只有两种切法：
+   ★ 列切：输出是【拼接】关系 → 不需要通信，可以直接喂给下一层
+   ★ 行切：输出是【求和】关系 → 必须 All-Reduce
+
+② ★★ Megatron 的核心技巧：把「列切」和「行切」配成一对 ★★
+   FFN:  W₁ 列切 → GELU → W₂ 行切 → 1 次 All-Reduce
+   为什么 W₁ 必须列切：GELU(a+b) ≠ GELU(a)+GELU(b)
+     ★ 非线性只能作用在【完整值】上，列切给的正是完整值
+
+③ 注意力按【头】切，天然干净：头与头之间本无依赖，softmax 不跨卡
+
+④ ★ 一层 transformer = 前向 2 次 + 反向 2 次 = 4 次 All-Reduce
+   ⚠️ 我的算例：80 层、s=4096、d=8192 → 每步要传 21 GB
+      NVLink 23 ms ✅  /  InfiniBand 429 ms ❌
+   → ★★ 铁律：TP ≤ 8，只在一台机器内做 ★★
+   ✅ Megatron-3 和 PipeDream-2BW 两篇论文都明确说了这个限制
+
+⑤ ✅ Megatron-1 的成绩单：8.3B 模型、512 张 GPU、8 路 TP、
+   15.1 PFLOP/s、76% 扩展效率（单卡基线 39 TFLOP/s = 峰值的 30%）
+
+⑥ 源码：ColumnParallelLinear / RowParallelLinear 两个类
+   ★ gather_output=False + input_is_parallel=True 这对参数，
+     就是 §6.1 那个洞察在代码里的样子
+
+⑦ ⚠️ TP 有个洞：LayerNorm / Dropout / 残差的激活值【没被切】，
+   每张 TP 卡都存一份完整的 —— ✅ Megatron-3 论文点名了这件事
+   → 08 章的序列并行 SP 专门来补这个洞
+</code></pre></div>
+
+<p><strong>下一章讲第二种模型并行：把【层】切开。</strong> 它能跨机器用，代价是一个新东西——<strong>气泡</strong>。</p>
+<hr />
+<blockquote>
+<p><a href="05-ZeRO与FSDP.html">← 05 ZeRO 与 FSDP</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="07-流水线并行PP.html">07 流水线并行 PP</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

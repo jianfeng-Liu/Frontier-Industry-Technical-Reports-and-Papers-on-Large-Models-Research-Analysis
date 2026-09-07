@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 · MTP 与投机解码</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="11-位置编码RoPE.html">← 11 位置编码 RoPE</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="13-优化器与Muon.html">13 优化器与 Muon</a></p>
+</blockquote>
+<h1 id="12-mtp">12 · MTP 与投机解码</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：MTP 这个词在五份报告里到处出现，但它其实身兼<strong>两个完全不同的职责</strong>——训练时是"更密的监督信号"，推理时是"免费的草稿模型"。大部分解读只讲了其中一个。<strong>本章把两条线都走一遍。</strong></p>
+<p>读完你应该能回答：投机解码为什么"完全不掉质量"（含四行完整证明）？接受长度那个数字怎么算？为什么 Medusa 的并行头不如 MTP 的串行模块？以及五家在这里的分歧到底在哪三处？</p>
+</blockquote>
+<hr />
+<h2 id="121-decode">12.1 起点：decode 为什么慢得离谱</h2>
+<p>回到 <a href="06-KV-cache.html">06 章</a>。生成文字时，模型是<strong>一个 token 一个 token 吐</strong>的，每吐一个都要把整整 50 层完整跑一遍：</p>
+<div class="codehilite"><pre><span></span><code>跑完 50 层  →  吐出 &quot;真&quot;
+跑完 50 层  →  吐出 &quot;好&quot;
+跑完 50 层  →  吐出 &quot;，&quot;
+       ↑
+   完全串行，第 2 次必须等第 1 次结束才能开始
+</code></pre></div>
+
+<p>这里有一个<strong>极其浪费</strong>的事实。回忆 <a href="06-KV-cache.html">06 章 §6.4</a> 的 roofline 分析：</p>
+<div class="codehilite"><pre><span></span><code>decode 一步要做的事：
+   ① 把 500B 的模型权重（或者 MoE 下激活的那 18B）从显存读进计算单元    ← 慢，受带宽限制
+   ② 把 KV cache 从显存读进来                                          ← 慢，受带宽限制
+   ③ 拿这些权重去乘 1 个 token 的向量                                   ← 快到可以忽略
+</code></pre></div>
+
+<p><strong>代价几乎全在"搬运"上，真正的"计算"几乎不花时间。</strong></p>
+<p>于是出现一个很反直觉的性质：</p>
+<div class="codehilite"><pre><span></span><code>一次前向处理  1 个 token  → 耗时 T
+一次前向处理  5 个 token  → 耗时 ≈ T（几乎不变！）
+                             因为权重只搬一次，多算 4 个 token 的乘法几乎是白送的
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这一条是整个投机解码的物理基础</strong>：<br />
+<strong>"一次验证 5 个 token" 和 "一次生成 1 个 token" 花的时间几乎一样。</strong></p>
+<p>换句话说：<strong>GPU 在 decode 阶段大部分算力是空转的，我们有免费的算力可以拿来"猜"。</strong></p>
+</blockquote>
+<hr />
+<h2 id="122">12.2 核心洞察：出题很慢，判卷很快</h2>
+<div class="codehilite"><pre><span></span><code>生成（串行）              验证（并行）
+  ┌───┐                  ┌───┬───┬───┬───┐
+  │ ? │  必须一个一个来   │ 真│ 好│ ， │适合│  可以一次全部检查
+  └───┘                  └───┴───┴───┴───┘
+   慢                        和只检查 1 个一样快
+</code></pre></div>
+
+<p><strong>所以策略是</strong>：找个便宜的东西先"猜"几个 token，再让大模型<strong>一次性判卷</strong>。</p>
+<ul>
+<li>猜对了 → 白赚，这几个 token 一次前向就出来了</li>
+<li>猜错了 → 从错的那个位置截断，用大模型自己的答案纠正，<strong>一点损失都没有</strong>（下面会证明）</li>
+</ul>
+<hr />
+<h2 id="123">12.3 投机解码的完整一轮</h2>
+<div class="codehilite"><pre><span></span><code>当前已生成： &quot;今天天气&quot;
+
+┌─ 第 1 步：草稿（便宜、快） ────────────────────────────────┐
+│  草稿模型连猜 4 个：  &quot;真&quot;  &quot;好&quot;  &quot;，&quot;  &quot;适合&quot;              │
+│  同时记下它给每个 token 的概率 q(·)                        │
+└───────────────────────────────────────────────────────────┘
+                          │
+┌─ 第 2 步：验证（贵，但只跑一次） ──────────────────────────┐
+│  把 &quot;今天天气&quot; + &quot;真好，适合&quot; 一起送进大模型               │
+│  一次前向，拿到 5 个位置上的真实分布 p(·)                  │
+│                                                            │
+│   位置1 (在&quot;今天天气&quot;后)  p → 大模型认为该出什么           │
+│   位置2 (在&quot;...真&quot;后)     p                                │
+│   位置3 (在&quot;...真好&quot;后)   p                                │
+│   位置4 (在&quot;...真好，&quot;后) p                                │
+│   位置5 (在&quot;...真好，适合&quot;后) p  ← 这个是&quot;白送的下一个 token&quot;│
+└───────────────────────────────────────────────────────────┘
+                          │
+┌─ 第 3 步：逐位置裁决 ──────────────────────────────────────┐
+│  &quot;真&quot;    p 也很高  → ✅ 接受                                │
+│  &quot;好&quot;    p 也很高  → ✅ 接受                                │
+│  &quot;，&quot;    p 也还行  → ✅ 接受                                │
+│  &quot;适合&quot;  p 很低（大模型想说&quot;出门&quot;） → ❌ 拒绝               │
+│          → 截断！后面的全部丢弃，从大模型的分布里重采一个   │
+└───────────────────────────────────────────────────────────┘
+
+本轮产出： &quot;真&quot; &quot;好&quot; &quot;，&quot; &quot;出门&quot;  =  4 个 token
+本轮成本： 1 次大模型前向 + 4 次草稿模型前向（草稿模型很便宜）
+                    ↑
+              原本要 4 次大模型前向
+</code></pre></div>
+
+<p><strong>注意第 5 个位置那个"白送的 token"</strong>：如果 4 个全接受，验证时位置 5 的输出可以直接当第 5 个 token 用。所以猜 $\gamma$ 个，<strong>最好情况能产出 $\gamma+1$ 个</strong>。</p>
+<hr />
+<h2 id="124">12.4 ★ 为什么"完全不掉质量"——拒绝采样的证明</h2>
+<p>这是投机解码最漂亮的部分，也是它和"小模型代打"的本质区别。<strong>它有数学保证：输出分布和不用投机解码时逐 token 严格相同。</strong></p>
+<p><strong>规则</strong>（Leviathan et al. 2023）：设草稿分布 $q$、大模型真实分布 $p$，草稿采出了 token $x$：</p>
+<p>$$<br />
+\begin{aligned}<br />
+&amp;\textbf{接受概率：}\quad \min\left(1,\ \frac{p(x)}{q(x)}\right)\[4pt]<br />
+&amp;\textbf{若拒绝：}\quad \text{从"残差分布"重新采样}\quad p'(x) = \frac{\max\big(0,\ p(x)-q(x)\big)}{\sum_{x'}\max\big(0,\ p(x')-q(x')\big)}<br />
+\end{aligned}<br />
+$$</p>
+<p><strong>直觉</strong>：<br />
+- 草稿模型给某个词的概率<strong>比大模型还低</strong>（$q<p$）→ 无条件接受，因为它已经"保守"了
+- 草稿给得**太高**（$q>p$）→ 按比例 $p/q$ 随机接受一部分，把多给的那部分退回去<br />
+- 拒绝时不能随便从 $p$ 采（那会重复计入已经被接受的质量），而要从"$p$ 比 $q$ 多出来的那块"采</p>
+<p><strong>证明它等于 $p$</strong>（只有四行）：</p>
+<p>$$<br />
+\begin{aligned}<br />
+P(\text{输出 } x) &amp;= \underbrace{q(x)\cdot\min\Big(1,\tfrac{p(x)}{q(x)}\Big)}<em _text_拒绝后重采到="\text{拒绝后重采到">{\text{草稿采到 }x\text{ 且被接受}} \;+\; \underbrace{P(\text{拒绝})\cdot p'(x)}</em>\[4pt]}x<br />
+&amp;= \min\big(p(x),q(x)\big) \;+\; \beta\cdot\frac{\max(0,\,p(x)-q(x))}{\beta}\[4pt]<br />
+&amp;= \min(p,q)(x) + \max(0,\,p-q)(x)\[4pt]<br />
+&amp;= p(x) \qquad\blacksquare<br />
+\end{aligned}<br />
+$$</p>
+<p>其中用到了一个恒等式：$P(\text{拒绝}) = 1-\sum_x\min(p,q)(x) = \sum_x\max(0,p-q)(x) = \beta$，<strong>分母正好被约掉</strong>。</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">verify_one_position</span><span class="p">(</span><span class="n">draft_token</span><span class="p">,</span> <span class="n">q</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">rng</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;q, p 都是长度为 V 的概率向量&quot;&quot;&quot;</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">draft_token</span>
+    <span class="k">if</span> <span class="n">rng</span><span class="o">.</span><span class="n">uniform</span><span class="p">()</span> <span class="o">&lt;</span> <span class="nb">min</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">p</span><span class="p">[</span><span class="n">x</span><span class="p">]</span> <span class="o">/</span> <span class="n">q</span><span class="p">[</span><span class="n">x</span><span class="p">]):</span>
+        <span class="k">return</span> <span class="n">x</span><span class="p">,</span> <span class="kc">True</span>                      <span class="c1"># 接受</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">maximum</span><span class="p">(</span><span class="n">p</span> <span class="o">-</span> <span class="n">q</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">residual</span> <span class="o">=</span> <span class="n">residual</span> <span class="o">/</span> <span class="n">residual</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>    <span class="c1"># 归一化残差分布</span>
+    <span class="k">return</span> <span class="n">rng</span><span class="o">.</span><span class="n">choice</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">p</span><span class="p">),</span> <span class="n">p</span><span class="o">=</span><span class="n">residual</span><span class="p">),</span> <span class="kc">False</span>   <span class="c1"># 拒绝，重采并截断</span>
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话</strong>：<strong>投机解码是纯粹的加速，不是近似。</strong> 草稿模型质量差只会让它"猜得少"（变慢），<strong>永远不会让输出变差</strong>。这也是为什么各家敢无条件在生产里开它。</p>
+</blockquote>
+<hr />
+<h2 id="125">12.5 能快多少：接受率与接受长度</h2>
+<p><strong>单步接受率</strong> $\alpha$ 有一个非常干净的闭式：</p>
+<p>$$\alpha = \mathbb{E}_x\big[\min(p,q)\big] = \sum_x \min\big(p(x),q(x)\big) = 1 - \mathrm{TV}(p,q)$$</p>
+<p><strong>接受率 = 1 − 两个分布的总变差距离。草稿模型和大模型越像，接受率越高。</strong></p>
+<p>一轮猜 $\gamma$ 个，<strong>接受长度</strong>（accept length，各家报告里的核心指标）的期望是等比数列求和：</p>
+<p>$$\mathbb{E}[\text{accept length}] = \sum_{i=0}^{\gamma}\alpha^i = \frac{1-\alpha^{\gamma+1}}{1-\alpha}$$</p>
+<p>代入感受一下：</p>
+<div class="codehilite"><pre><span></span><code>α = 0.7, γ = 3  →  E = (1−0.7⁴)/0.3 = 2.53      每轮 2.53 个 token
+α = 0.8, γ = 3  →  E = (1−0.8⁴)/0.2 = 2.95
+α = 0.8, γ = 7  →  E = (1−0.8⁸)/0.2 = 4.16
+α = 0.9, γ = 7  →  E = (1−0.9⁸)/0.1 = 5.70
+</code></pre></div>
+
+<p><strong>实际加速比</strong>还要扣掉草稿模型的成本：</p>
+<p>$$\text{speedup} \approx \frac{\mathbb{E}[\text{accept length}]}{1 + \gamma\cdot c},\qquad c = \frac{\text{草稿模型单步耗时}}{\text{大模型单步耗时}}$$</p>
+<blockquote>
+<p>📌 <strong>这就是为什么 GLM-5.2 报告里那个 "2.76" 是个有分量的数字</strong>——它不是"猜了 3 个"，而是"<strong>平均每轮真的产出 2.76 个 token</strong>"，直接约等于解码吞吐翻 2.76 倍（再扣草稿开销）。</p>
+<p>也解释了<strong>为什么 $\gamma$ 不能无限加大</strong>：$\alpha^i$ 是指数衰减的，猜到第 8 个时接受概率已经只有 $0.8^8=0.17$，<strong>但草稿成本 $\gamma c$ 是线性增长的</strong>。所以存在一个最优 $\gamma$。</p>
+</blockquote>
+<hr />
+<h2 id="126">12.6 草稿模型从哪来：四种方案的演化</h2>
+<p>现在问题变成：<strong>这个"便宜又和大模型很像"的草稿模型，哪儿来？</strong></p>
+<div class="codehilite"><pre><span></span><code>① 另训一个小模型（原始方案，2023）
+   用同系列的 1B 模型给 500B 当草稿
+   ✅ 简单     ❌ 要另外训一个模型；两个模型分布差得远，α 不高；还要多占显存
+
+② Medusa（并行多头，2024）
+   在主模型最后一层上挂 K 个独立的线性头，同时预测 t+1, t+2, t+3
+        h ──┬──▶ head_1 → t+1
+            ├──▶ head_2 → t+2       ← 三个头互相看不见
+            └──▶ head_3 → t+3
+   ✅ 极便宜   ❌ head_2 在预测 t+2 时不知道 t+1 是什么 → 猜得不准，α 低
+
+③ EAGLE（在特征层面自回归，2024）
+   草稿模型不预测 token，而是预测主模型的 hidden state，并且是自回归的
+   ✅ α 高很多  ❌ 仍是一个需要单独训练的附加模块
+
+④ MTP（Multi-Token Prediction，DeepSeek-V3 起成为标配）
+   ⭐ 在预训练阶段就把&quot;预测后面第 2、3 个 token&quot;当成额外的训练目标
+      于是草稿能力是**预训练顺带练出来的**，不用事后补训
+</code></pre></div>
+
+<h3 id="mtp">⭐ MTP 是谁提的：一条四段的出处链</h3>
+<blockquote>
+<p>⚠️ <strong>先纠正一个常见误解</strong>：<strong>MTP 不是 DeepSeek 发明的</strong>，DeepSeek-V3 做的是<strong>把它变成前沿大模型的标配</strong>。<br />
+✅ 下面这条链不是我编的——<strong>DeepSeek-V4 报告自己在正文里就是这么引的</strong>：<br />
+<em>"Multi-Token Prediction (MTP) [DeepSeek-AI, 2024; </em><em>Gloeckle et al., 2024</em><em>; Li et al., 2024; </em><em>Qi et al., 2020</em><em>]"</em>。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>年份</th>
+<th>谁</th>
+<th>论文</th>
+<th>贡献</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2018-11</strong></td>
+<td>Mitchell <strong>Stern</strong> 等（Google）</td>
+<td>✅ <a href="https://arxiv.org/abs/1811.03115">arXiv:1811.03115</a> <em>Blockwise Parallel Decoding for Deep Autoregressive Models</em></td>
+<td>★ <strong>最早的源头</strong>：一次预测多个位置、再回头验证，<strong>投机解码的原型</strong>就在这里</td>
+</tr>
+<tr>
+<td><strong>2020-01</strong></td>
+<td>Weizhen <strong>Qi</strong> 等（微软）</td>
+<td>✅ <a href="https://arxiv.org/abs/2001.04063">arXiv:2001.04063</a> <em>ProphetNet</em></td>
+<td>★ 第一次把"<strong>同时预测未来 n 个 token</strong>"做成<strong>预训练目标</strong>（future n-gram prediction）</td>
+</tr>
+<tr>
+<td><strong>2024-04</strong></td>
+<td>Fabian <strong>Gloeckle</strong> 等（Meta）</td>
+<td>✅ <a href="https://arxiv.org/abs/2404.19737">arXiv:2404.19737</a> <em>Better &amp; Faster Large Language Models via Multi-token Prediction</em></td>
+<td>★★ <strong>"Multi-Token Prediction"这个名字和现代形态</strong>：多个输出头共享主干，并指出它<strong>顺带就是草稿模型</strong></td>
+</tr>
+<tr>
+<td><strong>2024-12</strong></td>
+<td><strong>DeepSeek-V3</strong></td>
+<td>✅ <a href="https://arxiv.org/abs/2412.19437">arXiv:2412.19437</a></td>
+<td>★★★ 改成<strong>串行因果</strong>的 MTP 模块（不是并行头）+ 在千亿级模型上验证，<strong>此后五家全跟进</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>DeepSeek 真正的增量是"③ → ④"那一步</strong>：把 Gloeckle 的<strong>并行多头</strong>改成<strong>串行因果模块</strong>（下一段的对照图）。<br />
+★ 这也是为什么本教程把 MTP 放在投机解码这一章讲——<strong>它的两个身份（提升基座 / 当草稿）从出处上就是分开来的两条线，在 V3 这里合流。</strong></p>
+</blockquote>
+<p><strong>②→④ 最关键的一处进化，是从"并行"变成"串行（因果）"</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Medusa（并行）                        MTP（串行 / 因果）
+  h ──┬─▶ t+1                          h ─▶[模块1]─▶ t+1
+      ├─▶ t+2  ← 不知道 t+1                     │ 把真实的 t+1 喂进来
+      └─▶ t+3  ← 不知道 t+1, t+2                ▼
+                                             [模块2]─▶ t+2   ← 知道 t+1 是什么
+                                                  │
+                                                  ▼
+                                             [模块3]─▶ t+3   ← 知道 t+1, t+2
+</code></pre></div>
+
+<p><strong>MTP 的每个模块都能看到前面模块"应该"产出的 token</strong>，所以预测质量高得多，接受率 $\alpha$ 也就高得多。代价是这几个模块必须<strong>顺序执行</strong>，不能并行——但它们每个只有 1 层，很便宜。</p>
+<hr />
+<h2 id="127-mtp">12.7 MTP 到底长什么样</h2>
+<blockquote>
+<p>DeepSeek-V3 的定义，五家都在这个基础上改。</p>
+</blockquote>
+<p><strong>先明确一件事：MTP 模块不是"一个头"，而是"一个完整的 Transformer 层"。</strong></p>
+<div class="codehilite"><pre><span></span><code>             ┌──────────────────────────────────────────────┐
+             │            主模型（50~93 层）                 │
+             └───────────────────┬──────────────────────────┘
+                                 │  h_i⁰ = 第 i 个位置的最终 hidden state
+        ┌────────────────────────┼───────────────────────────┐
+        │                        │                           │
+        ▼                        ▼                           ▼
+  [共享输出头]            ┌─ MTP 模块 1 ─┐            （主模型自己的输出）
+        │                 │              │
+        ▼                 │  ① 拼接：     │
+     预测 t_{i+1}         │  h_i⁰  ⊕  Emb(t_{i+1})  ← 把&quot;下一个真实 token&quot;喂进来
+     （主任务）            │     ↓ 各自先 RMSNorm     │
+                          │  ② 投影 M₁：2d → d       │
+                          │     ↓                    │
+                          │  ③ 一个完整的 Transformer 层 │
+                          │     （注意力 + FFN）      │
+                          │     ↓ h_i¹               │
+                          │  ④ 送进【共享的】输出头   │
+                          └──────┬───────────────────┘
+                                 ▼
+                            预测 t_{i+2}
+                                 │  h_i¹ 继续往下传
+                                 ▼
+                          ┌─ MTP 模块 2 ─┐
+                          │  h_i¹ ⊕ Emb(t_{i+2})  │
+                          │      ... 同样结构 ...  │
+                          └──────┬───────────────┘
+                                 ▼
+                            预测 t_{i+3}
+</code></pre></div>
+
+<p><strong>公式</strong>（$k$ 表示第 $k$ 个 MTP 模块，$k=0$ 是主模型）：</p>
+<p>$$<br />
+\begin{aligned}<br />
+h_i^{\prime k} &amp;= M_k\Big[\ \mathrm{RMSNorm}\big(h_i^{k-1}\big)\ ;\ \mathrm{RMSNorm}\big(\mathrm{Emb}(t_{i+k})\big)\ \Big] &amp;&amp;\text{拼接后投影，}M_k\in\mathbb{R}^{d\times 2d}\<br />
+h_{1:L-k}^{k} &amp;= \mathrm{TRM}<em 1:L-k="1:L-k">k\big(h</em>\}^{\prime k}\big) &amp;&amp;\text{过一个完整的 Transformer 层<br />
+P_{i+k+1}^{k} &amp;= \mathrm{OutHead}\big(h_i^{k}\big) &amp;&amp;\text{共享输出头，得到词表分布}<br />
+\end{aligned}<br />
+$$</p>
+<p><strong>三个必须记住的设计要点</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>要点</th>
+<th>内容</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Embedding 和输出头是共享的</strong></td>
+<td>所有 MTP 模块和主模型用同一份 <code>Emb</code> 和 <code>OutHead</code></td>
+<td>这两块参数最大（各 ~8 亿，见 <a href="02-Embedding与词表.html">02 章</a>），复制 D 份显存吃不消；共享还能保证草稿和主模型"说同一种语言"</td>
+</tr>
+<tr>
+<td><strong>每个模块有自己独立的 <code>M_k</code> 和 <code>TRM_k</code></strong></td>
+<td>模块 1 和模块 2 的 Transformer 层参数不同</td>
+<td>预测"下一个"和预测"下下个"是两个不同难度的任务</td>
+</tr>
+<tr>
+<td><strong>训练时喂的是真实 token（teacher forcing）</strong></td>
+<td>$\mathrm{Emb}(t_{i+k})$ 用的是训练数据里的真值</td>
+<td>和主模型的训练方式一致；推理时才换成"上一模块自己猜的"</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mtp_forward</span><span class="p">(</span><span class="n">h_main</span><span class="p">,</span> <span class="n">tokens</span><span class="p">,</span> <span class="n">modules</span><span class="p">,</span> <span class="n">emb</span><span class="p">,</span> <span class="n">out_head</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;h_main: 主模型输出 [L, d]；返回 D 个额外的预测分布&quot;&quot;&quot;</span>
+    <span class="n">h</span><span class="p">,</span> <span class="n">preds</span> <span class="o">=</span> <span class="n">h_main</span><span class="p">,</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">mod</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">modules</span><span class="p">,</span> <span class="n">start</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
+        <span class="n">tok_emb</span> <span class="o">=</span> <span class="n">emb</span><span class="p">[</span><span class="n">tokens</span><span class="p">[</span><span class="n">k</span><span class="p">:]]</span>                       <span class="c1"># 第 i 个位置取 t_{i+k}</span>
+        <span class="n">cat</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">([</span><span class="n">rmsnorm</span><span class="p">(</span><span class="n">h</span><span class="p">[:</span><span class="o">-</span><span class="n">k</span><span class="p">]),</span> <span class="n">rmsnorm</span><span class="p">(</span><span class="n">tok_emb</span><span class="p">)],</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">h</span> <span class="o">=</span> <span class="n">transformer_layer</span><span class="p">(</span><span class="n">cat</span> <span class="o">@</span> <span class="n">mod</span><span class="o">.</span><span class="n">M</span><span class="p">,</span> <span class="n">mod</span><span class="o">.</span><span class="n">params</span><span class="p">)</span>  <span class="c1"># [L-k, d]</span>
+        <span class="n">preds</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">h</span> <span class="o">@</span> <span class="n">out_head</span><span class="o">.</span><span class="n">T</span><span class="p">)</span>                    <span class="c1"># 预测 t_{i+k+1}</span>
+    <span class="k">return</span> <span class="n">preds</span>
+</code></pre></div>
+
+<hr />
+<h2 id="128">12.8 训练目标</h2>
+<p>每个 MTP 深度算一份自己的交叉熵，再加权并进总损失：</p>
+<p>$$\mathcal{L}<em i="1">{\text{MTP}}^{k} = -\frac{1}{L}\sum</em>}^{L-k}\log P_{i+k+1}^{k}\big[t_{i+k+1}\big],\qquad \mathcal{L} = \mathcal{L<em k="1">{\text{main}} + \lambda\cdot\frac{1}{D}\sum</em>$$}^{D}\mathcal{L}_{\text{MTP}}^{k</p>
+<p>$\lambda$ 通常取 0.1~0.3——<strong>主任务永远是主角，MTP 只是配角</strong>，否则会伤害主模型质量。</p>
+<hr />
+<h2 id="129-mtp">12.9 ★ MTP 的两个身份（这一点最容易被漏掉）</h2>
+<div class="codehilite"><pre><span></span><code>身份 A：训练时 —— 一个更密的监督信号
+   普通训练：每个位置只被教一件事 &quot;下一个词是什么&quot;
+   开 MTP  ：每个位置同时被教 D+1 件事 &quot;接下来 D+1 个词分别是什么&quot;
+
+   效果：迫使模型在 h_i 里编码更长程的规划信息，而不是只做&quot;局部续写&quot;
+   ⭐ 关键：即使推理时完全不用投机解码，MTP 也能让主模型本身变好
+        （DeepSeek-V3 报告的消融就是这么说的：MTP 一致地改善了大多数评测）
+
+身份 B：推理时 —— 一个免费的草稿模型
+   那 D 个 Transformer 层拿来就是现成的草稿器，零额外训练成本
+   不想用可以直接丢掉，主模型完全不受影响
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以 MTP 是那种少见的"两头都赚"的设计</strong>：训练时它是正则化/更强的监督，推理时它是加速器。<strong>这是它三年内变成所有前沿模型标配的原因。</strong></p>
+</blockquote>
+<hr />
+<h2 id="1210-vs">12.10 推理时怎么用：链式 vs 树形</h2>
+<div class="codehilite"><pre><span></span><code>链式（chain，最常见）
+    模块1 猜 &quot;真&quot; → 模块2 拿着&quot;真&quot;猜 &quot;好&quot; → 模块3 拿着&quot;真好&quot;猜 &quot;，&quot;
+    一次验证 3+1 个位置
+
+树形（tree / Medusa 式，把免费算力用满）
+    模块1 猜出 top-2:  &quot;真&quot; / &quot;很&quot;
+                        ├─ &quot;真&quot; → 模块2 猜 top-2: &quot;好&quot; / &quot;不错&quot;
+                        └─ &quot;很&quot; → 模块2 猜 top-2: &quot;热&quot; / &quot;冷&quot;
+    一次验证一整棵树（用特制的树形注意力掩码，让每条路径只看到自己的祖先）
+    ✅ 接受长度更高    ❌ 掩码复杂、验证的 token 数变多
+</code></pre></div>
+
+<hr />
+<h2 id="1211">12.11 一个真实存在的坑：训练深度 ≠ 推理深度</h2>
+<p><strong>DeepSeek-V3 的 MTP 深度是 1（只训了 1 个模块），但推理时想一次产出 2 个 token。</strong></p>
+<div class="codehilite"><pre><span></span><code>训练时：  模块1 收到的输入 = 主模型的真实 hidden  h⁰
+推理时：  第 1 步一样；但如果想再往前猜一格，就得把 模块1 自己的输出 h¹ 再喂回 模块1
+          ↑
+       模块1 从来没见过&quot;自己的输出&quot;这种输入分布  →  训推不一致  →  接受率掉
+</code></pre></div>
+
+<p><strong>GLM-5.2 的解法特别干净</strong>：</p>
+<div class="codehilite"><pre><span></span><code>想预测后 3 个 token，就要 3 个 MTP 模块 → 显存 ×3          ❌
+GLM 的做法：3 个模块【共享同一份参数】
+
+   ┌───────────────┐
+   │  MTP 层（一份） │ ◀── 循环使用 3 次
+   └───────────────┘
+
+✅ 显存和只有 1 层时持平
+✅ 因为训练时这一份参数就被反复喂过&quot;自己上一轮的输出&quot;，
+   推理时的输入分布和训练时完全一致 → 训推不一致被消除
+</code></pre></div>
+
+<p><strong>结果：接受长度 2.76</strong>（DeepSeek-V3.2 是 2.55）；GLM-5.2 自己的消融里从 4.56 提到 5.47。</p>
+<hr />
+<h2 id="1212-mtp">12.12 五家的 MTP 配置</h2>
+<table>
+<thead>
+<tr>
+<th>家</th>
+<th>MTP 配置</th>
+<th>接受长度</th>
+<th>特点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>深度 1，<strong>完全沿用 V3 未改</strong></td>
+<td>未给</td>
+<td>报告原文："we adopt the same strategy without modification"——V4 的创新预算全花在注意力和残差上了</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>把预训练的 MTP 层<strong>微调成 EAGLE-3 风格草稿模型</strong></td>
+<td>未给</td>
+<td>见下方 ⭐</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td><strong>3 层参数共享</strong></td>
+<td><strong>2.76</strong></td>
+<td>唯一给了可比数字的一家；解决训推不一致</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>7 个 MTP module（五家最多）</strong></td>
+<td>未给</td>
+<td>押注树形/深链，配合它开源的 kernel</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>深度 3，<strong>MTP 内部的注意力一律用 SWA 窗口 2048</strong></td>
+<td>未给</td>
+<td>见下方 💡</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>💡 <strong>openPangu 为什么敢在 MTP 里只用 512K 上下文中的最近 2048 个 token？</strong></p>
+<p>因为<strong>草稿模型不需要准，只需要快</strong>。猜错了有 §12.4 的拒绝采样兜底，一点质量都不会掉。而"下一个词大概是什么"这件事，<strong>绝大多数情况下只取决于最近几百个 token</strong>。<br />
+于是：把 MTP 的注意力从"看 512K"砍到"看 2048"，草稿成本（公式里的 $c$）大幅下降，接受率 $\alpha$ 只掉一点点，<strong>净收益为正</strong>。<br />
+<strong>这是"投机解码的容错性可以直接兑换成工程简化"的一个漂亮例子。</strong></p>
+<p>⭐ <strong>Kimi K3 那一处非常值得单独看：它换掉了草稿模型的训练目标。</strong></p>
+<p>常规做法是让草稿模型去最小化和主模型的 <strong>KL 散度</strong>（"学得像一点"）。K3 指出这是<strong>错的代理目标</strong>：</p>
+<p>$$\text{真正想最大化的是接受率}\quad \alpha = \sum_x\min\big(p(x),q(x)\big)$$</p>
+<p>而对一个<strong>容量受限</strong>的草稿模型来说，<strong>最小化 KL 并不等于最大化 $\alpha$</strong>——KL 会逼着它去拟合 $p$ 的尾巴，但接受率只关心两个分布<strong>重叠的那部分质量</strong>。<br />
+所以 K3 直接优化 <strong>LK loss</strong>：$-\log\sum_x\min\big(p(x),q(x)\big)$，也就是<strong>接受率的负对数</strong>。</p>
+<p>另外它的输入也做了改造（EAGLE-3 风格）：融合<strong>第 1 个、第 4 个、最后一个 AttnRes block</strong>（见 <a href="03-残差流.html">03 章 §3.6</a>）的低/中/高层特征，融合矩阵 $W_{E3}$ 初始化成 $[0\ \ 0\ \ I]$——<strong>初始时刻严格等价于"只用高层特征"（即 MTP 层原本被训练的输入），再慢慢学着吸收低中层。</strong> 这个初始化技巧保证了微调起点不劣化。</p>
+<p>详见 <a href="../Kimi-K3.html">../Kimi-K3.md</a> §八。</p>
+</blockquote>
+<hr />
+<h2 id="1213">12.13 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>物理事实：decode 是访存受限的  →  &quot;验证 5 个&quot; 和 &quot;生成 1 个&quot; 一样快
+    ↓
+投机解码：先猜再验，拒绝采样保证输出分布不变       （纯赚，不掉质量）
+    ↓
+草稿从哪来：小模型 → Medusa 并行头 → EAGLE → MTP  （越来越像主模型，α 越来越高）
+    ↓
+MTP 的两个身份：训练时是更密的监督，推理时是免费草稿
+    ↓
+五家的分歧只在三处：几个模块、参不参数共享、模块内部的注意力用多大窗口
+</code></pre></div>
+
+<p><strong>关键公式回顾</strong>：</p>
+<div class="codehilite"><pre><span></span><code>接受概率      min(1, p(x)/q(x))
+残差分布      p&#39; = max(0, p−q) / β
+单步接受率    α = Σ min(p,q) = 1 − TV(p,q)
+接受长度      E = (1 − α^{γ+1}) / (1 − α)
+加速比        ≈ E / (1 + γc)
+MTP 模块      h&#39;^k = M_k[RMSNorm(h^{k−1}); RMSNorm(Emb(t_{i+k}))]
+MTP 损失      L = L_main + (λ/D)·Σ_k L^k_MTP
+</code></pre></div>
+
+<p><strong>下一章</strong>讲训练侧：AdamW，以及这一代最重要的训练侧变化——Muon。</p>
+<hr />
+<blockquote>
+<p><a href="11-位置编码RoPE.html">← 11 位置编码 RoPE</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="13-优化器与Muon.html">13 优化器与 Muon</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

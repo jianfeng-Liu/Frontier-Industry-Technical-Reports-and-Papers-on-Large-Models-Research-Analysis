@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · ⭐ 打包与文档掩码：最后一公里的效率与正确性</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="12-合成数据.html">← 12 合成数据</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="14-采样-shuffle-与断点续训.html">14 采样、shuffle 与断点续训</a></p>
+</blockquote>
+<h1 id="13">13 · ⭐ 打包与文档掩码：最后一公里的效率与正确性</h1>
+<blockquote>
+<p><strong>数据已经洗干净、配好比、转成 <code>.bin</code> 了。最后一个问题是：</strong><br />
+<strong>长短不一的文档，怎么塞进一个整整齐齐的 <code>[B, L]</code> 张量？</strong></p>
+<p>★ 这一章讲的东西<strong>直接决定训练速度</strong>，而且藏着一个<strong>很多人不知道自己踩了的正确性坑</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="131">13.1 问题的由来</h2>
+<div class="codehilite"><pre><span></span><code>GPU 要的是一个规整的张量：   tokens.shape = [B, L] = [512, 4096]
+
+而你手上的文档长这样：
+    doc0   312 token
+    doc1  8734 token
+    doc2    47 token
+    doc3  1205 token
+    ...
+    ★ 长度分布通常是【重尾】的：大量很短的，少量极长的
+</code></pre></div>
+
+<p><strong>三种做法：</strong></p>
+<div class="codehilite"><pre><span></span><code>① 补齐（padding）
+   [doc0 ────312───][PAD PAD PAD ... PAD]  共 4096
+   ❌ ★ 浪费巨大
+
+② 截断（truncation）
+   doc1 只取前 4096，后面 4638 个 token ★ 直接扔掉
+   ❌ 丢数据，且长文档的后半永远学不到
+
+③ ★ 拼接后切分（concatenate &amp; chunk）
+   把所有文档首尾相接成一条长流，每 4096 切一刀
+   ✅ 零浪费、零丢弃
+   ❌ ★★ 一条样本里会混进好几篇【毫不相干】的文档 → 13.4 的正确性问题
+</code></pre></div>
+
+<blockquote>
+<p>★★★ <strong>关键认知（很多人没搞清楚）：</strong><br />
+<strong><a href="04-训练格式-Megatron索引.html">04 章</a>讲的 Megatron <code>GPTDataset</code> 用的就是③——它本来就是拼接后切分的。</strong><br />
+<strong>所以【预训练阶段根本没有 padding 浪费】。</strong></p>
+<p><code>⟹ ★ "打包（packing）"这个话题，主要是【后训练/SFT】的问题，
+     因为 SFT 的一条样本（一轮对话）★不能被从中间切断。
+   而预训练阶段真正的问题是③带来的【跨文档污染】。
+⟹ 这一章因此分成两半：
+     13.2-13.3 讲【打包】—— 主要面向 SFT
+     13.4-13.6 讲【文档掩码】—— 预训练和 SFT 都要</code></p>
+</blockquote>
+<h3 id="3-2">★★★ 先澄清：③ 的"切一刀"和 ② 的"截断"完全不是一回事</h3>
+<p>很多混乱都出在这两个词被混用了：</p>
+<div class="codehilite"><pre><span></span><code>② 截断丢弃（truncate &amp; discard）
+   doc1 有 8734 token → 只留前 4096，★ 后面 4638 个【永久扔掉】
+   ⟹ 语料真的少了一块，长文档的后半【永远学不到】
+
+③ 拼接后切分（concat &amp; chunk）
+   doc1 有 8734 token → 前 4096 在样本 k，
+                        中间 4096 在样本 k+1，
+                        剩下 542 个接着排在 k+2 的开头
+   ⟹ ★★ 一个 token 都没丢，只是【被切到了相邻几条样本里】
+
+★★★ 全教程（以及所有讲预训练的文献）说&quot;可以截断&quot;，
+     指的永远是 ③ 这种【切分】，绝不是 ② 那种【丢弃】。
+</code></pre></div>
+
+<h3 id="3">★★★ 为什么 ③ 这种"从文档中间切开"是可以接受的</h3>
+<p><strong>原因一（最本质）：预训练的监督单位是 token，不是"一篇文档"</strong></p>
+<div class="codehilite"><pre><span></span><code>预训练做的是 next-token prediction（下一个词预测）：
+   给定前面所有 token，预测下一个 token。
+★ loss（损失）是在【每一个位置上单独算】的，然后取平均。
+
+  文本:  今天  天气  很   好   ，   我   出去  跑步
+  标签:        天气  很   好   ，   我   出去  跑步  …
+              ↑ 每个位置都是一条独立的监督信号
+  ⟹ ★ 一条 4096 的样本 = 4096 条监督信号，而不是&quot;1 条样本&quot;
+
+从中间切开之后：
+   前半段          每个位置上文都完整        → 信号 ★ 100% 有效
+   后半段（新样本开头） 开头几十个 token 上文缺失 → 信号 ★【变弱】，但【没有变错】
+
+★★ 关键认知：上文不完整的续写，本身就是一个【合法的】语言建模任务。
+   模型在推理时本来就经常要在没有完整前文的情况下往下写。
+   ⟹ 这不是脏数据，只是【难度更高】的数据。
+</code></pre></div>
+
+<p><strong>原因二：受影响的 token 占比很小，且会被 shuffle 稀释</strong></p>
+<div class="codehilite"><pre><span></span><code>⚠️ 下面是我为了给量级感构造的粗估，不是论文结论：
+
+  设 L = 8192，平均文档长度 ≈ 1000 token
+     ⟹ 一条样本里约拼了 8 篇 → 产生 8 个文档边界
+  设每个边界之后 ~50 个 token 处于&quot;上文不足&quot;的劣化区
+
+     劣化占比 ≈ 8 × 50 / 8192 ≈ 5%
+
+★ 而且切点位置会随 shuffle 种子变化（见 [14 章](14-采样-shuffle-与断点续训.md)）：
+  同一篇文档在不同轮次里切在不同地方
+  ⟹ 长期看，每个位置都被&quot;完整上文&quot;覆盖过。
+</code></pre></div>
+
+<p><strong>原因三：不切的代价是 GPU 闲死</strong></p>
+<div class="codehilite"><pre><span></span><code>Transformer 训练要求一个 batch 里所有序列★等长，否则要 padding。
+而注意力开销 ∝ 序列长度的【平方】 ⟹ padding 的浪费会被平方放大。
+
+  按最长文档补齐      → ★ 利用率可能 &lt; 20%（见 13.2 的 89% 极端例子）
+  按文档分桶          → 中等，实现复杂（这条路见 13.7）
+  ★ 拼接后切分         → 利用率 ≈ 100%，代价只是边界处那 ~5%
+</code></pre></div>
+
+<h3 id="sft">★★ 那 SFT 为什么就不能切</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>预训练</th>
+<th>SFT / 后训练</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>监督单位</td>
+<td>★ 单个 token</td>
+<td>★ 一条完整样本（prompt + 完整回答）</td>
+</tr>
+<tr>
+<td>从中间切开的后果</td>
+<td>少数 token 上文变短，信号<strong>变弱</strong></td>
+<td>回答被砍掉，信号<strong>变错</strong></td>
+</tr>
+<tr>
+<td>模型会学到什么</td>
+<td>「在信息不全时也要合理续写」——<strong>有用</strong></td>
+<td>「话说到一半就停」——★<strong>方向错误</strong></td>
+</tr>
+<tr>
+<td>数据规模</td>
+<td>万亿（T）级，5% 可稀释</td>
+<td>十万~百万级，★ 每条都金贵</td>
+</tr>
+<tr>
+<td>结论</td>
+<td>★ <strong>可以切分</strong></td>
+<td>★ <strong>不能切分</strong>（所以才要 13.3 的装箱打包）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★★ 这张表就是 13.1 开头那句"打包主要是 SFT 的问题"的完整理由：<br />
+<strong>预训练不需要装箱，是因为它本来就允许把文档切开；<br />
+SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</strong></p>
+</blockquote>
+<h3 id="_1">✅ 但"可以接受"不等于"没有代价"</h3>
+<p>✅ <strong>Fewer Truncations Improve Language Modeling</strong><br />
+（<a href="https://arxiv.org/abs/2404.10830">arXiv:2404.10830</a>，Hantian Ding 等，AWS AI Labs，2024-04-16）</p>
+<p>⚠️ <strong>核对说明</strong>：这篇论文的 PDF <strong>不在本教程的 <a href="papers/">papers/</a> 目录里</strong>。下面的数字来自<br />
+<strong>arXiv 官方摘要</strong>（编号 ↔ 标题 ↔ 第一作者 ↔ 首次提交日期已通过 arXiv API 核对），<br />
+✅ 属于一手来源，但<strong>未逐句核对正文</strong>——引用时请以原文为准。</p>
+<div class="codehilite"><pre><span></span><code>✅ 论文摘要明确指出的问题：
+   拼接切分虽然高效，★ 但会&quot;破坏数据完整性&quot;——
+   它把大量文档切成不完整的碎片，导致模型★学不会生成
+   【基于完整上下文的、逻辑连贯且事实一致】的内容。
+
+★★ 说人话的例子：
+   原文  「……XX 公司 2023 年的营收是 |切| 47 亿美元。」
+   切开后：前提句在样本 k，数字在样本 k+1
+   ⟹ 模型学到的是&quot;营收是&quot;后面可以接【任意数字】
+   ⟹ ★★ 这正是【幻觉（hallucination）】的一种制造机制
+
+✅ 论文提出 Best-fit Packing（最优装箱打包）：
+   用&quot;长度感知的组合优化&quot;打包，★ 在保持和拼接切分【同等训练效率】的前提下，
+   完全消除【不必要的】截断。
+
+✅ 摘要报告的收益（相对提升）：
+   阅读理解 +4.7% ／ 上下文遵循 +16.8% ／ 程序合成 +9.2%
+   ★★ 闭域幻觉（closed-domain hallucination）最多减少 58.3%
+</code></pre></div>
+
+<blockquote>
+<p>★★★ <strong>所以本节的完整结论是一个权衡，不是一句"随便切"：</strong><br />
+<code>预训练【能够】容忍切分   —— 因为监督单位是 token，切分只让信号变弱不变错
+但切分【不是免费的】     —— ✅ 事实和它的前提被切散，是幻觉的成因之一
+⟹ ★ 正确的态度：能少切就少切（13.3 的装箱 / 13.7 的分桶），
+     而不是"反正预训练能截断，无所谓"。</code></p>
+</blockquote>
+<hr />
+<h2 id="132-padding">13.2 padding 到底浪费了多少</h2>
+<p>✅ <strong>Efficient Sequence Packing without Cross-contamination</strong><br />
+（<a href="https://arxiv.org/abs/2107.02027">arXiv:2107.02027</a>，Mario Michael Krell 等，Graphcore，2021-06）</p>
+<p>✅ 论文报告的实测：</p>
+<div class="codehilite"><pre><span></span><code>· 在常见的 NLP 数据集上，★ 高达 50% 的 token 是 padding
+· 极端例子：GLUE-CoLA 数据集在最大长度 128 下，
+  ★★ 89% 的 token 是 padding —— 也就是说 GPU 有 89% 的算力在算空气
+· 对 BERT 的 phase-2 预训练，打包带来了约 2 倍的加速
+</code></pre></div>
+
+<blockquote>
+<p>★ 为什么这么夸张？因为 padding 浪费 = <strong>1 − 平均长度/最大长度</strong>。<br />
+长度分布重尾时，你为了容纳那少数几条长的，把 L 设得很大，于是<strong>绝大多数样本都在补空气</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="133">13.3 ★ 打包 = 一个装箱问题</h2>
+<p>✅ 论文的核心贡献之一，就是<strong>把它明确地表述成了经典的【装箱问题（bin packing）】</strong>：</p>
+<div class="codehilite"><pre><span></span><code>给你一堆长度不同的物品（文档），
+和无限个容量为 L 的箱子（样本），
+★ 求：用最少的箱子装下所有物品。
+
+⟹ 这是运筹学里研究了几十年的经典 NP-hard 问题，有大量成熟的近似算法。
+</code></pre></div>
+
+<h3 id="_2">三个够用的算法</h3>
+<div class="codehilite"><pre><span></span><code>① 首次适应递减 First-Fit-Decreasing (FFD)
+   ★ 先把所有文档【从长到短】排序，
+     每篇依次放进【第一个装得下】的箱子；都装不下就开新箱子
+   ✅ 效果：通常能把浪费压到 1~3%，实现十行代码
+
+② 最佳适应 Best-Fit
+   放进【放完后剩余空间最小】的箱子。稍好一点，稍慢一点
+
+③ ✅ 论文提出的两个方法（针对超大规模）：
+   · SPFHP —— 基于【长度直方图】做打包，
+     ★ 关键洞察：几百万篇文档里长度只有 L 种取值，
+       所以不必逐篇处理，按【长度桶】处理就行 → 复杂度大幅下降
+   · NNLSHP —— 用非负最小二乘求解&quot;每种组合模式用多少次&quot;
+   ✅ 论文报告这两种方法能达到接近理论最优的打包效率
+
+④ ✅ Best-fit Packing（2404.10830，AWS，见 13.1）
+   ★ 同样是装箱，但它的目标函数不是&quot;省 padding&quot;（预训练本来就没有 padding），
+     而是 ★★【最小化文档被切断的次数】
+   ⟹ 这说明装箱这套工具在预训练里【也有用】，只是优化目标换了一个：
+        SFT 装箱  → 目标是【填满箱子】，省算力
+        预训练装箱 → 目标是【别切碎文档】，保数据完整性
+   ✅ 摘要报告：在保持与拼接切分同等训练效率的前提下消除不必要的截断，
+      ★ 闭域幻觉最多减少 58.3%
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pack_first_fit_decreasing</span><span class="p">(</span><span class="n">lengths</span><span class="p">,</span> <span class="n">L</span><span class="o">=</span><span class="mi">4096</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;返回 [[doc_idx, ...], ...]，每个子列表是一个样本&quot;&quot;&quot;</span>
+    <span class="n">order</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">lengths</span><span class="p">)),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">i</span><span class="p">:</span> <span class="o">-</span><span class="n">lengths</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>   <span class="c1"># ★ 长的先放</span>
+    <span class="n">bins</span><span class="p">,</span> <span class="n">remain</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">order</span><span class="p">:</span>
+        <span class="n">li</span> <span class="o">=</span> <span class="n">lengths</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">li</span> <span class="o">&gt;</span> <span class="n">L</span><span class="p">:</span>                       <span class="c1"># 超长文档单独处理（切分或丢弃）</span>
+            <span class="n">bins</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">i</span><span class="p">]);</span> <span class="n">remain</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span> <span class="k">continue</span>
+        <span class="k">for</span> <span class="n">b</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">bins</span><span class="p">)):</span>
+            <span class="k">if</span> <span class="n">remain</span><span class="p">[</span><span class="n">b</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">li</span><span class="p">:</span>
+                <span class="n">bins</span><span class="p">[</span><span class="n">b</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">i</span><span class="p">);</span> <span class="n">remain</span><span class="p">[</span><span class="n">b</span><span class="p">]</span> <span class="o">-=</span> <span class="n">li</span>
+                <span class="k">break</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">bins</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">i</span><span class="p">]);</span> <span class="n">remain</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">L</span> <span class="o">-</span> <span class="n">li</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">bins</span>
+
+<span class="c1"># ★ 一定要打印这个数字：它是打包好坏的唯一指标</span>
+<span class="c1"># 利用率 = 总 token 数 / (箱子数 × L)</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个实践细节</strong>：FFD 每次要扫所有箱子，箱子多了会慢。<br />
+★ 实用做法：<strong>分块处理</strong>（每 10 万篇文档独立打包一次），几乎不损失效率，速度快几个数量级。</p>
+</blockquote>
+<hr />
+<h2 id="134">13.4 ★★★ 跨文档污染：本章最重要的正确性问题</h2>
+<p>现在假设你把三篇不相干的文档打包进了同一条样本：</p>
+<div class="codehilite"><pre><span></span><code>样本 = [ 一篇菜谱 ][ 一段 Python 代码 ][ 一条新闻 ]
+         0 ~ 1200    1201 ~ 2800       2801 ~ 4096
+</code></pre></div>
+
+<p><strong>默认情况下，Transformer 的因果注意力是这样的：</strong></p>
+<div class="codehilite"><pre><span></span><code>位置 3000（新闻里的一个词）在算注意力时，
+   ★ 可以看到位置 0~2999 的【所有】token
+   —— 包括那篇菜谱和那段代码！
+
+⟹ ★★ 模型在学习&quot;看到菜谱和代码之后，接下来会出现这条新闻&quot;
+   —— 这是一个【完全虚假】的统计关系。
+</code></pre></div>
+
+<p><strong>这就叫跨文档污染（cross-contamination）。</strong></p>
+<h3 id="_3">✅ 一个必须知道的实验结论</h3>
+<blockquote>
+<p>✅ <strong>论文明确报告：加分隔符 token（比如 <code>&lt;eod&gt;</code>）【并不能】消除跨文档污染。</strong></p>
+<p>★ 很多人以为"我加了 <code>&lt;eod&gt;</code> 就没事了"。<strong>这是错的。</strong><br />
+<code>&lt;eod&gt;</code> 只是一个普通 token，注意力<strong>照样能看过去</strong>。模型或许能学到"遇到 <code>&lt;eod&gt;</code> 就该重置"，但那是<strong>让模型自己去学一件本可以直接在掩码里规定死的事</strong>——浪费容量，且学不干净。</p>
+</blockquote>
+<hr />
+<h2 id="135">13.5 ★★ 解法：块对角注意力掩码</h2>
+<div class="codehilite"><pre><span></span><code>【默认】因果掩码（下三角）——           【文档掩码】块对角 —— 
+可以看到样本里之前的一切               ★ 只能看到【同一篇文档】里之前的
+
+     0 1 2 3 4 5 6 7                       0 1 2 3 4 5 6 7
+  0 [█ · · · · · · ·]                   0 [█ · · · · · · ·]
+  1 [█ █ · · · · · ·]  doc A            1 [█ █ · · · · · ·]  doc A
+  2 [█ █ █ · · · · ·]                   2 [█ █ █ · · · · ·]
+  3 [█ █ █ █ · · · ·]                   3 [· · · █ · · · ·]  ← ★ 看不到 A 了
+  4 [█ █ █ █ █ · · ·]  doc B            4 [· · · █ █ · · ·]  doc B
+  5 [█ █ █ █ █ █ · ·]                   5 [· · · █ █ █ · ·]
+  6 [█ █ █ █ █ █ █ ·]  doc C            6 [· · · · · · █ ·]  doc C
+  7 [█ █ █ █ █ █ █ █]                   7 [· · · · · · █ █]
+       ↑ ★ 跨文档&quot;串味&quot;                       ↑ ★ 干净的块对角
+</code></pre></div>
+
+<p><strong>同时还要重置位置编码：</strong></p>
+<div class="codehilite"><pre><span></span><code>默认位置 id：  0 1 2 3 4 5 6 7          （跨文档连续累加）
+★ 重置后：    0 1 2 | 0 1 2 | 0 1       （每篇文档从 0 重新数）
+
+★ 为什么必须一起做？
+  否则一篇短文档如果碰巧被排在样本末尾，它的位置 id 就是 4000+，
+  而同一篇文档在别的样本里可能是 0~100。
+  ⟹ 模型会以为&quot;这篇文档在很靠后的位置&quot;，这是虚假信息。
+  ⚠️ 对 RoPE 这类相对位置编码，影响的是【文档内部的相对距离计算】。
+</code></pre></div>
+
+<h3 id="megatron">✅ Megatron 里的两个开关</h3>
+<div class="codehilite"><pre><span></span><code>--reset-attention-mask     ← ★ 打开块对角掩码
+--reset-position-ids       ← ★ 每篇文档位置 id 从 0 重新数
+
+⚠️⚠️ 两个都【默认关闭】。
+   ★★ 也就是说：如果你什么都不改，你的预训练【是带跨文档污染的】。
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>那为什么默认是关的？</strong> ⚠️ 我的理解（不是官方说法）：<br />
+<code>① 历史原因：早期实现里块对角掩码要显式构造 [L, L] 的掩码矩阵，
+   L=4096 时是 1600 万个 bool，★ 显存和带宽开销都很实在
+② 预训练时如果文档普遍很长（一条样本里就 1~2 篇文档），污染影响较小
+③ ★ 而 SFT 场景下文档普遍很短（一轮对话几百 token），
+   一条样本里能塞十几条 —— 此时污染影响【大得多】
+⟹ 实践建议：★ 预训练可以斟酌，SFT【必须打开】。</code></p>
+</blockquote>
+<hr />
+<h2 id="136">13.6 ★★★ 一个反直觉的好消息：文档掩码其实更快</h2>
+<p>很多人以为"加掩码 = 多做一件事 = 更慢"。<strong>恰恰相反。</strong></p>
+<div class="codehilite"><pre><span></span><code>朴素注意力的开销 ∝ 序列长度的平方。
+
+  不加掩码：一条 4096 的样本 → 4096² = 1677 万次
+  加掩码后：假设塞了 8 篇各 512 的文档
+            → 8 × 512² = 209 万次
+            ★★ 只有 1/8 !
+
+★ 一般地：一条样本里均匀塞 k 篇文档 → 注意力开销降到 1/k
+</code></pre></div>
+
+<p><strong>但前提是：算子必须真的跳过那些被掩掉的块，而不是"算完再乘 0"。</strong></p>
+<div class="codehilite"><pre><span></span><code>★★ 这就是【变长注意力（varlen attention）】的用途。
+   FlashAttention 提供了专门的变长接口，需要三样东西：
+
+   cu_seqlens        —— cumulative sequence lengths，★ 累积长度前缀和
+                        例：三篇文档长 300/1200/2596
+                            → cu_seqlens = [0, 300, 1500, 4096]
+                        ★ 这就是 04 章 .idx 里&quot;边界表&quot;思想的复现
+   max_seqlen        —— 本 batch 里最长的一篇，用于分配工作空间
+   cu_seqlens_padded —— 对齐补齐后的版本（某些实现需要）
+</code></pre></div>
+
+<h3 id="thd-sbhd">★ THD 与 SBHD：两种张量摆法</h3>
+<div class="codehilite"><pre><span></span><code>SBHD 格式（传统）  = [Sequence, Batch, Heads, Dim]
+   ★ 规整的四维张量，每条样本长度相同（不足补 padding）
+
+THD 格式（变长）   = [Total_tokens, Heads, Dim]
+   ★★ 把整个 batch 的所有 token 【拍平成一维】，
+     不同序列的边界靠 cu_seqlens 描述 —— 完全没有 padding
+
+  例：batch 里三条样本长 300 / 1200 / 2596
+    SBHD: [2596, 3, H, D]，其中 (2596-300) + (2596-1200) = 3692 个位置是空气
+    THD : [4096, H, D]     ★ 一个 padding 都没有
+
+⟹ ★★ THD + cu_seqlens 是现在长上下文和 SFT 训练的标准做法。
+   Transformer Engine / FlashAttention / 各家训练框架都支持。
+</code></pre></div>
+
+<blockquote>
+<p>★★★ <strong>把这一节的结论说透：</strong><br />
+<strong>"打包 + 文档掩码 + 变长注意力"这三件事必须一起做，才能同时拿到【正确性】和【速度】。</strong><br />
+<code>只打包不掩码      → 快，但★有跨文档污染（很多人的现状）
+打包 + 掩码但用 SBHD → 正确，但掩码是"算完乘 0"，★ 没有省下算力
+★ 打包 + 掩码 + THD/varlen → 又正确又快</code></p>
+</blockquote>
+<hr />
+<h2 id="137-dataset-decomposition">13.7 另一条路：按长度分桶（Dataset Decomposition）</h2>
+<p>✅ <strong>Dataset Decomposition: Faster LLM Training with Variable Sequence Length Curriculum</strong><br />
+（<a href="https://arxiv.org/abs/2405.13226">arXiv:2405.13226</a>，Hadi Pouransari 等，Apple，2024-05）</p>
+<p>它对 13.1 的做法③提出了一个<strong>根本性的替代</strong>：</p>
+<div class="codehilite"><pre><span></span><code>★ 传统做法（concat-and-chunk）：
+  把所有文档拼成一条流 → 每 L 切一刀
+  ❌ 一条样本里混了多篇文档（要靠 13.5 的掩码补救）
+  ❌ ★ 长文档被切碎，模型看不到完整的长依赖
+
+★★ Dataset Decomposition 的做法：
+  把语料按文档长度分解成【一组桶】，桶的容量是 2 的幂：
+     bucket_8    放长度 ~256 的片段
+     bucket_9    放长度 ~512 的
+     bucket_10   放长度 ~1024
+     ...
+     bucket_13   放长度 ~8192
+
+  训练时，★ 每个 batch 【只从一个桶里取】
+  ⟹ 同一个 batch 内所有序列等长 → 零 padding、零跨文档污染
+
+★ 额外的好处：既然桶是显式的，就可以【控制各桶的采样比例随时间变化】
+  → 前期多用短序列（便宜、收敛快），后期加大长序列比例
+  → ★★ 这就是标题里的&quot;变长序列课程（curriculum）&quot;
+✅ 论文报告：在同等目标效果下取得了明显的训练加速。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>怎么选</strong>：<br />
+<code>预训练、想省事、框架已支持 Megatron 那套 → 用 concat-and-chunk + 文档掩码
+想要长上下文能力、且能改数据管线       → ★ 按长度分桶更优
+SFT                                    → ★ 必须打包 + 掩码（样本不能切断）</code></p>
+</blockquote>
+<hr />
+<h2 id="138">13.8 ★★★ 挂回真实系统：一份前沿报告的直接印证</h2>
+<p>本章讲的两件事，在 <strong>DeepSeek-V4 的技术报告 §4.1</strong> 里各有一句原文对应<br />
+（✅ 我从 <a href="../业界模型技术报告/papers/"><code>DeepSeek-V4-正文提取.txt</code></a> 逐句核对过，详见 <a href="16-五家报告的数据章节.html">16.2 节</a>）：</p>
+<table>
+<thead>
+<tr>
+<th>本章内容</th>
+<th>✅ 报告原文（按原意转述）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>13.3 装箱打包</td>
+<td>「把来自不同来源的文档<strong>打包</strong>进合适的序列，以<strong>最小化样本截断</strong>」</td>
+</tr>
+<tr>
+<td>13.5 文档掩码</td>
+<td>「★ <strong>与 DeepSeek-V3 不同</strong>，我们在预训练中采用了<strong>样本级注意力掩码</strong>」</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ &quot;与 V3 不同&quot;这四个字，是本章最有分量的一句佐证：
+
+   ⟹ 它说明【DeepSeek-V3 那一代还没有做文档掩码】。
+   ⟹ 也就是说 13.5 说的&quot;默认关闭、很多人不知道自己踩了&quot;，
+      ★ 不是危言耸听 —— 这是一家前沿实验室在【新一代里专门补上】的东西。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>其他四家</th>
+<th>相关做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MiniMax-M3</strong></td>
+<td>✅ ★★ 长上下文样本的来源之一是「<strong>主题相关的文档打包</strong>」—— 见下方</td>
+</tr>
+<tr>
+<td><strong>Kimi K3 / GLM-5.2 / openPangu-2.0</strong></td>
+<td>⚠️ 报告的数据章节里<strong>未提及</strong>打包或文档掩码的具体做法</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>MiniMax 那条值得单独说</strong>：它是<strong>故意挑主题相关的文档打在一起</strong>。<br />
+<code>本章前面讲的打包是【随机】塞文档 → 所以才需要掩码防串味
+★ 而"主题相关打包"下，跨文档注意力【不再是污染，而是有价值的长程依赖信号】
+⟹ 它把打包从"省 padding 的技巧"变成了【制造长上下文训练数据的手段】
+⚠️ 但报告没说明此时是否关闭文档掩码，这一点无法从原文确认。</code></p>
+</blockquote>
+<hr />
+<h2 id="139">13.9 ⚠️ 四个坑</h2>
+<div class="codehilite"><pre><span></span><code>① ★★ 以为加了 &lt;eod&gt; 就不用掩码了
+   ✅ 论文明确否定：分隔符 token 【不能】消除跨文档污染
+
+② 打开了 --reset-attention-mask 但用的是 SBHD 稠密注意力
+   → 正确性有了，★ 但速度一点没省（掩码是&quot;算完乘 0&quot;）
+   → 要拿到加速必须走 THD + cu_seqlens
+
+③ ⚠️ cu_seqlens 算错 —— 最常见的是【差一错误】
+   它的长度必须是【序列条数 + 1】，且首元素为 0、末元素为总 token 数
+   ★ 现象：loss 略微偏高但不崩，★ 极难发现。
+   ★ 自检：assert cu[0]==0 and cu[-1]==total and (np.diff(cu)&gt;0).all()
+
+④ SFT 时 loss 掩码没跟着打包一起走
+   打包后一条样本里有 10 轮对话，
+   ★ 每一轮的&quot;只对 assistant 部分算 loss&quot;的掩码都要跟着重新对齐
+   ⚠️ 现象：模型学会了生成用户的提问。见 [15 章](15-后训练数据格式.md)
+</code></pre></div>
+
+<hr />
+<h2 id="1310">13.10 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 变长文档 → 定长 [B,L]，三种做法：补齐(浪费) / 截断丢弃(真丢数据) /
+   ★ 拼接后切分(零浪费，但引入跨文档污染)
+   ★★★ Megatron GPTDataset 用的就是第三种
+      ⟹ 预训练【本来就没有 padding 浪费】，
+        &quot;打包&quot;主要是 SFT 的问题（SFT 样本不能从中间切断）
+
+①b ★★★ 为什么预训练【可以】从文档中间切开（13.1）：
+   ★ 先分清两个词：②是【丢弃】后半，③是【切到下一条样本】——一个 token 都没丢
+   本质原因：预训练的监督单位是 ★【token】不是文档。loss 逐位置计算，
+     一条 4096 的样本 = 4096 条监督信号；切开只让边界后几十个 token
+     ★【上文变短 → 信号变弱】，而不是【变错】——上文不全的续写本身就是合法任务
+   ⚠️ 粗估：L=8192、平均文档 1000 token 时，劣化 token 占比 ≈ 5%，且被 shuffle 稀释
+   ★★ 而 SFT 切开是把回答砍掉 → 模型学会【说到一半就停】，是【方向错误】
+   ✅ 但切分不免费（2404.10830，AWS，⚠️ PDF 未归档、数字取自 arXiv 摘要）：
+      事实与其前提被切散是幻觉成因之一；Best-fit Packing 在同等训练效率下
+      ★ 使闭域幻觉最多减少 58.3%（阅读理解 +4.7% / 上下文遵循 +16.8% / 程序合成 +9.2%）
+   ⟹ ★ 正确态度是&quot;能少切就少切&quot;，不是&quot;反正能截断，无所谓&quot;
+
+② ✅ 打包的收益（2107.02027）：常见数据集里高达 50% 是 padding，
+   GLUE-CoLA@128 极端到 89%；打包给 BERT phase-2 带来约 2× 加速
+   ★ 本质是经典的【装箱问题】，FFD 十行代码就能把浪费压到 1~3%
+   ✅ 论文的 SPFHP/NNLSHP 用【长度直方图】而非逐篇处理，可扩到超大规模
+
+③ ★★★ 跨文档污染：一条样本里塞了三篇不相干的文档，
+   默认因果掩码让后面的能看到前面的 → 模型在学【虚假的统计关系】
+   ✅ 论文明确报告：★ 加 &lt;eod&gt; 分隔符【不能】解决这个问题
+
+④ ★★ 解法 = 块对角注意力掩码 + 位置 id 重置
+   ✅ Megatron: --reset-attention-mask / --reset-position-ids
+   ⚠️⚠️ 两个都【默认关闭】→ 不改配置的话你的训练是带污染的
+   ★ 预训练可斟酌（文档长时影响小），SFT 必须开（文档短、一条塞十几个）
+
+⑤ ★★★ 反直觉：文档掩码不但不慢，反而【更快】
+   一条样本塞 k 篇 → 注意力开销降到 1/k
+   ★ 但前提是算子真的跳过被掩的块 ⟹ 必须用变长注意力：
+     cu_seqlens（累积长度前缀和，★ 就是 .idx 边界表思想的复现）
+     + THD 格式（把整 batch 拍平成一维，零 padding）
+   ⟹ 打包 + 掩码 + THD 三件事要一起做
+
+⑥ ✅ 另一条路 Dataset Decomposition（2405.13226，Apple）：
+   按长度把语料分解成 2 的幂的桶，★ 每个 batch 只从一个桶取
+   → 零 padding + 零污染 + ★ 还能做&quot;短序列在前、长序列在后&quot;的课程
+
+⑦ ⚠️ 四个坑：以为 &lt;eod&gt; 够用 / 开了掩码但用 SBHD 没省算力 /
+   ★ cu_seqlens 差一错误（loss 略高但不崩，极难发现）/
+   SFT 打包后 loss 掩码没跟着对齐（★ 模型学会生成用户提问）
+
+⑧ ★★★ 一手佐证（DeepSeek-V4 报告 §4.1，见 16 章）：
+   ✅「打包文档以最小化样本截断」+
+   ✅「★ 与 V3 不同，我们采用【样本级注意力掩码】」
+   ⟹ ★ &quot;与 V3 不同&quot;说明上一代还没做 —— 本章这个坑是真实存在的
+   ✅ MiniMax-M3 则更进一步：★★【主题相关的文档打包】
+      ⟹ 此时跨文档注意力不是污染，而是有价值的长程信号
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><a href="12-合成数据.html">← 12 合成数据</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="14-采样-shuffle-与断点续训.html">14 采样、shuffle 与断点续训</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

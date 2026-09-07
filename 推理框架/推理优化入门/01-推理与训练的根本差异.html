@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 推理和训练到底差在哪</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="01">01 推理和训练到底差在哪</h1>
+<blockquote>
+<p><strong>一句话</strong>：训练是<strong>算力</strong>不够用，推理是<strong>内存带宽</strong>不够用。这一条差异，决定了后面十二章的全部内容。</p>
+</blockquote>
+<hr />
+<h2 id="11">1.1 先看一个反直觉的现象</h2>
+<p>你用一张 H100 跑一个 7B（70 亿参数）模型：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 训练时：GPU 的算力利用率能到 40%~50%
+    ★ 推理时（一次只服务一个用户）：算力利用率常常【不到 1%】
+</code></pre></div>
+
+<p>同一张卡，同一个模型，差了 50 倍。<strong>卡没坏，是这件事本身的性质变了。</strong></p>
+<hr />
+<h2 id="12">1.2 差异的根源：一次前向要搬多少、要算多少</h2>
+<p>先定义两个词（第一次出现，给全称）：</p>
+<blockquote>
+<p>📖 <strong>FLOPs</strong>（<strong>FL</strong>oating point <strong>OP</strong>eration<strong>s</strong>，浮点运算次数）——「要算多少」。<br />
+📖 <strong>访存量 / MOPs</strong>（<strong>M</strong>emory <strong>OP</strong>eration<strong>s</strong>，内存访问字节数）——「要从显存搬多少数据到计算单元」。</p>
+</blockquote>
+<p>一个参数量为 <strong>Ψ</strong>（希腊字母 psi，代表参数个数）的稠密模型，跑<strong>一次</strong>前向传播：</p>
+<div class="codehilite"><pre><span></span><code>    要算：  ≈ 2Ψ FLOPs  × （这一批有多少个 token）
+             ★ 每个参数参与一次乘、一次加 = 2 次运算
+
+    要搬：  ≈ 2Ψ 字节（BF16 每参数 2 字节）
+             ★★ 关键：不管这一批有 1 个 token 还是 1000 个 token，
+                权重都只需要【搬一遍】
+</code></pre></div>
+
+<p>于是有一个决定性的比值：</p>
+<div class="codehilite"><pre><span></span><code>    算术强度（arithmetic intensity）
+        = FLOPs ÷ 访存字节
+        = (2Ψ × B) ÷ (2Ψ)
+        = B                              ← B 就是这一批的 token 数
+
+    ★★ 算术强度 ≈ 批大小。一句话记住它。
+</code></pre></div>
+
+<hr />
+<h2 id="13">1.3 把这个数字和硬件对上</h2>
+<p>每张 GPU 都有一个「性价比平衡点」——算力除以带宽：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 演示用的量级（各家公开规格，具体数字随型号/精度而变）
+
+    NVIDIA H100 (SXM)：  BF16 算力 ≈ 990 TFLOP/s
+                         显存带宽 ≈ 3.35 TB/s
+                         ⟹ 平衡点 ≈ 990e12 / 3.35e12 ≈ 300
+
+    ★ 含义：只有当算术强度 &gt; ~300 时，GPU 才可能吃满算力。
+      低于这个数，GPU 一定在【等数据】，算力空转。
+</code></pre></div>
+
+<p>现在把训练和推理代进去：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>一批处理多少 token</th>
+<th>算术强度</th>
+<th>瓶颈在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练</strong></td>
+<td>batch 8 × 序列 4096 = <strong>32768</strong></td>
+<td>~32768 ≫ 300</td>
+<td>✅ <strong>算力受限</strong>（compute-bound）</td>
+</tr>
+<tr>
+<td><strong>推理 · Prefill</strong>（读 prompt）</td>
+<td>一个 2000 字的 prompt = <strong>2000</strong></td>
+<td>~2000 &gt; 300</td>
+<td>✅ <strong>算力受限</strong></td>
+</tr>
+<tr>
+<td><strong>推理 · Decode</strong>（吐字）</td>
+<td><strong>1</strong>（一次只生成一个 token）</td>
+<td><strong>~1</strong> ≪ 300</td>
+<td>❌ <strong>访存受限</strong>（memory-bound）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>★★ 这就是那 50 倍的来源。</strong><br />
+解码阶段每生成一个字，都要把<strong>整个模型的权重</strong>从显存里搬一遍，却只做 <strong>1 个 token</strong> 的计算。<br />
+300 倍的算力买了，只用上 1/300。</p>
+</blockquote>
+<hr />
+<h2 id="14">1.4 那怎么办？——这就是整本教程</h2>
+<p>既然瓶颈是「搬一次权重只干了一点活」，那所有优化都在做同一件事：</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 让「每搬一次权重」干更多的活 ★★
+
+    办法一：一次多塞几个用户进来（把 B 从 1 变成 256）
+            → 连续批处理                          （04 章）
+            → 但 B 变大的前提是显存装得下 KV Cache
+              → PagedAttention、前缀缓存           （05 章）
+              → MQA / GQA / MLA                    （07 章）
+              → KV Cache 量化                      （09 章）
+            ★ 你会发现 05、07、09 三章表面在讲省显存，
+              实际全都是为了「把 B 做大」这一件事。
+
+    办法二：一次多吐几个字（一次前向验证 4 个候选 token）
+            → 投机解码                             （08 章）
+
+    办法三：让权重本身变小，搬得更快
+            → 权重量化 FP8 / INT4                  （09 章）
+
+    办法四：别让 CPU 拖后腿（B=1 时 GPU kernel 太小，CPU 派发都来不及）
+            → CUDA Graph、图编译                   （12 章）
+</code></pre></div>
+
+<hr />
+<h2 id="15">1.5 第二个根本差异：没有反向传播</h2>
+<p>这一条看起来平淡，但它悄悄改掉了并行策略的全部成本模型。</p>
+<div class="codehilite"><pre><span></span><code>    训练一次迭代：  前向 → 反向 → 优化器更新
+    推理一次迭代：  前向                     ← ★ 就这么多
+</code></pre></div>
+
+<p>带来三个后果：</p>
+<p><strong>① 显存账完全不同。</strong><br />
+<a href="../../训练框架/分布式训练入门/02-显存去哪了.html">训练框架/02 章</a> 那张表说训练每个参数要 <strong>16 字节</strong>（参数 + 梯度 + Adam 的两个动量 + FP32 主权重）。推理呢：</p>
+<div class="codehilite"><pre><span></span><code>    推理每个参数：   2 字节（BF16 权重）        ★ 就这些
+    没有梯度、没有优化器状态、没有 FP32 主权重
+
+    ⟹ ★ 同一个模型，推理的权重显存是训练的【1/8】
+    ⟹ ⚠️ 但推理多了一个训练几乎没有的大头：KV Cache（02 章）
+</code></pre></div>
+
+<p><strong>② 张量并行的通信次数【减半】。</strong></p>
+<div class="codehilite"><pre><span></span><code>    训练：每层 4 次 all-reduce（前向 2 次 + 反向 2 次）
+    推理：每层 2 次 all-reduce（只有前向）      ← ★ 少一半
+
+    ✅ 源码可查：vLLM 的 RowParallelLinear 在
+       [linear.py:1660](../源码/vLLM/vllm/model_executor/layers/linear.py#L1660)
+       只有一句 tensor_model_parallel_all_reduce，没有任何反向的通信。
+</code></pre></div>
+
+<p><strong>③ 数据并行的含义彻底变了。</strong></p>
+<div class="codehilite"><pre><span></span><code>    训练的 DP：  N 份副本算不同数据 → ★ 每步必须 all-reduce 梯度同步
+                 ⟹ 通信量 2Ψ，是个【重】操作
+
+    推理的 DP：  N 份副本服务不同用户 → ★ 各算各的，【不需要同步】
+                 ⟹ 通信量 ≈ 0，是个【轻】操作
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>记住这一条，06 章会用它解释一个让人困惑的现象</strong>：<br />
+训练里 PP（流水线并行）排在最外层、DP 排中间；<br />
+推理里反过来，DP 排最外层、PP 排里面。<br />
+<strong>不是谁写错了，是 DP 的成本从「最贵」变成了「几乎免费」。</strong></p>
+</blockquote>
+<hr />
+<h2 id="16">1.6 第三个差异：训练是离线的，推理是在线的</h2>
+<div class="codehilite"><pre><span></span><code>    训练：  一个作业跑两个月，只关心【总吞吐】（MFU、tokens/s）
+            ★ 慢一点没关系，只要不崩
+
+    推理：  几万个用户同时在等，关心两件事：
+            ① 我等了多久才看到第一个字？   → TTFT
+            ② 后面的字吐得够不够快？       → TPOT
+            ★ 而且要在【承诺的延迟上限（SLO）】内，还要吞吐尽量高
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>TTFT</strong>（<strong>T</strong>ime <strong>T</strong>o <strong>F</strong>irst <strong>T</strong>oken，首字延迟）<br />
+📖 <strong>TPOT</strong>（<strong>T</strong>ime <strong>P</strong>er <strong>O</strong>utput <strong>T</strong>oken，每字延迟）<br />
+📖 <strong>SLO</strong>（<strong>S</strong>ervice <strong>L</strong>evel <strong>O</strong>bjective，服务等级目标——你对用户承诺的延迟上限）<br />
+这三个词 13 章会详细讲，先混个眼熟。</p>
+</blockquote>
+<p><strong>这带来一个训练里完全不存在的矛盾</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 提吞吐的手段（把 batch 做大）会【伤害】延迟
+    ★ 降延迟的手段（batch 做小、多卡切细）会【伤害】吞吐
+
+    ⟹ 推理系统的每一个设计，本质都是在这条线上选一个点。
+    ⟹ 10 章的 PD 分离，就是发现「这两件事根本不该在同一台机器上做」。
+</code></pre></div>
+
+<hr />
+<h2 id="17">1.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  ① 训练算力受限，推理【解码阶段】访存受限                        │
+│     算术强度 ≈ batch 里的 token 数，要 &gt; ~300 才吃得满算力      │
+│     ⟹ 解码时 batch=1 → 算力利用率 &lt;1%                        │
+│                                                              │
+│  ② 所有推理优化都在做一件事：                                  │
+│     ★★ 让「搬一次权重」干更多的活 ★★                          │
+│                                                              │
+│  ③ 没有反向传播 ⟹ 权重显存 1/8、TP 通信减半、DP 几乎免费        │
+│     ⟹ ★ 并行策略的成本模型和训练【不一样】（06 章）            │
+│                                                              │
+│  ④ 在线服务 ⟹ 多了「延迟 vs 吞吐」这条永恒的取舍线              │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="02-KV-Cache与显存账.html">02 KV Cache 与显存账本</a><br />
+我们已经知道要「把 batch 做大」，那到底是什么卡住了 batch？答案是 KV Cache。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

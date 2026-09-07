@@ -1,0 +1,1663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openPangu-2.0-Pro 架构与技术报告解析</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="openpangu-20-pro">openPangu-2.0-Pro 架构与技术报告解析</h1>
+<blockquote>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p><strong>来源</strong>：本文整理自 2026-08-05 的调研，架构、公式、超参、评测数字均从技术报告 PDF 正文提取核对（非二手解读）。</p>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>来源</th>
+<th>可靠性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>架构、超参、预训练课程、后训练、Infra、全部评测数字</td>
+<td><strong>openPangu-2.0 技术报告</strong>（45 页，正文提取核对）</td>
+<td>高（一手）</td>
+</tr>
+<tr>
+<td>505B/18B、512K、34T tokens、许可</td>
+<td>官方 HF 模型卡 + 华为官网公告</td>
+<td>高（一手）</td>
+</tr>
+<tr>
+<td><strong>与其他任何模型的横向对比</strong></td>
+<td><strong>报告中完全不存在</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>本文最重要的一条前提</strong>：<strong>这份 45 页报告里没有任何对照模型。</strong> 全文 <code>Kimi</code> / <code>MiniMax</code> / <code>Claude</code> / <code>GPT-</code> / <code>Gemini</code> 出现 <strong>0 次</strong>，<code>Qwen</code> 1 次（参考文献），<code>GLM</code> 2 次（一次参考文献，一次说明自己的 OPD 与 GLM-5 的实现差异）。Table 5 唯一的对照维度是 <strong>Flash vs Pro、Thinking vs Non-Thinking</strong>。</p>
+<p><strong>所以本文 §十二 里所有"与四家的差距"都是我跨厂商拼出来的，采样协议不同、评测子集口径不同，方向可信，具体分差不可信到小数点。</strong> 这一点和另外四家有本质区别——它们至少在自己的报告里放了对手。</p>
+<p><strong>本地论文</strong>：<a href="papers/openPangu-2.0-Tech-Report.pdf">papers/openPangu-2.0-Tech-Report.pdf</a>（45 页）· <a href="papers/openPangu-2.0-正文提取.txt">papers/openPangu-2.0-正文提取.txt</a><br />
+<strong>横向对比</strong>：见 <a href="模型技术对比.html">模型技术对比.md</a>（DeepSeek-V4 / Kimi K3 / GLM-5.2 / MiniMax M3 / openPangu-2.0 五方）<br />
+<strong>同系列</strong>：<a href="DeepSeek-V4.html">DeepSeek-V4.md</a> ｜ <a href="Kimi-K3.html">Kimi-K3.md</a> ｜ <a href="GLM-5.2.html">GLM-5.2.md</a> ｜ <a href="MiniMax-M3.html">MiniMax-M3.md</a></p>
+</blockquote>
+<hr />
+<h2 id="_1">一、一句话总览</h2>
+<p><strong>openPangu-2.0-Pro = 505B 总参 / 18B 激活的 MoE，MLA + DSA/SWA 1:2 混合注意力，mHC 4 支流残差，512K 上下文，34T tokens——全程在昇腾 NPU 上训练完成。</strong></p>
+<p>报告标题是 <strong>《openPangu-2.0: Towards Reliable and Efficient Agentic Reasoning》</strong>，摘要里反复出现的词是 <strong>hardware-software co-design</strong>。这决定了它和另外四家的根本区别：</p>
+<blockquote>
+<p><strong>另外四家的报告在回答"怎么把模型做得更强/更便宜"；这份报告在回答"怎么在昇腾上把一个 500B 级 MoE 从头到尾跑通"。</strong></p>
+</blockquote>
+<p>三个变体（报告 Table 8）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>MoE15B-A2B</th>
+<th>openPangu-2.0-Flash</th>
+<th><strong>openPangu-2.0-Pro</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用途</td>
+<td><strong>消融与快速验证</strong>（本报告所有消融都在它上面做）</td>
+<td>开源（2026-06-30）</td>
+<td>开源（2026-07-31）</td>
+</tr>
+<tr>
+<td>总参 / 激活</td>
+<td>15B / 2B</td>
+<td>92B / 6B</td>
+<td><strong>505B / 18B</strong></td>
+</tr>
+<tr>
+<td>上下文</td>
+<td>—</td>
+<td>512K</td>
+<td><strong>512K</strong></td>
+</tr>
+</tbody>
+</table>
+<p>另有一个 <strong>30B / 2B 激活的端侧模型</strong>（Kirin 感知量化与剪枝，专家复用 loss 把专家切换频率降 50%，专家激活预测做预取，吞吐最高提升 5×）。</p>
+<p><strong>发布时间线</strong>：2026-06-12 HDC 发布 → 06-30 Flash 开源 → <strong>07-31 Pro 权重 + 推理代码 + 技术报告开源</strong>。许可是 <code>OPENPANGU MODEL LICENSE AGREEMENT VERSION 2.0</code>，<strong>不是 MIT/Apache</strong>。</p>
+<hr />
+<h2 id="table-8">二、骨干架构（报告 Table 8，一手）</h2>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>MoE15B-A2B</th>
+<th>Flash</th>
+<th><strong>Pro</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总参数</td>
+<td>15B</td>
+<td>92B</td>
+<td><strong>505B</strong></td>
+</tr>
+<tr>
+<td>激活参数</td>
+<td>2B</td>
+<td>6B</td>
+<td><strong>18B</strong></td>
+</tr>
+<tr>
+<td>总层数</td>
+<td>32</td>
+<td>46</td>
+<td><strong>50</strong></td>
+</tr>
+<tr>
+<td>Dense 层</td>
+<td>2</td>
+<td>2</td>
+<td><strong>3</strong></td>
+</tr>
+<tr>
+<td>MoE 层</td>
+<td>30</td>
+<td>44</td>
+<td><strong>47</strong></td>
+</tr>
+<tr>
+<td>Hidden Size</td>
+<td>1536</td>
+<td>2560</td>
+<td><strong>5120</strong></td>
+</tr>
+<tr>
+<td>词表</td>
+<td>151552</td>
+<td>151552</td>
+<td><strong>151552</strong></td>
+</tr>
+<tr>
+<td>注意力头数</td>
+<td>48</td>
+<td>48</td>
+<td><strong>64</strong></td>
+</tr>
+<tr>
+<td>Query 投影秩</td>
+<td>384</td>
+<td>1024</td>
+<td><strong>1536</strong></td>
+</tr>
+<tr>
+<td>KV 投影秩</td>
+<td>512</td>
+<td>512</td>
+<td><strong>512</strong></td>
+</tr>
+<tr>
+<td>无位置 QK 维</td>
+<td>128</td>
+<td>128</td>
+<td><strong>128</strong></td>
+</tr>
+<tr>
+<td>RoPE 维</td>
+<td>64</td>
+<td>64</td>
+<td><strong>64</strong></td>
+</tr>
+<tr>
+<td>V head 维</td>
+<td>128</td>
+<td>128</td>
+<td><strong>128</strong></td>
+</tr>
+<tr>
+<td>Dense FFN 中间维</td>
+<td>7680</td>
+<td>9216</td>
+<td><strong>16128</strong></td>
+</tr>
+<tr>
+<td>路由专家</td>
+<td>128</td>
+<td>256</td>
+<td><strong>384</strong></td>
+</tr>
+<tr>
+<td>共享专家</td>
+<td>1</td>
+<td>1</td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td>激活路由专家</td>
+<td>8</td>
+<td>8</td>
+<td><strong>8</strong></td>
+</tr>
+<tr>
+<td>专家中间维</td>
+<td>768</td>
+<td>1024</td>
+<td><strong>1792</strong></td>
+</tr>
+<tr>
+<td>MTP 层</td>
+<td>1</td>
+<td>3</td>
+<td><strong>3</strong></td>
+</tr>
+<tr>
+<td><strong>DSA : SWA</strong></td>
+<td>1:2</td>
+<td>1:2</td>
+<td><strong>1:2</strong></td>
+</tr>
+<tr>
+<td>SWA 窗口</td>
+<td>512</td>
+<td>512</td>
+<td><strong>512</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">参数量验算（配置表内部自洽）</h3>
+<div class="codehilite"><pre><span></span><code>路由专家   47 × 384 × 3 × 1792 × 5120 ≈ 496.8B
+共享专家   47 ×   1 × 3 × 1792 × 5120 ≈   1.29B
+Dense FFN   3 ×       3 × 16128 × 5120 ≈   0.74B
+注意力(MLA) 50 × ≈80M                  ≈   4.0B
+词嵌入+输出 2 × 151552 × 5120          ≈   1.55B
+                                        ─────────
+                                          ≈ 504.4B  ✓ 对得上 505B
+
+激活：47 × 9 × 3 × 1792 × 5120 ≈ 11.6B  + 0.74 + 4.0 + 1.55 ≈ 17.9B  ✓ 对得上 18B
+</code></pre></div>
+
+<blockquote>
+<p><strong>口径提示</strong>：HF 侧栏标注 <strong>541B</strong>，是<strong>含 3 个 MTP 层</strong>的全量口径（每个 MTP 层 ≈ 一个完整 transformer 层 ≈ 10.7B，×3 ≈ 32B）。<strong>505B 不含 MTP。</strong> 这和 GLM-5 的 744B / 753B 是同一类口径差异，见 <a href="GLM-5.2.html">GLM-5.2.md</a> §一。</p>
+</blockquote>
+<p><strong>稀疏度</strong>：384 选 8 = <strong>48×</strong>，介于 V4 的 64× 和 GLM/M3 的 32× 之间。<strong>18B 激活是五家里最低的</strong>（M3 23B / GLM 40B / V4 49B / K3 104B）。</p>
+<hr />
+<h2 id="dsa-swa-12">三、注意力：DSA + SWA 的 1:2 交错</h2>
+<p>底座仍是 <strong>MLA</strong>，在它之上做了四件事。</p>
+<h3 id="31-dsaswaswa">3.1 层间交错：DSA–SWA–SWA</h3>
+<div class="codehilite"><pre><span></span><code>重复模式：DSA → SWA → SWA        （即 SWA:DSA = 2:1）
+SWA 窗口固定 512
+SWA 层的 RoPE base 随上下文放大：1e4 @4K → 6.4e6 @512K
+</code></pre></div>
+
+<p><strong>报告给了一条很有价值的负面经验</strong>：</p>
+<blockquote>
+<p>更大的比例（3:1、5:1）在 <strong>4K 短序列上性能不掉</strong>，但<strong>扩到 32K 和 128K 时训练 loss 会退化</strong>。</p>
+</blockquote>
+<p>这和 GLM-9B 的 SWA 消融、MiniMax M2 §2.2.2 是<strong>第三份同向证据</strong>——滑窗比例越高，短上下文越看不出问题，长上下文越崩。<strong>而且这一份补上了前两份缺的东西：它给出了"多少比例是安全的"这个量化答案（1:2，即三层里必须有一层是全局层）。</strong> 详见 <a href="模型技术对比.html">模型技术对比.md</a> §3.1.1。</p>
+<h3 id="32-dsa">3.2 DSA 的引入方式：只转全局层</h3>
+<p>DSA 沿用 DeepSeek 的 lightning indexer，选固定 <strong>K = 2048</strong> 个历史 KV。但引入方式和 DeepSeek / GLM 都不同：</p>
+<blockquote>
+<p><strong>openPangu 的基座本身就是 FULL-SWA 混合，所以它只把全注意力层转成 DSA，SWA 层原样保留。</strong></p>
+</blockquote>
+<p>结果是一个<strong>结构上解耦</strong>的设计：<strong>DSA 负责全局依赖，SWA 负责局部交互</strong>。</p>
+<p><strong>转换预算——第三个数据点</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>稀疏适配预算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DeepSeek-V3.2</td>
+<td><strong>943.7B tokens</strong></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0</strong></td>
+<td><strong>8B dense 预热 + 100B 稀疏训练</strong></td>
+</tr>
+<tr>
+<td>GLM-5</td>
+<td><strong>20B tokens</strong></td>
+</tr>
+</tbody>
+</table>
+<p>三家的差距达到 <strong>47×</strong>，而三家都声称"基本恢复下游表现"。<strong>这个量级的分歧本身就说明：DSA 适配预算目前没有共识，很可能高度依赖基座与数据。</strong></p>
+<h3 id="33-minimax-msa">3.3 ⭐ 一条与 MiniMax MSA 的独立互证</h3>
+<p>DSA 转换时，报告给 lightning indexer 加了一个辅助目标——<strong>拟合全注意力算出的原生注意力分数</strong>，然后写了这么一句：</p>
+<blockquote>
+<p><strong>系数设为 0.1（因为大系数会产生过大的梯度，损害训练稳定性）。</strong></p>
+</blockquote>
+<p><strong>这正是 MiniMax MSA 论文 §B.3 记录的失效模式。</strong> MSA 发现：indexer 的对齐 loss 权重 λ 一大，骨干就会通过<strong>简化主分支的注意力分布</strong>来降低这个 loss，而不是改进 indexer，最终 LM loss 发散。MSA 的解法是<strong>梯度 detach</strong>（<code>stopgrad(X)</code>），从而可以放心用大 λ。</p>
+<p><strong>华为独立撞上了同一堵墙，但选了另一条路——不 detach，改成把 λ 压到 0.1。</strong> 两份报告互不引用（openPangu 全文 <code>MiniMax</code> 出现 0 次）。</p>
+<blockquote>
+<p><strong>这是本目录里第一对"同一个失效模式、两个团队、两种解法"的样本，而且两边都把它写下来了。</strong> 强度上讲：MSA 给了机制解释和消融曲线，openPangu 只给了一句经验；但 openPangu 是在 <strong>505B 真实出货模型</strong>上的经验，MSA 的消融在 109B 试点上。<strong>两者互补。</strong> 详见 <a href="MiniMax-M3.html">MiniMax-M3.md</a> §五。</p>
+</blockquote>
+<h3 id="34-pas">3.4 PAS：参数化注意力汇聚点</h3>
+<p>每层引入 <strong>128 个可学习的 key-value 对</strong>（MLA 里是 latent KV），专门吸收多余的注意力质量。推理时它们是<strong>固定大小的虚拟 KV 条目</strong>，长上下文下开销可忽略。</p>
+<p>（消融见 §四，这是本报告最有独立价值的一处实验。）</p>
+<h3 id="35-modattn">3.5 ModAttn：局部上下文调制</h3>
+<p>用<strong>因果一维卷积 + 残差</strong>在全局注意力<strong>前后</strong>各注入一次局部上下文：</p>
+<div class="codehilite"><pre><span></span><code>Mod_θ(Z) = Z + CausalConv1D_θ(Z)
+
+作用位置：① MLA 的压缩 latent 分支（Q 和 KV 都做）
+         ② FlashAttention 全局聚合之后、输出投影之前
+</code></pre></div>
+
+<p>报告称其为 <strong>low-intrusion enhancement</strong>——不改变注意力接口，只在前后挂两个卷积。</p>
+<blockquote>
+<p>值得对照：<strong>Kimi K3 的 KDA 也在 q/k/v 上挂 ShortConv</strong>（见 <a href="Kimi-K3.html">Kimi-K3.md</a> §二）。<strong>两家在完全不同的注意力机制上，都选择用短因果卷积补局部建模。</strong></p>
+</blockquote>
+<h3 id="36-table-1">3.6 效率分析（报告 Table 1）</h3>
+<p>报告没有报端到端加速比，而是给了<strong>长上下文服务三项主导成本的领头系数</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>成本</th>
+<th>同构 DSA（如 V3.2）</th>
+<th>FULL-SWA（如 Gemma 2）</th>
+<th><strong>DSA-SWA（本文）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prefill FLOPs（S²）</td>
+<td><code>N^Idx_head · D_Idx</code></td>
+<td><code>⅓ N_head (D^MHA_QK + D^MHA_V)</code></td>
+<td><strong><code>⅓ N^Idx_head · D_Idx</code></strong></td>
+</tr>
+<tr>
+<td>Decode cache 读取（S）</td>
+<td><code>D_Idx</code></td>
+<td><code>⅓ D_KV</code></td>
+<td><strong><code>⅓ D_Idx</code></strong></td>
+</tr>
+<tr>
+<td>Decode cache 显存（S）</td>
+<td><code>D_KV + D_Idx</code></td>
+<td><code>⅓ D_KV</code></td>
+<td><strong><code>⅓ (D_KV + D_Idx)</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>论证逻辑很干净</strong>：相比同构 DSA，把 DSA 限制在 1/3 的层上，全局选择成本按比例砍到 1/3；相比 FULL-SWA，把稠密全局注意力换成"轻量索引 + 稀疏检索"，把二次项从全注意力表示降到小得多的索引表示。<strong>两个方向各占一半便宜。</strong></p>
+<p>⚠️ 但注意：<strong>这是渐近系数分析，不是实测加速比。</strong> 报告的实测数字只有 TPOT / TPS（见 §十一），没有和任何基线对比。</p>
+<hr />
+<h2 id="pas-vs-gpt-oss-sink">四、⭐ PAS vs gpt-oss sink：本报告最有独立价值的一处消融</h2>
+<p>这是本目录五家里<strong>唯一一份把 attention sink 的不同实现放在一起比过的材料</strong>。</p>
+<p><strong>实验设置</strong>：MoE15B-A2B 基线，训练 250B tokens，FULL : SWA = 1:2 混合架构。</p>
+<p><strong>三条结论</strong>：</p>
+<ol>
+<li><strong>PAS 让梯度范数明显更平滑，spike 显著减少</strong>（Fig. 9）。</li>
+<li><strong>对全注意力基线，加 PAS 没有明显的 loss 收益。</strong></li>
+<li><strong>对混合 SWA 模型，PAS 有一致的 training-loss 增益，并且明显优于 gpt-oss 使用的 sink</strong>（Fig. 10）。</li>
+</ol>
+<p><strong>报告给的机制解释很到位</strong>：</p>
+<blockquote>
+<p>SWA 层是局部的。<strong>没有显式 sink 时，即使窗口内没有任何值得注意的 token，注意力质量也必须分配到窗口内的真实 token 上</strong>——这会把某些 token 推去充当"局部 sink"的角色，扰乱注意力分布。参数化 sink 给 SWA 层提供了一个<strong>固定的吸收通道</strong>：对 FULL/DSA 层它是稳定的全局 sink，对 SWA 层它是"局部窗口没有信息时的兜底注意力目标"。</p>
+</blockquote>
+<p><strong>为什么这条值得单独记</strong>：</p>
+<ul>
+<li>它解释了一个此前没人解释过的现象——<strong>sink 机制的收益是架构条件性的</strong>。全注意力基线上加 sink 收益不明显，<strong>只有混合了滑窗层才显现</strong>。这意味着凡是引用"attention sink 有用"的工作，都需要说明自己的注意力架构。</li>
+<li>它是<strong>唯一一份 gpt-oss sink 的第三方对照实验</strong>。DeepSeek-V4 用的是"每个头一个可学习 sink logit"（加在 softmax 分母上），MiniMax M3 用的是 <code>swigluoai</code> 那一系的 gpt-oss 血统组件，但<strong>都没有做过 sink 变体之间的对比</strong>。</li>
+<li>它给了 §3.1 那条"SWA 比例不能太高"的经验一个<strong>互补的补丁思路</strong>：SWA 崩掉的一部分原因可能不是"看得不够远"，而是"没地方放弃看"。</li>
+</ul>
+<p>⚠️ <strong>打折提示</strong>：消融在 <strong>15B/2B 模型、250B tokens</strong> 上做，规模离 505B 很远；报告只给了曲线（Fig. 9/10），<strong>没有给数值表</strong>，无法量化"明显优于"是多少。</p>
+<hr />
+<h2 id="mhc4">五、mHC：4 支流，以及一个原论文没记录的失效模式</h2>
+<p>openPangu 直接采用 DeepSeek 的 <strong>mHC</strong>（Manifold-Constrained Hyper-Connections，arXiv:2512.24880），配置 <strong>4 条并行残差流 + 20 次 Sinkhorn-Knopp 迭代</strong>——<strong>和 DeepSeek-V4 完全一致的迭代次数</strong>（见 <a href="DeepSeek-V4.html">DeepSeek-V4.md</a> §三）。</p>
+<div class="codehilite"><pre><span></span><code>x̄ = RMSNorm(h̄)
+[r_pre, r_post, r_res] = x̄ · W_mHC
+H_pre  = σ(r_pre)                              ← 从哪几条流读入子层
+H_post = 2σ(r_post)                            ← 子层输出写回哪几条流
+H_res  = Sinkhorn-Knopp(reshape(r_res, n, n))  ← 流间混合，约束为近似双随机
+</code></pre></div>
+
+<h3 id="gate-collapse">⭐ 新发现：Gate Collapse</h3>
+<p><strong>这是 mHC 原论文和 V4 报告里都没有的内容</strong>：</p>
+<blockquote>
+<p>在原始 mHC 的放置方式下（<code>H_pre</code> 在 pre-norm 之前、<code>H_post</code> 在子层输出之后），我们观察到 <strong>gate-collapse 现象：训练过程中，浅层的所有 <code>H_pre</code> 和 <code>H_post</code> 门控都趋近于零</strong>，导致这些层<strong>与残差流脱耦</strong>，训练信号退化。</p>
+</blockquote>
+<p><strong>归因</strong>：子层输出在写回之前尺度不稳定。</p>
+<p><strong>两级尺度控制解法</strong>：</p>
+<ol>
+<li><strong>Sandwich normalization</strong>：在 <code>H_post</code> 写回<strong>之前</strong>对子层输出做归一化，让 <code>H_post</code> 不必再去压制过大或不稳的输出尺度。</li>
+<li><strong>Block-level post-normalization</strong>：在<strong>第一层之后、之后每五层</strong>对残差流做一次块级后归一化，显式约束多流主干沿深度累积的尺度。</li>
+</ol>
+<p><strong>消融（报告 Table 2，MoE15B-A2B，1T tokens）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>EN</th>
+<th>ZH</th>
+<th>MMLU</th>
+<th>CEval</th>
+<th>BigBench</th>
+<th>MATH</th>
+<th>MBPP+</th>
+<th><strong>平均</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Baseline（无 mHC）</td>
+<td>0.500</td>
+<td>0.605</td>
+<td>0.765</td>
+<td>0.708</td>
+<td>0.591</td>
+<td>0.459</td>
+<td>0.532</td>
+<td>0.594</td>
+</tr>
+<tr>
+<td><strong>mHC（稳定化后）</strong></td>
+<td><strong>0.511</strong></td>
+<td><strong>0.608</strong></td>
+<td><strong>0.799</strong></td>
+<td><strong>0.743</strong></td>
+<td><strong>0.622</strong></td>
+<td><strong>0.472</strong></td>
+<td><strong>0.553</strong></td>
+<td><strong>0.615</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>七项全赢，平均 +2.1 个点</strong>，MMLU +3.4、CEval +3.5 最明显。</p>
+<blockquote>
+<p><strong>这是本目录里 mHC 的第二份独立验证。</strong> V4 报告说 mHC 让墙钟时间多 6.7% 但解决了 1.6T 规模的训练稳定性；openPangu 在 15B 规模上给出了<strong>下游指标的直接收益</strong>，并额外贡献了一个 V4 没写的失效模式和它的解法。<strong>对任何想用 mHC 的人，这一节比 V4 报告更实用。</strong></p>
+</blockquote>
+<hr />
+<h2 id="moe-aux-loss-free-sign-rms">六、MoE：把 aux-loss-free 的 sign 换成 RMS 归一化</h2>
+<p>384 专家选 8 的高稀疏度对负载均衡提出了更严格的要求。openPangu 用了<strong>两套互补机制</strong>：</p>
+<h3 id="61-adaptive-auxiliary-loss-free-bias">6.1 Adaptive Auxiliary-Loss-Free Bias</h3>
+<p>原版 aux-loss-free 用 <strong>sign 函数</strong>更新偏置——<strong>不管超载多少，修正幅度都一样</strong>：</p>
+<div class="codehilite"><pre><span></span><code>原版：  b_i ← b_i − γ · sign(F_i − Q_i)
+
+openPangu： b_i ← b_i − γ · (F_i − Q_i) / RMS(F − Q)
+            其中 RMS(F − Q) = sqrt( (1/N_r) Σ_j (F_j − Q_j)² )
+</code></pre></div>
+
+<p><strong>保留了专家负载误差的相对幅度</strong>：超载多的专家得到更大修正，接近均衡的得到更小修正，而整体更新尺度仍由学习率 γ 控制。</p>
+<p><strong>消融（附录 A.3）</strong>：两种方法<strong>收敛速度相同、LM loss 几乎一致</strong>，但 RMS 归一化版<strong>始终取得更低的 batch 级负载违背度（MaxVio），且优势随训练推进而扩大</strong>。</p>
+<blockquote>
+<p>⚠️ 报告在这里引用了 <strong>苏剑林的博客《MoE 环游记：3、换个思路来分配》</strong>（<code>spaces.ac.cn/archives/10757</code>）作为正式参考文献 [66]。<strong>这是本目录五份报告里唯一一次把中文技术博客列进参考文献。</strong></p>
+<p>📌 <strong>和 Kimi K3 的 Quantile Balancing 是同一个问题的两种解</strong>：K3 认为 <code>γ</code> 这个固定步长是病根，于是<strong>直接从 margin 的分位数解析解出 bias，把 γ 消掉</strong>；华为认为病根是 sign 丢掉了误差幅度，于是<strong>保留 γ 但让步长自适应</strong>。K3 的解更彻底（少一个超参），华为的解改动更小（一行公式）。<strong>两家都没引用对方。</strong> 见 <a href="Kimi-K3.html">Kimi-K3.md</a> §四。</p>
+</blockquote>
+<h3 id="62-ep-group">6.2 EP-group 辅助损失</h3>
+<p>自适应 bias 管<strong>全局 batch</strong> 的均衡，另加一个 <strong>EP-group 辅助损失</strong>管<strong>每个专家并行组内部</strong>的局部均衡。权重 <code>2.0e-4</code>，另有 router z-loss <code>1.0e-6</code>。</p>
+<p><strong>这些均衡约束只在 general 阶段开启，之后全部关闭。</strong></p>
+<hr />
+<h2 id="mtp3">七、MTP：3 层，且内部走滑窗</h2>
+<div class="codehilite"><pre><span></span><code>L = L_main + Σ_{k=1..D} λ_k · L_MTP^(k)
+出货配置 D = 3
+</code></pre></div>
+
+<p><strong>一个别家没有的细节</strong>：<strong>MTP 模块内部的所有注意力都用固定 2048 窗口的滑窗注意力</strong>。理由是让辅助模块在长上下文下保持实用——窗口限住了计算与 cache 增长，同时保留足够的局部上下文来产出高质量草稿。</p>
+<p><strong>分阶段调度（报告 Table 3）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>序列长度</th>
+<th>MTP 层数 D</th>
+<th>Loss 权重 λ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>General</td>
+<td>4K</td>
+<td>1</td>
+<td>0.3</td>
+</tr>
+<tr>
+<td>Reasoning</td>
+<td>8K</td>
+<td>1</td>
+<td><strong>0.1</strong>（避免过度正则化主推理目标）</td>
+</tr>
+<tr>
+<td>Annealing</td>
+<td>32K / 128K / 512K</td>
+<td><strong>3</strong></td>
+<td>0.1 each（合计 0.3）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>四家的 MTP 现在有四种做法</strong>：V4 深度 1、GLM 3 层<strong>参数共享</strong>、K3 微调成 EAGLE-3 草稿模型、M3 <strong>7 个模块</strong>、openPangu <strong>3 层独立 + 内部滑窗 + 分阶段扩展</strong>。⚠️ 报告<strong>没有给接受长度（accept length）</strong>，无法和 GLM 的 2.76 / DeepSeek-V3.2 的 2.55 对比。</p>
+</blockquote>
+<hr />
+<h2 id="muon-4-head">八、Muon：分 4 组，不是逐 head</h2>
+<p>Muon 用于所有二维及以上权重张量；AdamW 负责词嵌入、预测头、<strong>parametric sink 参数</strong>、以及所有一维参数（RMSNorm 权重、mHC 门控系数）。</p>
+<p><strong>关键差异</strong>：</p>
+<blockquote>
+<p>对 MLA 的 query 和 key-value 上投影，<strong>注意力头被分成 4 组</strong>后再做 Muon。</p>
+</blockquote>
+<p>理由：<strong>既对齐 head 的结构独立性，又保证更新矩阵足够大，正交化才稳定。</strong></p>
+<blockquote>
+<p>📌 <strong>这是"按 head 切分正交化"这条线上的第三个刻度</strong>：<br />
+<code>GLM-5 Muon Split（2026-02） ：逐 head 切开
+Kimi K3 Per-Head Muon（07） ：逐 head 切开
+openPangu-2.0（07-31）      ：切成 4 组   ← 明确说明理由是"矩阵别切太小"</code><br />
+<strong>前两家从没讨论过"切太细会不会让 Newton-Schulz 不稳"这个问题。</strong> openPangu 提出了它，但<strong>没有给消融</strong>——是经验判断。</p>
+</blockquote>
+<p>超参：<code>μ = 0.95</code>，Nesterov，更新缩放 <code>γ = 0.2</code> 以匹配 AdamW 的 RMS 幅度，<strong>从而两个优化器共用一套学习率调度</strong>。Newton-Schulz 系数直接采用 <code>modded-nanogpt</code> 仓库的实现（报告在脚注给了 commit 级链接）。</p>
+<h3 id="muon-attention-logits">⭐ Muon 下 attention logits 稳定性：第三种归因</h3>
+<p>已有工作报告 Muon 会导致 attention logits 爆炸（这正是 Kimi 提出 QK-Clip 的原因）。openPangu 观察到：</p>
+<blockquote>
+<p>整个训练过程中 attention logits 保持稳定，<strong>最大值始终在约 20 的有界范围内</strong>（Fig. 12，覆盖 Pro 的完整训练全程），无需任何 clipping。</p>
+</blockquote>
+<p><strong>归因</strong>：<strong>sandwich normalization + block post-normalization</strong>，它们显式约束了隐状态与输出的尺度。</p>
+<p>报告很诚实地加了一句：<strong>"We leave a more systematic ablation of this phenomenon to future work."</strong></p>
+<blockquote>
+<p><strong>到这里，"Muon 下 logits 为什么稳"已经有三种互斥归因了</strong>：<br />
+<code>GLM-5      → Muon Split（逐 head 正交化，从优化器侧解决）
+DeepSeek-V4 → QK-RMSNorm（直接归一化 q 和压缩 KV 条目）
+openPangu   → sandwich norm + block post-norm（约束子层输出与残差流尺度）
+Kimi K2/K3  → QK-Clip（直接裁剪，是"承认问题存在"的一方）</code><br />
+<strong>四家给出四个不同的解释，而且没有任何一家做过交叉消融。</strong> 这是本目录里最明确的一个<strong>悬而未决的开放问题</strong>。详见 <a href="模型技术对比.html">模型技术对比.md</a> §3.8。</p>
+</blockquote>
+<hr />
+<h2 id="34t-tokens">九、预训练：三阶段课程，34T tokens</h2>
+<div class="codehilite"><pre><span></span><code>① General   : 4K 序列, 25T tokens
+              Pro: batch warmup → 64M, peak lr 2.0e-4（Flash 是 36M / 3.0e-4）
+              前 500B warmup → 峰值保持 17T → 最后 8T cosine 降到 1.0e-4
+② Reasoning : 8K 序列,  8T tokens，提高 STEM 与代码高质量数据比例
+              lr cosine 1.0e-4 → 3.0e-5
+③ Annealing : 32K(800B) → 128K(400B) → 512K(200B)
+              lr cosine 3.0e-5 → 8.0e-6
+④ DSA 转换  : 8B replay tokens dense 预热 @ lr 1.0e-3
+              100B replay tokens 稀疏训练 @ lr 8.0e-6
+</code></pre></div>
+
+<p><code>25T + 8T + 1.4T ≈ 34.4T</code> ✓ 与官方"约 34T"一致。</p>
+<p><strong>RoPE base 随长度逐级放大</strong>：<code>10K@4K → 100K@8K → 400K@32K → 1.6M@128K → 6.4M@512K</code>。</p>
+<p><strong>Tokenizer 的一个反直觉决定</strong>：报告对比了三种词表，<strong>3-digit 变体压缩率最好</strong>（中文 4.04、多语 3.37、行业 4.51，平均 2.71），但<strong>最终选了压缩率略差的 single-digit 变体</strong>（平均 2.59）。理由：</p>
+<blockquote>
+<p>避免多位数字按频率合并，为<strong>数值推理、多模态定位、工具调用</strong>提供更规则的数字级表示。</p>
+</blockquote>
+<p><strong>用压缩率换数字表示的规整性</strong>——这在 agentic 场景（坐标、bounding box、索引、工具参数）里是合理的取舍。</p>
+<hr />
+<h2 id="rl-opd">十、后训练：多专家 RL + OPD，以及一份训推不一致的完整解剖</h2>
+<div class="codehilite"><pre><span></span><code>SFT（快慢合一）
+  ↓
+四路专家 RL：Reasoning / General / Agentic / Code
+  ↓
+Multi-Expert On-Policy Distillation（OPD）合成单模型
+</code></pre></div>
+
+<h3 id="101-opd-glm-5">10.1 OPD：明确对标 GLM-5</h3>
+<div class="codehilite"><pre><span></span><code>A_{i,t} = sg[ log ( π^train_{θ_expert}(y_{i,t} | x_i, y_{i,&lt;t}) / π^train_θ(y_{i,t} | x_i, y_{i,&lt;t}) ) ]
+</code></pre></div>
+
+<p><strong>和 GLM-5 的 On-Policy Cross-Stage Distillation、Kimi K3 的 MOPD 是同一个式子。</strong> 但报告写明了自己的差异：</p>
+<blockquote>
+<p><strong>这与 GLM-5 不同——GLM-5 报告称从推理后端读取教师概率，并提到未来会从 <code>π^infer</code> 迁移到 <code>π^train</code>。</strong></p>
+</blockquote>
+<p><strong>openPangu 直接用训练引擎前向计算教师概率，等于把 GLM-5 说的"未来工作"做了。</strong> 这是本目录里少见的<strong>明确的、有据可查的接力</strong>。</p>
+<p>另外两个加法：</p>
+<ul>
+<li><strong>轻量正则</strong>：mask 掉 advantage 近零的 token；clip 掉离群的 log-ratio 值。</li>
+<li><strong>计算优化</strong>：不给每个专家分配独立 NPU 池，而是<strong>把专家按顺序轮流装入一个共享 NPU 池</strong>——rollout 后按专家分组样本，逐组加载权重算 log 概率。<strong>用时间换显存。</strong></li>
+</ul>
+<h3 id="102-agentic-rl">10.2 Agentic RL</h3>
+<p>五个手段，其中一个值得注意：</p>
+<ul>
+<li><strong>TITO（Token-in-Token-out）</strong>：消除轨迹生成与策略更新之间的 tokenization 错配。<strong>这个术语和做法与 GLM-5 完全一致</strong>（见 <a href="GLM-5.2.html">GLM-5.2.md</a> §九）。</li>
+<li><strong>在线动态过滤</strong>：持续跟踪每样本通过率，<strong>始终被解出的样本动态踢出训练循环</strong>，让模型永远待在学习前沿。</li>
+<li><strong>语法惩罚</strong>：畸形工具调用（缺参数、非法 JSON）触发显式格式错误惩罚。</li>
+<li><strong>可验证评估</strong>：奖励确定性，基于训练循环之外的客观执行结果。</li>
+<li><strong>暖启动</strong>：Agentic RL 从 General RL 的 checkpoint 初始化。</li>
+</ul>
+<h3 id="103">10.3 ⭐ 训推不一致：一份三分类的完整解剖</h3>
+<p><strong>这是本报告最有分量、也是五家里最系统的一章。</strong> 其他四家并非没做——<strong>V4 那一份的分量其实相当重</strong>：它专门写了一节 <em>High-Performance Batch-Invariant and Deterministic Kernel Libraries</em>，✅ 报告原文的目标是"确保训练与推理之间的<strong>逐位可复现（bitwise reproducibility）</strong>"，属于拿 kernel 工程正面解决问题；GLM 有 bitwise 量化 kernel，K3 有全程 QAT。<strong>但只有 openPangu 把"为什么会不一致"拆成分类学讲了一遍</strong>——它交付的是<strong>诊断框架</strong>，V4 交付的是<strong>工程结果</strong>，两者不是一回事。</p>
+<p><strong>现有手段</strong>（报告承认"没有单一技术能覆盖所有场景，要按架构/硬件/失配严重程度组合"）：</p>
+<ul>
+<li><strong>FP16 替代 BF16</strong> ⚠️ ——配动态 loss scaling 处理梯度下溢。<strong>这是一个逆潮流的选择</strong>，五家里唯一一个。</li>
+<li><strong>KPop</strong> 替代 IcePop 和常规拒绝采样，作为主要校正机制。配了一个 <strong>shadow 超参机制</strong>：训练初期并行评估多个候选 <code>φ</code>，先估计它们的 mask 行为再定值。经验规则：<strong>train-rollout PCC &lt; 0.99 用更严的 mask；&gt; 0.99 用更松的 <code>φ</code> 以保留探索能力</strong>。</li>
+<li><strong>Rollout Routing Replay (R3)</strong> 的四点增强：</li>
+<li><strong>流式传输路由专家</strong>：通过 OpenAI 兼容流式 API 增量推送路由记录，把带宽需求摊到整个生成时间线上。</li>
+<li><strong>可扩展数据传输</strong>：只把元数据放进 DataProto，路由记录走 HCCL，避开 Ray 瓶颈和序列长度 padding。</li>
+<li><strong>Masked R3</strong> ⚠️：观察到<strong>隐状态随 MoE 层加深、序列逐 token 推进而累积发散</strong>，此时强制全量专家重放会<strong>严重扭曲输出 logits、PCC 骤降，可能触发梯度爆炸或训练发散</strong>。解法是自适应阈值——<strong>只有当训练侧提出的专家选择与推理侧记录的重合度超过阈值时，才对该 token 重放</strong>。</li>
+<li><strong>Cached R3</strong>：agentic RL 多轮推理时，已解码 token 在后续轮次会重新 prefill，而 prefill 可能给出<strong>与当初生成时不同的路由</strong>。解法是持久化每个 token 首次生成时的路由选择，训练时重放缓存值。</li>
+</ul>
+<p><strong>根因三分类</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>定义</th>
+<th>具体成因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A. 显式定义失配</strong></td>
+<td>数学上就不等价</td>
+<td>训推双引擎架构本身的公式差异</td>
+</tr>
+<tr>
+<td><strong>B. 计算图重排失配</strong></td>
+<td>数学等价但数值发散</td>
+<td>① <strong>部署策略</strong>：MLA 在 Absorptive(MQA, decode) 与 Non-Absorptive(MHA, 训练/prefill) 间切换；MoE 专家训练侧按 Expert-ID 升序累加、推理侧按 Top-k 分数降序累加<br>② <strong>并行策略</strong>：训推偏好不同并行方式，改变浮点累加精度与顺序<br>③ <strong>融合算子</strong>：kernel 融合隐式重写计算图与数值精度（不同 FlashAttention 家族、MoE dispatch/combine kernel、采样算子）</td>
+</tr>
+<tr>
+<td><strong>C. 硬件调度非确定性</strong></td>
+<td>同一次运行到下一次都会变</td>
+<td>NPU 按输入 shape 自动选 tiling：<strong>SplitK</strong>（K 轴累加拆到多个 AI Core）、<strong>K 轴 swizzling</strong>（交错访存提升 HBM 带宽）、<strong>AtomicAdd</strong>（多核异步收集，核到达顺序随机；AllReduce 的 Ring/Tree 拓扑算法进一步发散）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>两阶段白盒对齐方法论</strong>（报告称为 preview，尚未完成）：</p>
+<div class="codehilite"><pre><span></span><code>前提：关闭随机采样 + 开启确定性通信 + 两侧并行策略完全对齐
+
+Phase I  : 训练前向 ↔ 推理 Prefill 严格对齐（解 A 和 B 类）
+           昇腾定制 tensor hook 逐层导出原始二进制 → 高精度二进制差异比对 → 反向定位
+Phase II : Decode 对齐（解更深的 C 类），需要 kernel 级介入
+</code></pre></div>
+
+<blockquote>
+<p><strong>为什么这一章值得单独读</strong>：另外四家更多是把训推一致当成"我们做到了"来陈述，<strong>只有这一份把它当成一个待解的工程问题、并给出了分类学</strong>。</p>
+<p>⚠️ <strong>B 类里那条最值得单独拎出来的观察</strong>——✅ 报告原文：<em>"MLA switching between Absorptive (MQA, decode) and Non-Absorptive (MHA, training/prefill) modes"</em>，即 <strong>MLA 在 decode 走 MQA 吸收模式、在训练/prefill 走 MHA 模式</strong>，同一份权重在两条路径上跑的是<strong>不同的算子形状</strong>，天然是一个失配源。</p>
+<p>★ <strong>这个隐性成本落在谁头上</strong>（⚠️ 以下是我按各家报告原文的归属，2026-08 核对）：<br />
+<code>✅ 有这个失配源：openPangu（报告原文如上）
+                 GLM-5.2 —— ✅ 报告写明推理侧要"统一采用 MLA 的 MQA 模式"
+                 Kimi K3 —— ⚠️ 仅限它那 1/4 的 Gated MLA 层
+❌ 没有这个失配源：MiniMax M3 —— 用 GQA，训推同一条路径
+                   ★ DeepSeek-V4 —— 它【根本不用 MLA】：报告全文没出现过
+                     MLA，CSA/HCA 的内核直接就是共享 KV 的 MQA</code><br />
+⟹ ★ 所以这是 <strong>MLA 这条技术路线的隐性成本</strong>，不是"用了压缩 KV 就一定有"。V4 走压缩路线却绕开了它。</p>
+</blockquote>
+<hr />
+<h2 id="_3">十一、推理与量化</h2>
+<h3 id="111-w8a8-4-bit">11.1 量化：W8A8，<strong>不是 4-bit</strong></h3>
+<div class="codehilite"><pre><span></span><code>静态对称的输出通道权重量化 + 动态 per-token 激活量化
+Pro：权重占用 1009 GB → 517 GB，压缩 1.95×
+</code></pre></div>
+
+<p>校准用 channel-wise smoothing，并<strong>放松了 SmoothQuant 的 <code>a + b = 1</code> 硬约束</strong>，改成对解耦指数 <code>(a, b)</code> 做二维搜索；对关键的 up projection，输入侧与输出侧平滑系数<strong>交替迭代优化至收敛</strong>。</p>
+<p><strong>保持 BF16 的模块</strong>（报告给了明确的决策依据）：融合算子只接受 BF16 输入的、<strong>位于离散选择之前对量化噪声敏感的（TopK 路由和 indexing）</strong>、误差会累积的残差路径、开销大于收益的小层、已经被侧流窗口掩盖的算子。</p>
+<blockquote>
+<p>⚠️ <strong>这是五家里最保守的量化</strong>。V4 是 FP4 存 + FP8 算、K3 是 MXFP4 + MXFP8、GLM 是 INT4 + W8A8、M3 出货 MXFP8。<strong>openPangu 停在 W8A8，而且报告没有提 QAT——看起来是训练后量化（PTQ）。</strong> 另外还有两篇独立的 openPangu 量化论文（arXiv:2606.21257 昇腾量化实证研究、arXiv:2512.23367 Atlas A2 上的 PTQ），说明这条线是单独在推进的。</p>
+</blockquote>
+<h3 id="112-table-67">11.2 实测性能（报告 Table 6/7，全部为昇腾实测）</h3>
+<blockquote>
+<p>📖 <strong>先解释表头的五个缩写</strong>（不熟悉的话，<a href="大模型架构入门/06-KV-cache.html">大模型架构入门/06-KV-cache.md §6.1</a> 有完整讲解）：</p>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>全称</th>
+<th>是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ISL</strong></td>
+<td>Input Sequence Length</td>
+<td>输入有多少 token（"8K+1K"里的 8K）</td>
+</tr>
+<tr>
+<td><strong>OSL</strong></td>
+<td>Output Sequence Length</td>
+<td>输出有多少 token（"8K+1K"里的 1K）</td>
+</tr>
+<tr>
+<td><strong>TTFT</strong></td>
+<td>Time To First Token</td>
+<td><strong>首字延迟</strong>：按下回车到看见第一个字，单位秒</td>
+</tr>
+<tr>
+<td><strong>TPOT</strong></td>
+<td>Time Per Output Token</td>
+<td><strong>每字延迟</strong>：之后每多吐一个字的间隔，单位毫秒。★ 就是你看到的"打字速度"</td>
+</tr>
+<tr>
+<td><strong>TPS</strong></td>
+<td>Tokens Per Second</td>
+<td><strong>吞吐量</strong>：一块卡每秒总共吐出多少 token</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>TPOT 和 TPS 别混</strong>：前者是"我一个人要等多久"（越小越好），后者是"这块卡一共干了多少活"（越大越好），两者靠 <code>TPS ≈ batch ÷ TPOT</code> 联系，且<strong>互相打架</strong>——下面两张表正好是同一个模型的两个取舍点。</p>
+</blockquote>
+<p><strong>超低延迟</strong>（牺牲吞吐换延迟）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>ISL + OSL</th>
+<th>TPOT (ms)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Flash</td>
+<td>8K+1K</td>
+<td>5.27</td>
+</tr>
+<tr>
+<td>Flash</td>
+<td>128K+1K</td>
+<td>5.63</td>
+</tr>
+<tr>
+<td><strong>Pro</strong></td>
+<td>8K+1K</td>
+<td><strong>9.53</strong></td>
+</tr>
+<tr>
+<td><strong>Pro</strong></td>
+<td>128K+1K</td>
+<td><strong>9.55</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Pro 从 8K 到 128K，TPOT 只涨了 0.02 ms。</strong> 这是 DSA+SWA 混合架构最直接的效果验证——<strong>解码成本几乎与上下文长度无关。</strong><br />
+（换算一下：9.53 ms/token ≈ <strong>每秒 105 个字</strong>，远快于人的阅读速度）</p>
+</blockquote>
+<p><strong>低延迟吞吐</strong>（牺牲延迟换吞吐；PD 分离部署，Pro 用 2P1D 八节点）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>ISL + OSL</th>
+<th>TPOT (ms)</th>
+<th>Batch</th>
+<th><strong>TPS (tokens/s per NPU)</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Flash</td>
+<td>8K+1K</td>
+<td>16.2</td>
+<td>48</td>
+<td>2963</td>
+</tr>
+<tr>
+<td>Flash</td>
+<td>128K+8K</td>
+<td>13.0</td>
+<td>24</td>
+<td>1846</td>
+</tr>
+<tr>
+<td><strong>Pro</strong></td>
+<td>8K+1K</td>
+<td>23.2</td>
+<td>40</td>
+<td><strong>1727</strong></td>
+</tr>
+<tr>
+<td><strong>Pro</strong></td>
+<td>128K+8K</td>
+<td>18.1</td>
+<td>24</td>
+<td><strong>1326</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>对照上面那张表</strong>：同一个 Pro，batch 开到 40 之后 TPOT 从 <strong>9.53 ms 变成 23.2 ms</strong>（慢 2.4 倍），换来 1727 TPS 的吞吐。<strong>这两组数字不能凑在一起用。</strong></p>
+</blockquote>
+<p><strong>Prefill</strong>：128K 单 batch 输入下，Flash <strong>TTFT 2.6 s</strong>、Pro <strong>TTFT 3.0 s</strong>——即输入 12.8 万 token 时，用户要等约 3 秒才看到第一个字。</p>
+<p>⚠️ <strong>这些数字全部没有对比基线</strong>，只能自己和自己比。官方博客那句"单卡吞吐率可达业界主流开源模型的 2 倍"<strong>在报告正文里找不到出处</strong>。</p>
+<h3 id="113">11.3 昇腾侧的工程优化（择要）</h3>
+<ul>
+<li><strong>算子</strong>：mHC 拆成三个可重叠的算子（含专用 sinkhorn 算子）；SWA 侧提出 <strong>intra-core 动态 micro-tile 级 mask-skip</strong>——把 L1 上的粗粒度基本块切成与计算阵列物理维度对齐的 micro-tile，<strong>在 L1→L0 搬运前跳过"全无效" micro-tile</strong>，同时让 PAS 常驻 L1。</li>
+<li><strong>通信</strong>：MoE Dispatch 改为 <strong>token-centric 执行模型</strong>——每个 token <strong>只读取和量化一次</strong>再分发给所有路由专家，消除 Top-k 相关的冗余计算，<strong>Dispatch 延迟降 25~30%，端到端延迟最多改善 5%</strong>。</li>
+<li><strong>图优化</strong>：CANN 的 ACL Graph + Npugraph_ex（静态 kernel 编译 + Superkernel 融合），<strong>合计改善 TPOT 3.2 ms</strong>（静态编译 1.2 ms + Superkernel 2 ms）。</li>
+<li><strong>并行</strong>：MoE 走经典 EP；注意力在 prefill 侧用 <strong>DSA CP + SWA TP</strong>、decode 侧用 Attention DP。CP 方案叫 <strong>Felix</strong>。（★ 这一条信息量最大，单独拆在 §11.4）</li>
+<li>训练侧部署在 <strong>CloudMatrix 384 超节点</strong>。</li>
+</ul>
+<h3 id="114-prefill-cptpdecode-attention-dp">11.4 ★ 把那句「prefill CP+TP、decode Attention DP」拆开看</h3>
+<blockquote>
+<p>📖 <strong>先把缩写摊开</strong>：<strong>TP</strong>（Tensor Parallelism，张量并行，切权重矩阵）· <strong>DP</strong>（Data Parallelism，数据并行，切请求、权重复制）· <strong>EP</strong>（Expert Parallelism，专家并行，切专家）· <strong>CP</strong>（Context Parallelism，上下文并行，切序列）· <strong>GEMM</strong>（General Matrix Multiply，通用矩阵乘，就是一次大矩阵乘法）。</p>
+</blockquote>
+<p>上面那条 bullet 是报告披露的原话，但它压缩得太狠了。<strong>这里按 Table 8 的配置把它还原成「每张卡到底拿到哪些权重」</strong>——因为它是 505B 这类模型能在昇腾上跑起来的核心，也是最容易被读错的一句话。</p>
+<blockquote>
+<p>⚠️ <strong>口径声明</strong>：<strong>切法本身（MoE 走 EP、prefill DSA CP + SWA TP、decode Attention DP）是报告原文；下面的卡数（32）和每卡参数账是本文按 Table 8 推算的，报告没有给。</strong> 通用机理与 vLLM / SGLang 的源码对应见 <a href="../推理框架/推理优化入门/10-PD分离.html">推理框架/10-PD分离 §10.4</a>。</p>
+</blockquote>
+<h4 id="1-decode-dp">① 先破一个误解：「decode 全用 DP」不等于每卡放一份完整模型</h4>
+<p>505B 就算 W8A8 也要 ~505 GB，<strong>没有任何一张卡装得下一个副本</strong>。所谓 P/D 用不同并行，<strong>说的只是注意力那一段</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 占 98.4% 的路由专家（497 B），P 和 D 【都是 EP】，切法完全一样
+    ★ 分歧只在 MLA 那 4.0 B 的注意力权重上
+</code></pre></div>
+
+<p>⚠️ 按 Table 8 推算的三块权重（50 层 = 3 dense + 47 MoE，hidden 5120，64 头，KV 秩 512，384 专家，专家中间维 1792）：</p>
+<table>
+<thead>
+<tr>
+<th>权重块</th>
+<th>参数量</th>
+<th>能怎么切</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>路由专家 ×384</td>
+<td><strong>497 B（98.4%）</strong></td>
+<td>★ 只能 EP。单个专家才 27.5M，TP 再切 32 份 = 1792/32 = 56 维，矩阵小到算子跑不满</td>
+</tr>
+<tr>
+<td>MLA 注意力</td>
+<td>4.0 B</td>
+<td>TP 行（按头切）、DP 也行（整份复制）——<strong>全部分歧在这里</strong></td>
+</tr>
+<tr>
+<td>Dense FFN + 共享专家 + 词表</td>
+<td>3.6 B</td>
+<td>都行，量太小</td>
+</tr>
+</tbody>
+</table>
+<h4 id="2-p-32-d-32">② 每张卡拿到什么（⚠️ 设 P 实例 32 卡、D 实例 32 卡）</h4>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Prefill 侧</strong></th>
+<th><strong>Decode 侧</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注意力</td>
+<td>DSA 层 CP（Felix）+ SWA 层 TP；64 头 ÷ 32 = <strong>每卡 2 头</strong>。<code>W^DQ</code>/<code>W^DKV</code> 不带头维、切不动 ⟹ 32 卡各存一份 ≈ 0.54 B</td>
+<td><strong>不切</strong>，4.0 B 整份复制；<strong>每卡处理不同请求，注意力算完一次通信都不用</strong></td>
+</tr>
+<tr>
+<td>Dense FFN</td>
+<td>16128 ÷ 32 = 每卡 504 维</td>
+<td>跟注意力一起复制</td>
+</tr>
+<tr>
+<td>MoE</td>
+<td><strong>EP=32，每卡 12 个完整专家 ≈ 15.5 B</strong></td>
+<td><strong>EP=32，每卡 12 个完整专家 ≈ 15.5 B</strong>（★ 与 P 侧相同）</td>
+</tr>
+<tr>
+<td>每卡合计</td>
+<td>≈ <strong>16.3 GB</strong> @ W8A8</td>
+<td>≈ <strong>23 GB</strong> @ W8A8（多出的 ~7 GB 就是复制的代价）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 顺带说准一件事：<strong>prefill 侧不是「全 TP」。</strong> DSA 层要看全序列，128K 的 prompt 切序列（CP）比切头划算；SWA 层窗口只有 512，切序列没意义，切头就够——<strong>所以报告写的是 DSA CP + SWA TP 两种混着上。</strong></p>
+</blockquote>
+<h4 id="3-decode-mla">③ ★★ decode 为什么必须反着来——决定性的一条是 MLA</h4>
+<p>报告在训推一致性那节自己写了前提：<strong>MLA 在 decode 端切到 Absorptive 模式，等价于 MQA（见 §10.3 B 类失配）</strong>。这一步把 TP 的地基抽掉了：</p>
+<div class="codehilite"><pre><span></span><code>    ★ TP 的前提是「按注意力头切」。
+      Absorptive 之后 KV 只剩【1 个头】⟹ 32 张卡没法切
+      ⟹ 只能【32 张卡各存一份完全相同的 KV cache】
+</code></pre></div>
+
+<p>⚠️ 按 KV 秩 512 + RoPE 维 64 = 576、bf16、DSA:SWA = 1:2 推算：</p>
+<div class="codehilite"><pre><span></span><code>    单条 128K 序列的 KV cache
+      17 个 DSA 层：17 × 576 × 2B × 131072 ≈ 2.5 GB    ← 随长度线性增长
+      33 个 SWA 层：33 × 576 × 2B × 512    ≈  19 MB    ← 窗口 512，★ 恒定
+      ───────────────────────────────────── ≈ 2.5 GB / 条
+
+    若 decode 也用 TP=32：32 卡各存同一条 ⟹ 80 GB 只服务【1 个】用户
+    改用 Attention DP=32：32 卡各存不同条 ⟹ 同样 80 GB 服务【32 个】用户
+                                          ★★★ 并发差 32 倍
+</code></pre></div>
+
+<blockquote>
+<p>★ 这笔账也解释了 §11.2 那个「Pro 从 8K 到 128K，TPOT 只涨 0.02 ms」的另一半：<br />
+<strong>33 个 SWA 层的 cache 是恒定的，只有 17 个 DSA 层随长度增长。</strong></p>
+</blockquote>
+<p>另外两条辅助理由：</p>
+<ul>
+<li><strong>decode 的矩阵已经小到切不动</strong>：Table 7 的 Pro 用 batch=40，若 TP=32 则每卡 GEMM 只有 <code>40 × 2 × 128</code>，时间全花在 all-reduce 和 kernel 启动上（这也正是 §11.3 那些 Superkernel 融合和静态图编译要救的东西）。</li>
+<li><strong>DP 把有效 batch 放大 32 倍，正好喂饱 EP</strong>：TP 下全系统只有 40 个 token 路由给 384 个专家，<strong>每个专家平均分不到 1 个 token</strong>；DP=32 下是 1280 个 token，每个专家 ≈ 27 个 ⟹ 专家 GEMM 才有形状。</li>
+</ul>
+<h4 id="4">④ ⚠️ 代价</h4>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ① 多花 ~7 GB/卡 复制注意力 + dense + 词表
+    ⚠️ ② 32 个 DP rank 必须【步调一致地一起 generate】——
+          MoE 的 all-to-all 是跨 DP 的集合通信，
+          没请求的卡也得塞【假 batch】进去凑数，否则另外 31 张卡一直等
+    ⚠️ ③ P 和 D 的专家热度分布不同 ⟹ 负载均衡（EPLB，Expert Parallelism Load Balancer，专家并行负载均衡器）要分两套配
+          ★ 报告的 EP-group 辅助损失（§6.2）管的是训练侧均衡，和这是两码事
+</code></pre></div>
+
+<hr />
+<h2 id="_4">十二、评测</h2>
+<h3 id="121-table-5-hf">12.1 官方全表（报告 Table 5，与 HF 模型卡完全一致）</h3>
+<p>解码设置 <code>top_p 0.8, temperature 1.0</code>。<strong>加粗为 openPangu-2.0 系列内部最优。</strong></p>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Flash 非思考</th>
+<th>Flash 思考</th>
+<th>Pro 非思考</th>
+<th><strong>Pro 思考</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>General</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>CL-Bench (Acc)</td>
+<td>15.5</td>
+<td><strong>20.4</strong></td>
+<td>17.8</td>
+<td>19.7</td>
+</tr>
+<tr>
+<td>IFEval (Prompt Strict)</td>
+<td>89.3</td>
+<td><strong>95.9</strong></td>
+<td>90.4</td>
+<td>94.5</td>
+</tr>
+<tr>
+<td>IFBench (Prompt Strict)</td>
+<td>54.4</td>
+<td>79.6</td>
+<td>59.5</td>
+<td><strong>79.9</strong></td>
+</tr>
+<tr>
+<td>AgentIF ((CSR+ISR)/2)</td>
+<td>43.9</td>
+<td><strong>44.9</strong></td>
+<td>42.2</td>
+<td>44.4</td>
+</tr>
+<tr>
+<td>SysBench (ISR)</td>
+<td>87.9</td>
+<td><strong>91.1</strong></td>
+<td>82.6</td>
+<td>90.8</td>
+</tr>
+<tr>
+<td>Multichallenge (Acc)</td>
+<td>51.9</td>
+<td><strong>68.4</strong></td>
+<td>52.2</td>
+<td>62.9</td>
+</tr>
+<tr>
+<td>SimpleQA Verified (Acc)</td>
+<td>21.6</td>
+<td>24.5</td>
+<td>27.1</td>
+<td><strong>34.9</strong></td>
+</tr>
+<tr>
+<td>Chinese-SimpleQA (Acc)</td>
+<td>66.0</td>
+<td>66.7</td>
+<td><strong>75.7</strong></td>
+<td>74.2</td>
+</tr>
+<tr>
+<td><strong>Reasoning</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>HMMT Feb 2026 (Avg@16)</td>
+<td>63.2</td>
+<td>76.5</td>
+<td>63.3</td>
+<td><strong>86.2</strong></td>
+</tr>
+<tr>
+<td>– w/ Python</td>
+<td>–</td>
+<td>90.7</td>
+<td>–</td>
+<td><strong>93.2</strong></td>
+</tr>
+<tr>
+<td>AIME 2026 (Avg@16)</td>
+<td>86.5</td>
+<td>93.3</td>
+<td>87.3</td>
+<td><strong>95.4</strong></td>
+</tr>
+<tr>
+<td>– w/ Python</td>
+<td>–</td>
+<td><strong>98.1</strong></td>
+<td>–</td>
+<td>97.9</td>
+</tr>
+<tr>
+<td>Apex (Avg@16)</td>
+<td>–</td>
+<td>1.0</td>
+<td>2.1</td>
+<td><strong>17.7</strong></td>
+</tr>
+<tr>
+<td>IMO-AnswerBench (Acc)</td>
+<td>62.3</td>
+<td>76.5</td>
+<td>60.8</td>
+<td><strong>84.3</strong></td>
+</tr>
+<tr>
+<td>BBEH (Harmonic Mean)</td>
+<td>51.5</td>
+<td>62.5</td>
+<td>55.0</td>
+<td><strong>69.7</strong></td>
+</tr>
+<tr>
+<td>GPQA-Diamond (Avg@4)</td>
+<td>79.8</td>
+<td>83.7</td>
+<td>81.1</td>
+<td><strong>87.9</strong></td>
+</tr>
+<tr>
+<td>HLE (Acc)</td>
+<td>8.5</td>
+<td>20.3</td>
+<td>9.0</td>
+<td><strong>27.1</strong></td>
+</tr>
+<tr>
+<td><strong>Agent</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>TAU2-Bench (Avg@3)</td>
+<td>74.0</td>
+<td><strong>88.0</strong></td>
+<td>71.6</td>
+<td>81.1</td>
+</tr>
+<tr>
+<td>MCP-Atlas (Acc)</td>
+<td>47.9</td>
+<td>58.9</td>
+<td>48.8</td>
+<td><strong>61.3</strong></td>
+</tr>
+<tr>
+<td>SkillsBench (Avg@5)</td>
+<td>40.0</td>
+<td>42.6</td>
+<td>47.5</td>
+<td><strong>48.9</strong></td>
+</tr>
+<tr>
+<td>PinchBench (Avg@3)</td>
+<td>82.5</td>
+<td>85.6</td>
+<td><strong>88.9</strong></td>
+<td>84.0</td>
+</tr>
+<tr>
+<td>WildClawBench (Avg@3)</td>
+<td>35.0</td>
+<td>41.5</td>
+<td>43.1</td>
+<td><strong>46.5</strong></td>
+</tr>
+<tr>
+<td>Claw-Eval (Pass^3)</td>
+<td>58.2</td>
+<td>57.7</td>
+<td>49.4</td>
+<td><strong>61.7</strong></td>
+</tr>
+<tr>
+<td>GDPVal (Acc)</td>
+<td>–</td>
+<td>51.4</td>
+<td>51.2</td>
+<td><strong>74.9</strong></td>
+</tr>
+<tr>
+<td>BrowseComp (Acc)</td>
+<td>–</td>
+<td>57.0</td>
+<td>–</td>
+<td><strong>65.7</strong></td>
+</tr>
+<tr>
+<td><strong>Coding</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>LiveCodeBench V6 (Avg@3)</td>
+<td>50.9</td>
+<td>85.1</td>
+<td>74.5</td>
+<td><strong>85.7</strong></td>
+</tr>
+<tr>
+<td>FeatBench (Avg@3)</td>
+<td>45.8</td>
+<td>45.9</td>
+<td><strong>48.4</strong></td>
+<td>47.1</td>
+</tr>
+<tr>
+<td>DeepCodeBench (Avg@3)</td>
+<td>70.9</td>
+<td><strong>76.5</strong></td>
+<td>72.6</td>
+<td>74.2</td>
+</tr>
+<tr>
+<td>SWE-bench Verified (Avg@3)</td>
+<td>57.6</td>
+<td>63.1</td>
+<td>66.8</td>
+<td><strong>68.5</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>几个内部观察</strong>：</p>
+<ol>
+<li><strong>Thinking 档的收益极度不均</strong>。HLE <code>9.0 → 27.1</code>（3×）、Apex <code>2.1 → 17.7</code>（8.4×）、IMO <code>60.8 → 84.3</code>；但 PinchBench <strong>反而从 88.9 掉到 84.0</strong>、Chinese-SimpleQA <code>75.7 → 74.2</code>、FeatBench <code>48.4 → 47.1</code>。<strong>思考不是免费的。</strong></li>
+<li><strong>Flash 在多项 Agent 任务上反超 Pro</strong>：TAU2-Bench 88.0 vs 81.1、SysBench 91.1 vs 90.8、Multichallenge 68.4 vs 62.9、DeepCodeBench 76.5 vs 74.2。<strong>92B 在几个 agent 基准上打赢 505B，这件事报告没有解释。</strong></li>
+<li><strong>SimpleQA Verified 34.9 与 Chinese-SimpleQA 74.2 差 39 分</strong>——中英文事实性知识的巨大不对称，是所有公开数字里最刺眼的一处。</li>
+</ol>
+<h3 id="122">12.2 ⚠️ 与四家的差距（全部为跨厂商拼接，见文首前提）</h3>
+<p>Pangu 取 <strong>Pro-Thinking</strong>；K3 取其报告，GLM-5.2 / M3 / V4-Pro 取 Z.ai 模型卡同一张表。</p>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th><strong>Pangu-Pro</strong></th>
+<th>K3</th>
+<th>GLM-5.2</th>
+<th>M3</th>
+<th>V4-Pro</th>
+<th>差距</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数学 / 推理</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>AIME 2026</td>
+<td><strong>95.4</strong></td>
+<td>—</td>
+<td>99.2</td>
+<td>—</td>
+<td>94.6</td>
+<td>−3.8 ／ <strong>赢 V4 +0.8</strong></td>
+</tr>
+<tr>
+<td>HMMT Feb 2026</td>
+<td>86.2</td>
+<td>—</td>
+<td>92.5</td>
+<td>84.4</td>
+<td>95.2</td>
+<td>−6.3~−9.0 ／ <strong>赢 M3 +1.8</strong></td>
+</tr>
+<tr>
+<td>IMO-AnswerBench</td>
+<td>84.3</td>
+<td>—</td>
+<td>91.0</td>
+<td>—</td>
+<td>89.8</td>
+<td>−5.5~−6.7</td>
+</tr>
+<tr>
+<td>GPQA-Diamond</td>
+<td>87.9</td>
+<td>93.5</td>
+<td>91.2</td>
+<td>93.0</td>
+<td>90.1</td>
+<td>−2.2 ~ <strong>−5.6</strong></td>
+</tr>
+<tr>
+<td><strong>知识</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>HLE（无工具）</td>
+<td>27.1</td>
+<td>43.5</td>
+<td>40.5</td>
+<td>37.0</td>
+<td>37.7</td>
+<td><strong>−9.9 ~ −16.4</strong></td>
+</tr>
+<tr>
+<td>SimpleQA Verified</td>
+<td>34.9</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>57.9</td>
+<td><strong>−23.0</strong></td>
+</tr>
+<tr>
+<td><strong>Agent</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>MCP-Atlas</td>
+<td>61.3</td>
+<td>—</td>
+<td>76.8</td>
+<td>74.2</td>
+<td>73.6</td>
+<td><strong>−12.3 ~ −15.5</strong></td>
+</tr>
+<tr>
+<td>BrowseComp</td>
+<td>65.7</td>
+<td>91.2</td>
+<td>—</td>
+<td>83.5</td>
+<td>—</td>
+<td><strong>−17.8 ~ −25.5</strong></td>
+</tr>
+<tr>
+<td>Claw-Eval</td>
+<td>61.7</td>
+<td>—</td>
+<td>—</td>
+<td>74.5</td>
+<td>—</td>
+<td>−12.8</td>
+</tr>
+<tr>
+<td><strong>编程</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>SWE-bench Verified</td>
+<td>68.5</td>
+<td>—</td>
+<td>—</td>
+<td>80.5</td>
+<td>—</td>
+<td><strong>−12.0</strong></td>
+</tr>
+<tr>
+<td>LiveCodeBench</td>
+<td>85.7 (V6)</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>93.5（版本未标 ⚠️）</td>
+<td>~−7.8</td>
+</tr>
+</tbody>
+</table>
+<p><strong>差距的形状比大小更有信息量</strong>：</p>
+<div class="codehilite"><pre><span></span><code>数学竞赛类   ：−3.8 ~ −9      ← 基本同档，AIME 反超 V4-Pro、HMMT 反超 M3
+知识类       ：−10 ~ −23      ← 差一代
+Agent / 工具 ：−12 ~ −26      ← 差一代，且是最大的一处
+</code></pre></div>
+
+<p><strong>这个形状和那四家的共性诊断不一样。</strong> 四家收敛出的结论是"推理靠架构、知识靠数据"，短板<strong>只在知识</strong>（见 <a href="模型技术对比.html">模型技术对比.md</a> §5.3）。<strong>openPangu 是知识和 Agent 双短，而 Agent 恰恰是那四家最强的一格。</strong></p>
+<p>一个与公开事实自洽的解释：</p>
+<blockquote>
+<p><strong>AIME/HMMT 是短轨迹、可验证、RL 便宜的任务；BrowseComp / MCP-Atlas / SWE-bench 是长周期多轮、环境昂贵、rollout 长尾严重的任务。</strong> 后者正是那四家把半本报告砸进去的地方。余承东公开说过"留给自己的算力非常有限"，报告也承认在复杂真实软件工作流上与第一梯队有差距。<strong>算力约束下先保短轨迹 RL，是一个说得通的取舍。</strong></p>
+</blockquote>
+<p><strong>18B 激活是五家里最低的</strong>，也指向同一方向。</p>
+<p>⚠️ <strong>不放进上表的三项</strong>（避免误导）：</p>
+<ul>
+<li><strong>IFBench</strong>：Pangu 79.9（prompt-strict）vs M2 报告消融里的 23.1/27.2——<strong>差距太大，几乎确定是不同子集或不同判定口径</strong>，不可比。</li>
+<li><strong>τ²-Bench</strong>：Pangu 81.1（Avg@3，总分）vs M2 的 τ²-retail 62.3 / τ²-telecom 32.5（<strong>分子集，且是 M2 的 SFT 消融模型</strong>），不可比。</li>
+<li><strong>Apex</strong>：Pangu 的 Apex 17.7 在 Reasoning 分组、Avg@16；M3 模型卡的 apex-agents 27.7 听起来是 agent 基准。<strong>是否同一个 benchmark 未能确认</strong>，不比。</li>
+</ul>
+<h3 id="123">12.3 第三方数据点</h3>
+<ul>
+<li><strong>WildClawBench 榜单</strong>：openPangu-2.0-<strong>Flash</strong> 41.5 排第 7，低于 GLM-5（42.6）和 MiMo-V2.5-Pro（43）。Pro 官方自测 46.5，若能复现则会超过该快照里的这两个。⚠️ 该榜单列的是 GLM-<strong>5</strong> 而非 5.2，且 Pro 尚未见第三方复测。</li>
+<li>截至 2026-08-05，<strong>Artificial Analysis 等独立评测平台尚未发布 Pro 的结果</strong>。</li>
+</ul>
+<h3 id="124-in-house-harness">12.4 报告自己的 in-house harness</h3>
+<p>报告另有 §5.2 两节：<strong>Deep Research 与交互式可视化</strong>、<strong>全栈迷你应用生成</strong>。这两节是内部 harness 的定性/对比展示，<strong>同样没有外部模型对照</strong>。</p>
+<hr />
+<h2 id="_5">十三、这份报告真正的贡献在哪</h2>
+<p><strong>如果只看榜单，openPangu-2.0-Pro 是"数学接近第一梯队、Agent 差一代"。但这不是它的重点。</strong></p>
+<table>
+<thead>
+<tr>
+<th>它是什么</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一台高完成度的集成机</strong></td>
+<td>mHC ← DeepSeek、DSA ← DeepSeek、Muon ← 公共、OPD 公式 ← GLM-5（明确标注）、TITO ← GLM-5、sink ← gpt-oss 谱系、R3 ← 社区。<strong>报告全部如实引用，没有包装成原创。</strong></td>
+</tr>
+<tr>
+<td><strong>昇腾全栈的可行性证明</strong></td>
+<td>505B 全程在昇腾 NPU 上训练，<strong>开源了预训练代码、后训练代码和训练算子</strong>——那四家<strong>没有一家开源训练框架</strong></td>
+</tr>
+<tr>
+<td><strong>四条原创增量</strong></td>
+<td>① PAS 及其 vs gpt-oss sink 的消融；② mHC 的 gate-collapse 失效模式与两级归一化解法；③ aux-loss-free 的 RMS 归一化更新；④ 训推不一致的三分类根因解剖</td>
+</tr>
+<tr>
+<td><strong>一份对使用者更实用的 mHC 文档</strong></td>
+<td>V4 报告讲了 mHC 为什么需要，openPangu 讲了<strong>照原样用会踩什么坑</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>最值得记的一句</strong>：这份报告在<strong>它自己关心的问题上</strong>（怎么在国产硬件上把 500B MoE 训稳、推快）披露得比另外四家都细——训推不一致那一章的颗粒度，五家里没有第二份。<strong>它的"薄"只出现在能力对比上，而那恰好是它选择不谈的部分。</strong></p>
+<hr />
+<h2 id="_6">十四、可靠性说明</h2>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>来源</th>
+<th>可信度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Table 8 架构超参、Table 1 效率系数、Table 2 mHC 消融、Table 3 MTP 调度、Table 5 全部评测、Table 6/7 延迟吞吐、三阶段课程与全部超参、OPD 公式、训推失配三分类、量化配置、附录 A.2/A.3 消融</td>
+<td><strong>报告正文提取</strong></td>
+<td>一手，可在 <a href="papers/openPangu-2.0-正文提取.txt">papers/openPangu-2.0-正文提取.txt</a> grep 核对</td>
+</tr>
+<tr>
+<td>505B/18B、512K、34T、许可、发布时间线</td>
+<td>HF 模型卡 + 华为官网</td>
+<td>一手</td>
+</tr>
+<tr>
+<td>541B 的口径拆解、参数量验算</td>
+<td><strong>本文推算</strong>（基于 Table 8）</td>
+<td>推算，两项均与官方数字吻合</td>
+</tr>
+<tr>
+<td>§11.4 的并行切法（MoE 走 EP、prefill DSA CP + SWA TP、decode Attention DP、Felix）</td>
+<td><strong>报告 Infra 节原文</strong></td>
+<td>一手</td>
+</tr>
+<tr>
+<td>§11.4 的 <strong>32 卡假设与全部每卡参数账 / KV cache 账</strong></td>
+<td><strong>本文推算</strong>（基于 Table 8）</td>
+<td>⚠️ <strong>推算，报告未给卡数与显存数字</strong></td>
+</tr>
+<tr>
+<td>§12.2 与四家的全部差距</td>
+<td><strong>跨厂商拼接</strong></td>
+<td>⚠️ <strong>二手组合，口径不统一</strong></td>
+</tr>
+<tr>
+<td>WildClawBench 榜单排位</td>
+<td>第三方榜单快照</td>
+<td>二手，且是 Flash 不是 Pro</td>
+</tr>
+</tbody>
+</table>
+<p><strong>最需要保留怀疑的五处</strong>：</p>
+<ol>
+<li><strong>没有任何对照模型</strong>——所有横向结论都不是华为的主张，是我拼的。</li>
+<li><strong>完全没有长上下文评测</strong>。全文 <code>RULER</code> 出现 0 次，MRCR、NIAH 也没有。<strong>它宣称 512K，但没有任何逐长度召回数据</strong>——比 GLM-5.2 的"1M 无曲线"更彻底。而且它是五家里唯一<strong>不到 1M</strong> 的。</li>
+<li><strong>所有消融都在 15B/2B 上做</strong>（mHC 1T tokens、PAS 250B tokens、负载均衡同理），<strong>离 505B 很远</strong>。PAS 那一组只给曲线不给数值表。</li>
+<li><strong>官方博客的"单卡吞吐 2 倍于业界主流开源模型"在报告正文里找不到出处</strong>，Table 6/7 全部是自己和自己比。</li>
+<li><strong>MTP 没有给接受长度</strong>，无法与 GLM 的 2.76 / DeepSeek-V3.2 的 2.55 对比；<strong>量化没有提 QAT</strong>，看起来是 PTQ，与另外四家的训练时量化不是一回事。</li>
+</ol>
+<hr />
+<h2 id="_7">参考来源</h2>
+<ul>
+<li><strong>openPangu-2.0: Towards Reliable and Efficient Agentic Reasoning</strong>（45 页技术报告，无 arXiv 编号）— 本地：<a href="papers/openPangu-2.0-Tech-Report.pdf">papers/openPangu-2.0-Tech-Report.pdf</a></li>
+<li><a href="https://huggingface.co/openpangu/openPangu-2.0-Pro">openpangu/openPangu-2.0-Pro (Hugging Face)</a> — 完整评测表与模型卡</li>
+<li><a href="https://www.huawei.com/cn/news/2026/7/openpangu">openPangu-2.0-Pro 模型及技术报告正式开源上线（华为官网，2026-07-31）</a></li>
+<li><a href="https://gitcode.com/ascend-tribe">Ascend Tribe 开源社区（GitCode）</a> — 训练/推理框架、算子</li>
+<li>mHC 原论文：<a href="https://arxiv.org/abs/2512.24880">Manifold-Constrained Hyper-Connections (arXiv:2512.24880)</a>（DeepSeek，V4 同款组件）</li>
+<li>相关独立论文：<a href="https://arxiv.org/abs/2606.21257">An Empirical Study of OpenPangu Quantization on Ascend NPUs (arXiv:2606.21257)</a> · <a href="https://arxiv.org/abs/2512.23367">Post-Training Quantization of OpenPangu Models for Efficient Deployment on Atlas A2 (arXiv:2512.23367)</a></li>
+<li><a href="https://www.zhihu.com/question/2066567142019786000">如何评价华为盘古 5050 亿参数的 openPangu-2.0-Pro 模型及技术报告正式开源上线？（知乎）</a></li>
+<li><a href="https://www.opensourceforu.com/2026/08/huawei-open-sources-505b-openpangu-ai-drops-weights-and-code/">Huawei Open Sources 505B openPangu AI, Drops Weights And Code (Open Source For You)</a></li>
+<li><a href="https://pandaily.com/huawei-openpangu-20-pro-open-source-ascend-jul2026">After Vowing to Make Pangu World No.1, Yu Chengdong Opens openPangu-2.0-Pro (Pandaily)</a></li>
+</ul>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

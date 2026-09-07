@@ -1,0 +1,1253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · DeepSeek 的脚手架：从"查不到"到"可以逐行读"</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="07-deepseek">07 · DeepSeek 的脚手架：从"查不到"到"可以逐行读"</h1>
+<blockquote>
+<p>⭐⭐⭐ 本章有 <strong>两个</strong> 一手来源，这在全目录是独一份：</p>
+<p><strong>来源 A｜论文</strong>：DeepSeek-V4 技术报告<br />
+本地存档 <a href="../../业界模型技术报告/papers/arxiv-2606.19348.pdf"><code>业界模型技术报告/papers/arxiv-2606.19348.pdf</code></a>（58 页），<br />
+引用集中在 <strong>§5.2.5 沙箱基础设施</strong>、<strong>§5.3.1 评测设置</strong> 和 <strong>交错思考</strong> 一节。<br />
+本章所有 ✅ 逐字引文，我都用 <code>pypdf</code> 从这份 PDF 重新抽过一遍原文核对。</p>
+<p><strong>来源 B｜源码</strong>：<code>deepseek-ai/deepseek-harness</code>（简称 <strong>dsh</strong>）<br />
+✅ 2026 年开源，MIT 协议，仓库地址 https://github.com/deepseek-ai/deepseek-harness<br />
+本章 ✅ 逐字源码引文来自我在 <strong>2026-09-04</strong> 拉取的 <code>master</code>，<br />
+提交 <code>76fda72</code>（2026-09-03），根包版本 <code>0.1.2-rc.1</code>。</p>
+<p>⚠️ <strong>2026-09-05 我又拉了一次</strong>（<code>git clone --depth 1</code>，浅克隆），<br />
+已经走到提交 <code>d347e70</code>（2026-09-04，<code>release/dsh-0.1.3-alpha.1</code> 的合并），<br />
+根包版本 <strong><code>0.1.3-alpha.1</code></strong>。变动见 7.1 表，<br />
+新核实到的凭据/API key 机制见 <strong>7.2b</strong>（该节是第二次拉取时新写的）。<br />
+★ 本章其余 ✅ 引文我没有在新提交上逐条重抽，遇到对不上以仓库现状为准。</p>
+<p>★★★ 一句话预告：<strong>这一章是全目录唯一一处，<br />
+你能同时看到【脚手架配置】【它的源码实现】和【它跑出来的分数】三件东西的地方。</strong></p>
+</blockquote>
+<hr />
+<h2 id="70">7.0 ⚠️ 这一章被推翻过一次，请先读这一段</h2>
+<div class="codehilite"><pre><span></span><code>   ⟹ 本目录 README 原来把可查证度分成三档，DeepSeek 被放在最底下：
+
+      ① SWE-agent            ✅ 论文 + 源码，全可查
+      ② Claude Code / Codex  ✅ 行为可查 / ⚠️ 实现不可查
+      ③ DeepSeek             ⚠️ 基本查不到 ← 【这一条现在错了】
+
+   ⚠️⚠️ 2026 年 8 月，DeepSeek 把自家的 agent 脚手架整个开源了，
+        仓库名 deepseek-harness，命令行叫 dsh，MIT 协议。
+   ⟹ ★★★ 于是 DeepSeek 从【最底档】直接跳到了【比第①档还全】的位置：
+        论文（规格）＋ 源码（实现）＋ 分数（结果），三样齐全。
+        SWE-agent 有论文和源码，但它不是任何一家前沿模型的跑分脚手架；
+        Claude Code / Codex 是产品脚手架，但源码/分数对不上号。
+</code></pre></div>
+
+<p>⚠️ 但请立刻注意一条边界，它决定了本章后面每一节的措辞：</p>
+<div class="codehilite"><pre><span></span><code>   ┌─────────────────────────────────────────────────────────────┐
+   │ ✅ 报告说：跑分用的是 &quot;an internally developed evaluation    │
+   │    framework&quot;（一个内部开发的评测框架）。                     │
+   │                                                             │
+   │ ✅ 仓库存在：dsh，且里面有一个配置档位（sdk-minimal）        │
+   │    和报告描述的那套参数【逐项吻合】。                        │
+   │                                                             │
+   │ ⚠️⚠️ 但 —— 报告【没有】说那个内部框架就是 dsh，              │
+   │    dsh 仓库里也【没有】任何一处提到 SWE-bench、              │
+   │    Terminal-Bench 或跑分复现。我 grep 过，零命中。           │
+   │                                                             │
+   │ ⟹ ★★★ 所以本章的写法是：                                   │
+   │    【报告说了什么】和【仓库里有什么】分开列，                 │
+   │    两者对得上的地方我标 ⚠️「高度吻合，但这是我的推断」。      │
+   └─────────────────────────────────────────────────────────────┘
+
+   ★ 时间线也支持&quot;不是同一份代码&quot;这个谨慎读法：
+     报告 arXiv 编号 2606（2026 年 6 月）⟹ 跑分在 6 月之前；
+     dsh 首次公开在 2026 年 8 月，且仍标注 developer preview。
+   ⟹ ⚠️ 我的判断：dsh 更像那套内部框架【产品化之后的后代】，
+     而不是当初那份跑分脚本本身。
+</code></pre></div>
+
+<hr />
+<h2 id="71-dsh">7.1 ✅ dsh 是什么：仓库事实速览</h2>
+<p>★ 名词：<strong>dsh</strong> = <strong>D</strong>eep<strong>S</strong>eek <strong>H</strong>arness（DeepSeek 脚手架）的命令名。<br />
+⟹ ★★ 注意它自称 harness 而不是 agent —— 这正是 <a href="01-两个harness不是一个东西.html">01 章</a> 讲的歧义词，<br />
+   这里是【agent 脚手架】那个意思，不是【评测框架】。</p>
+<table>
+<thead>
+<tr>
+<th>事实</th>
+<th>值</th>
+<th>我怎么核实的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>协议</td>
+<td>✅ MIT，<code>Copyright (c) 2026 DeepSeek</code></td>
+<td><code>LICENSE</code> 首行</td>
+</tr>
+<tr>
+<td>根包</td>
+<td>✅ <code>@deepseek-ai/dsh-root</code>。版本：09-04 读到 <code>0.1.2-rc.1</code>，⚠️ 09-05 已是 <strong><code>0.1.3-alpha.1</code></strong></td>
+<td><code>package.json</code></td>
+</tr>
+<tr>
+<td>运行时</td>
+<td>✅ Node.js <code>^22.19.0 \|\| &gt;=24.0.0</code>，包管理器锁定 <code>pnpm@11.7.0</code></td>
+<td><code>package.json</code> 的 <code>engines</code> / <code>packageManager</code></td>
+</tr>
+<tr>
+<td>规模</td>
+<td>✅ <code>packages/</code> 下的 <code>package.json</code>：09-04 是 <strong>257</strong> 个，⚠️ 09-05 是 <strong>262</strong> 个</td>
+<td><code>find packages -name package.json \| wc -l</code></td>
+</tr>
+<tr>
+<td>成熟度</td>
+<td>⚠️ README 自称 <em>developer preview</em>，并全大写警告 <strong>"THERE WILL BE COMPATIBILITY-BREAKING CHANGES"</strong>（将会有破坏兼容性的改动）</td>
+<td><code>README.md</code></td>
+</tr>
+<tr>
+<td>热度</td>
+<td>⚠️ 我 2026-09-04 读到 <strong>211.4k star / 24.8k fork / 906 watching / 14,981 commits</strong>。★ 这是网页读数，会变，别把它当固定事实</td>
+<td>GitHub 仓库页</td>
+</tr>
+<tr>
+<td>外部贡献</td>
+<td>✅ <code>CONTRIBUTING.md</code> 明写 <strong>"we cannot accept external pull requests at the moment"</strong>（目前无法接受外部 PR），引导去 Discussions 和写插件</td>
+<td><code>CONTRIBUTING.md</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★★ 它的架构主张只有一句话：everything is a plugin（万物皆插件）。</strong></p>
+<p>✅ <code>docs/architecture.md</code> 逐字：</p>
+<blockquote>
+<p>"Every part of the product is a plugin, including the model adapter, the tool registry,<br />
+the session log, and the agent loop itself, so each is replaceable from configuration.<br />
+There is no privileged core to patch."</p>
+</blockquote>
+<p>⟹ <strong>产品的每一个部分都是插件，包括模型适配器、工具注册表、会话日志，以及 agent 循环本身，因此每一个都可以通过配置替换。不存在一个享有特权的、需要你去打补丁的内核。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：Cordis
+     ⟹ dsh 底下的插件框架，✅ README 说其设计发表于
+        arXiv 2608.25512《A Programming Paradigm for Spatiotemporal Composability》
+        （一种面向时空可组合性的编程范式）。
+     ⚠️ 这篇论文我【没有】独立核实，只转述 README 的指向。
+
+   ★ 名词：profile（配置档）/ bundle（插件包）
+     ⟹ ✅ 一次 dsh 运行 = 按顺序叠起来的一棵插件树。
+        profile 列出它要叠哪些 bundle，bundle 是一组配置行 + 对应代码。
+     ⟹ ★★ 官方随包发的 profile 有五个：
+        web / headless / sdk / sdk-minimal / acp。
+     ⟹ 🔑🔑 ★★★ 记住 sdk-minimal 这个名字，下一节整节都在讲它。
+</code></pre></div>
+
+<hr />
+<h2 id="72">7.2 ★★★ 本章最硬的一节：报告里那四个参数，在仓库里对应哪几行</h2>
+<p>先把报告那句话再放一遍（✅ 逐字，我已用 pypdf 从 PDF 重新抽取核对）：</p>
+<blockquote>
+<p>"For code agent tasks (SWE-Verified, Terminal-Bench, SWE-Pro, SWE Multilingual),<br />
+we evaluate DeepSeek-V4 series using an internally developed evaluation framework.<br />
+This framework provides a minimal set of tools — a bash tool and a file-edit tool.<br />
+The maximum number of interaction steps is set to 500, and the maximum context<br />
+length is set to 512K tokens."</p>
+</blockquote>
+<p>⟹ <strong>对于代码 agent 任务（SWE-Verified、Terminal-Bench、SWE-Pro、SWE 多语言版），我们使用一个内部开发的评测框架来评测 DeepSeek-V4 系列。该框架提供一套极简工具集 —— 一个 bash 工具和一个文件编辑工具。最大交互步数设为 500，最大上下文长度设为 512K token。</strong></p>
+<p>★★★ 现在看 <code>packages/bundle/sdk-minimal/README.md</code> 的开头一行（✅ 逐字）：</p>
+<blockquote>
+<p>"Standalone two-tool SDK profile for users who need a minimal cross-platform coding<br />
+agent without the shared base bundle."</p>
+</blockquote>
+<p>⟹ <strong>独立的双工具 SDK 配置档，面向需要一个极简跨平台编码 agent、又不想要共享 base 插件包的用户。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ &quot;two-tool&quot;（双工具）。
+      ⚠️ 报告说的 &quot;a bash tool and a file-edit tool&quot;，
+         在仓库里有一个【自称双工具】的官方 profile。
+      ⟹ ★★ 这是我认为两者同源的最强线索，但仍然只是线索。
+</code></pre></div>
+
+<p><strong>✅ 把 <code>packages/bundle/sdk-minimal/cordis.patch.yml</code> 里相关的行摘出来，逐项对照：</strong></p>
+<table>
+<thead>
+<tr>
+<th>报告说的</th>
+<th>仓库里对应的配置行</th>
+<th>对得上吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>bash 工具</td>
+<td><code>id: persistent-bash</code> → <code>@deepseek-ai/dsh-tool-bash-persistent</code>，<code>timeoutMs: 300000</code>（300 秒）；Windows 上换成 <code>persistent-pwsh</code></td>
+<td>✅ 对上</td>
+</tr>
+<tr>
+<td>文件编辑工具</td>
+<td><code>id: str-replace-editor</code> → <code>@deepseek-ai/dsh-tool-str-replace-editor</code>，<code>maxOutputChars: 16000</code></td>
+<td>✅ 对上</td>
+</tr>
+<tr>
+<td>"minimal set"（极简工具集）</td>
+<td>整棵树里<strong>只有这两个</strong> model-facing 工具</td>
+<td>✅ 对上</td>
+</tr>
+<tr>
+<td>512K 上下文</td>
+<td>⚠️ <strong>对不上</strong>：<code>defaultContextWindow</code> 默认取 <code>DSH_CONTEXT_WINDOW ?? 1000000</code>（100 万）</td>
+<td>⚠️ 见下</td>
+</tr>
+<tr>
+<td>500 步上限</td>
+<td>❌ <strong>仓库里根本没有这个开关</strong>（详见 7.4）</td>
+<td>❌ 没有</td>
+</tr>
+</tbody>
+</table>
+<p>★★ 顺便把这个 profile 的其它设定也列出来，因为每一条都是【跑分口径】：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ 系统提示词：DSH_SYSTEM_PROMPT，缺省是一句
+      &quot;You are a helpful software engineer assistant.&quot;
+      （你是一个乐于助人的软件工程师助手。）
+      ⟹ 🔑 ★★★ 就这一句。没有几千字的 persona。
+      ⟹ ★★ 对照 06 章讲的 Claude Code —— 完全相反的路线。
+
+   ✅ 沙箱策略：mode: danger-full-access（危险·完全访问）
+      ⟹ ⚠️ README 自己警告：&quot;use it only with an isolated workspace&quot;
+         （只在隔离的工作区里用）。
+      ⟹ ★★ 这在跑分场景是合理的：题目本来就跑在一次性容器里，
+         再套一层进程级限制只会让 bash 用不顺。
+
+   ✅ 明确【不装】的东西（README 逐条列出）：
+      Web 界面、设置、托管凭据、遥测、compaction（上下文压缩）、
+      工作区指令、skills、jobs、subagents 全部缺席。
+   ⟹ 🔑🔑 ★★★ 请把这一行读三遍：
+      【跑分档位是把功能一个个【拆掉】拆出来的，不是攒出来的。】
+
+   ✅ 会话持久化：未压缩 JSONL，落在 $DSH_HOME/sessions
+   ✅ 流空闲超时：streamIdleTimeoutMs: 172800000
+      ⟹ ★★ 换算一下 = 48 小时。
+      🔑 一个允许模型思考两天不吭声的超时值，
+         本身就说明设计者预期的是【超长任务】。
+</code></pre></div>
+
+<p><strong>⭐ 还有一份一行的文档，位置很说明问题 —— 仓库根目录的 <code>BENCHMARK.md</code></strong>（✅ 全文只有这么多）：</p>
+<blockquote>
+<p>"Follow <em>Get started with the Python SDK</em> to install the SDK and run the<br />
+<code>jsonrpc-agent</code> minimal variant. Use separate workspaces and session IDs for<br />
+independent benchmark tasks."</p>
+</blockquote>
+<p>⟹ <strong>按《Python SDK 上手》安装 SDK，并运行 <code>jsonrpc-agent</code> 的 minimal 变体。为互相独立的基准任务使用各自独立的工作区和会话 ID。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 官方仓库里【叫 BENCHMARK.md 的那份文档】，
+      指向的正是 sdk-minimal 这个 profile。
+   ⟹ ★★ 也就是说：DeepSeek 自己认为&quot;要跑分就用这个双工具档位&quot;。
+      ⚠️ 但它仍然没说&quot;V4 报告里那些分数是这么跑出来的&quot;。
+</code></pre></div>
+
+<p>★ <code>docs/user/guide/python-sdk.md</code> 里那张表把这个档位的口径写得更全（✅ 逐字摘要）：<br />
+模型缺省 <code>deepseek-v4-flash</code>，示例里 <code>max_tokens=49_152</code>，shell 超时 300 秒，<br />
+编辑器输出上限 16,000 字符，<strong>"Runtime context and compaction: Absent"</strong>（运行时上下文与上下文压缩：无）。</p>
+<hr />
+<h2 id="72b-2026-09-05api-key-sdk-minimal">7.2b ⭐⭐ 补录（2026-09-05）：API key 放哪，暴露了 sdk-minimal 又少一样东西</h2>
+<blockquote>
+<p>★ 这一节是我第二次拉仓库、真正<strong>把 dsh 配起来跑通一次</strong>之后补的。<br />
+它不改变 7.2 的结论，而是给"跑分档位是拆出来的"这句话再添一条证据。</p>
+</blockquote>
+<p>★ 名词：<strong>凭据引用（credential reference）</strong><br />
+⟹ dsh 的配置文件里【从不写 key 本身】，只写一个环境变量名（例如 <code>apiKeyEnv: DEEPSEEK_API_KEY</code>），<br />
+   真正的值由另一类插件（凭据提供方）保管。所以"key 放哪"这个问题，<br />
+   在 dsh 里等价于"<strong>哪个 profile 挂了凭据插件</strong>"。</p>
+<p><strong>✅ 完整档位（base 组合包，即 web / headless）有四层取值，先命中者赢：</strong></p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>位置</th>
+<th>可写？</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 启动进程的环境变量</td>
+<td><code>DEEPSEEK_API_KEY=… dsh</code></td>
+<td>❌ 只读</td>
+</tr>
+<tr>
+<td>② 受管凭据文件</td>
+<td><code>$DSH_HOME/.credentials.yaml</code></td>
+<td>✅ Web 界面写的就是它</td>
+</tr>
+<tr>
+<td>③ 项目 <code>.env</code></td>
+<td><code>&lt;调用目录&gt;/.env</code></td>
+<td>❌</td>
+</tr>
+<tr>
+<td>④ home <code>.env</code></td>
+<td><code>$DSH_HOME/.env</code></td>
+<td>❌</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 逐字，<code>apps/cli/reference/README.md</code>：</p>
+<blockquote>
+<p>"Provider credentials resolve from the inherited environment, <code>$DSH_HOME/.credentials.yaml</code>,<br />
+the invoking directory's <code>.env</code>, then <code>$DSH_HOME/.env</code>; the managed document is never<br />
+materialized into <code>process.env</code>."</p>
+</blockquote>
+<p>⟹ <strong>凭据依次从继承环境、<code>$DSH_HOME/.credentials.yaml</code>、调用目录的 <code>.env</code>、<code>$DSH_HOME/.env</code> 解析；受管文档从不物化进 <code>process.env</code>。</strong></p>
+<div class="codehilite"><pre><span></span><code>   🔑🔑 ★★★ 但 sdk-minimal【没有凭据插件】。
+      ✅ 我 grep 过 packages/bundle/sdk-minimal/cordis.patch.yml，
+         关键词 credential 零命中。
+
+   ⟹ ✅ 对应源码 packages/llm/llm-deepseek/src/index.ts:433-447：
+        先问 ctx.get(&#39;credentials&#39;)，拿不到这个服务就【直接退回读启动环境变量】，
+        再没有就抛 MISSING_CREDENTIAL。
+
+   ⟹ ★★★ 所以跑分档位里，环境变量是【唯一】入口，
+      .credentials.yaml 和两个 .env 全部不生效。
+</code></pre></div>
+
+<p>⟹ 🔑 <strong>把这条并进 7.2 那份"明确不装的东西"清单</strong>：<br />
+   Web 界面、设置、托管凭据、遥测、compaction、工作区指令、skills、jobs、subagents ——<br />
+   ★★ 其中"托管凭据"这一条，现在有了源码级的确证（缺插件 + 缺插件时的回退路径）。<br />
+   ⟹ ★★ 这也很合理：跑分跑在一次性容器里，key 本来就该从 <code>-e</code> 注进去，<br />
+      再存一个磁盘文件只是多一个要清理的东西。</p>
+<p><strong>⚠️ 顺带纠正一处仓库自身的文档错误</strong>（这条值得单独记住）：</p>
+<div class="codehilite"><pre><span></span><code>   ⚠️ packages/llm/llm-deepseek/README.md 的字段表写：
+      &quot;baseURL … $DEEPSEEK_BASE_URL wins when set&quot;（环境变量优先）
+
+   ✅ 但源码 packages/llm/llm-deepseek/src/index.ts:378-380 是：
+      config.baseURL  ??  $DEEPSEEK_BASE_URL  ??  https://api.deepseek.com
+      ⟹ 【配置 / settings 层最高，环境变量只排第二】—— 和 README 写反了。
+
+   ⟹ ★★ 我用实验确认过源码版本：把 $DSH_HOME/settings.yaml 的 baseURL
+      改成一个不存在的域名，dsh 报错时喊的正是那个假域名：
+        dsh: TRANSPORT: DeepSeek API request to https://…invalid/v1 failed
+   ⟹ 🔑 教训：dsh 的 README 字段表【不可尽信】，以源码为准。
+</code></pre></div>
+
+<p>★ 另外两条第二次拉取时顺带核实到的小事实：<br />
+✅ base 组合包里 <code>agent-default-model</code> 的缺省就是 <code>provider: deepseek-official</code> / <code>model: deepseek-v4-flash</code><br />
+（<code>packages/bundle/base/cordis.patch.yml:75-79</code>），所以开箱即用不需要选模型；<br />
+✅ 内置 <code>web_search</code> 工具<strong>复用同一个 <code>DEEPSEEK_API_KEY</code></strong>，另接受 <code>DEEPSEEK_SEARCH_BASE_URL</code>。</p>
+<p>★ 还有一条和 7.7（轨迹日志）呼应的观察：<br />
+✅ <code>headless</code> 档位落的会话日志是 <strong>zstd 压缩</strong>的（<code>session.jsonl.zstd</code>），<br />
+而 7.2 引的 <code>sdk-minimal</code> 是<strong>未压缩 JSONL</strong> —— 两个档位的持久化策略确实不同。</p>
+<hr />
+<h2 id="73-2-vs-62">7.3 ★★★ 第一个反差：2 个工具 vs 同一个仓库里的 62 个</h2>
+<p>★★ 03 章那张表现在可以补完了 —— 而且最有意思的是，<strong>最后两行来自同一个仓库</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   ┌───────────────┬────────────────────────────────────────┐
+   │ SWE-agent     │ 9 个专门设计的工具                     │
+   │ （2024 论文） │ find_file / search_file / search_dir /  │
+   │               │ open / scroll_down / scroll_up / goto / │
+   │               │ create / edit                          │
+   ├───────────────┼────────────────────────────────────────┤
+   │ Claude Code   │ 十几个内置工具（Read/Edit/Bash/Glob/   │
+   │ （2026 产品） │ Grep/Task/WebFetch…）                   │
+   ├───────────────┼────────────────────────────────────────┤
+   │ dsh 全量目录  │ ★★★ ✅ 62 个 model-visible 工具名，     │
+   │ （2026 源码） │ 分布在 24 个工具包里                    │
+   ├───────────────┼────────────────────────────────────────┤
+   │ dsh           │ ★★★ ✅ 2 个：bash + str_replace_editor  │
+   │ sdk-minimal   │ 官方称 &quot;two-tool profile&quot;               │
+   └───────────────┴────────────────────────────────────────┘
+</code></pre></div>
+
+<p>✅ 那 62 个名字，我从 <code>docs/tool-catalog.md</code> 里 <code>grep '^### '</code> 数出来的，包括：</p>
+<div class="codehilite"><pre><span></span><code>   ask_user_question  bash  pwsh  read  write  edit  read_image  glob  grep
+   run_code  exit_plan_mode  lsp  skill  todo_write  workflow  ralph
+   web_search  web_fetch  job_list  job_output  job_kill
+   terminal_open/read/send/close/list/signal（6 个）
+   subagent  list_subagent_models  send_message  interrupt_agent  list_agents
+   create_goal / get_goal / update_goal
+   schedule_create / delete / list
+   session_search / session_trace / session_event_read / _search / _trace
+   spawn_teammate  team_task_create / get / list / update  wait_agent
+   cordis_define / undefine / run / stop / inspect_list / inspect_query / inspect_self
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 这才是真正的结论，比原来那版&quot;2 个 vs 9 个&quot;深一层：
+
+   ⚠️ 不是【DeepSeek 认为 2 个工具就够了】。
+   ✅ 是【同一家公司、同一个仓库，产品档位给 62 个，跑分档位给 2 个】。
+
+   ⟹ ★★★ 工具数量不是一个技术信仰，是一个【按场景拨的旋钮】。
+      ★★ 产品要好用 ⟹ 工具多，给人省事。
+      ★★ 跑分要干净 ⟹ 工具少，减少变量、减少 prompt 里的 schema 占用。
+</code></pre></div>
+
+<p>⚠️ 一个必须说清的细节：这 62 个不是"默认全开"。<br />
+✅ <code>docs/tool-catalog.md</code> 里明确标注了哪些<strong>不在任何随包配置里</strong>（例如 <code>cordis_*</code> 那七个，<br />
+原文 "Not in any shipped tree"，⟹ 不在任何随包发布的插件树里），<br />
+以及哪些默认关闭（例如 Agent Teams 那九个，"The shipped dsh-base bundle keeps the package disabled"）。<br />
+✅ 实际的 <code>dsh-base</code> 插件包一共 <strong>85 行配置行</strong>（我 grep <code>- id:</code> 数的）。<br />
+⟹ ★★ 所以"62"是<strong>目录规模</strong>，不是<strong>某一次运行的工具数</strong>。这个区别在读任何脚手架时都要守住。</p>
+<p>★★ 还有一条旁证仍然成立，它解释了"为什么 2 个就敢跑"（✅ V4 报告逐字）：</p>
+<blockquote>
+<p>"for each target domain — such as mathematics, coding, agent, and instruction<br />
+following — a separate expert model is trained independently."</p>
+</blockquote>
+<p>⟹ <strong>对每个目标领域 —— 例如数学、编程、agent、指令遵循 —— 都单独训练一个专家模型。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 ★★★ &quot;agent&quot; 被列为一个和数学、编程并列的【训练领域】。
+      ⟹ ★★【&quot;会用工具&quot;是被专门训出来的能力】，不再靠脚手架兜。
+      ⟹ ⚠️ 我的推断：能力从【脚手架】搬进了【模型权重】，
+         所以跑分时才敢把脚手架拆到只剩两个工具。
+</code></pre></div>
+
+<hr />
+<h2 id="74-500">7.4 ⭐⭐ 第二个反差：500 步 —— 而仓库里【没有】这个开关</h2>
+<p>★★ 先看数字对比：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>SWE-agent（2024）</th>
+<th>DeepSeek-V4（2026）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>上下文窗口</td>
+<td>✅ GPT-4 Turbo <strong>128K</strong> / Claude 3 Opus 200K</td>
+<td>✅ 报告：<strong>512K</strong> ／ ⚠️ dsh 默认回退值 <strong>1M</strong></td>
+</tr>
+<tr>
+<td>步数上限</td>
+<td>⚠️ 成本上限约束下，实测成功案例约 <strong>12 步</strong>、失败约 21 步</td>
+<td>✅ 报告：<strong>500 步</strong></td>
+</tr>
+<tr>
+<td>上下文策略</td>
+<td>✅ 只留最近 5 条观察</td>
+<td>✅ 搜索 agent 明说 discard-all；⚠️ 代码 agent 未说明</td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★★ 但现在有源码了，就能问一个原来问不出的问题：这个 500 是配在哪儿的？</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️ 答案是：【不在 dsh 里】。
+
+   ✅ 我 grep 了整个仓库：maxSteps / max_steps / stepLimit / maxTurns
+      —— 全部零命中。
+   ✅ agent-loop 这个&quot;唯一的具体循环&quot;只有一个上限类配置：
+      maxParallelToolCalls，默认 10，
+      ⟹ 管的是&quot;一步里最多并发几个工具调用&quot;，不是&quot;总共几步&quot;。
+   ✅ 它的 README 自己说：
+      &quot;It is the harness&#39;s only concrete loop — everything beyond
+       &#39;call the model, run the tools, repeat&#39; belongs to plugins.&quot;
+      ⟹【它是本脚手架唯一的具体循环 —— 除了&quot;调模型、跑工具、重复&quot;
+         之外的一切，都属于插件。】
+
+   ⟹ 🔑🔑🔑 ★★★ 所以&quot;500 步&quot;这个数，
+      不是脚手架的属性，是【跑分脚本套在脚手架外面的一层】。
+
+   ⟹ ★★ 这条结论比数字本身更有用。它说明：
+      ┌────────────────────────────────────────────────┐
+      │ 一次跑分的口径，至少分布在三层：                 │
+      │   ① 模型（V4-Pro / reasoningEffort 档位）       │
+      │   ② 脚手架（工具集、超时、沙箱、上下文策略）     │
+      │   ③ 跑分驱动脚本（步数上限、并发、题目集、重试） │
+      │ ⟹ ★★★ 开源了②，不等于能复现③。               │
+      └────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>⚠️ 关于 512K vs 1M 那个差异，我的读法是：<br />
+<code>DSH_CONTEXT_WINDOW ?? 1000000</code> 是"模型不在适配器目录里时的<strong>回退值</strong>"，<br />
+不是跑分时实际用的窗口；报告的 512K 应该是跑分脚本显式设的。<br />
+✅ 报告标题本身就是 "Towards Highly Efficient Million-Token Context Intelligence"<br />
+（迈向高效的百万 token 上下文智能），所以 1M 这个回退默认值和模型定位是一致的。<br />
+⚠️ 这一段是我的推断，报告和仓库都没有把两者接起来。</p>
+<p><strong>⭐ 上下文策略这一段，报告在【搜索 agent】那里给了明确答案</strong>（✅ 逐字）：</p>
+<blockquote>
+<p>"For search agent tasks (BrowseComp, HLE w/ tool), we also use an in-house harness<br />
+with websearch and Python tool, and set maximum interaction steps to 500 and the<br />
+maximum context length to 512K tokens. For BrowseComp, we use the same<br />
+discard-all context management strategy as DeepSeek-V3.2."</p>
+</blockquote>
+<p>⟹ <strong>对于搜索 agent 任务（BrowseComp、带工具的 HLE），我们同样使用一个内部 harness，配备网页搜索和 Python 工具，最大交互步数设为 500，最大上下文长度设为 512K token。对于 BrowseComp，我们使用与 DeepSeek-V3.2 相同的「全部丢弃」上下文管理策略。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：discard-all（全部丢弃）
+     ⟹ ★★★ 04 章三种策略里【最激进的截断】：不是折叠成一行，是直接扔。
+
+   ⟹ ★★ 现在可以对照仓库了 —— dsh 里的上下文管理有三个包：
+      ✅ dsh-compaction-basic
+         ⟹ 压力上来时，把最老的一段【总结成一段摘要】，
+            代价是&quot;one extra model request&quot;（一次额外的模型请求）。
+      ✅ dsh-compaction-tool-result-pruner
+         ⟹ 只裁工具输出：留头 + 一句 &quot;middle pruned&quot; + 留尾，
+            ★★★ 且【完整原文仍留在 session log 里】供回放。
+            🔑 不用调模型，所以有时光靠它就把压力泄掉了。
+      ✅ dsh-command-compact
+         ⟹ 人手打 /compact 立刻压一次。
+
+   ⟹ 🔑🔑 ★★★ 请注意这里的反差：
+      ✅ dsh 有一整套【摘要式】压缩；
+      ✅ 而跑分用的 sdk-minimal 明确写着 compaction【缺席】；
+      ✅ 报告说 BrowseComp 用的是【全部丢弃】。
+   ⟹ ★★ 三处口径三个样。
+      🔑 这正是 04 章的核心论点：上下文策略是配置，不是产品属性。
+</code></pre></div>
+
+<hr />
+<h2 id="75">7.5 ⭐⭐⭐ 第三个披露：脚手架的写法能让模型特性【失效】——现在能看到实现了</h2>
+<p>★★★ 这仍然是我认为整份报告里最重要的一段。先看模型侧特性（✅ 逐字，§ Interleaved Thinking）：</p>
+<blockquote>
+<p>"Tool-Calling Scenarios. … all reasoning content is fully preserved throughout the<br />
+entire conversation. Unlike DeepSeek-V3.2, which discarded thinking traces upon<br />
+each new user turn, DeepSeek-V4 series retain the complete reasoning history across<br />
+all rounds, including across user message boundaries."</p>
+</blockquote>
+<p>⟹ <strong>工具调用场景：全部推理内容在整段对话中被完整保留。与 DeepSeek-V3.2 在每个新用户回合到来时丢弃思考轨迹不同，DeepSeek-V4 系列跨所有轮次保留完整的推理历史，包括跨越用户消息边界。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：interleaved thinking（交错思考）
+     ⟹ 模型的&quot;思考过程&quot;和&quot;工具调用&quot;交替进行，且思考内容在后续轮次里仍可见。
+   ★ 名词：thinking trace / reasoning trace（思考轨迹）
+     ⟹ 模型在给出动作之前那段&quot;内心独白&quot;。
+     ⟹ ★★ 保留它 = 模型记得&quot;我上一步为什么那么想&quot;。
+</code></pre></div>
+
+<p>★★★ 然后是那句关键警告（✅ 逐字，我已从 PDF 原文核对）：</p>
+<blockquote>
+<p>"agent frameworks that simulate tool interactions via user messages (e.g., Terminus)<br />
+may not trigger the tool-calling context path and thus may not benefit from enhanced<br />
+reasoning persistence. We continue to recommend non-think models for such<br />
+architectures."</p>
+</blockquote>
+<p>⟹ <strong>那些通过「用户消息」来模拟工具交互的 agent 框架（例如 Terminus），可能不会触发工具调用的上下文路径，因而可能享受不到增强的推理持久性。对这类架构，我们仍然建议使用非思考模型。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 请务必读懂这一段。它在说：
+
+   ┌──────────────────────────────────────────────────────────┐
+   │ 同一个模型，同一道题，                                    │
+   │ 只因为脚手架【把工具结果塞在哪个字段里】不一样——         │
+   │                                                          │
+   │   写法 A：作为 tool result（工具结果）回传                │
+   │      ⟹ ✅ 触发工具调用路径 ⟹ 思考轨迹保留 ⟹ 更强        │
+   │                                                          │
+   │   写法 B：伪装成 user message（用户消息）回传             │
+   │      ⟹ ❌ 不触发 ⟹ 思考轨迹被丢弃 ⟹ 更弱                │
+   │      ⟹ ★★★ 官方甚至建议这种情况【别用思考模型】          │
+   └──────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>★★★ 而现在，这条"要保留思考轨迹"的要求，在 dsh 里能看到是怎么落实的。</strong></p>
+<p>✅ <code>packages/llm/llm-deepseek/README.md</code> 逐字：</p>
+<blockquote>
+<p>"Reasoning content from a prior assistant turn is passed back verbatim, whether or<br />
+not that turn called a tool."</p>
+</blockquote>
+<p>⟹ <strong>来自上一个助手回合的推理内容会被【原样】回传，无论那一回合是否调用了工具。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ &quot;verbatim&quot;（逐字原样）+ &quot;whether or not that turn called a tool&quot;
+      （无论有没有调工具）—— 这正是报告承诺的那个特性的实现侧。
+   ⟹ ★★ 官方适配器把它做成了【无条件行为】，
+      而不是留给使用者去配。⟹ 这就是&quot;自家脚手架配自家模型&quot;的价值。
+</code></pre></div>
+
+<p>⚠️ 但同一份 README 也写了它的代价（✅ 逐字）：</p>
+<blockquote>
+<p>"reasoning passback appends on every reasoned turn"</p>
+</blockquote>
+<p>⟹ <strong>每一个有推理的回合，回传都会往上追加。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 上下文写在&quot;是否命中 prompt cache（提示词缓存）&quot;那一段里。
+      ★ 名词：prompt cache（提示词缓存）
+        ⟹ 请求前缀没变时，服务端可以复用上一次的计算，价格更便宜。
+   ⟹ 🔑 ★★ 所以【保留思考轨迹】不是白拿的：
+      它让上下文单调变长，也参与缓存命中的判定。
+   ⟹ ⚠️ 报告只讲了它的好处，源码 README 讲了它的账。
+      ★★★ 这就是&quot;有源码&quot;比&quot;只有论文&quot;多出来的那部分信息。
+</code></pre></div>
+
+<p>★★ 顺带一个只有源码才看得到的口径：<code>reasoningEffort</code>（推理力度）有四档 —— ✅ <code>off / low / high / max</code>，<br />
+适配器默认 <code>high</code>；<code>off</code> 不会以 <code>reasoning_effort: 'off'</code> 上线，而是发 <code>thinking: { type: 'disabled' }</code>。<br />
+⟹ 🔑 ★★★ 读任何 DeepSeek 的榜单数字时，除了"哪个模型"，还得问"哪一档 effort"。<br />
+✅ 这也解释了 7.7 那张表里为什么写着 "DS-V4-Pro <strong>Max</strong>"、"GPT-5.4 <strong>xHigh</strong>"、"Gemini-3.1-Pro <strong>High</strong>"<br />
+—— 那些后缀就是这个旋钮。</p>
+<p>⚠️ 关于 <code>Terminus</code>：它是报告点名的第三方 agent 框架。我没有独立核实它的实现，只转述报告的说法。</p>
+<hr />
+<h2 id="76-dsec-dsh">7.6 ⚠️ 沙箱：报告里的 DSec 和开源的 dsh，【不是同一个东西】</h2>
+<p>★★ 报告 §5.2.5 用整整一节讲沙箱平台。✅ 逐字：</p>
+<blockquote>
+<p>"we build a production-grade sandbox platform, DeepSeek Elastic Compute (DSec).<br />
+DSec comprises three Rust components — the API gateway (Apiserver), per-host agent<br />
+(Edge), and the cluster monitor (Watcher) … In production, a single DSec cluster<br />
+manages hundreds of thousands of concurrent sandbox instances."</p>
+</blockquote>
+<p>⟹ <strong>我们构建了一个生产级沙箱平台 DeepSeek Elastic Compute（DSec）。DSec 由三个 Rust 组件构成 —— API 网关（Apiserver）、每主机代理（Edge）和集群监视器（Watcher）……在生产环境中，单个 DSec 集群管理数十万个并发沙箱实例。</strong></p>
+<p>✅ 补一条原来漏掉的细节：报告说这三个组件"scale horizontally atop the <strong>3FS</strong> distributed filesystem"<br />
+（在 3FS 分布式文件系统之上横向扩展）—— 3FS 是 DeepSeek 早前开源的另一个项目。</p>
+<p><strong>✅ 报告披露的四种执行基底：</strong></p>
+<table>
+<thead>
+<tr>
+<th>基底</th>
+<th>报告原文 ⟹ 中文</th>
+<th>★ 隔离强度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Function Call</strong></td>
+<td>"dispatches stateless invocations to a pre-warmed container pool, eliminating cold-start overhead" ⟹ 把无状态调用派发到预热容器池，消除冷启动开销</td>
+<td>最弱、最快</td>
+</tr>
+<tr>
+<td><strong>Container</strong></td>
+<td>"fully Docker-compatible" ⟹ 完全兼容 Docker</td>
+<td>★★ 与 SWE-agent 同级</td>
+</tr>
+<tr>
+<td><strong>microVM</strong></td>
+<td>基于 Firecracker，"adds VM-level isolation for security-sensitive, high-density deployments" ⟹ 为安全敏感、高密度部署提供虚拟机级隔离</td>
+<td>★★★ 更强</td>
+</tr>
+<tr>
+<td><strong>fullVM</strong></td>
+<td>基于 QEMU，"supports arbitrary guest operating systems" ⟹ 支持任意客户操作系统</td>
+<td>最强、最重</td>
+</tr>
+</tbody>
+</table>
+<p><strong>⚠️⚠️ ★★★ 现在是这一节的重点：我在 dsh 仓库里 grep 了 <code>DSec</code> 和 <code>Elastic Compute</code>，零命中。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 【开源的是脚手架，不是那套沙箱基础设施。】
+
+   ✅ dsh 自带的隔离，是【同一台机器上的进程级约束】：
+      packages/sandbox/sandbox-local 逐字：
+        Linux  ⟹ bwrap（bubblewrap），不行就退到 Landlock 启动器
+        macOS  ⟹ Seatbelt（sandbox-exec）
+        Windows⟹ ACL 受限令牌（restricted token）
+      三档策略：read-only / workspace-write / danger-full-access
+
+   ✅ 而 packages/sandbox/sandbox 的 README 自己把边界划得很清（逐字）：
+      &quot;Confinement is same-world only — backends share the host kernel and
+       filesystem, while containers, microVMs, and remote executors replace
+       whole capabilities instead.&quot;
+      ⟹【约束仅限于同一世界内 —— 各后端共享宿主内核与文件系统；
+         而容器、microVM、远程执行器是【替换整块能力】，不是在这里加后端。】
+
+   ✅ 一条我很欣赏的设计：fail closed（失败即关闭）。
+      &quot;When the requested mode cannot be enforced, the call fails closed with a
+       SANDBOX_UNAVAILABLE error instead of running unconfined.&quot;
+      ⟹【当请求的模式无法被强制执行时，调用以 SANDBOX_UNAVAILABLE 错误
+         失败关闭，而不是在无约束状态下运行。】
+      ⟹ ★★ 对照 05 章：这正是&quot;宁可不跑，也不静默降级&quot;。
+
+   ✅ 想要真隔离怎么办？仓库给了远程档位：
+      packages/e2b（dsh-e2b / fs-e2b / subprocess-e2b）⟹ 一个共享的远程
+      Linux 沙箱，文件、命令、终端全在里面跑。
+      ⚠️ 但 README 明写 &quot;no shipped composition enables this family by default&quot;
+      （没有任何随包配置默认启用这一族）—— 而且 E2B 是第三方服务。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 ★★★ 所以 05 章那句 SWE-agent 论文的坦白：
+      &quot;not considered as secure as virtualized hardware isolation&quot;
+      （不如硬件虚拟化隔离安全）——
+   ⟹ ★★ DSec 的 microVM / fullVM 把这个缺口补上了，
+      ⚠️ 但【补上那部分没有开源】。
+      dsh 开源的这一层，隔离强度和 SWE-agent 是同一量级，
+      甚至更轻（进程级 &gt; 容器级只在&quot;不需要装 Docker&quot;这点上占优）。
+
+   ⟹ ★★★ 一句话记住分界线：
+      【DeepSeek 开源了&quot;模型怎么被驱动&quot;，没有开源&quot;命令跑在哪里&quot;。】
+</code></pre></div>
+
+<hr />
+<h2 id="77-dsh">7.7 ⭐ 轨迹日志与确定性重放：报告里的承诺，在 dsh 里变成了架构不变量</h2>
+<p>✅ 报告逐字：</p>
+<blockquote>
+<p>"DSec maintains a globally ordered trajectory log for each sandbox, persistently<br />
+recording every command invocation and its results."<br />
+… "deterministic replay — any historical session can be faithfully reproduced from<br />
+its trajectory."</p>
+</blockquote>
+<p>⟹ <strong>DSec 为每个沙箱维护一份全局有序的轨迹日志，持久记录每一次命令调用及其结果。……确定性重放 —— 任何历史会话都能从它的轨迹被忠实复现。</strong></p>
+<p>★★★ 现在看 dsh 的架构文档，同样的思想被写成了一条<strong>强制约束</strong>（✅ <code>docs/architecture.md</code> 逐字）：</p>
+<blockquote>
+<p>"<strong>Model-visible means logged.</strong> Anything that reaches a model request must be<br />
+reconstructable from the log, and a runtime invariant asserts it."</p>
+</blockquote>
+<p>⟹ <strong>【模型可见即已记录。】任何进入模型请求的东西都必须能从日志中重建，并且有一条运行时不变量在断言这一点。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：runtime invariant（运行时不变量）
+     ⟹ 程序运行时持续自检的一条断言：一旦被违反就报错，不是写在注释里的君子协定。
+
+   ⟹ 🔑🔑 ★★★ 这句话的分量：
+      它不是&quot;我们记了日志&quot;，而是
+      【凡是模型看得见的，必须能从日志重建，否则运行时报错】。
+   ⟹ ★★ 配套机制：
+      ✅ session log 是 append-only（只追加）的 SessionEvent 流；
+      ✅ deriveMessages() 从这条流【投影】出模型历史；
+      ✅ 连 assistant/chunk（流式片段）原样保留，用于回放和界面还原；
+      ✅ 前面提到的 tool-result pruner 裁掉的只是【模型看到的那份】，
+         完整原文留在日志里 —— 这正是这条不变量在起作用。
+</code></pre></div>
+
+<p>⚠️ 但请注意，这里有一个<strong>新出现的、必须说的东西</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ docs/deepseek-llm-api-wire-extensions.md 披露了两个私有请求扩展字段：
+
+   ┌─────────────────────┬──────────┬──────────────────────────────┐
+   │ dsh_plugin_packages │ ✅ 默认开 │ 上报当前激活的插件包名+版本   │
+   │ dsh_session_log     │ ⚠️ 默认关 │ 上报会话日志的一段连续后缀    │
+   └─────────────────────┴──────────┴──────────────────────────────┘
+
+   ✅ 文档自己列了 dsh_session_log 打开后会暴露什么（逐字）：
+      &quot;the Session working directory, system-prompt snapshots, user and assistant
+       content, raw assistant chunks, tool arguments and results, compaction
+       summaries, feedback, and plugin-owned events.&quot;
+      ⟹【会话工作目录、系统提示词快照、用户与助手内容、原始助手片段、
+         工具参数与结果、压缩摘要、反馈，以及插件自有事件。】
+
+   ⟹ 🔑 ★★★ 我认为这一段值得单独指出来，两个原因：
+      ① ✅ 默认关闭、且文档主动把暴露面逐项写出来 —— 这是负责任的做法。
+      ② ⚠️ 但它也说明：这条&quot;确定性重放&quot;的链路，
+         在设计上是【可以把整份会话日志送回服务端的】。
+      ⟹ ★★ 自己部署时，这是必须自己拍板的一个开关。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 回到复现性这个老问题，现在的结论比原来精确了：
+
+      ✅ 环境可复现  ⟹ SWE-agent 用一次性容器
+      ✅ 过程可复现  ⟹ DSec 轨迹日志 / dsh 的 append-only session log
+      ⚠️ 但【他们的那次跑分】仍然不可复现：
+         报告没公开任何一条轨迹，dsh 里也没有跑分驱动脚本。
+   ⟹ ★★★ 🔑 能复现 ≠ 已公开。这一条【开源之后依然成立】。
+</code></pre></div>
+
+<hr />
+<h2 id="78">7.8 那这套框架跑出来是多少分？</h2>
+<p>✅ 报告 Table 6，Agentic（agent 能力）一段，<strong>SWE Verified — Resolved（解决率 %）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>Opus-4.6 Max</th>
+<th>GPT-5.4 xHigh</th>
+<th>Gemini-3.1-Pro High</th>
+<th>K2.6 Thinking</th>
+<th>GLM-5.1 Thinking</th>
+<th><strong>DS-V4-Pro Max</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>80.8</strong></td>
+<td>—</td>
+<td>80.6</td>
+<td>80.2</td>
+<td>—</td>
+<td><strong>80.6</strong></td>
+</tr>
+</tbody>
+</table>
+<p>同表 <strong>Terminal Bench 2.0 — Acc（准确率 %）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>Opus-4.6</th>
+<th>GPT-5.4</th>
+<th>Gemini-3.1-Pro</th>
+<th>K2.6</th>
+<th>GLM-5.1</th>
+<th><strong>DS-V4-Pro</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>65.4</td>
+<td><strong>75.1</strong></td>
+<td>68.5</td>
+<td>66.7</td>
+<td>63.5</td>
+<td>67.9</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️ ★★★ 这张表【必须】配一句警告才能读：
+
+   ✅ 报告只说了【DeepSeek 自己】用的是内部框架、2 个工具、
+      500 步、512K 上下文。
+   ⚠️ 它【没有说】Opus-4.6 那个 80.8 是在什么脚手架下跑的。
+
+   ⟹ 🔑 ★★★ 这一栏的可比性，取决于一个报告没交代的前提：
+      【别家的数字，是他们自己报的，还是 DeepSeek 用同一套框架重跑的？】
+
+   ⟹ ★★ 对照一下：报告在【长上下文】那一段是明说了的（✅ 逐字）——
+      &quot;We re-evaluate Claude Opus 4.6 and Gemini 3.1 Pro on these tasks with the
+       goal of standardizing the configuration across all models.&quot;
+      ⟹【我们在这些任务上重新评测了 Claude Opus 4.6 和 Gemini 3.1 Pro，
+         目的是统一所有模型的配置。】
+   ⟹ ★★★ 长上下文那段【明确声明了统一口径】，
+      agent 那段【没有同样的声明】。
+      ⚠️ 这个差别，读者应该自己去原文确认，而不是替它假设。
+
+   ⟹ 🔑🔑 ★★★ 开源改变了什么？改变了【一半】：
+      ✅ 现在你可以自己 pip install deepseek-harness-sdk，
+         用 profile=&quot;sdk-minimal&quot; 把 SWE-bench 跑一遍。
+      ⚠️ 但你复现出来的数字如果对不上，你仍然分不清是因为
+         ① 模型版本/effort 档位不同 ② 步数上限等驱动层参数不同
+         ③ 题目集口径不同 —— 因为②③ 依然没有公开。
+</code></pre></div>
+
+<hr />
+<h2 id="79">7.9 ⭐ "内部框架 = 自己给自己出题"的质疑，开源之后怎么看</h2>
+<p>★★★ 报告在方法论上最有意思的一手（✅ 逐字）：</p>
+<blockquote>
+<p>"It is worth noting that DeepSeek-V4-Pro performs well on MCP Atlas and Toolathlon<br />
+— two evaluation test sets that include a wide range of tools and MCP services —<br />
+indicating that our model has excellent generalization capability and does not<br />
+perform well only on internal frameworks."</p>
+</blockquote>
+<p>⟹ <strong>值得注意的是，DeepSeek-V4-Pro 在 MCP Atlas 和 Toolathlon 上表现良好 —— 这两个测试集包含大量工具和 MCP 服务 —— 这表明我们的模型具有出色的泛化能力，而不是只在内部框架上表现好。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：MCP（Model Context Protocol，模型上下文协议）
+     ⟹ 一套让 agent 接入外部工具/数据源的通用协议。
+     ⟹ ✅ dsh 自己也内置了 MCP 客户端：packages/mcp/mcp-client。
+
+   ⟹ 🔑🔑 ★★★ 这句话的结构是一个【自辩】：
+   ① 潜在质疑：★★&quot;你用自研框架跑分，是不是模型被调成只会用你那两个工具了？&quot;
+   ② 报告的回应：&quot;我们在别人的、工具很多的基准上也不差。&quot;
+
+   ⟹ ★★ 方向是对的：在陌生工具集上仍然强，确实是泛化的证据。
+</code></pre></div>
+
+<p><strong>★★★ 而开源这件事，对这个质疑的回应力度，比那句自辩强得多 —— 但仍然不是完整回应：</strong></p>
+<div class="codehilite"><pre><span></span><code>   ✅ 开源【真正解决】的部分：
+      ① 双工具跑分档位可以被任何人拿去跑别的模型
+         ⟹ 🔑 这是关键：sdk-minimal 里的模型适配器是可换的插件，
+            换掉 llm-deepseek 那一行就能跑别家模型。
+         ⟹ ★★★ 也就是说，&quot;用同一套公开脚手架把自己和对手都重跑一遍&quot;
+            这件事，现在【外部第三方可以做】了。
+      ② 工具的确切 schema、bash 的确切描述文本、编辑器的确切语义，
+         全部可读 —— 原来这些是黑盒。
+
+   ⚠️ 开源【没有解决】的部分：
+      ① 报告没说跑分用的就是这份代码（7.0 那条边界）。
+      ② 跑分驱动脚本（500 步、题目集、重试策略）不在仓库里。
+      ③ DSec 沙箱不在仓库里。
+      ④ ⚠️ 仓库不接受外部 PR，且是 developer preview
+         ⟹ ★★ 意味着&quot;你今天复现出来的口径，下个版本可能就变了&quot;。
+
+   ⟹ ★★★ 所以我原来那句评论要改一个字：
+      原来我说&quot;真正干净的做法应该是用同一套公开脚手架重跑&quot;——
+      ⟹ 🔑 现在这套公开脚手架【存在了】，
+         但【做这件事的人还得是社区，不是 DeepSeek 自己】。
+   ⟹ ⚠️ 这是我的评论，不是报告或仓库的表述。
+</code></pre></div>
+
+<p>★★ 顺带，报告还主动承认了一个环境问题（✅ 逐字，很少见）：</p>
+<blockquote>
+<p>"Regarding Terminal-Bench 2.0, we acknowledge the environment-related issues noted<br />
+by GLM-5.1. Nevertheless, we report our performance on the original Terminal-Bench<br />
+2.0 dataset for consistency. On the Terminal-Bench 2.0 Verified subset,<br />
+DeepSeek-V4-Pro achieves a score of approximately 72.0."</p>
+</blockquote>
+<p>⟹ <strong>关于 Terminal-Bench 2.0，我们承认 GLM-5.1 指出的环境相关问题。尽管如此，为保持一致性，我们仍在原始 Terminal-Bench 2.0 数据集上报告成绩。在 Terminal-Bench 2.0 Verified 子集上，DeepSeek-V4-Pro 得分约为 72.0。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 67.9（原始集）vs 约 72.0（Verified 子集）。
+      🔑 ★★★ 同一个模型、同一次运行，换个子集差 4 分。
+      ⟹ 这就是&quot;口径&quot;两个字的重量。
+   ⟹ ★★ 而且报告选择报【低的那个】以保持一致性 —— 这一点我认为值得肯定。
+</code></pre></div>
+
+<hr />
+<h2 id="710-10">7.10 和 <a href="../评测入门/10-DeepSeek的评测口径.html">评测入门 10 章</a> 的分工</h2>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────────────────────────────────────────────────┐
+   │ 评测入门 10 章                                            │
+   │   来源：DeepSeek-V3 / R1 报告                             │
+   │   角度：★【评测框架】—— 温度、few-shot、输出长度、       │
+   │        去污染、greedy vs sampling                         │
+   │   关于 SWE-bench 的结论：                                 │
+   │     ✅ &quot;SWE-Bench verified is evaluated using the         │
+   │        agentless framework&quot;                               │
+   │     ⟹ V3 的 42.0 是【V3 + Agentless】的分数              │
+   ├──────────────────────────────────────────────────────────┤
+   │ 本章（agent脚手架 07）                                     │
+   │   来源：DeepSeek-V4 报告 ＋ deepseek-harness 源码          │
+   │   角度：★★★【agent 脚手架】—— 工具数、步数、上下文、    │
+   │        沙箱基底、思考轨迹保留、插件架构                    │
+   │   关于 SWE-bench 的结论：                                 │
+   │     ✅ V4 换成了【自研 code agent 框架】，2 工具/500 步    │
+   │     ✅ 且这套脚手架（或其后代）现在可以逐行读              │
+   └──────────────────────────────────────────────────────────┘
+
+   ⟹ 🔑🔑 ★★★ 把两章接起来，你会看到一条演进线：
+
+      V3（Agentless，不用 agent 循环）  ⟹ 42.0
+      V4（自研 agent 框架，500 步）     ⟹ 80.6
+
+   ⚠️⚠️ 但【绝对不能】把这两个数直接相减说&quot;进步了 38.6 分&quot;：
+      ① 模型换了（V3 → V4）
+      ② 脚手架换了（Agentless → 自研 agent 循环）
+      ③ ⚠️ 题目集是否完全一致，需要回原文核对
+   ⟹ ★★★ 三个变量同时变了，这个差值【不归因于任何单一原因】。
+   ⟹ 🔑 这正是 08 章要讲的核心问题。
+
+   ⟹ ★★ 补一句演进线上的第三段：
+      V3 用 Agentless（无 agent 循环）⟹ V4 自研 agent 循环 ⟹ 把循环开源。
+      🔑 三步走完，DeepSeek 从&quot;评测口径披露最细的一家&quot;
+         变成了&quot;脚手架实现披露最细的一家&quot;。
+</code></pre></div>
+
+<hr />
+<h2 id="711">7.11 本章总结</h2>
+<div class="codehilite"><pre><span></span><code>    🔑 十条带走：
+
+    ① ★★★ ✅ V4 报告披露了跑分那次的四个参数：
+       只有 2 个工具（bash + 文件编辑）、500 步上限、512K 上下文、
+       内部自研框架。⟹ ⚠️ 原来这里写&quot;不开源&quot;，现在这句话作废。
+
+    ② ★★★ ✅ deepseek-harness（dsh）已开源，MIT，Node.js，
+       everything-is-a-plugin，packages/ 下 257 个包。
+       ⟹ DeepSeek 在本目录的可查证度从【最底档】升到【最高档】。
+
+    ③ ⚠️⚠️ ★★★ 但报告【没说】跑分用的就是 dsh，
+       dsh 里也零处提及 SWE-bench。
+       ⟹ 🔑 高度吻合 ≠ 同一份代码。本章所有对照都按这条边界写。
+
+    ④ ★★★ ✅ 报告的&quot;minimal set of tools&quot;在仓库里有实体：
+       profile `sdk-minimal`，官方自称 &quot;two-tool profile&quot;，
+       只有 bash-persistent（300 秒超时）+ str_replace_editor
+       （输出上限 16000 字符），系统提示词只有一句话，
+       compaction / subagent / skills / 遥测【全部拆掉】。
+       ✅ 根目录 BENCHMARK.md 就指向这个 profile。
+
+    ⑤ ★★★ 🔑 2 vs 62：同一个仓库里，工具目录有 62 个 model-visible
+       工具，跑分档位只留 2 个。
+       ⟹【工具数量不是技术信仰，是按场景拨的旋钮。】
+
+    ⑥ ★★★ ⚠️ &quot;500 步&quot;在 dsh 里【找不到对应开关】
+       （maxSteps 全仓零命中，只有 maxParallelToolCalls: 10）。
+       ⟹ 🔑 它属于【跑分驱动脚本】那一层。
+          ★★★ 开源了脚手架 ≠ 能复现跑分。
+
+    ⑦ ★★★ 🔑 全目录最硬的一条证据仍然成立，而且现在有实现侧了：
+       ✅ 报告：工具结果若被&quot;伪装成用户消息&quot;回传，思考轨迹保留特性
+          不触发，官方建议这种情况别用思考模型。
+       ✅ 源码：官方适配器把&quot;上一回合的推理内容原样回传，无论
+          那一回合有没有调工具&quot;做成了无条件行为。
+       ⚠️ 代价源码也写了：每个推理回合都追加，影响提示词缓存命中。
+
+    ⑧ ⚠️⚠️ ★★★ 开源的是脚手架，【不是 DSec】。
+       ✅ 报告的 DSec：四种基底（函数调用/容器/microVM/fullVM）+ 3FS。
+       ✅ dsh 的沙箱：同机进程级（bwrap/Landlock/Seatbelt/Windows ACL），
+          README 自己写明 &quot;same-world only&quot;，失败即关闭。
+       ⟹ 🔑【开源了&quot;模型怎么被驱动&quot;，没开源&quot;命令跑在哪里&quot;。】
+
+    ⑨ ★★★ ✅ DSec 的&quot;确定性重放&quot;，在 dsh 里以架构不变量存在：
+       &quot;Model-visible means logged&quot;（模型可见即已记录）。
+       ⚠️ 但同一套日志也能通过 dsh_session_log 字段回传服务端
+          （默认关闭，文档主动列出了暴露面）—— 自部署时要自己拍板。
+
+    ⑩ ⚠️ ★★★ Table 6 的横向对比，报告在【长上下文】那段声明了
+       统一口径，在【agent】那段没有同样的声明。
+       ⟹ 开源之后，&quot;用同一套公开脚手架把各家重跑一遍&quot;这件事
+          第一次变得可做 —— 🔑 但做的人得是社区，
+          而且仓库是 developer preview、不收外部 PR。
+</code></pre></div>
+
+<hr />
+<h2 id="_1">附：本章新增引用的源码位置速查</h2>
+<table>
+<thead>
+<tr>
+<th>主题</th>
+<th>文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>插件架构 / 不变量 / 回合与步的流程</td>
+<td><code>docs/architecture.md</code></td>
+</tr>
+<tr>
+<td>62 个工具的完整 schema</td>
+<td><code>docs/tool-catalog.md</code></td>
+</tr>
+<tr>
+<td>双工具跑分档位（完整配置树）</td>
+<td><code>packages/bundle/sdk-minimal/cordis.patch.yml</code> + 同目录 <code>README.md</code></td>
+</tr>
+<tr>
+<td>跑分入口</td>
+<td><code>BENCHMARK.md</code> → <code>docs/user/guide/python-sdk.md</code></td>
+</tr>
+<tr>
+<td>唯一的 agent 循环</td>
+<td><code>packages/core/agent-loop/README.md</code></td>
+</tr>
+<tr>
+<td>思考轨迹回传 / reasoningEffort 四档</td>
+<td><code>packages/llm/llm-deepseek/README.md</code></td>
+</tr>
+<tr>
+<td>私有请求扩展字段（含会话日志回传）</td>
+<td><code>docs/deepseek-llm-api-wire-extensions.md</code></td>
+</tr>
+<tr>
+<td>沙箱边界</td>
+<td><code>packages/sandbox/sandbox/README.md</code>、<code>packages/sandbox/sandbox-local/README.md</code></td>
+</tr>
+<tr>
+<td>远程沙箱（默认关闭）</td>
+<td><code>packages/e2b/*/README.md</code></td>
+</tr>
+<tr>
+<td>三种上下文压缩策略</td>
+<td><code>packages/compaction/{compaction-basic,compaction-tool-result-pruner,command-compact}/README.md</code></td>
+</tr>
+<tr>
+<td>凭据四层 / 各 profile 的 CLI 行为</td>
+<td><code>apps/cli/reference/README.md</code></td>
+</tr>
+<tr>
+<td>凭据层次与 <code>.credentials.yaml</code> 格式</td>
+<td><code>packages/credentials/credentials-local/README.md</code></td>
+</tr>
+<tr>
+<td>baseURL 与 key 的实际解析顺序（⚠️ 与 README 表格矛盾，以此为准）</td>
+<td><code>packages/llm/llm-deepseek/src/index.ts:378-380</code>、<code>:433-447</code></td>
+</tr>
+<tr>
+<td>缺省 provider / model</td>
+<td><code>packages/bundle/base/cordis.patch.yml:75-79</code></td>
+</tr>
+<tr>
+<td>不收外部 PR 的说明</td>
+<td><code>CONTRIBUTING.md</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<blockquote>
+<p>上一章：<a href="06-ClaudeCode与Codex逐项对照.html">06 Claude Code 与 Codex 逐项对照</a> ｜ 下一章：<a href="08-脚手架怎么影响榜单分数.html">08 脚手架怎么影响榜单分数</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

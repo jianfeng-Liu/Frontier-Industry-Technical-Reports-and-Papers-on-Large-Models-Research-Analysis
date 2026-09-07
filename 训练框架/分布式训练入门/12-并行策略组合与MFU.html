@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 · 并行策略组合与 MFU</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="11-重计算与激活优化.html">← 11 重计算与激活优化</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="13-断点续训与容错.html">13 断点续训与容错</a></p>
+</blockquote>
+<h1 id="12-mfu">12 · 并行策略组合与 MFU</h1>
+<blockquote>
+<p><strong>前面十一章给了你一堆旋钮，这一章讲怎么拧。</strong><br />
+读完你应该能回答：<strong>MFU 到底怎么算</strong>？给我 1024 张卡和一个 400B 模型，TP/PP/DP 各设多少？为什么"TP 不要跨机"是铁律？为什么调参要<strong>按固定顺序</strong>来？以及——<strong>跑到 50% MFU 算好还是算差</strong>？</p>
+</blockquote>
+<hr />
+<h2 id="121">12.1 先把旋钮列全</h2>
+<div class="codehilite"><pre><span></span><code>┌─ 你现在手里有这些旋钮 ────────────────────────────────────┐
+│                                                            │
+│  切法（第二部分）                                           │
+│    TP  张量并行度      [06](06-张量并行TP.md)              │
+│    PP  流水线并行度    [07](07-流水线并行PP.md)            │
+│    CP  上下文并行度    [08](08-序列并行与上下文并行.md)     │
+│    DP  数据并行度      [04](04-数据并行DP.md)              │
+│    EP  专家并行度      [09](09-专家并行EP.md)              │
+│    SP  序列并行开关    [08](08-序列并行与上下文并行.md)     │
+│    ZeRO 阶段 0/1/2/3   [05](05-ZeRO与FSDP.md)              │
+│                                                            │
+│  省法（第三部分）                                           │
+│    精度 BF16 / FP8     [10](10-混合精度与FP8.md)           │
+│    重计算粒度           [11](11-重计算与激活优化.md)        │
+│                                                            │
+│  批次                                                       │
+│    b   micro-batch size                                    │
+│    B   global batch size                                   │
+│    m   = B/(b·DP)  一条流水线里的 micro-batch 个数          │
+│    VPP 虚拟流水线级数                                       │
+└────────────────────────────────────────────────────────────┘
+
+    ★★ 组合空间轻松上万种。★ 而且【绝大多数组合是跑不起来的】（OOM），
+       能跑起来的里面，最快和最慢能差 2 倍以上。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 这不是夸张。PTD-P 论文（<a href="../papers/Megatron-2-PTD-P-Efficient-Large-Scale-Training-arXiv-2104.04473.pdf">papers/Megatron-2-...-2104.04473.pdf</a>）明确说过：不同的并行配置之间，吞吐可以差<strong>两倍以上</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="122-mfu">12.2 ★ MFU：先学会量体温</h2>
+<p><strong>在调任何参数之前，你需要一个能判断"我现在跑得好不好"的数字。</strong></p>
+<h3 id="_1">定义</h3>
+<div class="codehilite"><pre><span></span><code>    ┌────────────────────────────────────────────────────┐
+    │  MFU = 【模型本身必须做的浮点运算】                  │
+    │        ────────────────────────────────            │
+    │        【硬件理论上能做的浮点运算】                  │
+    └────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>MFU</strong> = <strong>M</strong>odel <strong>FLOPs </strong>U<strong>tilization，</strong>模型算力利用率<strong>。<br />
+📌 </strong>FLOPs<strong> = </strong>FL<strong>oating-point </strong>OP<strong>eration</strong>s<strong>，浮点运算次数。</strong>⚠️ 注意结尾的 s 是复数不是"每秒"<strong>；每秒的写法是 </strong>FLOP/s**。这两个记号在论文里经常被混用，看到时按上下文判断。</p>
+</blockquote>
+<h3 id="_2">怎么算</h3>
+<p><strong>分子</strong>用 <a href="01-为什么需要分布式训练.html">01 章</a>那个公式：</p>
+<p>$$\text{每步的模型 FLOPs} \approx 6\,\Psi\,T$$</p>
+<div class="codehilite"><pre><span></span><code>    Ψ = 参数量（MoE 用【激活参数量】），T = 这一步吃了多少 token
+    ★ 6 = 前向 2 + 反向 4（反向要算两个梯度，所以是前向的两倍）
+</code></pre></div>
+
+<p><strong>分母</strong>是硬件峰值 × 卡数 × 用时：</p>
+<p>$$\text{MFU} = \frac{6\,\Psi\,T}{N \times P_{\text{peak}} \times t_{\text{step}}}$$</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 一个完整的算例（⚠️ 举例数字，不是任何真实系统的披露值）：
+
+      模型 175B，2048 张 H100（BF16 峰值 989 TFLOP/s，不含稀疏加速）
+      global batch = 1024 条 × 4096 token = 4.19 M token
+      实测一步用了 26 秒
+
+      分子 = 6 × 175e9 × 4.19e6      = 4.40e18 FLOPs
+      分母 = 2048 × 989e12 × 26      = 5.27e19 FLOPs
+      MFU  = 4.40 / 52.7            ≈ 8.4%   ← ⚠️ 太低了，有大问题
+</code></pre></div>
+
+<h3 id="_3">★★ 关键：分子里【不算】重计算</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 这是 MFU 这个指标最重要的设计：
+
+      分子只算【模型定义上必须的】6ΨT，
+      ★ 重计算多做的那一遍前向【不计入分子】。
+
+    → 所以开了完全重计算，MFU 会【下降】（做了更多实际运算，
+      但模型需要的运算没变，时间却变长了）
+
+    ⟹ ★★ 这正是 [11 章](11-重计算与激活优化.md)那个
+       &quot;54.2% vs 42.1%&quot; 的含义：同一个模型、同一批卡，
+       ✅ 选择性重计算比完全重计算的 MFU 高 12 个点。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>另一个容易混淆的指标：HFU</strong>（<strong>H</strong>ardware <strong>FLOPs</strong> <strong>U</strong>tilization，硬件算力利用率）。<strong>它把重计算也算进分子</strong>——衡量的是"硬件忙不忙"，而 MFU 衡量的是"忙得有没有意义"。<strong>★ 开了重计算时 HFU &gt; MFU，两者的差值就是重计算的开销。看论文时一定要看清报的是哪个。</strong></p>
+</blockquote>
+<h3 id="_4">什么算好</h3>
+<table>
+<thead>
+<tr>
+<th>MFU</th>
+<th>评价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 25%</td>
+<td>⚠️ 配置有明显问题，去查 §12.5</td>
+</tr>
+<tr>
+<td>30~40%</td>
+<td>能跑，但有明显提升空间</td>
+</tr>
+<tr>
+<td><strong>40~50%</strong></td>
+<td>★ 大多数生产训练的正常水位</td>
+</tr>
+<tr>
+<td><strong>&gt; 55%</strong></td>
+<td>★★ 调得很好了</td>
+</tr>
+<tr>
+<td>&gt; 70%</td>
+<td>一般只出现在小模型 / 短序列 / 特调场景</td>
+</tr>
+</tbody>
+</table>
+<p><strong>✅ 有据可查的几个标杆</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>系统</th>
+<th>规模</th>
+<th>数字</th>
+<th>★ 实际是哪个口径</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PTD-P（Megatron-2）</td>
+<td>1T 参数，3072 A100</td>
+<td><strong>52%</strong></td>
+<td>⚠️ <strong>HFU</strong>（见下方订正）</td>
+<td>✅ 2104.04473</td>
+</tr>
+<tr>
+<td>Megatron-3 完全重计算</td>
+<td>530B，2240 A100</td>
+<td><strong>42.1%</strong></td>
+<td>MFU</td>
+<td>✅ 2205.05198</td>
+</tr>
+<tr>
+<td>Megatron-3 选择性重计算</td>
+<td>530B，2240 A100</td>
+<td><strong>★ 54.2%</strong>（快 29%）</td>
+<td>MFU</td>
+<td>✅ 2205.05198</td>
+</tr>
+<tr>
+<td>MegaScale</td>
+<td>175B，<strong>12,288</strong> GPU</td>
+<td><strong>★★ 55.2%</strong>（比 Megatron-LM 高 1.34×）</td>
+<td>✅ 明确写了 MFU</td>
+<td>✅ 2402.15627</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ MegaScale 摘要原文：<em>"MegaScale achieves </em><em>55.2% Model FLOPs Utilization (MFU)</em><em> when training a </em><em>175B</em><em> LLM model on </em><em>12,288 GPUs</em><em>, improving the MFU by </em><em>1.34×</em><em> compared to Megatron-LM."</em></p>
+</blockquote>
+<h4 id="megatron-2-52-mfu">⚠️★★ 订正：Megatron-2 那个 52%，不是 MFU</h4>
+<p><strong>这是一个流传很广的误引，本文之前也写错了，在此更正。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ 论文摘要原文（只说了&quot;理论峰值&quot;，★ 没说是 MFU）：
+       &quot;per-GPU throughput of 52% of theoretical peak&quot;
+
+    ⟹ ★ 那到底是哪个口径？去看它的 FLOPs 公式（论文第 12 页）：
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>论文原文（附录，决定性证据）</strong>：<br />
+<em>"We also note that equation (3) assumes </em><em>activation recomputation</em><em> and<br />
+</em><em>takes into account the floating-point operations associated with the extra forward pass</em><em>."</em></p>
+<p>✅ 它给出的公式是：<strong>F = 96·B·s·l·h²·(1 + s/6h + V/16lh)</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 盯住那个系数 96。
+
+      标准的 MFU 分子用的是  72·B·s·l·h²
+        （前向 24 + 反向 48 = 72，★ 反向是前向的 2 倍，见 §12.2）
+
+      Megatron-2 用的是      96·B·s·l·h²
+        （96 = 72 × 4/3，★ 多出来的 24 就是【重计算的那次额外前向】）
+
+    ⟹ ★★★ 分子里【算了】重计算 ⟹ 按 §12.2 的定义，这是 HFU，不是 MFU。
+</code></pre></div>
+
+<p><strong>换算过去是多少？</strong></p>
+<div class="codehilite"><pre><span></span><code>    MFU = HFU × 72/96 = 52% × 0.75 ≈ ⚠️ 39%
+
+    ⚠️ 这是我按公式做的换算，论文本身【没有】报告 MFU 数字。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>★★ 为什么必须较这个真？</strong> 因为不订正的话，这张表会给出错误的结论：<br />
+```<br />
+    ✗ 错误读法：「Megatron-2 是 52%，MegaScale 是 55.2%，<br />
+                  ⟹ 三年过去只进步了 3 个百分点，★ 分布式训练停滞了」</p>
+<div class="codehilite"><pre><span></span><code>✅ 正确读法：「Megatron-2 是 39% MFU，MegaScale 是 55.2% MFU，
+              ⟹ ★★ 实际提升了 40% 以上」
+
+⟹ 🔑 一个口径错误，能把&quot;重大进步&quot;读成&quot;原地踏步&quot;。
+</code></pre></div>
+
+<p>```</p>
+<p>⚠️ <strong>也不要因此说 Megatron-2 的论文有问题</strong>：<br />
+<strong>MFU / HFU 这组术语是 2022 年 PaLM 论文才明确区分的</strong>，<br />
+而 Megatron-2 发表于 2021 年 4 月。<br />
+★ 它说的 "52% of theoretical peak" 在当时是准确表述——<br />
+<strong>是后人把它转述成"52% MFU"时丢了口径。</strong></p>
+<p>★ <strong>给你自己的启示</strong>：以后看到任何"XX% 利用率"，先问三句：<br />
+<code>① 分子里【算没算】重计算？        ⟹ 决定是 MFU 还是 HFU
+    ② 峰值用的是【稠密还是稀疏】算力？ ⟹ 稀疏峰值是稠密的 2 倍，能把数字腰斩
+    ③ 论文自己【用了哪个词】？         ⟹ "of theoretical peak" 是【不表态】，
+                                         不能默认按 MFU 读</code></p>
+</blockquote>
+<hr />
+<h2 id="123-ptd-p-takeaway">12.3 ★★★ PTD-P 的三条 Takeaway（本章最硬的部分）</h2>
+<p><strong>PTD-P 论文最有价值的不是它的性能数字，而是它明确写出来的三条经验法则。</strong>⭐ <strong>这三条直接告诉你旋钮该按什么顺序拧。</strong></p>
+<h3 id="takeaway-1tp">✅ Takeaway #1：TP 不要跨机</h3>
+<blockquote>
+<p><em>"When considering different forms of model parallelism, </em><em>tensor model parallelism should generally be used up to degree g when using g-GPU servers</em><em>, and then </em><em>pipeline model parallelism can be used to scale up to larger models across servers</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 翻译成人话：
+      一台机器有 8 张卡（NVLink 互联）→ ★ TP 最多开到 8
+      还不够大？→ ★ 再往上用 PP 跨机器
+
+    为什么？回忆 [03 章](03-通信原语.md)的带宽阶梯：
+      机内 NVLink       ~900 GB/s
+      机间 InfiniBand   ~50 GB/s      ★★ 差约 18 倍
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 为什么偏偏是 TP 不能跨机（而不是 PP）：
+
+      TP：每层【4 次 all-reduce】（[06](06-张量并行TP.md)/[08](08-序列并行与上下文并行.md)）
+          → 80 层 = 320 次集合通信，★ 而且【卡在计算路径上】，必须等
+      PP：相邻 stage 之间【1 次 P2P 发送】
+          → 只在 stage 边界通信，★ 而且可以和计算重叠
+
+    ⟹ ★★ 通信最密集的那个维度，要放在带宽最快的那条链路上 ★★
+       这是全章唯一一条【几乎没有例外】的规则。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文自己诊断的病因：<em>"the all-reduce communication required for tensor parallelism needs to go through </em><em>inter-server links, which are slower</em><em> than the high-bandwidth NVLink available within a multi-GPU server"</em>，以及 <em>"a high degree of model parallelism can create </em><em>small matrix multiplications (GEMMs), potentially decreasing GPU utilization</em><em>"</em>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 注意第二个病因，它常被忽略：
+      TP 开太大 → 每张卡分到的矩阵变得又小又窄
+      → GPU 的 Tensor Core 吃不饱（矩阵太小，启动开销占比升高）
+      → ★ 就算通信是免费的，算力利用率也会掉
+</code></pre></div>
+
+<h3 id="takeaway-2-dp">✅ Takeaway #2：先把模型塞下，剩下的全给 DP</h3>
+<blockquote>
+<p><em>"When using data and model parallelism, a total model-parallel size of </em><em>M = t · p</em><em> should be used so that the model's parameters and intermediate metadata </em><em>fit in GPU memory</em><em>; </em><em>data parallelism can be used to scale up training to more GPUs</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 这条给出了整个调参的【骨架顺序】：
+
+      ① 先问：TP × PP 开到多少，模型才【装得下】？   ← 显存问题
+      ② 装下之后，剩下的卡【全部给 DP】              ← 扩展问题
+
+    ⟹ ★ TP 和 PP 是【被迫】开的（不开就 OOM），
+       DP 才是【想开】的（它最便宜、最好扩展）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 一个重要的现代补充（PTD-P 是 2021 年的论文）：
+       今天 ZeRO/FSDP 让 DP 也能省显存（[05 章](05-ZeRO与FSDP.md)），
+       所以 ①②之间多了一步：
+       ★ 能用 ZeRO-1 解决的，就不要动 TP/PP。
+</code></pre></div>
+
+<h3 id="takeaway-3micro-batch">✅ Takeaway #3：micro-batch 没有万能值</h3>
+<blockquote>
+<p><em>"The </em><em>optimal microbatch size b depends on</em><em> the throughput and memory footprint characteristics of the model, as well as </em><em>the pipeline depth p, data-parallel size d, and batch size B</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ b 被两股力量拉扯：
+
+      b 变大 → 单卡矩阵变大 → GPU 效率↑（✅ 论文实测最高 1.3×）
+             → 但激活显存 ∝ b，↑；且 m = B/(b·DP) 变小
+               → ★ 流水线气泡 (p−1)/(m+p−1) 变大（[07 章](07-流水线并行PP.md)）
+
+      b 变小 → 气泡小，显存省
+             → 但每次矩阵乘太小，GPU 吃不饱
+
+    ⟹ ★ 没有公式能算出最优 b，只能【实测扫几个值】。
+       ⚠️ 常见起点：b = 1、2、4，配 PP 时优先试 b=1（气泡最小）。
+</code></pre></div>
+
+<hr />
+<h2 id="124">12.4 ★ 一套可以照做的调参顺序</h2>
+<p><strong>把上面三条 Takeaway 加上第三部分的工具，拼成一条流程。</strong>⚠️ <strong>这是我按论文结论 + 常见工程实践整理的顺序，不是某篇论文的原文。</strong></p>
+<div class="codehilite"><pre><span></span><code>┌── 第 0 步：先把【免费的】全开 ──────────────────────────┐
+│   ✅ FlashAttention        （更快，无代价）              │
+│   ✅ BF16 混合精度         （[10 章](10-混合精度与FP8.md)）│
+│   ✅ SP（若 TP&gt;1）         （[08 章](08-序列并行与上下文并行.md)，通信量不变）│
+│   ✅ 选择性重计算          （[11 章](11-重计算与激活优化.md)，2.7% 换 70%）│
+│   ✅ 各种 overlap 开关     （见 §12.6）                   │
+│   ★ 这一步没有任何取舍，不开是纯亏。                      │
+└──────────────────────────────────────────────────────────┘
+              ↓
+┌── 第 1 步：TP —— 只在【一台机器内】 ───────────────────┐
+│   从 TP=1 起步，OOM 了就翻倍：1 → 2 → 4 → 8            │
+│   ★★ 硬上限 = 单机卡数（Takeaway #1）                   │
+│   ⚠️ MoE 模型：优先用 EP 而不是 TP（[09 章](09-专家并行EP.md)）│
+└──────────────────────────────────────────────────────────┘
+              ↓
+┌── 第 2 步：还装不下 → PP 跨机 ─────────────────────────┐
+│   PP = 装得下的最小值（★ 不要多开，每一级都带气泡）      │
+│   同时保证 m = B/(b·DP) ≥ 4p（[07 章](07-流水线并行PP.md)）│
+│   ★ 开了 PP 就顺手开 VPP（--num-layers-per-virtual-...）│
+│     气泡再除以 v，代价是通信次数 ×v                      │
+└──────────────────────────────────────────────────────────┘
+              ↓
+┌── 第 3 步：序列很长（≥32K）→ CP ───────────────────────┐
+│   ★ 只有长序列才开。短序列开 CP 是纯亏（[08 章](08-序列并行与上下文并行.md)）│
+└──────────────────────────────────────────────────────────┘
+              ↓
+┌── 第 4 步：剩下的卡【全给 DP】 ────────────────────────┐
+│   DP = N / (TP × PP × CP)          （Takeaway #2）      │
+│   ★ 显存还紧张 → ZeRO-1（几乎无代价）→ ZeRO-2 → ZeRO-3  │
+│   ⚠️ ZeRO-3 通信量大，和 PP 一起用要谨慎                 │
+└──────────────────────────────────────────────────────────┘
+              ↓
+┌── 第 5 步：扫 micro-batch b ───────────────────────────┐
+│   试 b = 1, 2, 4，看哪个 MFU 最高（Takeaway #3）        │
+└──────────────────────────────────────────────────────────┘
+              ↓
+┌── 第 6 步：还是不够快 → 加重计算 / 上 FP8 ─────────────┐
+│   ★ 这一步是【真的取舍】了，要一边测 MFU 一边看 loss。   │
+└──────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<h3 id="_5">一个走完全程的例子（⚠️ 演示用，非真实披露配置）</h3>
+<div class="codehilite"><pre><span></span><code>    题目：400B 稠密模型，1024 张 H100（128 台 × 8 卡），序列 8K
+
+    第 1 步  显存账（[02 章](02-显存去哪了.md)）：
+             模型状态 = 400e9 × 16 字节 = 6400 GB
+             单卡 80 GB → ★ 至少要切到 80 份以上才装得下
+             TP = 8（打满单机）→ 每份 800 GB，★ 还是不够
+
+    第 2 步  PP：6400 / (8 × 80) = 10 → ★ 取 PP = 16 留余量
+             （层数要能整除，80 层 / 16 = 5 层每 stage）
+
+    第 4 步  DP = 1024 / (8 × 16) = ★ 8
+             ★ 开 ZeRO-1：优化器状态再切 8 份，
+               每卡模型状态 ≈ 6400/(8×16) × (4/16 + 12/16/8) ≈ 15 GB
+
+    第 5 步  m = B/(b·DP)，要 ≥ 4p = 64
+             取 b=1、B=512 → m = 512/8 = 64  ✅ 刚好
+
+    ⟹ 最终： TP=8, PP=16, DP=8, b=1, VPP=4, ZeRO-1, SP+选择性重计算
+       验算： 8 × 16 × 1 × 8 = 1024  ✅
+       气泡： (16−1)/(64+16−1)/4 ≈ 4.7%   ★ 可以接受
+</code></pre></div>
+
+<hr />
+<h2 id="125-mfu">12.5 ⚠️ MFU 低的时候查什么</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 按【收益 ÷ 排查成本】排序的清单：
+
+    ① TP 跨机了吗？
+       → 看 TP 组的 rank 是不是落在同一台机器上
+       → ★ 这一条能解释绝大多数&quot;莫名其妙的慢&quot;
+
+    ② 气泡多大？   (p−1)/((m+p−1)·v)
+       → m &lt; 4p 就是配错了。★ 要么 B 调大，要么 PP 调小
+
+    ③ 重计算开太狠了吗？
+       → 完全重计算 = ✅ 直接损失 30~40%
+       → 换成 selective 试试
+
+    ④ overlap 开关漏了吗？（§12.6）
+       → 这些是白给的，忘开就是纯亏
+
+    ⑤ 单卡矩阵是不是太小了？
+       → TP 太大会把矩阵切碎（Takeaway #1 的第二个病因）
+       → ★ hidden_size / TP 建议 ≥ 1024
+
+    ⑥ 数据管道跟得上吗？
+       → ★ 一个隐蔽的坑：GPU 在等数据。
+         把 dataloader 摘掉喂假数据跑一次，MFU 若明显上升，
+         问题就在数据侧（见 [../../数据格式和数据处理/](../../数据格式和数据处理/README.md)）
+
+    ⑦ 有慢卡（straggler）吗？→ [13 章](13-断点续训与容错.md)
+</code></pre></div>
+
+<hr />
+<h2 id="126-megascale-table-3">12.6 ✅ 一个真实的逐项拆解（MegaScale Table 3）</h2>
+<p><strong>MegaScale 论文给了一张极其有教育意义的表：从 47.7% 一路加到 65.3%，每一项各值多少。</strong>（175B 模型，256 卡，batch 256）</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>加上什么</th>
+<th>MFU</th>
+<th>累计提升</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>baseline</td>
+<td>47.7%</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>+ PTB（并行 transformer block）</td>
+<td>52.3%</td>
+<td>+4.6%</td>
+</tr>
+<tr>
+<td>3</td>
+<td>+ SWA（滑动窗口注意力）</td>
+<td>53.3%</td>
+<td>+5.6%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>★ <strong>+ TP overlap</strong></td>
+<td>55.5%</td>
+<td>+7.8%</td>
+</tr>
+<tr>
+<td>5</td>
+<td>★ <strong>+ PP overlap</strong></td>
+<td>58.0%</td>
+<td>+10.3%</td>
+</tr>
+<tr>
+<td>6</td>
+<td>★ <strong>+ DP overlap</strong></td>
+<td>59.5%</td>
+<td>+11.8%</td>
+</tr>
+<tr>
+<td>7</td>
+<td>+ 高效算子</td>
+<td>61.2%</td>
+<td>+13.5%</td>
+</tr>
+<tr>
+<td>8</td>
+<td>+ 杂项优化</td>
+<td>62.3%</td>
+<td>+14.6%</td>
+</tr>
+<tr>
+<td>9</td>
+<td>+ LAMB（batch ×3）</td>
+<td>65.3%</td>
+<td>+17.6%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 请注意第 4、5、6 行 ★★
+
+    三个 overlap 加起来 = ★ 4.0 个百分点（55.5 → 59.5 的路上占了大头）
+    而它们都是【纯粹的工程开关】——不改模型、不改超参、不影响收敛。
+
+    ⟹ ★ 这就是为什么 §12.4 第 0 步要把 overlap 全打开。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 注意第 2、3、9 行（PTB / SWA / LAMB）<strong>改动了模型或优化器</strong>，不是免费的——论文自己也强调它们<em>"do not affect the model convergence"</em>，但那是经过验证的结论，不能直接照搬到别的模型上。<strong>★ 第 4~8 行才是可以无脑抄的部分。</strong></p>
+</blockquote>
+<h3 id="overlap">什么是 overlap</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 核心思想一句话：★【通信的时候，让 GPU 别闲着】★
+
+    ┌─ 不 overlap ────────────────────────┐
+    │  计算 ████    通信 ▒▒▒▒  计算 ████   │  总时间 = 计算 + 通信
+    └──────────────────────────────────────┘
+
+    ┌─ overlap ──────────────────────────┐
+    │  计算 ████████████                  │  总时间 = max(计算, 通信)
+    │  通信   ▒▒▒▒▒▒                      │  ★ 通信被&quot;藏&quot;起来了
+    └──────────────────────────────────────┘
+
+    三个战场：
+      DP overlap：反向算第 k 层时，第 k+1 层的梯度已经在 all-reduce 了
+                  ★ 这是 [04 章](04-数据并行DP.md) 讲的 bucket 机制
+      TP overlap：把 all-gather 拆块，算一块传一块
+                  ⚠️ 需要 TP≥2 且开 SP
+      PP overlap：P2P 发送和计算并行（--overlap-p2p-comm，开 VPP 时自动打开）
+      EP overlap：all-to-all 和相邻 micro-batch 的计算并行（[09 章](09-专家并行EP.md)）
+</code></pre></div>
+
+<hr />
+<h2 id="127">12.7 自动并行：能不能让机器自己搜？</h2>
+<p><strong>既然组合空间这么大，为什么不让程序自己搜？—— 有人做了。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ Alpa（[papers/Alpa-Auto-Parallel-arXiv-2201.12023.pdf](../papers/Alpa-Auto-Parallel-arXiv-2201.12023.pdf)）
+       ★ 关键洞察：把并行分成【两个层次】分别搜
+          inter-operator（算子之间 → 类似 PP）
+          intra-operator（算子内部 → 类似 TP/DP）
+       → 用整数规划 + 动态规划分层求解
+
+    ✅ GSPMD（[papers/GSPMD-Auto-Parallel-arXiv-2105.04663.pdf](../papers/GSPMD-Auto-Parallel-arXiv-2105.04663.pdf)）
+       ★ 思路不同：用户只标注【几个关键张量】怎么切，
+         编译器自动把切分方式【传播】到整张计算图
+       → 这是 Google TPU 栈（JAX/XLA）的路线
+
+    ⚠️ 为什么工业界主流仍然是手工配：
+       ① 搜索本身要花钱（Alpa 的搜索时间在大模型上不可忽略）
+       ② 手工的解已经足够好 —— Takeaway #1/#2 把空间砍掉了 99%
+       ③ ★ 生产环境需要【可解释、可复现】：
+          出问题时要能一眼看懂配置，自动搜出来的解不好排查
+</code></pre></div>
+
+<hr />
+<h2 id="128-megatron">12.8 挂回 Megatron</h2>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 五个维度</span>
+--tensor-model-parallel-size<span class="w"> </span><span class="m">8</span><span class="w">          </span><span class="c1"># ★ ≤ 单机卡数</span>
+--pipeline-model-parallel-size<span class="w"> </span><span class="m">16</span>
+--context-parallel-size<span class="w"> </span><span class="m">1</span>
+--expert-model-parallel-size<span class="w"> </span><span class="m">8</span><span class="w">          </span><span class="c1"># MoE 用</span>
+<span class="c1"># DP 不用设 —— ★ 它 = 总卡数 ÷ 其他所有维度的乘积（自动推出）</span>
+
+--sequence-parallel<span class="w">                     </span><span class="c1"># 配 TP 用，几乎必开</span>
+--num-layers-per-virtual-pipeline-stage<span class="w"> </span><span class="m">1</span><span class="w">   </span><span class="c1"># VPP</span>
+
+<span class="c1"># 批次</span>
+--micro-batch-size<span class="w"> </span><span class="m">1</span>
+--global-batch-size<span class="w"> </span><span class="m">512</span>
+
+<span class="c1"># 免费的 overlap（★ §12.6 那 4 个点就在这里）</span>
+--tp-comm-overlap<span class="w">                       </span><span class="c1"># 需 TP≥2 + --sequence-parallel</span>
+--overlap-p2p-comm<span class="w">                      </span><span class="c1"># 开 VPP 时自动打开</span>
+--overlap-grad-reduce
+--overlap-param-gather
+--overlap-moe-expert-parallel-comm<span class="w">      </span><span class="c1"># MoE</span>
+
+<span class="c1"># 省显存</span>
+--recompute-granularity<span class="w"> </span>selective
+--use-distributed-optimizer<span class="w">             </span><span class="c1"># ★ 这就是 ZeRO-1</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    源码位置：
+      megatron/core/parallel_state.py
+          ★★ initialize_model_parallel() —— 所有并行组的划分逻辑都在这里，
+             rank 怎么排、TP 组是不是同机，全看这个函数
+      megatron/training/arguments.py
+          ★ validate_args() —— 各种非法组合在这里被拦下来，
+            读它等于读一份&quot;哪些组合不许用&quot;的清单
+</code></pre></div>
+
+<h3 id="rank-tp-cp-ep-dp-pp">🔑 rank 排布顺序：为什么是 TP → CP → EP → DP → PP</h3>
+<p><strong>上面那些并行度设完，还有一件事没定：16 张卡里，谁和谁组成一个 TP 组？谁和谁组成一个 DP 组？</strong> 这个"排座位"的规则，在源码里就是一个字符串常量。</p>
+<div class="codehilite"><pre><span></span><code>✅ megatron/core/parallel_state.py：order = &quot;tp-cp-ep-dp-pp&quot;
+   （由 megatron/training/initialize.py 传进 initialize_model_parallel()）
+
+      tp  -  cp  -  ep  -  dp  -  pp
+     最内 ←——— 通信敏感度递减 ———→ 最外
+   变化最快                      变化最慢
+
+★★ 最容易记反的一点：DP 在【中间】，PP 才在【最外】★★
+   不是 TP → PP → DP。
+</code></pre></div>
+
+<h4 id="_6">怎么用它算出每张卡的身份</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 规则：rank = 各维度下标 × &quot;比它更内层的所有维度的乘积&quot; 之和
+
+    以源码 docstring 的官方例子（16 卡，TP=2，PP=4 ⟹ DP=2，CP=EP=1）：
+
+        rank = tp_id  +  2 × dp_id  +  4 × pp_id
+               └─内─┘     └─中─┘        └─外─┘
+
+    ✅ 于是三种组的 rank【步长】各不相同（和 docstring 列出的分组完全对得上）：
+
+      TP 组：只变 tp_id，步长 = 1          → [g0,g1] [g2,g3] …        紧挨着
+      DP 组：只变 dp_id，步长 = TP = 2     → [g0,g2] [g1,g3] …        ★ 隔一个
+      PP 组：只变 pp_id，步长 = TP×DP = 4  → [g0,g4,g8,g12] …         隔三个
+
+    ★★ [04 章](04-数据并行DP.md) 那个&quot;g0 和 g2 一组，隔了一个&quot;的疑问，
+       答案就是这个步长 2 —— 它等于 TP，因为 DP 的外面一层正好是 TP。
+</code></pre></div>
+
+<h4 id="_7">为什么偏偏是这个顺序</h4>
+<p><strong>因为 rank 编号的"内外"直接等于物理链路的"快慢"。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 事实一：global_rank = 节点号 × 每节点卡数 + 本地卡号
+      → rank 0~7 必然在第一台机器，8~15 在第二台
+      ⚠️ 这是 torchrun / Slurm 的标准分配，不是 Megatron 定的，但 Megatron 依赖它
+
+    ★ 事实二：[03 章](03-通信原语.md)的带宽阶梯
+      机内 NVLink 900 GB/s   vs   机间 InfiniBand 50 GB/s   ★ 差 18 倍
+
+    ⟹ ★★ 步长越小 → rank 越挨着 → 越可能同机 → 拿到的链路越快 ★★
+       所以整个 order 就是一条按【通信敏感度】排的降序队列，
+       敏感度最高的排最内层，去抢最快的线。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>通信原语</th>
+<th>触发频率</th>
+<th>在关键路径上？</th>
+<th>座次</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TP</strong></td>
+<td>all-reduce</td>
+<td><strong>每层 4 次</strong></td>
+<td>✅ 完全阻塞，下一层必须干等</td>
+<td>最内 → 机内</td>
+</tr>
+<tr>
+<td><strong>CP</strong></td>
+<td>all-gather / ring</td>
+<td>每层注意力</td>
+<td>✅ 阻塞</td>
+<td>紧随 TP</td>
+</tr>
+<tr>
+<td><strong>EP</strong></td>
+<td>all-to-all</td>
+<td>每个 MoE 层</td>
+<td>✅ 阻塞</td>
+<td>第三</td>
+</tr>
+<tr>
+<td><strong>DP</strong></td>
+<td>all-reduce</td>
+<td><strong>每 iteration 1 次</strong></td>
+<td>❌ 可与反向重叠</td>
+<td>中间</td>
+</tr>
+<tr>
+<td><strong>PP</strong></td>
+<td>P2P send/recv</td>
+<td>每 micro-batch，仅 stage 边界</td>
+<td>❌ 可被 1F1B 掩盖</td>
+<td>最外 → 跨机</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 一笔演示用的账（h=8192, s=4096, b=1, bf16, 80 层, TP=2/PP=4；非真实披露配置）
+
+      单个激活张量 = 4096 × 8192 × 2 B = 64 MB
+
+      TP：每卡 20 层 × 4 次 × 64 MB ≈ 5 GB     ★ 且是 80 次【阻塞式】集合通信
+      PP：每卡 2 × 64 MB = 128 MB              ★ 且是 2 次【异步】P2P
+
+      ⟹ 通信量差 ~40 倍，同步次数差 40 倍，★★ 相乘就是几百倍的敏感度差距
+</code></pre></div>
+
+<h4 id="pp-123">★ PP 放最外层：§12.3 没说透的三个理由</h4>
+<p>§12.3 Takeaway #1 讲的是"TP 通信太密集，<strong>不能</strong>跨机"。<strong>★ 反过来问：为什么 PP 特别【适合】被推到慢网络上？</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① 它的通信量与模型多深【无关】
+       80 层切 4 段，边界永远只有 3 个 —— ★ 层数翻倍，PP 通信量不变。
+       而 TP 每层都通信，层数翻倍它就翻倍。
+
+    ② 它是 P2P，不是集合通信
+       集合通信要求全组同步就位，一个慢的拖垮全组；
+       ★ P2P 只需上下游【两方】就绪，对跨机网络的抖动宽容得多。
+
+    ③ ★★ 最关键：PP 的主要成本压根不是带宽，是气泡 ★★
+       气泡率 = (p−1)/m（[07 章](07-流水线并行PP.md)）
+       ★ 这个数字和网速【一点关系都没有】。
+       ⟹ 把 PP 挪到慢网络上，它最大的那块开销纹丝不动。
+</code></pre></div>
+
+<blockquote>
+<p>✅ Zero Bubble 论文（<a href="03-通信原语.html">03 章</a>引过同一句）说的就是这件事：<em>"PP is particularly advantageous for utilizing </em><em>cross-server connections</em><em>, especially at the scale of thousands of GPUs"</em></p>
+</blockquote>
+<h4 id="dp">那 DP 为什么在中间，不在最外？</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 因为 DP 的通信量是三者里【最大】的（整份梯度，GB 量级）。
+      &quot;能和反向重叠&quot;只藏得住【延迟】，藏不住【带宽】——
+      ★ 带宽不够时，反向都算完了梯度还没传完，照样卡住。
+
+    对比两种排布下 DP 组的落位（还是 16 卡 TP=2/PP=4）：
+
+      tp-cp-ep-dp-pp（默认）    DP 组 = [g0,g2]  步长 2  → ★ 机内，走 NVLink ✅
+      tp-cp-ep-pp-dp（反过来）  DP 组 = [g0,g8]  步长 8  →   跨机，走 IB     ❌
+
+    ⟹ ★★ 一句话：TP 抢最快的线，DP 抢剩下最快的，PP 拿最慢的那条 ★★
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 当 TP × DP &gt; 单节点卡数时，DP 无论如何都会跨机。Megatron 还有一层兜底：
+
+      ✅ parallel_state.py 的 create_hierarchical_groups()
+         把一个大 DP 组拆成【机内子组 + 机间子组】：
+         先在机内用 NVLink 做 reduce-scatter，再跨机做一次小得多的 all-reduce。
+
+      ★ DP 放中间正是这种分层拆分能成立的【前提】——
+        如果 DP 组的 rank 是零散跳跃的，根本切不出干净的机内子组。
+</code></pre></div>
+
+<h4 id="_8">想反过来？有开关，但基本用不上</h4>
+<div class="codehilite"><pre><span></span><code>--use-tp-pp-dp-mapping<span class="w">     </span><span class="c1"># ✅ order 变成 &quot;tp-cp-ep-pp-dp&quot;（见 initialize.py）</span>
+<span class="w">                           </span><span class="c1">#    DP 组 → [g0,g8]、[g1,g9]…（跨机）</span>
+<span class="w">                           </span><span class="c1">#    PP 组 → [g0,g2,g4,g6]…（机内）</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 什么时候才该考虑（推断，论文和源码都没给建议）：
+      · 序列极长 / micro-batch 很大 → 边界激活张量涨到几百 MB，PP 不再&quot;轻&quot;
+      · 集群拓扑特殊：节点内卡很多，但节点间网络极弱
+
+    ★ 标准 DGX / HGX 集群上不要动它 —— 默认的 tp-cp-ep-dp-pp 就是最优解。
+</code></pre></div>
+
+<hr />
+<h2 id="129">12.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① ★ MFU = 6ΨT / (卡数 × 峰值算力 × 步时长)
+   ★★ 分子【不含重计算】—— 所以开完全重计算 MFU 会掉
+   📌 HFU 含重计算，衡量&quot;硬件忙不忙&quot;；MFU 衡量&quot;忙得有没有意义&quot;
+   ✅ 标杆：Megatron-3 54.2%（530B/2240卡）、
+      ⚠️ PTD-P 常被引作&quot;52% MFU&quot;——★ 那其实是 HFU，换算 MFU ≈39%（§12.2 订正）、
+           MegaScale 55.2%（175B/12288卡）
+   ★ 40~50% 是正常水位，&gt;55% 算调得好
+
+② ★★★ PTD-P 三条 Takeaway（本章的骨架）：
+   #1 ✅ TP 开到单机卡数为止，再大用 PP 跨机
+      → 因为 TP 每层 4 次 all-reduce 卡在计算路径上，
+        而机内 NVLink 比机间 IB 快约 18 倍
+      → ⚠️ 第二个病因常被忽略：TP 太大会把矩阵切碎，GPU 吃不饱
+   #2 ✅ TP×PP 只开到&quot;装得下&quot;，剩下的卡全给 DP
+      → TP/PP 是被迫开的，DP 才是想开的
+      → ⚠️ 现代补充：能用 ZeRO-1 解决的就别动 TP/PP
+   #3 ✅ 最优 micro-batch 没有公式，取决于 p、d、B 和模型本身
+      → b↑ 则 GPU 效率↑（实测最高 1.3×）但气泡↑、显存↑
+
+③ ★ 调参顺序：免费项全开 → TP(≤单机) → PP(最小) → CP(仅长序列)
+   → DP(剩下全部) → 扫 b → 才轮到真取舍（重计算/FP8）
+
+④ ✅ MegaScale Table 3 是最好的教材：47.7% → 65.3%
+   ★ 其中 TP/PP/DP 三个 overlap 贡献约 4 个百分点，且【完全免费】
+   ⚠️ 但 PTB/SWA/LAMB 那几行动了模型，不能无脑抄
+
+⑤ overlap 的本质：总时间从【计算+通信】变成【max(计算,通信)】
+
+⑥ MFU 低的排查顺序：TP 跨机 → 气泡 → 重计算过度 → overlap 漏开
+   → 矩阵切太碎(hidden/TP ≥ 1024) → 数据管道 → 慢卡
+
+⑦ 自动并行（Alpa 分两层搜 / GSPMD 传播标注）技术上可行，
+   ⚠️ 但工业界仍手工配：搜索有成本、手工解够好、生产要可解释
+
+⑧ ★★ rank 排布顺序 = TP → CP → EP → DP → PP（由内到外）★★
+   ✅ 源码常量 order = &quot;tp-cp-ep-dp-pp&quot;
+   ★ 易错：DP 在【中间】，PP 在【最外】，不是 TP→PP→DP
+   → 组内步长：TP=1 ｜ DP=TP ｜ PP=TP×DP
+     （04 章&quot;g0 和 g2 一组&quot;的步长 2，就是这么来的）
+   → 排序依据是【通信敏感度】，rank 内外 = 链路快慢：
+     TP 每层 4 次阻塞通信，躲不掉 → 抢机内 NVLink
+     DP 量最大但可与反向重叠   → 中间，尽量留机内
+     ★ PP 主要成本是气泡(p−1)/m 而非带宽 → 丢给跨机慢网络最划算
+</code></pre></div>
+
+<p><strong>这一章解决的是"怎么跑得快"。下一章解决一个更现实的问题</strong>：跑了三个星期，第 19 天半夜一张卡掉了——<strong>怎么办</strong>？</p>
+<hr />
+<blockquote>
+<p><a href="11-重计算与激活优化.html">← 11 重计算与激活优化</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="13-断点续训与容错.html">13 断点续训与容错</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

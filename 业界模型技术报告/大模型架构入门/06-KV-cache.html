@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · KV cache：为什么长上下文这么贵</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="05-注意力机制.html">← 05 注意力机制</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="07-MHA到MLA.html">07 从 MHA 到 MLA</a></p>
+</blockquote>
+<h1 id="06-kv-cache">06 · KV cache：为什么长上下文这么贵</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：这是全教程<strong>第二关键</strong>的一章。五份技术报告里那些看起来五花八门的注意力改造，<strong>动机全部来自本章的两个事实</strong>。<br />
+读完你应该能回答：KV cache 是什么、有多大？为什么"生成第 10001 个字"比"读完 10000 个字"更贵？<strong>为什么省 KV cache 几乎等于直接提速</strong>？</p>
+</blockquote>
+<hr />
+<h2 id="61">6.1 先看一个反直觉的事实</h2>
+<div class="codehilite"><pre><span></span><code>    你给模型一个 10 万字的文档，让它总结。
+
+    阶段 A：模型&quot;读完&quot;这 10 万字        ← 大概 3 秒
+    阶段 B：模型吐出 500 字的总结        ← 大概 5 秒
+
+    读 10 万字用了 3 秒，写 500 字用了 5 秒。
+    ★ 写字比读字慢了【400 倍】（按每字算）
+</code></pre></div>
+
+<p><strong>这不是模型"思考"得慢。这是两个阶段的硬件瓶颈完全不同。</strong></p>
+<div class="codehilite"><pre><span></span><code>┌─── Prefill（预填充）：处理你的输入 ────────────────────┐
+│  一次前向，【并行】处理全部 L 个 token                   │
+│  每个权重矩阵读进来一次，要给 L 个 token 用              │
+│  → 计算多、访存少  → 【算力受限 compute-bound】          │
+└────────────────────────────────────────────────────────┘
+
+┌─── Decode（解码）：一个一个吐字 ──────────────────────┐
+│  每次前向只处理【1 个】token                            │
+│  每个权重矩阵还是要完整读进来一次，但只给 1 个 token 用   │
+│  → 计算少、访存多  → 【访存受限 memory-bound】           │
+└────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<h3 id="_1">★ 先把四个缩写认清楚（后面各章会反复出现）</h3>
+<p><strong>这两个阶段各自对应一个延迟指标，业界几乎只用缩写称呼它们。本教程从这里开始也会用，所以先在这里讲清楚：</strong></p>
+<div class="codehilite"><pre><span></span><code>┌─ TTFT ─ Time To First Token ─「首字延迟」──────────────────┐
+│                                                            │
+│  你按下回车  →  屏幕上蹦出【第一个字】，中间等了多久        │
+│                                                            │
+│  由 Prefill 决定 → 算力受限 → 只有【减少 FLOPs】才有用      │
+│  单位：秒（s）。上面例子里那「3 秒」就是 TTFT               │
+└────────────────────────────────────────────────────────────┘
+
+┌─ TPOT ─ Time Per Output Token ─「每字延迟」────────────────┐
+│                                                            │
+│  第一个字出来【之后】，每多蹦一个字要等多久                 │
+│  （有些论文写作 ITL = Inter-Token Latency，是同一个东西）   │
+│                                                            │
+│  由 Decode 决定 → 访存受限 → 只有【减少字节数】才有用       │
+│  单位：毫秒（ms）                                           │
+│  ★ 它就是你肉眼看到的「打字速度」：                         │
+│    TPOT = 10 ms  →  每秒 100 个字，比人读得快，体感流畅      │
+│    TPOT = 100 ms →  每秒 10 个字，明显一顿一顿              │
+└────────────────────────────────────────────────────────────┘
+
+  一次完整对话的耗时  ≈  TTFT  +  TPOT × 输出字数
+                         └首字┘   └──── 后续每个字 ────┘
+</code></pre></div>
+
+<p><strong>还有两个描述"量"而不是"延迟"的缩写：</strong></p>
+<div class="codehilite"><pre><span></span><code>TPS   Tokens Per Second「吞吐量」—— 一块卡每秒总共吐出多少字
+      ★★ 和 TPOT 不是一回事，这是最容易混的一对：
+         TPOT 问的是「我这一个用户要等多久」        ← 延迟，越小越好
+         TPS  问的是「这块卡一共干了多少活」        ← 产能，越大越好
+      两者靠 batch（同时服务几个用户）联系起来：
+         TPS ≈ batch ÷ TPOT
+      ⚠️ 而且它们【互相打架】：batch 开大 → TPS 涨，但每个用户的 TPOT 也变长
+         （openPangu 的实测就是这样：TPOT 9.53 ms 那一档和
+           1727 TPS 那一档【不是同一个配置】，见 §6.7）
+
+ISL   Input Sequence Length  —— 输入有多少 token（报告表格里常见）
+OSL   Output Sequence Length —— 输出有多少 token
+      「8K+1K」就是 ISL=8192、OSL=1024 的意思
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>为什么要专门强调这四个词</strong>：五份技术报告在"推理性能"一节几乎只报这几个数。<strong>看不懂缩写，那一整节就等于没读。</strong></p>
+</blockquote>
+<hr />
+<blockquote>
+<p>🔑 <strong>一句必须记住的话</strong>：<br />
+<strong>Decode 阶段，GPU 的算力几乎是闲置的。它 99% 的时间在等数据从显存搬到计算单元。</strong></p>
+<p>这句话是理解这一代所有推理优化的钥匙。</p>
+</blockquote>
+<hr />
+<h2 id="62-cache">6.2 为什么需要 cache</h2>
+<p>回忆 <a href="05-注意力机制.html">05 章</a>：生成第 $t$ 个 token 时，它的 Query 要和<strong>前面所有</strong> token 的 Key 做内积。</p>
+<div class="codehilite"><pre><span></span><code>生成第 1 个：Q1 · [K1]                       V: [V1]
+生成第 2 个：Q2 · [K1, K2]                   V: [V1, V2]
+生成第 3 个：Q3 · [K1, K2, K3]               V: [V1, V2, V3]
+                    ↑↑↑↑↑↑
+              这些每次都完全一样！
+</code></pre></div>
+
+<p><strong>K1 是从 token 1 算出来的，token 1 不会变，所以 K1 永远不变。</strong></p>
+<div class="codehilite"><pre><span></span><code>❌ 不 cache：每生成一个 token，重算前面所有 K、V     → O(L²) 重复计算
+✅ cache：  算过就存下来，只算新 token 的 K、V       → O(L) 
+</code></pre></div>
+
+<p><strong>所以 KV cache 是必须的。问题是它太大了。</strong></p>
+<blockquote>
+<p>⚠️ <strong>为什么不 cache Q</strong>：因为 $Q_t$ 只在生成第 $t$ 个 token 时用一次，用完就没用了。<strong>K 和 V 要被后面所有 token 反复用，Q 不会。</strong></p>
+</blockquote>
+<hr />
+<h2 id="63-kv-cache">6.3 KV cache 到底有多大：算一笔账</h2>
+<p>$$\text{KV cache 大小} = 2 \times N \times H_{kv} \times d_h \times L \times B \times \text{bytes}$$</p>
+<table>
+<thead>
+<tr>
+<th>符号</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>K 和 V 各一份</td>
+</tr>
+<tr>
+<td>$N$</td>
+<td>层数（每层都有自己的 KV）</td>
+</tr>
+<tr>
+<td>$H_{kv}$</td>
+<td>KV 头数</td>
+</tr>
+<tr>
+<td>$d_h$</td>
+<td>每个头的维度</td>
+</tr>
+<tr>
+<td>$L$</td>
+<td>当前序列长度</td>
+</tr>
+<tr>
+<td>$B$</td>
+<td>batch size（同时服务几个用户）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">代入真实数字</h3>
+<p><strong>用一个 openPangu 规模的假想 MHA 模型</strong>（$N=50$，$d=5120$，即 $H\cdot d_h = 5120$），BF16（2 字节）：</p>
+<div class="codehilite"><pre><span></span><code>每个 token 每层：  2 × 5120 × 2 字节 = 20,480 字节 = 20 KB
+每个 token 全模型：20 KB × 50 层 = 1,024,000 字节 ≈ 1 MB   ★
+
+    L = 8K：      8 GB
+    L = 128K：  128 GB      ← 已经超过单卡显存
+    L = 512K：  512 GB      ← 需要 7 张 80GB 卡【只放 cache】
+    L = 1M：   1024 GB
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>记住这个量级：一个 500B 级模型，MHA 下大约 1 MB / token。</strong></p>
+<p>而这还只是 <strong>batch=1</strong>。真实服务要同时服务几十上百个用户：<br />
+<code>B = 32，L = 128K：128 GB × 32 = 4 TB    ← 完全不可能</code></p>
+</blockquote>
+<h3 id="_3">对比：模型权重本身多大</h3>
+<div class="codehilite"><pre><span></span><code>openPangu-2.0-Pro：505B 参数
+    BF16：  505B × 2 字节 = 1010 GB     ← 报告实测 1009 GB ✅
+    W8A8：  505B × 1 字节 ≈ 505 GB      ← 报告实测 517 GB ✅（1.95× 压缩）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    权重（固定）    ████████████████████  1009 GB
+    KV cache 128K   ██                     128 GB   ← MHA 假想值
+    KV cache 512K   ██████████             512 GB   ← 和权重同一量级了！
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是问题的全貌</strong>：短上下文时 KV cache 可以忽略，<strong>长上下文时它会追上甚至超过模型权重本身</strong>。而它还<strong>随用户数线性增长</strong>。</p>
+<p>✅ <strong>对照真实数据</strong>：DeepSeek-V4 报告称在 <strong>1M 上下文下，KV cache 只占约 2%</strong>。这不是 MHA 能做到的——是 <a href="07-MHA到MLA.html">07 章</a> 的压缩技术做到的。</p>
+</blockquote>
+<hr />
+<h2 id="64-roofline">6.4 Roofline：为什么"省显存"就等于"提速"</h2>
+<p>这一节是本章的技术核心。<strong>它解释了为什么所有厂商都在省 KV cache，而不是省计算。</strong></p>
+<h3 id="arithmetic-intensity">算术强度（arithmetic intensity）</h3>
+<p>对任何一段计算，定义：</p>
+<p>$$I = \frac{\text{做了多少次浮点运算 (FLOPs)}}{\text{从显存搬了多少字节 (bytes)}}$$</p>
+<p><strong>硬件有一个"脊点"（ridge point）</strong>：</p>
+<p>$$I_{\text{ridge}} = \frac{\text{峰值算力 (FLOP/s)}}{\text{显存带宽 (byte/s)}}$$</p>
+<p>以 <strong>H100 SXM</strong>（BF16 稠密约 989 TFLOPS，HBM3 带宽约 3.35 TB/s）为例：</p>
+<p>$$I_{\text{ridge}} \approx \frac{989\times10^{12}}{3.35\times10^{12}} \approx \mathbf{295\ \text{FLOP/byte}}$$</p>
+<div class="codehilite"><pre><span></span><code>      性能
+        ▲
+ 峰值算力├──────────────────────  ← 算力受限区（compute-bound）
+        │                ╱
+        │              ╱  斜率 = 显存带宽
+        │            ╱
+        │          ╱  ← 访存受限区（memory-bound）
+        │        ╱     性能完全由带宽决定，算力再强也没用
+        └──────╱────────────────────────→ 算术强度 I
+                     ↑
+                I_ridge ≈ 295 FLOP/byte
+</code></pre></div>
+
+<blockquote>
+<p><strong>要跑满 H100 的算力，每从显存读 1 个字节，必须做 295 次浮点运算。</strong> 达不到，就是在浪费算力。</p>
+</blockquote>
+<h3 id="decode">Decode 的算术强度是多少</h3>
+<p>对一个权重矩阵 $W\in\mathbb{R}^{m\times n}$，BF16 存储：</p>
+<div class="codehilite"><pre><span></span><code>搬运：m × n × 2 字节
+计算：每个 batch 元素做 2mn FLOPs（乘 + 加），共 B 个
+
+    I = (2mn × B) / (2mn) = B
+</code></pre></div>
+
+<p>$$\boxed{I_{\text{decode}} \approx B\ \text{（batch size）}}$$</p>
+<div class="codehilite"><pre><span></span><code>B = 1：    I = 1        vs   I_ridge = 295
+                             → 算力利用率 【1/295 ≈ 0.3%】
+B = 32：   I = 32       →  利用率 ~11%
+B = 295：  I = 295      →  刚好跑满
+
+★ 但 B=295 意味着 KV cache 要 ×295 —— 显存根本放不下
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是完整的因果链，请仔细看</strong>：</p>
+<p><code>① decode 每次只处理 1 个 token → 算术强度 ≈ batch size
+② 要跑满算力，需要 batch ≈ 295
+③ 但 batch 越大，KV cache 越大（线性）
+④ 显存被 KV cache 占满 → batch 开不大 → 算力浪费 99%
+             ↓
+⑤ ★★ 省下 KV cache = 能开更大 batch = 直接换成吞吐量 ★★</code></p>
+<p><strong>"省显存"和"提速"在 decode 阶段是【同一件事】。这就是五家全都在死磕 KV cache 的原因。</strong></p>
+</blockquote>
+<h3 id="decode_1">换个角度：单次 decode 的时间下界</h3>
+<p>即使 batch=1，每生成一个 token 也<strong>必须至少把所有激活的权重读一遍</strong>：</p>
+<div class="codehilite"><pre><span></span><code>openPangu-2.0-Pro 激活参数 18B，W8A8（1 字节）：
+    每 token 至少搬运 18 GB
+    在 3 TB/s 带宽下：18 / 3000 ≈ 6 ms
+
+✅ 报告实测 TPOT = 9.53 ms @ 8K，9.55 ms @ 128K
+   （TPOT = 每吐一个字的间隔，见 §6.1；8K/128K 是 ISL 输入长度）
+   → 和这个量级完全吻合（差的部分是 KV cache 读取 + 通信 + 非理想效率）
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>注意 openPangu 那两个数字</strong>：<strong>8K 和 128K 的 TPOT 几乎一样</strong>（9.53 vs 9.55 ms）。<br />
+这说明它的 KV cache 读取开销在 128K 下<strong>依然没有成为主导项</strong>——正是 MLA + SWA + DSA 组合起来的效果（<a href="07-MHA到MLA.html">07</a>/<a href="08-高效注意力.html">08</a> 章）。</p>
+<p><strong>反过来说</strong>：如果一个模型用朴素 MHA，128K 的 TPOT 会明显高于 8K，因为每步都要多读 128 GB 的 cache。</p>
+</blockquote>
+<hr />
+<h2 id="65">6.5 三个可以下手的方向</h2>
+<p>现在你有了完整的问题定义，<strong>解法只有三个方向</strong>，五家全部落在这三格里：</p>
+<div class="codehilite"><pre><span></span><code>    KV cache 大小 = 2 × N × H_kv × d_h × L × B × bytes
+                        ↑    ↑↑↑↑↑↑↑↑↑↑    ↑        ↑
+                        │        │          │        │
+                     ① 层数    ② 每层存多少  ③ 存几个  ④ 每个几字节
+                                                token
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>方向</th>
+<th>怎么做</th>
+<th>在哪章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>② 每层存多少</strong></td>
+<td>MQA / GQA / <strong>MLA</strong>（低秩压缩）</td>
+<td><strong><a href="07-MHA到MLA.html">07 章</a></strong></td>
+</tr>
+<tr>
+<td><strong>③ 存几个 token</strong></td>
+<td>滑动窗口 / 稀疏选择 / 线性注意力（根本不存）</td>
+<td><strong><a href="08-高效注意力.html">08 章</a></strong></td>
+</tr>
+<tr>
+<td><strong>④ 每个几字节</strong></td>
+<td>KV cache 量化（BF16 → FP8 → INT4）</td>
+<td><strong><a href="14-量化.html">14 章 §14.10</a></strong></td>
+</tr>
+<tr>
+<td><strong>① 层数</strong></td>
+<td>只在部分层保留全量 KV（跨层共享）</td>
+<td><a href="08-高效注意力.html">08 章</a>（GLM 的 IndexShare 是相关思路）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>这就是 06→07→08 三章的分工，也是 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1 那张表的组织逻辑。</strong></p>
+<hr />
+<h2 id="66-prefill-ttft">6.6 Prefill 侧的账：TTFT（首字延迟）</h2>
+<p>Prefill 是<strong>算力受限</strong>的，所以它的账完全不同。</p>
+<p>$$\text{prefill FLOPs} \approx 2 \times N_{\text{active}} \times L + \underbrace{\text{注意力的 } L^2 \text{ 项}}_{\text{长序列时主导}}$$</p>
+<p>回忆 <a href="01-鸟瞰全景.html">01 章 §1.5</a>：</p>
+<div class="codehilite"><pre><span></span><code>L = 4K：   注意力项占 ~12%，可忽略
+L = 1M：   注意力项占 ~97%，【完全主导】
+
+    而且它是【平方】的：128K → 1M 是 8 倍长度，这一项涨 64 倍
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>✅ openPangu 报告实测：TTFT = 3.0 s @ 128K 输入、单 batch
+   （TTFT = Time To First Token = 首字延迟，见 §6.1）
+   → 读 12.8 万字要等 3 秒才开始出字，这 3 秒【全部花在 Prefill 上】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>两个阶段要用完全不同的手段优化</strong>：<br />
+```<br />
+Prefill 慢  →  是【算力】问题  →  要减少 FLOPs  →  稀疏注意力、滑窗<br />
+Decode 慢   →  是【访存】问题  →  要减少字节数  →  压缩 KV cache、量化</p>
+<p>★ 稀疏注意力同时帮两边：既少算，又少存<br />
+  这就是为什么 DSA / MSA / SWA 这类技术是五家的主流选择<br />
+```</p>
+</blockquote>
+<hr />
+<h2 id="67">6.7 还有一个方向：一次多吐几个字</h2>
+<p><strong>如果 decode 的瓶颈是"每步都要把 18 GB 权重读一遍"，那么——</strong></p>
+<div class="codehilite"><pre><span></span><code>    读一遍权重，只吐 1 个 token   →  每 token 成本 = 18 GB
+    读一遍权重，吐出 5 个 token   →  每 token 成本 = 3.6 GB    ★ 5 倍
+</code></pre></div>
+
+<p><strong>权重只读一次，能多产出几个 token，就等于直接提速几倍。</strong></p>
+<p>这正是 <strong>MTP + 投机解码</strong>的全部动机，见 <a href="12-MTP与投机解码.html">12 章</a>。<strong>五家全部上了 MTP，一个不落</strong>，因为它是在不改主模型的前提下最直接的 decode 加速手段。</p>
+<blockquote>
+<p>📌 <strong>注意这和"省 KV cache"是两条独立的路</strong>：<br />
+<code>省 KV cache  →  能开更大 batch  →  提【吞吐量 TPS】（这块卡每秒总共吐多少字）
+MTP          →  每次多吐几个字  →  降【单用户延迟 TPOT】（我这一个人要等多久）</code><br />
+✅ openPangu 报告的 <strong>1727 TPS/NPU</strong> 是<strong>吞吐量</strong>指标，<strong>9.53 ms TPOT</strong> 是<strong>延迟</strong>指标——回到 §6.1 那组定义。</p>
+<p>⚠️ <strong>但这两个数字不能凑在一起吹</strong>，它们来自报告里<strong>两张不同的表、两个不同的配置</strong>：<br />
+```<br />
+「超低延迟」那档：  TPOT 9.53 ms                    ← 牺牲吞吐换延迟<br />
+「低延迟吞吐」那档：TPOT 23.2 ms，batch 40，1727 TPS ← 牺牲延迟换吞吐</p>
+<p>验算一下这组数是否自洽（⚠️ 我的推算，不是报告写的）：<br />
+    40 个用户 ÷ 0.0232 秒 ≈ 1724 tokens/s  ✅ 和 1727 对得上<br />
+    —— 正好印证 §6.1 那条 TPS ≈ batch ÷ TPOT<br />
+```<br />
+<strong>同一个模型，batch 从小调到 40，TPOT 从 9.53 ms 变成 23.2 ms（慢了 2.4 倍），换来吞吐量大涨。这就是延迟与吞吐的取舍。</strong></p>
+</blockquote>
+<hr />
+<h2 id="68">6.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① Prefill（读输入）是【算力受限】，Decode（吐字）是【访存受限】
+   → decode 时 GPU 算力利用率可能只有 0.3%，全在等数据
+② KV cache = 2·N·H_kv·d_h·L·B·bytes
+   500B 级 MHA 模型 ≈ 1 MB / token
+   → 128K 就是 128 GB，512K 追上模型权重本身，且随用户数线性增长
+③ ★ Roofline：decode 的算术强度 ≈ batch size，而脊点是 ~295
+   → KV cache 占满显存 → batch 开不大 → 算力浪费
+   → 【省 KV cache 就是直接提吞吐】，这两件事在 decode 阶段是同一件事
+④ 只有四个下手点：改层数 / 改每层存多少 / 改存几个 token / 改每个几字节
+   → 分别对应 08 / 07 / 08 / 14 章
+⑤ Prefill 慢是 FLOPs 问题（L² 项），Decode 慢是字节数问题，手段不同
+   稀疏注意力是少数【两边都帮】的技术
+⑥ 另一条独立的路：MTP —— 权重只读一次，多吐几个字（12 章）
+</code></pre></div>
+
+<p><strong>下一章</strong>开始给答案：怎么把每层存的东西从 20 KB 压到 1 KB。</p>
+<hr />
+<blockquote>
+<p><a href="05-注意力机制.html">← 05 注意力机制</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="07-MHA到MLA.html">07 从 MHA 到 MLA</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

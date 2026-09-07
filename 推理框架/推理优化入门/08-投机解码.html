@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 投机解码</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="08">08 投机解码</h1>
+<blockquote>
+<p><strong>一句话</strong>：既然 Decode 时 GPU 有 99% 的算力在空转，那就<strong>用这些免费算力去猜后面几个字</strong>——猜对了白赚，猜错了也没亏。</p>
+</blockquote>
+<hr />
+<h2 id="81">8.1 这个想法为什么成立</h2>
+<p>回到 01 章那个数字：</p>
+<div class="codehilite"><pre><span></span><code>    Decode 一次前向：搬 16 GB 权重，只算 1 个 token
+    ⟹ 算力利用率 &lt;1%
+
+    ★★ 关键问题：如果这一次前向算 【4 个 token】，会慢多少？
+    ★★ 答案：几乎不慢。因为权重还是只搬一遍，算力本来就是空的。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    验证 1 个 token：耗时 T
+    验证 4 个 token：耗时 ≈ 1.05 T     ← ★ 几乎免费
+
+    ⟹ 于是有了这个交易：
+       用一个【小而快】的模型先猜 4 个字，
+       再用【大模型一次前向】同时验证这 4 个字对不对。
+       ★ 对的部分直接采纳，第一个错的地方开始重来。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文 arXiv 2211.17192（<code>papers/Speculative-Decoding-arXiv-2211.17192.pdf</code>），Google，2022。<br />
+论文最重要的贡献不是这个想法，而是<strong>证明了它在数学上是无损的</strong>——见 §8.3。</p>
+</blockquote>
+<hr />
+<h2 id="82">8.2 一次投机解码长什么样</h2>
+<div class="codehilite"><pre><span></span><code>    当前已生成：&quot;杭州是浙江省的&quot;
+
+    ① 草稿阶段（draft）：小模型自回归跑 4 步，很快
+       猜出：&quot;省&quot; &quot;会&quot; &quot;，&quot; &quot;位&quot;
+       ★ 小模型每步也要一次前向，但它小，比如 1B vs 70B，快 20 倍
+
+    ② 验证阶段（verify）：★ 大模型【一次】前向，
+       把 &quot;杭州是浙江省的&quot; + [&quot;省&quot;,&quot;会&quot;,&quot;，&quot;,&quot;位&quot;] 全部喂进去
+       ⟹ 得到大模型在每个位置【本来会输出什么】
+
+       位置1：大模型也想输出「省」   ✅ 接受
+       位置2：大模型也想输出「会」   ✅ 接受
+       位置3：大模型想输出「城」，草稿是「，」  ❌ 拒绝
+       位置4：★ 不用看了，前面已经错了，后面全作废
+
+    ③ 结果：这一次大模型前向，产出了 【&quot;省&quot; &quot;会&quot; &quot;城&quot;】 3 个 token
+       （2 个接受 + 1 个用大模型自己的输出【纠正】）
+       ★★ 注意第 3 个是白送的——拒绝时顺手就拿到了正确答案
+
+    ⟹ 原本 3 次大模型前向，现在 1 次搞定。★ 加速 3 倍。
+</code></pre></div>
+
+<p><strong>几个必须理解的量</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    📖 draft length / γ（伽马）：一次猜几个，通常 3~5
+    📖 acceptance rate（接受率）：猜中的比例
+    📖 ★ 加速比 ≈ (平均接受个数 + 1) ÷ (1 + 草稿开销)
+
+    ★★ 两个反向的力：
+       γ 越大 ⟹ 一次可能吐更多字（好）
+       γ 越大 ⟹ 草稿本身越慢，且越靠后越容易猜错（坏）
+    ⟹ 存在最优 γ，且它随负载变化 ⟹ 所以框架里有「自适应」的实现
+</code></pre></div>
+
+<hr />
+<h2 id="83">8.3 ★ 为什么是「无损」的——这一点最容易被误解</h2>
+<blockquote>
+<p>❓ 常见误解："用小模型猜，输出质量肯定会降。"<br />
+<strong>不会。投机解码的输出分布和不用它【完全一致】。</strong></p>
+</blockquote>
+<h3 id="_1">先说清「无损」到底指什么</h3>
+<div class="codehilite"><pre><span></span><code>    ❌ 无损 ≠ 每次生成的文本【逐字一样】
+    ✅ 无损 = 输出的【概率分布】一样
+</code></pre></div>
+
+<p>举个例子：大模型在某个位置本来会给出 <code>"好" 60%  "热" 30%  "冷" 10%</code>。<strong>无损保证的是：开了投机解码之后，这个位置吐出各个字的概率还是精确的 60/30/10。</strong> 你跑一万次，统计频率对得上；但具体某一次吐哪个字，可能和不开时不同。</p>
+<h3 id="_2">★★ 秘密在两步：一步「删」，一步「补」</h3>
+<p>关键在<strong>拒绝时怎么处理</strong>，论文给出的是一个精确的采样算法：</p>
+<div class="codehilite"><pre><span></span><code>    设：大模型（目标）的概率是 p(x)，小模型（草稿）的是 q(x)，草稿猜的是 x̂
+
+    【第一步 · 删】接受判据
+       ★ 若 p(x̂) ≥ q(x̂)：  直接接受
+       ★ 若 p(x̂) &lt; q(x̂)：  以概率 p(x̂)/q(x̂) 接受
+                            （小模型比大模型更爱这个词，就按比例打折）
+
+    【第二步 · 补】拒绝后的重采样        ★★★ 全部魔法都在这里
+       一旦拒绝，【不是】丢掉重来，而是由【大模型自己】
+       从修正后的分布 norm(max(0, p − q)) 里重新采一个
+
+    ⟹ ★★ 数学上可以证明：最终采出来的 token，
+       服从的分布【严格等于】p —— 也就是大模型本来的分布。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话抓住它</strong>：<strong>第一步负责【删】</strong>——压掉小模型过度偏爱的词；<strong>第二步负责【补】</strong>——把被压掉的概率质量精确地还回去。<br />
+<strong>删完必须补，否则分布不守恒。</strong> 记住这句，下面的「有损验证」就是一句话能说清的事了。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 这意味着：
+       ✅ 小模型再烂，也【不会降低质量】，只会降低加速比
+       ✅ 所以草稿模型可以大胆用最快的，甚至用 n-gram 查表
+       ⚠️ 但注意：这是【分布相同】，不是【逐 token 相同】。
+          开了投机解码后，同样的随机种子可能生成不同的具体文本。
+          ★ 做回归测试时这一点会咬人。
+</code></pre></div>
+
+<hr />
+<h3 id="2026">⚠️ 2026 更新：市面上开始出现【有损验证】了</h3>
+<blockquote>
+<p>✅ 论文：<em>Revisiting Lossy Verification in Speculative Decoding: Mechanisms, Trade-offs, and Failure Modes</em>（arXiv 2607.26627，2026-07-29）</p>
+</blockquote>
+<p>上面那套无损保证<strong>是可以被放弃的</strong>——已经有一批方法为了速度放松严格的分布匹配。</p>
+<blockquote>
+<p>🔑 <strong>用上面的框架一句话概括：有损验证 = 把【第二步】拆掉或改掉。</strong></p>
+</blockquote>
+<p>论文的措辞很重：这会<strong>悄悄改写解码分布</strong>（silently rewrites）。⚠️ <strong>「悄悄」是重点</strong>——不报错、不告警，你只会发现分数莫名其妙低了一点。</p>
+<blockquote>
+<p>✅ 论文把它们归成两类，并指出<strong>彼此差异「大多是表面的」</strong>（本质是同一个病）。</p>
+</blockquote>
+<h4 id="1">① 截断式验证：过滤 ≠ 纠正比例</h4>
+<p><strong>做法</strong>：不再算 <code>p/q</code> 的比值，改成先划一条线圈出「<strong>允许集合</strong>」（目标模型认为合理的那批词），草稿猜的词<strong>只要落进集合里就放行</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    ✅ Medusa 的 typical acceptance ── 允许集合来自 η-sampling（按熵动态定门槛线）
+    ✅ SpecCascade                  ── 允许集合来自 min-p sampling（门槛 = 最高概率 × 某比例）
+</code></pre></div>
+
+<blockquote>
+<p>📌 这两个本来都是正经的<strong>截断采样</strong>，用途是「把长尾烂词砍掉」，是个好东西。<br />
+<strong>问题不在截断本身，在于拿它当【验证判据】。</strong></p>
+</blockquote>
+<p><strong>★★ 陷阱在这</strong>：拒绝的直接丢弃、<strong>不做第二步重采样</strong>——正好丢掉了上面那个「补」的步骤。</p>
+<div class="codehilite"><pre><span></span><code>    它【想要】的是「截断后的【目标】分布」   p(x) / Z(p)
+    它【实际产出】的是「截断后的【草稿】分布」q(x) / Z(q)
+                                              ↑↑ 换成 q 了
+</code></pre></div>
+
+<blockquote>
+<p>📖 <code>Z</code> 是<strong>归一化常数</strong>：砍掉一部分词之后，剩下的概率加起来不到 1，要除以剩余总和把它拉回 1。</p>
+</blockquote>
+<p><strong>为什么会变成 q？——因为过滤只能删掉不合格的选项，删不掉合格选项之间的错误比例。</strong> 一个具体例子：</p>
+<div class="codehilite"><pre><span></span><code>    假设词表只有 A / B / C 三个词
+
+    大模型 p ：  A 0.6    B 0.3    C 0.1
+    小模型 q ：  A 0.2    B 0.7    C 0.1
+    允许集合 ： {A, B}                       （C 被截断掉了）
+
+    ✅ 你【想要】的  = p 在 {A,B} 上归一化   → A 66.7%   B 33.3%
+    ❌ 你【实际得到】= 草稿抽 A 的概率 0.2、抽 B 的 0.7，
+                       C 被拒了就丢掉不算    → A 22.2%   B 77.8%
+                                                ↑↑ A 和 B 的主次【完全颠倒了】
+</code></pre></div>
+
+<blockquote>
+<p>门卫只查「你有没有资格进门」，不管「进门的人里各类人占多少比例」——<strong>而比例恰恰就是分布的全部内容。</strong></p>
+<p>⟹ ✅ 论文原话：输出「<strong>像草稿模型，而不像目标分布</strong>」。<br />
+⚠️ 说白了：<strong>你花大钱部署 72B，实际拿到的是接近小模型的输出质量。</strong></p>
+</blockquote>
+<h4 id="2">② 协作式验证：干脆承认掺水</h4>
+<p><strong>做法</strong>：不装了，直接把两个分布按比例混起来。</p>
+<div class="codehilite"><pre><span></span><code>    实际产出 = λ·p(x) + (1−λ)·q(x)     ← 凸组合（加权平均，两个权重加起来 = 1）
+
+       λ = 1   → 纯目标模型（等价无损）
+       λ 越小  → 掺的草稿越多，越快，也越偏
+
+    ✅ CoS（固定混合系数 λ）、lenience 宽容度（λ 自适应调整）
+</code></pre></div>
+
+<blockquote>
+<p>📌 这一类至少是<strong>诚实的</strong>——λ 明摆着是个旋钮，你知道自己在拿质量换速度。<br />
+⚠️ <strong>截断式的真正问题在于它【看起来像无损】。</strong></p>
+</blockquote>
+<h4 id="qwen25-72b-llama-31-8b">✅ 质量掉多少（Qwen2.5-72B / LLaMA-3.1-8B 实测）</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 在标准投机解码下（单草稿、一条链）：
+      还好，和配对基线差距 ≤ 1.4 分
+
+    ★★ 但一上 EAGLE-3（树形/多草稿），差距炸开：
+       typical acceptance 的平均分差   −0.32  ⟶  【−6.32】
+                          INCLUDE 上          【−8.8】
+       ⚠️ 甚至【低于 EAGLE-3 自己的基线】：MATH 69.84 vs 73.20
+          ⟹ 本来是为了加速，结果【速度和质量一起亏】
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>配对基线</strong>（paired baseline）= 用<strong>同样的截断设置</strong>、但走<strong>无损</strong>验证的对照组。<br />
+必须这样比，才能把「截断本身的好处」和「有损验证的代价」分开——见下面的建议 ①。</p>
+</blockquote>
+<p><strong>★ 为什么树形上更糟（✅ 论文 Lemma 2）</strong></p>
+<blockquote>
+<p>📖 <strong>KL 散度</strong>：衡量「两个概率分布差多远」的一把尺子，<strong>0 = 完全相同</strong>，越大差得越远。这里用它量「实际输出分布」和「本该的目标分布」之间的失真。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    标准 SD  ：草稿越训越好（q → p）时，KL → 0
+               ⟹ ✅ 失真是【可以消掉的】，把草稿练好就有回报
+
+    EAGLE-3 ：KL 收敛到一个【正的常数】
+               ⟹ ⚠️ 存在一条【地板】，草稿再完美，失真也消不掉
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>我的直觉理解</strong>（论文给的是定理，这层解释是我的推断）：树形一次摆出多个候选、「谁先通过就用谁」，这本身是一种 <strong>best-of-n 式的挑选</strong>，会系统性地放大草稿的偏好——而这个放大效应跟「草稿准不准」无关，所以 <code>q = p</code> 了它也还在。</p>
+</blockquote>
+<p><strong>★★★ 最阴险的一点：任务越难，坑越深</strong></p>
+<div class="codehilite"><pre><span></span><code>    无损 vs 截断式的差距
+       GSM8K（小学数学应用题）   +0.38pp
+       AIME （竞赛数学）        【+6.67pp】     ← 17 倍
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>pp = percentage point，百分点</strong>（绝对差值，不是相对比例）。</p>
+<p>⚠️ <strong>这才是真正要命的地方</strong>：你在 GSM8K 上测，看到 0.38 个百分点，结论是「几乎无损，上线吧」——<strong>但你的用户在做难题时，实际掉的是 6.67 个百分点。</strong><br />
+★ <strong>为什么</strong>：难题的正确答案往往依赖那些概率不高但关键的 token，而分布被拉向草稿模型时，恰恰就是这些 token 最先被牺牲掉。<br />
+⟹ <strong>拿 GSM8K 测是【测不出来】的。</strong></p>
+</blockquote>
+<h4 id="_3">🔑 ✅ 论文给选型的三条</h4>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>建议</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>别拿默认解码当基线</strong>，要和<strong>分布匹配的配对基线</strong>比</td>
+<td>否则「截断本身的好处」和「验证方案的代价」混在一起互相抵消，你会得到一个假的「没掉分」结论</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>树形 / EAGLE-3 上不要用截断式验证</strong></td>
+<td>失真不随草稿变好而消失（有地板），换来的块效率提升<strong>根本不抵</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td>★ <strong>真想要截断的好处，就直接对目标模型做截断，再用无损验证</strong></td>
+<td>顺序换一下即可：先让<strong>大模型自己</strong>截断出想要的分布，再对它走标准的两步无损验证。✅ 实测这样做<strong>全程不低于 EAGLE-3 基线</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>第 ③ 条是最实用的结论</strong>：你想要的「砍掉长尾烂词」这个好处，<strong>根本不需要牺牲无损性</strong>——把截断放在目标模型这一侧就行了。<br />
+⟹ <strong>有损验证是一笔不必要的交易。</strong></p>
+<p>🔑 <strong>本节一句话</strong>：无损投机解码 = <strong>删 + 补</strong>两步；有损验证省掉了「补」，于是输出<strong>悄悄从「大模型的分布」滑向「小模型的分布」</strong>——链式投机上滑一点点，树形投机上滑很多，而且<strong>简单任务上你完全看不出来</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="84">8.4 草稿从哪来——六种流派</h2>
+<h3 id="1-draft-model">① 独立小模型（draft model）</h3>
+<div class="codehilite"><pre><span></span><code>    用同系列的小模型，比如 Llama-70B 配 Llama-1B
+    ✅ 优点：接受率高（同源，分布接近）
+    ⚠️ 缺点：★ 要额外占一份显存，还要额外维护一个模型
+</code></pre></div>
+
+<h3 id="2-medusa">② Medusa：给大模型加几个「多头」</h3>
+<blockquote>
+<p>✅ 论文 arXiv 2401.10774（<code>papers/Medusa-Multiple-Decoding-Heads-arXiv-2401.10774.pdf</code>）</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 不要独立小模型。直接在大模型最后一层上，
+      并排接【几个额外的输出头】：
+        头1 预测下一个 token（原本就有）
+        头2 预测下下个 token      ← 新增
+        头3 预测下下下个 token    ← 新增
+        ...
+    ⟹ ★ 一次前向就同时得到了草稿，草稿开销【几乎为零】
+    ⚠️ 缺点：各个头【互相独立】地预测，不知道彼此猜了什么
+            ⟹ 越靠后的头越不准
+</code></pre></div>
+
+<h3 id="3-eagle">③ ★ EAGLE：在特征层面做自回归（工业界事实标准）</h3>
+<blockquote>
+<p>✅ 论文 arXiv 2401.15077（<code>papers/EAGLE-Speculative-Sampling-arXiv-2401.15077.pdf</code>）</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ EAGLE 的洞察：
+      Medusa 的问题是各头独立。要让草稿连贯，草稿过程本身就该是自回归的。
+      但用完整的小模型又太贵。
+
+    ★★ 折中：只跑【一层】轻量的 Transformer，
+       而且它的输入不是 token，是大模型倒数第二层的【隐藏特征】。
+       ⟹ 特征比 token 信息量大得多 ⟹ 一层就够
+       ⟹ 草稿又快又准，接受率显著高于 Medusa
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ EAGLE 是现在两个框架都重点支持的方案。
+    ✅ vLLM：[eagle.py](../源码/vLLM/vllm/v1/spec_decode/eagle.py)
+    ✅ SGLang：speculative/ 目录下有 eagle_info.py、eagle_utils.py、
+       eagle_worker_v2.py、multi_layer_eagle_utils.py、
+       ★ eagle_draft_cuda_graph_runner.py（专门给草稿模型也上 CUDA Graph）
+       ★ eagle_disaggregation.py（★ 投机解码 + PD 分离的组合，见 10 章）
+       —— 光 EAGLE 相关就有 8 个文件，可见它的分量
+</code></pre></div>
+
+<h3 id="4-n-gram">④ n-gram / 后缀解码：★ 不用模型，直接查表</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 观察：很多场景下，要生成的内容【在上文里出现过】
+       - 代码补全：变量名反复出现
+       - 文档问答/RAG：答案大段照抄原文
+       - 多轮对话：复述用户的话
+
+    ⟹ 草稿 = 从已有文本里【查一个匹配的后缀，把它后面的字抄过来】
+    ⟹ ★★ 零模型、零显存、零训练，在上述场景加速极其明显
+    ⚠️ 在自由创作类任务上接受率接近 0，等于白跑
+
+    ✅ vLLM: ngram_proposer.py / ngram_proposer_gpu.py / suffix_decoding.py
+    ✅ SGLang: ngram_worker.py / ★ cpp_ngram/（用 C++ 实现以降低查表开销）
+</code></pre></div>
+
+<h3 id="5-mtp-token">⑤ MTP：模型自带的多 token 预测</h3>
+<blockquote>
+<p>📖 <strong>MTP</strong>（<strong>M</strong>ulti-<strong>T</strong>oken <strong>P</strong>rediction，多 token 预测）<br />
+✅ DeepSeek-V3 论文（arXiv 2412.19437）在<strong>预训练阶段</strong>就加了 MTP 目标</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 和 Medusa 像，但 MTP 的头是【预训练时一起训】的，不是事后接的
+    ⟹ 质量和一致性都更好
+    ✅ SGLang: frozen_kv_mtp_worker_v2.py、frozen_kv_mtp_info.py 等
+</code></pre></div>
+
+<h3 id="6-dspark2026">⑥ ★★ 半自回归：DSpark（2026 年的新流派）</h3>
+<blockquote>
+<p>✅ 论文：<em>DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation</em><br />
+（arXiv 2607.05147，2026-07-06，DeepSeek-AI × 北京大学，33 位作者，MIT 开源）<br />
+✅ 一手源码就在本仓库：<code>推理框架/源码/vLLM/vllm/v1/worker/gpu/spec_decode/dspark/</code></p>
+</blockquote>
+<p><strong>先看它要解决的两难：</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 全自回归草稿（③ EAGLE 一类）：后面能看到前面 ⟹ 准
+      ⚠️ 但草稿【自己就串行了】 ⟹ 慢
+
+    ★ 全并行草稿（DFlash 一类）：一次前向出所有位置 ⟹ 快
+      ⚠️ 但位置之间互相不知道对方猜了什么 ⟹ ★★【后缀衰减】
+</code></pre></div>
+
+<p>✅ <strong>「后缀衰减」实测</strong>（条件接受率：只统计前面都被接受的情况，不受前缀错误连累）：</p>
+<div class="codehilite"><pre><span></span><code>    DFlash  Chat：位置1 0.72  ⟶  位置7 【0.63】   ← 越往后越不准
+    DFlash  Code：位置1 0.87  ⟶  位置7 【0.78】
+
+    ★★ 而 EAGLE-3 在 Chat 上【反而上升】：0.53 ⟶ 0.74
+       ⟹ 自回归能吃到「前面已经定下来了」这个信息，越往后越确定
+       ⟹ ★ 这正是并行草稿丢掉的东西
+</code></pre></div>
+
+<blockquote>
+<p>📌 ✅ 论文给衰减起的名字叫 <strong>multi-modal collision（多模态碰撞）</strong>：并行位置只能对「所有可能的前驱」求平均，而不是实际采到的那一个。举的例子很传神——把 "of course" 和 "no problem" 平均起来，得到 <strong>"of problem"</strong>。</p>
+</blockquote>
+<p><strong>DSpark 的折中：主干并行，采样时把依赖补回去</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① 并行阶段：DFlash 主干【一次前向】⟹ 隐状态 h₁…h_γ + 基础 logits U₁…U_γ
+    ② 顺序阶段：★ 逐个采样，每步给基础 logits 加一个偏置 B_k，
+                B_k 依赖【前一个实际采到的 token】
+
+    ★★ 关键设计：B_k 按自回归方式分解，保证每个 token 的 softmax 概率【精确】
+       ⟹ 于是 8.3 那套拒绝采样照常能用 ⟹ ✅ 仍然【无损】
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>Markov head（马尔可夫头，默认方案）</strong>：只依赖「上一个 token」的一阶偏置 B(x_{k−1}, x_k)，用低秩分解 B = W₁W₂ 实现，✅ 秩 r = 256。叫马尔可夫，就是因为只看前一步。<br />
+⚠️ 论文也试过 RNN 头（带门控的循环状态），✅ 结论是「只有边际收益」，主要出现在长 γ 上，因复杂度和部署性质被放弃。</p>
+</blockquote>
+<p>✅ <strong>接受长度 τ（每轮平均，含 bonus token）—— 取 Qwen3-8B 一行：</strong></p>
+<div class="codehilite"><pre><span></span><code>    草稿方案      GSM8K   HumanEval   MT-Bench   Alpaca
+    ─────────────────────────────────────────────────────
+    Eagle3         5.30      4.33       2.66      2.54
+    DFlash         5.33      4.64       3.11      2.98
+    ★ DSpark      6.17      5.52       3.72      3.58
+
+    ✅ 宏平均提升（Qwen3-8B）：相对 Eagle3 +26.7%，相对 DFlash +18.4%
+    ✅ 深度消融：★★ 2 层的 DSpark 在所有领域【打过 5 层的 DFlash】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 一个重要反例，别被「并行胜过自回归」带偏：
+       在 Gemma4-12B 上，✅ Eagle3【全面胜过】DFlash（9 个数据集无一例外）
+    ⟹ ★ 并行草稿的优势【不跨模型家族普适】
+       （DSpark 因为把依赖补回来了，在两边都赢）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这一流派为什么重要</strong>：前五种流派全都在问「<strong>怎么猜得更准</strong>」。DSpark 的另一半创新——置信度调度——问的是一个全新的问题：「<strong>哪些猜测值得去验</strong>」。那部分见 §8.7。</p>
+</blockquote>
+<hr />
+<h2 id="85">8.5 树形投机：一次猜多条路</h2>
+<p>线性草稿只猜一条序列。<strong>树形草稿</strong>同时猜多个分支：</p>
+<blockquote>
+<p>✅ SpecInfer 论文 arXiv 2305.09781（<code>papers/SpecInfer-Tree-Speculative-arXiv-2305.09781.pdf</code>）</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>                     &quot;杭州是浙江省的&quot;
+                      ┌────┴────┐
+                    &quot;省&quot;       &quot;首&quot;        ← 两个候选
+                   ┌──┴──┐      │
+                 &quot;会&quot;   &quot;城&quot;   &quot;府&quot;
+                  │
+                 &quot;，&quot;
+
+    ★ 一次前向验证【整棵树】，接受最长的那条合法路径
+    ⟹ 接受率显著提高（多条路总有一条对）
+
+    ★ 实现关键：树形注意力掩码（tree attention mask）
+      让树上每个节点，只能看见【自己到根的那条路径】，看不见兄弟分支。
+      ⟹ 靠一个精心构造的 attention mask 在一次前向里完成
+</code></pre></div>
+
+<blockquote>
+<p>⚠️⚠️ <strong>2026 实测泼冷水：树形不是免费的，它在高并发下塌得比线性还快</strong><br />
+✅ 来源：<em>Speculative Decoding: Performance or Illusion?</em>（arXiv 2601.11580，Berkeley，含 Ion Stoica）<br />
+✅ 环境：SGLang v0.5.9 + FlashInfer，H100 80GB</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ k=21 的树，Qwen3-8B / GSM8K：
+        batch = 1   ⟹ 1.85×（线性只有 1.65×）  ✅ 树确实更好
+        ★★ batch = 64 ⟹ 【所有负载、两个模型，全部跌破 1×】
+                        而同条件下【线性投机始终 &gt; 1×】
+
+    ★ 看这两个数就明白为什么（k: 1 → 6 → 21）：
+        接受长度   2.25  →  2.51  →  2.92    ⟹ 确实涨了
+        接受率     0.415 →  0.300 →  0.095   ⟹ ★★ 崩了
+
+    ⟹ 树越大，送去验证的 token 数暴涨，而其中【绝大多数是废的】
+       低并发时算力空闲、废了也不心疼；★★ 高并发时这就是纯粹的浪费
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以树形投机和 8.6 的规律是叠加的，不是抵消的</strong>：树形放大了「验证侧的开销」，于是它比线性投机<strong>更早</strong>触到那条不划算的红线。</p>
+</blockquote>
+<hr />
+<h2 id="86">8.6 ⚠️ 投机解码什么时候【不该开】</h2>
+<p>这是最容易踩的坑，务必记住：</p>
+<div class="codehilite"><pre><span></span><code>    ★★★ 投机解码花的是【空闲算力】。
+        batch 大的时候，算力【不空闲】，这笔交易就不成立了。
+
+    batch = 1（单用户）：      ⟹ 算力 99% 空闲，✅ 加速 2~3 倍
+    batch = 8：               ⟹ 还有富余，✅ 有收益
+    batch = 64：              ⟹ 算力快满了，⚠️ 收益微弱
+    batch = 256（高并发）：    ⟹ ★★ 算力已经吃满，
+                                草稿的开销和验证的额外 token
+                                变成【纯粹的浪费】⟹ ❌ 吞吐反而【下降】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 结论：投机解码是【延迟优化】，不是【吞吐优化】。
+       适用：单用户/低并发、对 TPOT 敏感的场景（代码补全、交互式对话）
+       不适用：高并发批处理服务
+
+    ⟹ 这就是为什么框架在做「自适应投机」：
+       ✅ SGLang: adaptive_spec_params.py、adaptive_runtime_state.py
+       ✅ vLLM: spec_decode/dynamic/
+       ★ 按当前 batch 大小动态调 γ，甚至在高负载时【自动关掉】
+</code></pre></div>
+
+<p><strong>另外，调度器要为它留位置</strong>——这是 04 章那行代码的解释：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ vLLM scheduler.py:566</span>
+<span class="n">num_new_tokens</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">num_new_tokens</span><span class="p">,</span> <span class="n">token_budget</span><span class="p">,</span> <span class="n">input_budget</span> <span class="o">-</span> <span class="n">draft_slots</span><span class="p">)</span>
+<span class="c1">#                                                  ★ 减掉给草稿 token 预留的槽位</span>
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>2026 更新：这个决策已经从【batch 粒度】下沉到【token 粒度】</strong></p>
+</blockquote>
+<p>上面那张表是<strong>二元</strong>的：看 batch 大小，决定开还是不开、γ 调大还是调小——<strong>整个 batch 共用一个策略</strong>。</p>
+<p>✅ DSpark（§8.4 ⑥）证明了更细的做法：<strong>同一个 batch 里，靠谱的草稿送去验，不靠谱的当场砍掉。</strong></p>
+<p>一个很有说服力的旁证是：DeepSeek 生产环境为什么长期卡在 MTP-1（只猜 1 个 token）？</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 论文原话：静态的多 token 草稿（MTP-3 / MTP-5）在高并发下
+       会【严格降低】aggregate throughput —— 验证开销过大
+
+    ⟹ ★★ 所以不是「猜多了没用」，而是【静态地猜多】没用
+       ⟹ 能动态收缩，才敢把 γ 放大
+</code></pre></div>
+
+<p>✅ <strong>生产实测的调度行为</strong>（DeepSeek-V4-Flash）：</p>
+<div class="codehilite"><pre><span></span><code>    并发 &lt; ~200  ⟹ 预算从 MTP-1 的【静态 2 个】扩张到【4~6 个】/请求
+    并发 ↑       ⟹ 预算【平滑收缩】，而不是啪一下关掉
+
+    ★★ 对比上面那张 batch 表：那是【阶跃】的开关，
+       置信度调度是【连续】的旋钮 —— 机制见 §8.7
+</code></pre></div>
+
+<hr />
+<h2 id="87-2026">8.7 ★★ 2026 新战场：瓶颈搬到了【验证侧】</h2>
+<p>前面六种流派全都在优化<strong>草稿</strong>。2026 年一批工作指出：<strong>这个方向的边际收益已经很小了，因为大头根本不在那儿。</strong></p>
+<h3 id="_4">✅ 先看时间都花在哪</h3>
+<blockquote>
+<p>✅ 来源：<em>Speculative Decoding: Performance or Illusion?</em>（arXiv 2601.11580）<br />
+✅ 环境：vLLM v0.10.1.1，H100 80GB，batch 1~512</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★★ 验证（目标模型前向）占执行时间的 【42% ~ 95%】
+         —— 且随模型规模和 batch 增大而上升
+
+    ★ 而草稿侧的开销：
+        n-gram                   ⟹ 全程 &lt; 2%
+        EAGLE / EAGLE-3          ⟹ BS=1 时 12~20%，BS=512 时【3~7%】
+        独立草稿模型（70B 目标）  ⟹ BS=1 时 21%，  BS=512 时【3%】
+        拒绝采样本身             ⟹ &lt; 1.7%
+
+    ⟹ 🔑 batch 一大，草稿开销就摊薄到个位数百分比了。
+       ★★ 你把草稿再优化一倍，动的是那 3%；验证那 42~95% 一动不动。
+</code></pre></div>
+
+<h3 id="_5">✅ 理论上限：加速比被一个你想不到的量卡住</h3>
+<div class="codehilite"><pre><span></span><code>    ✅ E(加速比) = (1 − α^(k+1)) / ((1 − α) · (k·c + 1))
+
+       α = 接受率        k = 一次猜的长度
+       ★★ c = 【草稿一次前向 ÷ 目标一次前向】的时间比
+
+    ⟹ ✅ 论文的关键论断：草稿方法的【绝对速度无关紧要】，
+       只有它【相对于目标模型】的耗时才进这个公式。
+</code></pre></div>
+
+<p><strong>这解释了一个反直觉的实测现象：</strong></p>
+<div class="codehilite"><pre><span></span><code>    Llama3-70B 配 Llama3.2-1B  ⟹ c ≈ 12.5%，接受率 75%
+    Qwen3-8B   配 Qwen3-0.6B   ⟹ c ≈ 37.5%，接受率 81%  ← 接受率【更高】
+
+    ⚠️ 但小目标模型上，投机解码反而【更不划算】
+    ⟹ ★★ 目标模型越小，草稿相对越贵，c 越大，分母被 k·c 拖垮
+       ⟹ 🔑 投机解码是【大模型】的游戏 —— 模型越大越赚
+</code></pre></div>
+
+<p>✅ 而且实测离理论上限还差得远：InstructCoder / BS=1 / n-gram，<strong>实测 2.1× vs 理论上限 2.75×</strong>。</p>
+<h3 id="dspark">★★ DSpark 的置信度调度：验证侧的第一个生产级答案</h3>
+<p>回到 §8.4 ⑥ 结尾留的那个问题——<strong>哪些猜测值得去验</strong>。</p>
+<h4 id="_6">先看它要解决的场景</h4>
+<p>前面刚说了，验证占执行时间的 42%~95%。<strong>验证的成本取决于「这一步一共送了多少个 token 给目标模型」。</strong> 而在真实服务里，同时有很多个请求：</p>
+<div class="codehilite"><pre><span></span><code>    这一步引擎里有 4 个请求，每个都猜了 5 个 token：
+
+      请求 A：  猜1  猜2  猜3  猜4  猜5
+      请求 B：  猜1  猜2  猜3  猜4  猜5
+      请求 C：  猜1  猜2  猜3  猜4  猜5
+      请求 D：  猜1  猜2  猜3  猜4  猜5
+                                        ⟹ 一共 20 个 token 要验
+
+    ⚠️ 但里面很多是【明显没戏】的猜测：
+       验它们要花钱，几乎肯定被拒，白花。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>DSpark 的问题</strong>：既然验证这么贵，<strong>能不能只挑最有希望的那些去验？</strong><br />
+★ 注意这跟前六种流派完全不是一回事——它<strong>不改进草稿模型</strong>，它只决定「这一步验哪些」。</p>
+</blockquote>
+<h4 id="_7">三步走</h4>
+<p><strong>① 训一个「置信度头」，预测每个猜测能不能活下来</strong></p>
+<div class="codehilite"><pre><span></span><code>    在草稿模型上挂一个小头，给每个位置输出一个数 c_k ∈ (0,1)
+
+    ✅ 它的语义：假设前面几个都被接受了，【这一个】能被接受的概率
+       （所以叫「条件」概率——不算前面已经死掉的情况）
+</code></pre></div>
+
+<p>这个头<strong>怎么训</strong>？妙就妙在，「一个草稿 token 被接受的概率」有<strong>现成的闭式公式</strong>，不用去实测：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ c_k* = 1 − ½‖p_k^draft − p_k^target‖₁
+                    ↑ 这一坨叫【总变差距离】(Total Variation Distance)
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>总变差距离</strong>：衡量两个概率分布「有多不一样」的一把尺子，<strong>0 = 完全相同，1 = 完全不搭界</strong>。</p>
+<p><strong>所以这条公式读起来非常直白</strong>：<br />
+<code>草稿分布和目标分布【越像】 ⟹ 距离越小 ⟹ 接受概率越高
+    两者完全一样             ⟹ 距离 0    ⟹ 接受概率 100%</code><br />
+★ 这正是 §8.3 那套拒绝采样规则的一个<strong>数学副产品</strong>——接受率恰好等于 <code>1 − 总变差距离</code>。所以 ✅ 论文管它叫<strong>「解析的」逐步接受率</strong>：有公式可算，不需要跑一遍看看。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ✅ 训练方式：拿 c_k* 当【软标签】做二元交叉熵
+    ✅ 位置加权 w_k = exp(−(k−1)/γ)     ← 越靠前的位置权重越大
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>为什么靠前的位置更重要</strong>：位置 1 要是猜错了，后面 2~5 全部作废。<strong>前面的错误代价大得多，所以要优先预测准。</strong> γ 控制衰减快慢。</p>
+</blockquote>
+<p><strong>② 累乘出「前缀存活概率」</strong></p>
+<p>单个位置的 <code>c_k</code> 是「<strong>假设前面都活着</strong>」的条件概率。可实际上我们关心的是「<strong>这个位置到底能不能被用上</strong>」——那得前面每一个都活着才行。条件概率连乘就得到它：</p>
+<div class="codehilite"><pre><span></span><code>    a_{r,j} = c_{r,1} × c_{r,2} × … × c_{r,j}      ← 请求 r 的第 j 个位置
+
+    举例（c = 0.9, 0.8, 0.7, 0.6, 0.5）：
+      位置1  0.9
+      位置2  0.9×0.8            = 0.72
+      位置3  0.9×0.8×0.7        = 0.504
+      位置4  0.9×0.8×0.7×0.6    = 0.302
+      位置5  0.9×…×0.5          = 0.151
+                                  ↑ 只有 15% 的概率能用上，却要花和位置1一样的验证成本
+</code></pre></div>
+
+<p><strong>③ 把所有请求的所有位置混在一起排序，取 top-k</strong></p>
+<div class="codehilite"><pre><span></span><code>    A位1 0.90 │ B位1 0.85 │ A位2 0.72 │ C位1 0.70 │ B位2 0.61 │ A位3 0.50 │ …
+    └────────── 预算 B 个，就从左往右取 B 个 ──────────┘
+
+    ⟹ 结果自然就是「A 验 3 个、B 验 2 个、C 验 1 个、D 一个都不验」这种
+       ★ 预算被【按希望大小】分给了不同请求，而不是每个请求平均分
+</code></pre></div>
+
+<h4 id="3">★ 这里有个很漂亮的性质，让上面第 ③ 步几乎不要钱</h4>
+<p>先说<strong>为什么这事本来该很难</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 每个请求选出来的位置【必须是从头连续的一段】
+
+       ✅ 合法：验 位置1、2、3
+       ❌ 非法：验 位置1、5     ← 位置 5 的内容是建立在 2、3、4 之上的，
+                                  跳过它们，位置 5 根本无从验起
+
+    ⟹ 于是这看起来是个【带约束的分配问题】，通常要专门解一下。
+</code></pre></div>
+
+<p><strong>但实际上根本不用</strong>——因为存活概率是<strong>累乘</strong>出来的，而乘的每个数都 ≤ 1：</p>
+<div class="codehilite"><pre><span></span><code>    a_{r,1} ≥ a_{r,2} ≥ a_{r,3} ≥ …          ★ 沿位置【只会单调递减】
+
+    ⟹ 你只要选中了「A 的位置 3」，那 A 的位置 1、2 的分数【必然更高】，
+       ⟹ 它们【一定】也已经在 top-k 里了
+    ⟹ ★★ 全局 top-k 的结果，天然就是每个请求取一段前缀，不可能非法
+</code></pre></div>
+
+<blockquote>
+<p>✅ 你本地那份 vLLM 源码的文档串直接点破了这一点：<br />
+<code>vllm/v1/worker/gpu/spec_decode/adaptive_verification.py</code><br />
+<em>"Survival only decreases along a request, so a global top-k always admits continuously along steps with a request."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 于是「全局最优分配」用【一次排序 + 取前 B 个】就做完了，
+       不需要任何额外约束、不需要解规划 —— 工程上极便宜。
+</code></pre></div>
+
+<h4 id="_8">★★ 它优化的目标不是接受率，是吞吐</h4>
+<p><strong>这是最容易被忽略、但最有价值的一处设计。</strong> 一个自然的想法是「让接受率最高」，但那是错的目标——<strong>验得越多，接受的绝对数量越多，但每一步也越慢。</strong> 真正该最大化的是两者的乘积：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ Θ = τ · SPS(B)
+
+       τ      = 这一步【期望能接受】的 token 数        ⟹ 「每步产出多少 token」
+       SPS(B) = 送 B 个 token 去验时，引擎每秒能跑几步  ⟹ 「每秒能跑多少步」
+                ★ 这是【离线压测】出来的引擎吞吐曲线，不是算出来的
+
+       ⟹ 两者相乘 = 每秒产出多少 token = 吞吐
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    B 调大  ⟹ τ 上升（验得多，接受得多）
+            ⚠️ 但 SPS(B) 下降（每步更重，跑得更慢）
+    ⟹ ★ 存在一个最优的 B，Θ 就是用来找它的
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>注意它把【服务引擎的实测性能曲线】直接写进了目标函数</strong>——这是「算法」和「服务系统」真正耦合在一起的地方。换一张卡、换一个框架版本，这条曲线就得重新压测。</p>
+</blockquote>
+<h4 id="_9">⚠️ 落地踩的两个坑（这段最值得工程同学看）</h4>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 坑一：真实的 SPS(B) 是【阶梯状】的，不是一条光滑曲线
+             ⟹ GPU kernel 按固定块大小切分，B 从 128 变 129 可能直接掉一个台阶
+
+    ⚠️ 坑二：每步选出来的 token 数都在变，和【CUDA Graph 重放】直接冲突（见 12 章）
+             📖 CUDA Graph 把 kernel 调用序列【录制】成一张固定的图来省派发开销，
+                但它要求【张量形状固定】。每步 B 都变 ⟹ 图没法重放 ⟹ 优化全废
+</code></pre></div>
+
+<p><strong>✅ 解法：让调度器【异步】跑，和主流程错开两步</strong></p>
+<div class="codehilite"><pre><span></span><code>    容量上限 K      ← 用【两步之前】的置信度估出来（滞后，但形状可以提前定死）
+    当前这批 token  ← 仍按【最新】的累乘置信度排序（动态 top-K，实时）
+
+    ⟹ 「验几个」提前定好 ⟹ 形状稳定 ⟹ CUDA Graph 能用
+    ⟹ 「验哪几个」实时决定 ⟹ 不损失调度质量
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>精妙之处</strong>：这个「两步滞后」顺手还解决了一个<strong>正确性</strong>问题。</p>
+<p>```<br />
+    ⚠️ 隐患：如果调度器能根据【当前步实际采到的 token】来决定验几个，<br />
+             那「验多少」就和「采到了什么」相关了 —— 这会把分布带偏。</p>
+<div class="codehilite"><pre><span></span><code>✅ 而滞后两步意味着：调度决策所依据的信息，
+   在当前步的 token 被采出来【之前】就已经固定了
+   ⟹ 调度器【不可能偷看】当前步的结果 —— 这就是所谓的【因果屏障】
+</code></pre></div>
+
+<p>```</p>
+<p>⟹ ✅ 于是 §8.3 的无损性依然成立：<strong>调度只影响「验几个」（快慢），不影响「验出什么」（分布）。</strong></p>
+<p>🔑 <strong>这一节一句话</strong>：草稿侧问的是「<strong>怎么猜得更准</strong>」，已经卷到头了；验证侧问的是「<strong>在给定吞吐目标下，这一步到底该验几个 token</strong>」——那是个<strong>调度问题</strong>，不是模型问题。</p>
+</blockquote>
+<hr />
+<h2 id="88">8.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────┐
+│  ① 立论：Decode 算力 99% 空闲，验证 4 个 token 几乎不比 1 个慢 │
+│     ⟹ 用空闲算力去猜                                           │
+│                                                                │
+│  ② ★★ 无损：论文给的接受/重采样规则保证                        │
+│     最终分布【严格等于】大模型分布                             │
+│     ⚠️ 但不是逐 token 相同，回归测试会受影响                   │
+│     ⚠️ 2026 起出现【有损验证】：截断式实际产出的是草稿分布，   │
+│        且任务越难坑越深（GSM8K +0.38pp ⟶ AIME +6.67pp）        │
+│                                                                │
+│  ③ 草稿六流派                                                  │
+│     独立小模型 / Medusa 多头 / ★ EAGLE 特征级自回归（事实标准）│
+│     / ★ n-gram 查表（零成本，代码和 RAG 神器）/ MTP            │
+│     / ★★ DSpark 半自回归（并行主干 + 马尔可夫头把依赖补回来）  │
+│     ⟹ 树形一次验多条分支，但高并发下比线性塌得【更早】         │
+│                                                                │
+│  ④ ★★★ 最重要的一条：投机解码是【延迟】优化，不是吞吐优化      │
+│     高并发时算力不空闲 ⟹ 收益消失甚至【负收益】                │
+│     ★★ 且目标模型越小越不划算（c = 草稿÷目标 耗时比越大）      │
+│                                                                │
+│  ⑤ ★★ 2026 新战场在【验证侧】                                  │
+│     验证占执行时间 42%~95%；草稿开销在大 batch 下只剩 3%~7%    │
+│     ⟹ 草稿再优化，动的是那 3%                                  │
+│     ✅ DSpark 置信度调度：按前缀存活概率全局 top-k 分配验证预算│
+│     ⟹ 决策粒度从【batch】下沉到【token】                       │
+└────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="09-量化.html">09 量化</a><br />
+到目前为止我们没动过模型的数值精度。下一章动它——这是唯一一个<br />
+<strong>同时</strong>减少「权重搬运量」和「KV Cache 大小」的手段。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

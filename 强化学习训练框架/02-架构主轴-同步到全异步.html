@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 · 架构主轴：从同步到全异步</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="02">02 · 架构主轴：从同步到全异步</h1>
+<blockquote>
+<p><strong>这一篇干什么</strong>：讲清楚 RL 训练框架<strong>唯一的核心矛盾</strong>，以及业界在这条轴上的四个位置。<br />
+<strong>难度</strong> ★★★ · <strong>这是全目录最重要的一篇</strong><br />
+<strong>前置</strong>：<a href="01-格局全景.html">01-格局全景.md</a>、<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.3</a></p>
+</blockquote>
+<hr />
+<h2 id="21">2.1 先看清楚问题有多严重</h2>
+<p>RL 的一步训练长这样：</p>
+<div class="codehilite"><pre><span></span><code>生成 512 个答案  ────►  算奖励  ────►  算梯度更新参数  ────►  权重同步回去
+     ~80% 时间          ~5%            ~10%                  ~5%
+</code></pre></div>
+
+<p>大部分人对「生成占 80%」是有概念的。但真正致命的不是<strong>平均</strong>耗时，是<strong>长尾</strong>。</p>
+<h3 id="_1">🌐 一组能把问题量化的数字</h3>
+<p>单张 H100 上用 vLLM 做离线推理（bf16 精度）的吞吐大致是：</p>
+<table>
+<thead>
+<tr>
+<th>模型规模</th>
+<th>输出吞吐</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7B</td>
+<td>~6,300 token/s</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>~1,200 token/s</td>
+</tr>
+</tbody>
+</table>
+<p>拿这个算一步 RL 要多久。设定：64 道题 × 每题生成 8 个答案（G=8）= <strong>512 个 rollout</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>每个答案的输出长度</th>
+<th>7B 单卡耗时</th>
+<th>32B 单卡耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2K token</td>
+<td>~3 分钟</td>
+<td>~14 分钟</td>
+</tr>
+<tr>
+<td>8K token</td>
+<td>~11 分钟</td>
+<td>~56 分钟</td>
+</tr>
+<tr>
+<td><strong>32K token</strong></td>
+<td><strong>~45 分钟</strong></td>
+<td><strong>~3.7 小时</strong></td>
+</tr>
+</tbody>
+</table>
+<p>就算把生成摊到 8 张推理卡上并行，32B 模型生成 32K 长度的一步仍要 <strong>~28 分钟</strong>。</p>
+<blockquote>
+<p>来源：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>，访问于 2026-08。</p>
+</blockquote>
+<p>⚠️ 这组数字要读出的<strong>不是</strong>「生成很慢」，而是：<strong>在同步架构下，训练 GPU 在这 28 分钟里完全空转。</strong> 而且 512 个答案不是同时结束的——有的 500 token 就写完了，有的写满 32K 才停。同步架构必须<strong>等最慢的那一个</strong>。这就是长尾。</p>
+<p>✅ GLM-5 报告把这件事说得很直接：</p>
+<blockquote>
+<p><em>"the optimization target is not aggregate throughput but </em><em>end-to-end latency, dominated by the slowest (long-tail) sample in each step</em><em>"</em><br />
+（优化目标不是总吞吐，而是端到端延迟——它由每一步里最慢的那个样本决定。）<br />
+—— GLM-5 §3.6.2 Scaling Up: Tail-Latency Optimization</p>
+</blockquote>
+<hr />
+<h2 id="22">2.2 唯一的解法方向：让训练不等生成</h2>
+<p>所有架构分歧，都是这一句话的不同实现。而实现的关键，就落在<strong>五模块里的第 ③ 块：data buffer 有多深</strong>。</p>
+<h3 id="buffer">🌐 Buffer 深度四档</h3>
+<div class="codehilite"><pre><span></span><code>深度 0（同步）
+  生成一批 ──► 训完 ──► 生成下一批 ──► ...
+  训练卡在生成时空转，生成卡在训练时空转
+  样本 100% on-policy（在策略）
+
+深度 1（一步离策略 / one-step-off-policy）
+  生成第 N+1 批  ┐
+                 ├─ 同时进行
+  训练第 N 批    ┘
+  样本落后 1 个版本。这是&quot;最便宜的异步&quot;——只多一个缓冲区
+
+深度 2~K（有界队列）
+  生成 ────► [ 队列，最多 K 批 ] ────► 训练
+  队列满了才阻塞生成。K 越大越不容易卡，但样本越陈旧
+
+深度 ∞（无界流 / fully async）
+  生成永不停 ────► [ 流 ] ────► 训练按自己的节奏取
+  吞吐最高，陈旧度完全靠算法侧修正兜底
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>深度</th>
+<th>名称</th>
+<th>训练卡空转</th>
+<th>样本陈旧度</th>
+<th>谁在用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>同步</td>
+<td><strong>严重</strong></td>
+<td>0（完全 on-policy）</td>
+<td>TRL、OpenRLHF 默认、veRL 默认</td>
+</tr>
+<tr>
+<td>1</td>
+<td>一步离策略</td>
+<td>小</td>
+<td>落后 1 版</td>
+<td>SkyRL、open-instruct、veRL <code>one_step_off_policy/</code></td>
+</tr>
+<tr>
+<td>2~K</td>
+<td>有界队列</td>
+<td>很小</td>
+<td>落后 ≤K 版</td>
+<td>ROLL、NeMo-RL、MiniMax Forge</td>
+</tr>
+<tr>
+<td>∞</td>
+<td>全异步</td>
+<td>几乎没有</td>
+<td>不确定</td>
+<td>AReaL、PipelineRL、TorchForge、<strong>GLM-5 / slime</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这张表最重要的是<strong>第 3 列和第 4 列此消彼长</strong>。你没法两头都要：训练卡不空转，就意味着它在用旧样本训练。这是 RL 系统设计的<strong>根本权衡</strong>，后面所有东西都是在这条曲线上找位置。</p>
+<hr />
+<h2 id="23-verl-experimental">2.3 ✅ veRL 的 <code>experimental/</code> 就是这条谱系的源码实证</h2>
+<p>最有意思的证据是：veRL 把这条轴上的<strong>几乎每一档都实现了一遍</strong>，全部放在 <code>experimental/</code> 目录下。</p>
+<p>✅ 本地实测（commit <code>b256ebf</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>目录</th>
+<th>文件数</th>
+<th>行数</th>
+<th>对应档位</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>verl/experimental/one_step_off_policy/</code></td>
+<td>3</td>
+<td><strong>553</strong></td>
+<td>深度 1</td>
+</tr>
+<tr>
+<td><code>verl/experimental/separation/</code></td>
+<td>4</td>
+<td><strong>1,040</strong></td>
+<td>训推分离的基础设施</td>
+</tr>
+<tr>
+<td><code>verl/experimental/fully_async_policy/</code></td>
+<td>14</td>
+<td><strong>4,335</strong></td>
+<td>深度 ∞</td>
+</tr>
+<tr>
+<td><code>verl/experimental/agent_loop/</code></td>
+<td>6</td>
+<td><strong>2,831</strong></td>
+<td>agentic rollout（见 <a href="06-AgenticRL-环境与沙箱.html">06</a>）</td>
+</tr>
+<tr>
+<td><code>verl/experimental/reward_loop/</code></td>
+<td>14</td>
+<td>1,961</td>
+<td>奖励计算异步化</td>
+</tr>
+<tr>
+<td><code>verl/experimental/teacher_loop/</code></td>
+<td>3</td>
+<td>373</td>
+<td>在策略蒸馏（见 <a href="05-算法与框架的接口.html">05</a>）</td>
+</tr>
+</tbody>
+</table>
+<p>✅ <code>fully_async_policy/</code> 里的文件名把架构直接写在脸上：</p>
+<div class="codehilite"><pre><span></span><code>fully_async_main.py        主入口
+fully_async_rollouter.py   生成侧，独立进程
+fully_async_trainer.py     训练侧，独立进程
+message_queue.py           ★ 两者之间的队列——就是「深度 ∞」的那个流
+detach_utils.py            解耦工具
+dynamic_schedule/          动态调度
+config/  shell/  unittest/
+</code></pre></div>
+
+<p>而 <code>one_step_off_policy/</code> 只有 3 个文件、553 行：<code>main_ppo.py</code> + <code>ray_trainer.py</code> + <code>__init__.py</code>。</p>
+<p>⚠️ 我的解读：<strong>553 行 vs 4,335 行，差 7.8 倍，这个比例本身就是结论。</strong><br />
+从同步走到「一步离策略」，你只需要多开一个缓冲区、把两个阶段并行起来——改动很小，收益却拿走了大半。而从「一步离策略」走到「全异步」，你要额外处理：独立的生成进程生命周期、消息队列、动态调度、陈旧度追踪、失败恢复……复杂度陡增。</p>
+<p><strong>这是选型上最实用的一条经验：如果你不是在做超长上下文或 agentic 任务，一步离策略往往是性价比最高的位置。</strong> 见 <a href="07-选型与实践.html">07-选型与实践.md</a>。</p>
+<hr />
+<h2 id="24">2.4 ★★ 三家前沿模型，三个不同的位置</h2>
+<p>这一节是全篇的核心。三份技术报告，在同一条轴上选了三个不同的点。</p>
+<h3 id="1-glm-5">① GLM-5：走到最右边，彻底分离</h3>
+<p>✅ 原文（§4.1.1 Asynchronous RL Design）：</p>
+<blockquote>
+<p><em>"we </em><em>decouple the training engine and the inference engine onto different GPU devices</em><em>. The inference engine </em><em>continuously generates</em><em> trajectories. Once the number of generated trajectories reaches a predefined threshold, the batch is sent to the training engine to update the model... The training engine updates the model parameters and </em><em>pushes the new weights back to the inference engine every K gradient updates</em><em>."</em></p>
+</blockquote>
+<p>拆开看这段话，四个设计决策：</p>
+<table>
+<thead>
+<tr>
+<th>原文短语</th>
+<th>意思</th>
+<th>对应的架构选择</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>decouple ... onto different GPU devices</td>
+<td>训练和推理用不同的卡</td>
+<td><strong>disaggregated（分离部署）</strong></td>
+</tr>
+<tr>
+<td>continuously generates</td>
+<td>生成永不停</td>
+<td><strong>buffer 深度 = ∞</strong></td>
+</tr>
+<tr>
+<td>reaches a predefined threshold</td>
+<td>攒够阈值才发一批</td>
+<td>用「攒批」而不是「等对齐」来切分训练步</td>
+</tr>
+<tr>
+<td>every K gradient updates</td>
+<td>每 K 步才推一次权重</td>
+<td>权重同步频率是<strong>可调参数</strong>，不是每步必做</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 还有一句容易被漏掉但很关键的：</p>
+<blockquote>
+<p><em>"we also </em><em>reset the optimizer</em><em> after each weight update of the inference engine."</em></p>
+</blockquote>
+<p>⚠️ 我的理解：优化器状态（Adam 的一阶、二阶动量）是「对过去梯度的记忆」。异步 RL 里数据分布一直在漂，旧动量可能反而是噪声。每次推权重就重置一次优化器，等于<strong>主动放弃跨版本的动量累积</strong>，换取每一段训练内部的稳定性。这是个反直觉但很实在的工程选择——正常训练里没人会这么干。</p>
+<p>✅ 配套的还有一个 <strong>Multi-Task Rollout Orchestrator</strong>（多任务 rollout 编排器）：每个任务是一个独立的微服务，向中央编排器注册；编排器控制每个任务的 rollout 配比和生成速度；所有任务用统一的 message list 表示；<strong>支持超过 1000 路并发 rollout</strong>。</p>
+<h3 id="2-kimi-k3">② Kimi-K3：留在最左边，同置</h3>
+<p>✅ 原文（§5.3 Infra for 1M Agentic RL）：</p>
+<blockquote>
+<p><em>"We adopt </em><em>co-located RL training</em><em> to keep each 1M-context Kimi K3 RL experiment </em><em>within a few hundred GPUs</em><em>, and use </em><em>partial rollouts</em><em> to reduce tail latency from ultra-long trajectories."</em></p>
+</blockquote>
+<p>⚠️ 注意这句话的因果方向：<strong>同置是结论，不是前提。</strong> 前提是「每次实验要控制在几百张卡内」。K3 是 1M（一百万 token）上下文，分离部署要给训练侧和推理侧各留一整套卡，几百张的预算下这笔账划不来。</p>
+<p>那长尾怎么办？Kimi 不靠分离，靠另外三招：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>✅ 原文</th>
+<th>解决什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>partial rollout</strong>（部分 rollout）</td>
+<td><em>"use partial rollouts to reduce tail latency from ultra-long trajectories"</em></td>
+<td>超长样本不必一次生成完，下一轮接着生成</td>
+</tr>
+<tr>
+<td><strong>外部 KV cache 池</strong></td>
+<td><em>"external KV-cache retention"</em>，write-back 设计：正在解码的块留在 GPU 显存，可复用但闲置的前缀在被驱逐时才写回 CPU 内存，下次复用前预取</td>
+<td>partial rollout 的前缀不用重算</td>
+</tr>
+<tr>
+<td><strong>可恢复 microVM 沙箱</strong></td>
+<td><em>"resumable microVM sandboxes to preserve long-lived model and environment state"</em></td>
+<td>agent 任务中断后环境状态还在（见 <a href="06-AgenticRL-环境与沙箱.html">06</a>）</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这三招合起来，本质是<strong>把「异步」从系统层挪到了样本层</strong>：系统仍然是同步的，但单个样本可以跨步继续。这是一条被低估的路径。</p>
+<h3 id="3-minimax-forge">③ MiniMax Forge：在中间插值</h3>
+<p>✅ Forge（§6.2）的架构是三层解耦：</p>
+<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────┐
+│  Agent Side（agent 侧）                     │
+│  纯粹的轨迹生产者，对训练/推理完全无感知    │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────┐
+│  Middleware Abstraction Layer（中间件层）   │
+│  · Gateway Server：路由所有补全请求         │
+│  · Data Pool：分布式轨迹存储，异步收集      │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────┐
+│  Training / Inference Side（训推侧）        │
+│  · Rollout Engine 扮演 π_θ                  │
+│  · Train Engine 算 CISPO 梯度，同步权重回去 │
+└─────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>真正有意思的是它的调度策略——<strong>Windowed FIFO（窗口化先进先出）</strong>：</p>
+<p>✅ 队列 <code>Q = [T_0, T_1, ..., T_{N-1}]</code>，维护一个头指针 <code>i</code>，窗口是 <code>[T_i, T_{i+W-1}]</code>。<strong>窗口内</strong>谁先完成用谁（贪心，不等顺序），<strong>跨窗口边界</strong>必须严格按序。实践取 <strong><code>W = 0.3N</code></strong>。</p>
+<p>⚠️ 这就是在两个极端之间<strong>显式插值</strong>：</p>
+<div class="codehilite"><pre><span></span><code>W = 1  ──────────────────► 严格 FIFO：完全按顺序，长尾全暴露
+                              ↑
+                        W = 0.3N（Forge 实际取值）
+                              ↓
+W = N  ──────────────────► 完全贪心：谁快用谁，但陈旧度不可控
+</code></pre></div>
+
+<p>W 越大，吞吐越高、陈旧度越不可控；W 越小，越接近同步。<strong>把一个架构选择变成了一个可调旋钮</strong>，这是三家里最工程化的做法。</p>
+<p>✅ 另外两个 Forge 的加速手段值得单独记：</p>
+<ul>
+<li><strong>Prefix Tree Merging（前缀树合并）</strong>：同一道题的 G 个答案共享同一段前缀，前缀只算一次然后分叉。报告称「<strong>数学上等价于独立样本训练</strong>」「<strong>零近似误差</strong>」，带来 <strong>最高 40× 的训练加速</strong>。</li>
+<li><strong>全局 L3 KV Cache 池</strong>：由分布式文件系统托底，配一个成本感知的请求路由器。</li>
+</ul>
+<h3 id="_2">三家放在一起</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GLM-5</th>
+<th>Kimi-K3</th>
+<th>MiniMax Forge</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训推放置</td>
+<td><strong>分离</strong></td>
+<td><strong>同置</strong></td>
+<td>分离（三层解耦）</td>
+</tr>
+<tr>
+<td>buffer 深度</td>
+<td>∞（连续生成）</td>
+<td>0（但样本可跨步）</td>
+<td>有界，窗口 <code>W=0.3N</code></td>
+</tr>
+<tr>
+<td>长尾怎么解</td>
+<td>靠异步吸收 + PD 分离 + FP8</td>
+<td><strong>partial rollout + 外部 KV 池</strong></td>
+<td><strong>窗口内贪心 + 前缀树合并</strong></td>
+</tr>
+<tr>
+<td>明说的约束</td>
+<td>744B / 28.5T token 规模</td>
+<td><em>"within a few hundred GPUs"</em></td>
+<td>10 万+ agent 脚手架</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>我的综合判断：这三个点在同一条「吞吐 ↔ 分布一致性」的权衡曲线上，谁也没有推翻谁。</strong></p>
+<div class="codehilite"><pre><span></span><code>分布一致性（样本越新越好）
+   ▲
+   │  ★ Kimi-K3（同置）
+   │      同置 → 样本永远是最新权重生成的
+   │      代价：训练卡要等生成
+   │
+   │           ★ MiniMax（W=0.3N）
+   │               显式旋钮，可调
+   │
+   │                        ★ GLM-5（全异步）
+   │                            吞吐拉满，一致性交给算法侧兜底
+   └────────────────────────────────────────► 吞吐
+</code></pre></div>
+
+<p>选哪个点，取决于三个约束：<strong>卡够不够</strong>（Kimi 明说不够）、<strong>上下文多长</strong>（越长长尾越致命）、<strong>有没有算法侧的一致性兜底手段</strong>（见 <a href="04-训推一致性.html">04</a>）。</p>
+<hr />
+<h2 id="25">2.5 陈旧度怎么管：三种正交的手段</h2>
+<p>一旦离开深度 0，样本就带上了「版本落后」这个属性。🌐 业界的处理手段有三种，而且它们是<strong>正交的</strong>——可以同时用：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>做法</th>
+<th>优点</th>
+<th>缺点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 逐样本版本拒绝</strong></td>
+<td>每个样本带一个版本号，太旧的直接丢</td>
+<td>精确，粒度到单个样本</td>
+<td>丢掉的是已经花掉的算力</td>
+</tr>
+<tr>
+<td><strong>② 深度限制</strong></td>
+<td>队列最多 K 层，满了就阻塞生成</td>
+<td>简单，硬保证上界</td>
+<td>阻塞生成 = 部分退回同步</td>
+</tr>
+<tr>
+<td><strong>③ IS 加权修正</strong></td>
+<td>不丢样本，在 loss 里乘一个重要性采样比值来纠偏</td>
+<td>不浪费算力</td>
+<td>比值方差大时反而更不稳（见 <a href="04-训推一致性.html">04</a>）</td>
+</tr>
+</tbody>
+</table>
+<p>🌐 HF 横评的结论是：<strong>生产环境的趋势是三种混用</strong>，而不是只靠一种。</p>
+<p>⚠️ 这里有个容易踩的坑，值得单独拎出来：</p>
+<blockquote>
+<p><strong>非对称过滤会让「存活的正样本」系统性地更陈旧。</strong></p>
+</blockquote>
+<p>很多 RL 训练会做动态过滤——把全对或全错的组丢掉（因为组内没有区分度，梯度是零）。但难题的 rollout 通常<strong>更长</strong>，所以完成得更晚。结果是：难题的样本天然更旧，而难题恰恰是训练最需要的那部分。</p>
+<p><strong>batch 级的陈旧度门控看不见这个偏差</strong>——整批的平均陈旧度可能很正常，但真正贡献梯度的那些样本全都是最旧的。🌐 HF 横评据此认为<strong>逐样本打版本号是必需的</strong>，不能只在 batch 级别管。</p>
+<hr />
+<h2 id="26">2.6 本章小结</h2>
+<table>
+<thead>
+<tr>
+<th>结论</th>
+<th>分级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>长尾是核心问题：32B 模型 512 个 32K rollout，单卡要 3.7 小时；8 卡并行仍要 28 分钟</td>
+<td>🌐</td>
+</tr>
+<tr>
+<td>优化目标是端到端延迟（由最慢样本决定），不是总吞吐</td>
+<td>✅ GLM-5 §3.6.2</td>
+</tr>
+<tr>
+<td>buffer 深度四档（0 / 1 / 2~K / ∞）是架构的分类主轴</td>
+<td>🌐</td>
+</tr>
+<tr>
+<td>veRL 同时实现了三档：<code>one_step_off_policy/</code> 553 行 vs <code>fully_async_policy/</code> 4,335 行</td>
+<td>✅ 实测</td>
+</tr>
+<tr>
+<td>从同步到「一步离策略」改动小、收益大；再往后复杂度陡增</td>
+<td>⚠️ 由上一行推出</td>
+</tr>
+<tr>
+<td>GLM-5 全异步 / Kimi-K3 同置 / MiniMax 窗口插值 = 同一条权衡曲线上的三个点</td>
+<td>✅ 三方原文 + ⚠️ 综合</td>
+</tr>
+<tr>
+<td>GLM-5 每次权重同步后重置优化器</td>
+<td>✅ §4.1.1</td>
+</tr>
+<tr>
+<td>Forge 前缀树合并声称零近似误差、最高 40× 加速</td>
+<td>✅ §6.2.5</td>
+</tr>
+<tr>
+<td>陈旧度三手段正交，生产环境混用；逐样本打版本号是必需的</td>
+<td>🌐 + ⚠️</td>
+</tr>
+</tbody>
+</table>
+<p><strong>下一篇</strong> → <a href="03-权重同步.html">03-权重同步.md</a>：新权重到底怎么搬回生成引擎</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

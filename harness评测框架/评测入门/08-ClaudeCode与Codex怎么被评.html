@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · Claude Code 和 Codex 到底是怎么被评的</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="08-claude-code-codex">08 · Claude Code 和 Codex 到底是怎么被评的</h1>
+<blockquote>
+<p>⭐⭐ 这一章回答你最初问的那个问题。<br />
+结论提前说：<strong>★★★ 榜单上那个分数，评的不是模型，是【模型 + 脚手架】这一整套系统。</strong><br />
+而这两样东西，★★ 榜单通常只报前者的名字。</p>
+</blockquote>
+<hr />
+<h2 id="81-agent">8.1 先看一个源码事实：评测框架根本不知道 agent 长什么样</h2>
+<p>打开 SWE-bench 判卷入口 <a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:699</a> 的函数签名：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span>
+    <span class="n">dataset_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">split</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">instance_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">,</span>
+    <span class="n">predictions_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>     <span class="c1"># ★★★ 就是这一行</span>
+    <span class="n">max_workers</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="o">...</span>
+<span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Run evaluation harness for the given dataset and predictions.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+
+<p>它要的是一个<strong>文件路径</strong>。文件里每行一条预测，格式见 <a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:244</a> 的注释（★ 逐字）：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># pred (dict): Prediction w/ model_name_or_path, model_patch, instance_id</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 也就是说，SWE-bench 的判卷器只认三个字段：
+
+    ┌────────────────────┬────────────────────────────────────┐
+    │ instance_id        │ 哪道题                              │
+    │ model_patch        │ ★★ 你交上来的补丁文本               │
+    │ model_name_or_path │ ★ 一个【你自己随便填的字符串】      │
+    └────────────────────┴────────────────────────────────────┘
+
+    ★★★ 注意最后一个：它只是【日志目录名】，
+       [run_evaluation.py:253-254] 里就是拿来拼路径的：
+         model_name_or_path = pred.get(&quot;model_name_or_path&quot;, &quot;None&quot;).replace(&quot;/&quot;, &quot;__&quot;)
+         log_dir = RUN_EVALUATION_LOG_DIR / run_id / model_name_or_path / instance_id
+
+    ⟹ 🔑🔑🔑 评测框架【完全不验证、也完全不关心】这个补丁是谁生成的、
+       花了多少钱、跑了多少轮、用了什么工具、重试了几次。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 这就是本章的全部要害：
+
+    ┌───────────────────────────────────────────────────────────┐
+    │  SWE-bench 定义的是【题目】和【判卷】。                    │
+    │  ★★ 中间&quot;怎么把补丁做出来&quot;那一段，是【完全开放】的。      │
+    │  ⟹ 而 Claude Code、Codex 的绝大部分本事，全在那一段里。   │
+    └───────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="82-scaffold">8.2 名词：脚手架（scaffold）</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：scaffold（脚手架），也叫 agent harness / agent framework
+
+      ★★ 指【包在模型外面、让它能真的干活的那层程序】。
+      盖楼时钢筋水泥是主体，脚手架是让工人上得去的架子——
+      ★ 楼盖完脚手架就拆了，但没有它楼盖不起来。
+
+    ⟹ 🔑 07 章那张图里&quot;模型/agent 干活&quot;的格子，装的就是它。
+</code></pre></div>
+
+<p>一个脚手架至少要做这些事（⚠️ 以下是我对公开实现的归纳，不是某篇论文的原文）：</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ ① 工具集（tools）──────────────────────────────────┐
+   │  给模型几个能调用的动作：读文件、写文件、跑 shell、  │
+   │  grep 搜索、跑测试。★★ 工具设计得好不好，直接决定  │
+   │  同一个模型能不能干成活。                            │
+   └─────────────────────────────────────────────────────┘
+   ┌─ ② 上下文管理 ──────────────────────────────────────┐
+   │  07 章说仓库平均 438K 行，装不进上下文窗口。         │
+   │  ★★ 什么时候塞什么进去、旧的怎么压缩掉，是核心技术。│
+   └─────────────────────────────────────────────────────┘
+   ┌─ ③ 循环与停止条件 ──────────────────────────────────┐
+   │  ★ 让模型跑多少轮？什么时候判定&quot;它自己觉得做完了&quot;？  │
+   │  什么时候强行掐断？                                  │
+   └─────────────────────────────────────────────────────┘
+   ┌─ ④ 错误恢复 ────────────────────────────────────────┐
+   │  测试报错了怎么把报错喂回去、要不要回滚、重试几次。  │
+   └─────────────────────────────────────────────────────┘
+   ┌─ ⑤ 采样策略 ────────────────────────────────────────┐
+   │  ★★★ 只跑一遍？还是跑 5 遍挑最好的？（见 §8.5）    │
+   └─────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>★★ SWE-bench 自带的 <a href="../源码/swebench-5.0.2/swebench/inference/run_api.py">swebench/inference/run_api.py</a> 是最原始的一版脚手架，它的文件头注释（★ 逐字）：</p>
+<blockquote>
+<p>"This python script is designed to run inference on a dataset using either the<br />
+OpenAI or Anthropic API, depending on the model specified."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 看它的做法就知道有多简陋：
+      拼一个大 prompt → 调一次 API → 用 extract_diff() 从回复里抠出补丁 → 完。
+      ⟹ ★★ 一轮，没有工具，没有反馈，不跑测试。
+
+    ⟹ 🔑 这就是 07 章那个【1.96%】的由来。
+       ⚠️ 它衡量的是&quot;模型盲写补丁&quot;的能力，
+       ★★★ 而不是&quot;一个工程 agent 解决问题&quot;的能力。
+</code></pre></div>
+
+<hr />
+<h2 id="83-claude-code-codex">8.3 所以 Claude Code / Codex 被评的是什么</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：Claude Code —— Anthropic 的命令行编码工具
+      ★ 名词：Codex —— OpenAI 的编码 agent 产品线
+      ★★ 它们【不是模型】，是【产品】：模型 + 脚手架 + 工具 + 提示词 + 策略。
+
+    ⟹ 🔑🔑 当你看到&quot;Claude Code 在 SWE-bench Verified 上 xx%&quot;，
+       这个数字的完整含义是：
+
+    ┌──────────────────────────────────────────────────────┐
+    │  某个具体模型版本                                     │
+    │  ＋ 某个具体脚手架版本                                │
+    │  ＋ 某套工具定义                                      │
+    │  ＋ 某个上下文/轮数/超时预算                          │
+    │  ＋ 某种采样与挑选策略                                │
+    │  ＝ 在 500 道人工校验题上的 RESOLVED_FULL 百分比      │
+    └──────────────────────────────────────────────────────┘
+
+    ⟹ ★★★ 换掉其中任何一项，分数都会动，而且可能动很多。
+</code></pre></div>
+
+<p>⚠️ 这是我的判断，不是论文结论，但有源码支撑（§8.1）：<br />
+<strong>★★ 同一个模型换一套脚手架，SWE-bench 分数的差距可以大过两代模型之间的差距。</strong></p>
+<div class="codehilite"><pre><span></span><code>    🔑 一个思想实验帮你记住：
+       run_api.py 那套（一轮盲写）vs 一个能跑测试、看报错、改了再试的 agent。
+       ★★ 模型一模一样。分数不可能一样。
+       ⟹ 差的那部分，【全部记在了模型头上】。
+</code></pre></div>
+
+<hr />
+<h2 id="84-aci">8.4 名词：ACI —— 为什么"给模型的界面"本身是一项技术</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：ACI = Agent-Computer Interface（智能体-计算机界面）
+      ★★ 由 SWE-agent 团队提出的说法。
+
+      类比：UI（用户界面）是给人用的，★ ACI 是给模型用的。
+      ⟹ 🔑 核心主张：给模型的工具，不该照搬给人用的工具。
+</code></pre></div>
+
+<p>⚠️ 以下是我的解释，用来帮你理解为什么这件事重要：</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ 人用的 shell ────────────────┬─ 模型需要的 ────────────────┐
+   │ cat 一个 5000 行文件          │ ★ 分页显示，带行号            │
+   │ → 一屏刷过去，人可以滚回去     │ → 模型没有&quot;滚回去&quot;这个动作     │
+   ├───────────────────────────────┼───────────────────────────────┤
+   │ vim / sed 改文件               │ ★★ 一个明确的 edit 工具，     │
+   │ → 人靠眼睛确认改对没有         │ 改完【自动回显改动结果】       │
+   ├───────────────────────────────┼───────────────────────────────┤
+   │ 报错信息几百行                 │ ★ 截断 + 只留关键行           │
+   │ → 人会跳着看                   │ → 全塞进去会挤爆上下文         │
+   └───────────────────────────────┴───────────────────────────────┘
+
+    ⟹ 🔑🔑 结论：★★★【工具设计是能力的一部分】。
+       所以&quot;评 Claude Code&quot;这件事，评的相当大一块是【ACI 设计得好不好】，
+       而不只是模型聪不聪明。
+</code></pre></div>
+
+<h3 id="841">8.4.1 ✅ 论文原文：脚手架换一下，分数差多少</h3>
+<p>★★★ 这不是我的推断。SWE-agent 论文（arXiv:2405.15793，118 页，已校验）<br />
+把"同一个模型、不同脚手架"的对照实验做完了，数字如下。</p>
+<p>✅ 摘要原文：</p>
+<blockquote>
+<p>"We evaluate SWE-agent on SWE-bench and HumanEvalFix, achieving<br />
+state-of-the-art performance on both with a <strong>pass@1 rate of 12.5%</strong><br />
+and 87.7%, respectively, far exceeding the previous state-of-the-art<br />
+achieved with <strong>non-interactive LMs</strong>."</p>
+</blockquote>
+<p>✅ 引言原文（关键的一句）：</p>
+<blockquote>
+<p>"Using <strong>GPT-4 Turbo</strong> as a base LM, SWE-agent solves <strong>12.47%</strong> of the<br />
+2,294 SWE-bench test tasks, substantially outperforming the previous best<br />
+resolve rate of <strong>3.8%</strong> by a non-interactive, retrieval-augmented system."</p>
+<p>"The results show that SWE-agent solves <strong>10.7 percentage points more<br />
+instances than the baseline agent, which uses only the default Linux shell</strong>."</p>
+</blockquote>
+<p>✅ Table 1（原文表格，SWE-bench 全量 2,294 + Lite 300）：</p>
+<div class="codehilite"><pre><span></span><code>                          ── SWE-bench 全量 ──   ── SWE-bench Lite ──
+   系统 / 模型              %Resolved  平均花费     %Resolved  平均花费
+   ─────────────────────────────────────────────────────────────────
+   RAG（检索增强，非交互）
+     w/ GPT-4 Turbo           1.31      $0.13        2.67      $0.13
+     w/ Claude 3 Opus         3.79      $0.25        4.33      $0.25
+   Shell-only agent（只给裸 Linux shell）
+     w/ GPT-4 Turbo             -          -       11.00      $1.46
+     w/o Demonstration          -          -        7.33      $0.79
+   SWE-agent（完整 ACI）
+     w/ GPT-4 Turbo          12.47      $1.59       18.00      $1.67
+     w/ Claude 3 Opus        10.46      $2.59       13.00      $2.18
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 把这张表按【模型固定】的方式重读一遍，你会看到 08 章的全部论点：
+
+   ★★★ GPT-4 Turbo 这一个模型，在 SWE-bench Lite 上可以拿到：
+        2.67%  ← 脚手架 = RAG（把检索到的文件塞进提示词，模型一次性吐补丁）
+        7.33%  ← 脚手架 = 裸 shell，且不给示范
+       11.00%  ← 脚手架 = 裸 shell + 示范
+       18.00%  ← 脚手架 = SWE-agent 的完整 ACI
+
+   ⚠️ 【权重一个字节没改。】分数从 2.67 变成 18.00，相差 6.7 倍。
+
+   ⟹ 🔑 所以&quot;GPT-4 Turbo 在 SWE-bench 上得几分&quot;这句话，
+      ★★★ 在没说脚手架之前，是【一个没有答案的问题】。
+</code></pre></div>
+
+<p>✅ 论文自己也点破了成本这一维（正文原文）：</p>
+<blockquote>
+<p>"compared to RAG on Lite, SWE-agent is <strong>8-13x more costly</strong> but yields a<br />
+<strong>6.7-fold improved % Resolved</strong> rate."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 对照表里的 $ 列：$0.13 → $1.67，正好是 ~13 倍。
+      🔑 这就是 02 章那条定律的又一次现身：
+      ★★★【越真实 ⟺ 越贵 ⟺ 越难复现】。
+</code></pre></div>
+
+<hr />
+<h3 id="842-aci">8.4.2 ✅ ACI 的每一个设计细节都值几个点</h3>
+<p>★★ 论文 Table 3 做了 ACI 的消融实验（ablation，即"拆掉某个部件看掉几分"），<br />
+全部在 SWE-bench Lite 上，基线是完整 SWE-agent 的 <strong>18.0%</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ Table 3 原文数值（↓ 表示相对 18.0 掉了多少个百分点）
+
+   ┌─ 编辑器（Editor）────────────────────────────────────┐
+   │  edit 动作 + linting（语法检查）  18.0   ← 完整版      │
+   │  edit 动作、但不做 linting        15.0   ↓ 3.0        │
+   │  完全没有 edit 命令（Noedit）     10.3   ↓ 7.7  ★★★  │
+   └──────────────────────────────────────────────────────┘
+   ┌─ 搜索（Search）──────────────────────────────────────┐
+   │  汇总式（Summarized）             18.0   ← 完整版      │
+   │  逐条翻页式（Iterative）          12.0   ↓ 6.0  ⚠️    │
+   │  完全没有搜索命令（No search）    15.7   ↓ 2.3        │
+   └──────────────────────────────────────────────────────┘
+   ┌─ 文件查看器窗口大小（File Viewer）───────────────────┐
+   │  30 行                            14.3   ↓ 3.7        │
+   │  100 行                           18.0   ← 完整版      │
+   │  整个文件全塞进去（Full file）    12.7   ↓ 5.3        │
+   └──────────────────────────────────────────────────────┘
+   ┌─ 上下文管理（Context）───────────────────────────────┐
+   │  只保留最近 5 次观察（Last 5 Obs.）18.0  ← 完整版      │
+   │  保留完整历史（Full history）     15.0   ↓ 3.0        │
+   │  不给示范（w/o demo.）            16.3   ↓ 1.7        │
+   └──────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 这张表里有三个反直觉的地方，★★★ 每一个都值得记住：
+
+   ① ★★★ 【给模型更多信息，反而更差】
+      &quot;整个文件全塞进去&quot; 12.7 &lt; &quot;只给 100 行窗口&quot; 18.0。
+      ⚠️ 因为上下文被无关内容挤满，模型反而定位不到关键行。
+      ⟹ 这直接反驳了&quot;上下文窗口越大越好&quot;的朴素想法。
+
+   ② ★★★ 【设计得不好的工具，比没有这个工具还差】
+      逐条翻页式搜索 12.0 &lt; 完全没有搜索命令 15.7。
+      ✅ 论文原文解释：
+      &gt; &quot;when given a large number of search results, agents tend to look
+      &gt; through every match exhaustively, calling next until each result
+      &gt; has been inspected. This inefficient behavior can exhaust an
+      &gt; agent&#39;s cost budget or context window&quot;
+      ⟹ 🔑 模型不像人会&quot;扫一眼觉得不对就跳过&quot;，它倾向于把列表走完。
+
+   ③ ★★ 【护栏（guardrail）值 3 个点】
+      edit 命令加上 linting（提交前先做语法检查，不通过就拒绝这次编辑）
+      = 15.0 → 18.0。✅ 论文原文：
+      &gt; &quot;This intervention improves performance considerably
+      &gt; (without linting, 15.0% ↓ 3.0).&quot;
+      ⟹ ★★ 不是让模型变聪明，而是【不让它把错误写进文件】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 §8.4 的最终结论，现在有了完整的证据链：
+
+   ★★★ 一个 SWE-bench 分数 = 模型能力 × ACI 设计质量 × 尝试预算。
+   ⚠️ 榜单只写第一项的名字。
+   ⟹ 所以 §8.7 那张检查清单，不是吹毛求疵，是【读懂这个数的必要条件】。
+</code></pre></div>
+
+<p>✅ 补充一个 08 章开头就该有的实感数字（论文正文）：</p>
+<blockquote>
+<p>"out of 2,294 task instances, <strong>1,185 (51.7%)</strong> of SWE-agent w/ GPT-4 Turbo<br />
+trajectories have 1+ failed edit"</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 超过一半的运行过程里，模型至少写错过一次编辑。
+      🔑 agentic 评测和 01-06 章的选择题最大的不同就在这里：
+      ★★★ 它允许【中途犯错然后自己纠正】，最终只看结果。
+      ⟹ 这也是为什么它贵——一道题要来回几十轮。
+</code></pre></div>
+
+<hr />
+<h2 id="85-vs">8.5 最容易被误导的一点：一次尝试 vs 多次尝试</h2>
+<p>这是 02 章 pass@k 概念在 agentic 场景的翻版，★★★ 但危害大得多。</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ ① pass@1 / 单次提交 ──────────────────────────────┐
+   │  跑一遍，交一份补丁。★ 这是榜单的默认口径。         │
+   └────────────────────────────────────────────────────┘
+   ┌─ ② 跑 N 遍，人工/规则挑一份最好的交 ───────────────┐
+   │  ⚠️ 如果挑选依据是【跑了 f2p 测试看哪个绿】，       │
+   │     ★★★ 那就是【看着答案挑答案】——严重高估。      │
+   └────────────────────────────────────────────────────┘
+   ┌─ ③ 跑 N 遍，用【自己写的测试】挑一份交 ────────────┐
+   │  ★★ 这是合法的：模型自己造验收标准、自己筛。       │
+   │  但它显然比 ① 强，★ 且成本是 N 倍。                │
+   └────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ① 和 ③ 都是诚实的，但它们【不是同一个指标】。
+       把 ③ 的分数和别人 ① 的分数放同一张表里比，就是在骗人。
+
+    ⚠️ ② 在 SWE-bench 里技术上是做得到的——因为 f2p 测试名单
+       就写在数据集里。★★★ 这是这个基准最需要靠自律来守住的地方。
+</code></pre></div>
+
+<p>★★ 还有一个更隐蔽的变量：<strong>预算</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    07 章提到 DOCKER_CLIENT_TIMEOUT = 1800（30 分钟单题上限）。
+    ⟹ 但那只是【判卷】的超时。★ 生成补丁那一段花了多久、
+       烧了多少 token，★★★ SWE-bench 完全不记录、也不限制。
+
+    ⟹ 🔑 所以理论上：让 agent 在一道题上想 2 小时、烧 500 万 token，
+       分数会更高，而榜单上【看不出任何差别】。
+
+    ⟹ ★★★ 这叫【测试时计算量】(test-time compute)。
+       报分不报预算 ≈ 报油耗不说开了多快。
+</code></pre></div>
+
+<hr />
+<h2 id="86-swe-bench">8.6 除了 SWE-bench，还有哪些</h2>
+<p>⚠️ 以下是概览，具体数字请以各基准官方发布为准。</p>
+<div class="codehilite"><pre><span></span><code>   ┌────────────────────┬──────────────────────────────────────┐
+   │ SWE-bench (Verified)│ ★★ 事实标准。修 Python 仓库的 bug。 │
+   │                     │ 07 章已详拆。                        │
+   ├────────────────────┼──────────────────────────────────────┤
+   │ SWE-bench Multimodal│ ★ 带截图/前端的变体（源码里出现过：  │
+   │                     │ run_evaluation.py:716 有专门分支）   │
+   ├────────────────────┼──────────────────────────────────────┤
+   │ Terminal-Bench      │ ★★ 不限于修 bug：在【终端里完成任务】│
+   │                     │ 装环境、配服务、处理数据。            │
+   │                     │ ⟹ 🔑 更贴近&quot;Claude Code 日常在干嘛&quot; │
+   ├────────────────────┼──────────────────────────────────────┤
+   │ LiveCodeBench       │ ★★★ 用【持续更新的新题】对抗污染：  │
+   │                     │ 只用模型训练截止日【之后】的竞赛题。  │
+   │                     │ ⟹ 直接呼应 06 章的&quot;时间切分&quot;        │
+   ├────────────────────┼──────────────────────────────────────┤
+   │ HumanEval / MBPP    │ ⚠️ 已基本饱和，只写单个函数。         │
+   │                     │ ★ 现在只当&quot;最低门槛&quot;看，不当能力上限。│
+   └────────────────────┴──────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    🔑 挑基准的一个朴素原则：
+       ★★★【你的真实工作长什么样，就找形状最像的那个基准】。
+       ⟹ 你要是让模型改自家几十万行的老仓库，
+          HumanEval 的分数对你【一点参考价值都没有】。
+</code></pre></div>
+
+<hr />
+<h2 id="87-agentic">8.7 看到一个 agentic 分数，该追问的六件事</h2>
+<p>★★★ 建议把这张表存下来。</p>
+<div class="codehilite"><pre><span></span><code>   ┌───┬──────────────────────┬────────────────────────────────┐
+   │ ① │ 哪个子集？            │ full / Lite / Verified 差别巨大 │
+   │ ② │ 什么脚手架？          │ ★★ 自研 agent 还是官方 baseline│
+   │ ③ │ 几次尝试？怎么挑的？  │ ★★★ pass@1 还是 N 选 1        │
+   │ ④ │ 挑选时用没用 f2p 测试？│ ★★★ 用了 = 看答案挑答案      │
+   │ ⑤ │ 预算多少？            │ 轮数 / token / 墙钟时间        │
+   │ ⑥ │ 模型版本？日期？      │ ★ 同名模型不同快照分数会变     │
+   └───┴──────────────────────┴────────────────────────────────┘
+
+    ⟹ 🔑🔑 六项里【任何一项没说清，这个分数就不能横向比较】。
+       ★★ 现实是：绝大多数宣传口径只说清了 ① 和 ⑥。
+</code></pre></div>
+
+<hr />
+<h2 id="88-claude-code">8.8 如果你想自己评一次 Claude Code</h2>
+<p>⚠️ 这一节是操作建议，不是论文内容。</p>
+<div class="codehilite"><pre><span></span><code>   ★ 好消息：因为 §8.1 那个设计，你完全做得到。
+     ★★ 你只要产出一个 predictions.jsonl，判卷器不问来路。
+
+   ┌─ 步骤 ─────────────────────────────────────────────┐
+   │ ① 取 SWE-bench Verified 的题目（每条含仓库+commit  │
+   │    +issue 文本）                                    │
+   │ ② 对每条：把仓库 checkout 到那个 commit，           │
+   │    ★ 把 issue 文本作为任务丢给 Claude Code          │
+   │ ③ 它改完后，git diff 出补丁                         │
+   │ ④ 写成一行 JSON：                                   │
+   │    {&quot;instance_id&quot;: ..., &quot;model_patch&quot;: &lt;diff&gt;,      │
+   │     &quot;model_name_or_path&quot;: &quot;claude-code-mysetup&quot;}    │
+   │ ⑤ 跑官方判卷器（需要 Docker）                       │
+   └────────────────────────────────────────────────────┘
+
+    ⚠️ 三个坑：
+      ① ★★★ 必须切到题目指定的 base commit。
+         切错了 = 仓库里已经有修好的代码，分数虚高到离谱。
+      ② ★★ 别让 agent 看 f2p 测试文件（数据集里带着）。
+         看了就是抄答案。
+      ③ ★ 起 Docker 会拉几十 GB 镜像，跑 500 题是【小时级】。
+         ⟹ 建议先拿 20 题跑通链路，再放全量。
+
+    🔑 但说实话，★★★ 对你自己的业务来说，
+       12 章那条路（自建小评测集）比复现榜单值钱得多。
+</code></pre></div>
+
+<hr />
+<h2 id="89">8.9 本章总结</h2>
+<div class="codehilite"><pre><span></span><code>    🔑 六条带走：
+
+    ① ★★★ SWE-bench 只判卷不生成 ⟹【补丁怎么来的它不管】
+       源码证据：main() 只要 predictions_path，只认 3 个字段
+    ② ★★ 于是被评的对象是【模型 + 脚手架】这套系统，不是模型
+    ③ ★★ 脚手架包含：工具集 / 上下文管理 / 循环 / 纠错 / 采样
+    ④ ★★★ ACI（给模型用的界面）本身就是能力的一部分
+    ⑤ ★★★ 尝试次数 + 挑选方式 + 预算，是三个最常被隐藏的变量
+    ⑥ 🔑🔑 追问六件事：子集/脚手架/次数/挑选依据/预算/模型版本
+
+    ⟹ 回到 01 章那句总论：
+       ★★★【分数是&quot;模型 + 评测方法&quot;的联合产物】。
+       在 agentic 评测里，★★&quot;评测方法&quot;这一项甚至可能占主导。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>下一章：<a href="09-LLM当裁判.html">09-LLM当裁判.md</a> —— ★ 代码能跑测试，那"写得好不好"这种题怎么判？答案是：★★ 让另一个模型来打分。以及这么做的代价。<br />
+返回 <a href="README.html">评测入门总目录</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

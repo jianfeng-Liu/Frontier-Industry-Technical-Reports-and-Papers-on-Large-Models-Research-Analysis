@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRLHF 拆解：架构最直白的那一个</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="openrlhf">OpenRLHF 拆解：架构最直白的那一个</h1>
+<blockquote>
+<p><strong>这一篇干什么</strong>：源码级走查。OpenRLHF 是本目录里代码量最小的框架，<strong>因此它是理解 RL 框架骨架的最佳入口</strong>。<br />
+<strong>难度</strong> ★★<br />
+<strong>✅ 本文所有行号钉在 commit <code>3c3be62</code>（tag <code>v0.11.0</code>，2026-08-13）</strong>。行号会随版本漂移。</p>
+</blockquote>
+<hr />
+<h2 id="1">1 · 规模实测：小一个数量级</h2>
+<p>✅ 本地 clone 后实测：</p>
+<div class="codehilite"><pre><span></span><code>整仓：65 个 .py 文件 · 13,411 行 · 1.7 MB
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>veRL</th>
+<th>slime</th>
+<th><strong>OpenRLHF</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行数</td>
+<td>171,584</td>
+<td>72,468</td>
+<td><strong>13,411</strong></td>
+</tr>
+<tr>
+<td>相对 OpenRLHF</td>
+<td><strong>12.8×</strong></td>
+<td>5.4×</td>
+<td>1×</td>
+</tr>
+</tbody>
+</table>
+<p><code>openrlhf/</code> 内部：</p>
+<table>
+<thead>
+<tr>
+<th>目录</th>
+<th>文件数</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>trainer/</code></td>
+<td>20</td>
+<td><strong>5,196</strong></td>
+<td>所有训练器（PPO / DPO / SFT / RM）+ Ray 编排</td>
+</tr>
+<tr>
+<td><code>utils/</code></td>
+<td>14</td>
+<td>2,772</td>
+<td>工具，含 <code>agent.py</code></td>
+</tr>
+<tr>
+<td><code>cli/</code></td>
+<td>7</td>
+<td>1,967</td>
+<td>命令行入口</td>
+</tr>
+<tr>
+<td><code>models/</code></td>
+<td>6</td>
+<td>1,352</td>
+<td>模型与损失</td>
+</tr>
+<tr>
+<td><code>datasets/</code></td>
+<td>5</td>
+<td>641</td>
+<td>数据集</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>12.8 倍的差距不在算法，在后端适配。</strong> <a href="01-格局全景.html">01 章 §1.2</a> 已经论证过这点：veRL 接了 6 个训练引擎 × 4 个推理引擎 × 6 个 checkpoint 后端；OpenRLHF 只认 <strong>DeepSpeed + vLLM</strong> 一条路。</p>
+<p><strong>这不是缺点，是定位。</strong> 如果你要在多种硬件、多种引擎上跑，veRL 是唯一选择；如果你要读懂 RL 框架到底在干什么，<strong>从 13,411 行开始远比从 171,584 行开始现实</strong>。</p>
+<hr />
+<h2 id="2">2 · ✅ 三个基础设施组件</h2>
+<p>OpenRLHF 的 README 把技术栈说得很明确：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>角色</th>
+<th>✅ 原文要点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Ray</strong></td>
+<td>分布式调度与控制</td>
+<td><em>"separates the Actor, Reward, Reference, and Critic models across different GPUs, enabling scalable training for models up to </em><em>70B+ parameters</em><em>"</em></td>
+</tr>
+<tr>
+<td><strong>vLLM</strong></td>
+<td>高性能推理</td>
+<td><em>"RLHF training spends </em><em>80% of the time on sample generation</em><em>"</em></td>
+</tr>
+<tr>
+<td><strong>DeepSpeed</strong></td>
+<td>显存高效训练</td>
+<td>ZeRO-3 + deepcompile + AutoTP + RingAttention</td>
+</tr>
+<tr>
+<td><strong>NCCL / CUDA IPC</strong></td>
+<td>高速通信</td>
+<td>见 <a href="03-权重同步.html">03 章 §3.2</a></td>
+</tr>
+</tbody>
+</table>
+<p>✅ 那句「生成占 80% 时间」是本目录反复引用的那个数字的<strong>框架侧一手出处</strong>（<a href="02-架构主轴-同步到全异步.html">02 章 §2.1</a> 用的是 🌐 博客给的量化数据，这里是框架 README 的直接陈述）。</p>
+<h3 id="hybrid-engine">★ Hybrid Engine：另一条省钱的路</h3>
+<p>✅ README 原文：</p>
+<blockquote>
+<p><em>"</em><em>Hybrid Engine Scheduling</em><em>: All models and vLLM engines can </em><em>share GPU resources</em><em>—minimizing idle time and maximizing GPU utilization. This allows running full RLHF pipelines on </em><em>limited hardware</em><em>."</em></p>
+</blockquote>
+<p>⚠️ 这是 <a href="02-架构主轴-同步到全异步.html">02 章</a> 那条轴上被忽略的一个位置：<strong>GLM-5 靠「分离 + 异步」提高利用率，OpenRLHF 的 Hybrid Engine 靠「全部同置 + 换入换出」提高利用率。</strong> 两者的目标一样（别让卡闲着），手段完全相反。</p>
+<p>⚠️ 而且注意最后一句 <em>"on limited hardware"</em>——这和 ✅ Kimi-K3 的 <em>"within a few hundred GPUs"</em>（<a href="01-格局全景.html">01 章 §1.3</a>）是同一个约束下的同一类答案。<strong>卡少的时候，同置几乎总是对的。</strong></p>
+<p>✅ 源码里对应的是四个开关（<code>openrlhf/cli/train_ppo_ray.py</code>）：</p>
+<div class="codehilite"><pre><span></span><code>--train.colocate_actor_ref      actor 和 reference 共享 GPU
+--train.colocate_critic_reward  critic 和 reward 共享 GPU
+--train.colocate_all            全部共享
+--vllm.enable_sleep             ★ vLLM 睡眠模式（不用时释放显存）
+</code></pre></div>
+
+<p>⚠️ 前两个开关很有意思：<strong>actor 和 reference 是天然的一对</strong>（reference 只做前向，不占优化器状态），<strong>critic 和 reward 也是一对</strong>。这个配对不是随便定的——它对应 <a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.2</a> 那张显存账里 16Ψ 和 2Ψ 的搭配。</p>
+<hr />
+<h2 id="3-595-ppo">3 · ★★★ 同步主循环：595 行读懂 PPO</h2>
+<p>✅ <code>openrlhf/trainer/ppo_trainer.py</code> 的 <code>fit()</code>（L499 起）是全目录<strong>最容易读懂的 RL 主循环</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">for</span> <span class="n">episode</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">start_episode</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="o">.</span><span class="n">train</span><span class="o">.</span><span class="n">num_episodes</span><span class="p">):</span>      <span class="c1"># L516</span>
+    <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+        <span class="c1"># ① 生成一批样本（阻塞）</span>
+        <span class="n">rollout_samples</span><span class="p">,</span> <span class="n">filter_pass_rate</span><span class="p">,</span> <span class="n">prompts_consumed</span><span class="p">,</span> <span class="n">is_exhausted</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">samples_generator</span><span class="o">.</span><span class="n">generate_samples</span><span class="p">(</span><span class="o">**</span><span class="bp">self</span><span class="o">.</span><span class="n">generate_kwargs</span><span class="p">)</span>
+        <span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">rollout_samples</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">is_exhausted</span><span class="p">:</span> <span class="k">break</span>
+            <span class="k">continue</span>
+
+        <span class="c1"># ② 用这批样本做一次 PPO 更新</span>
+        <span class="n">status</span><span class="p">,</span> <span class="n">global_step</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">train_step</span><span class="p">(</span><span class="n">rollout_samples</span><span class="p">,</span> <span class="n">global_step</span><span class="p">)</span>
+
+        <span class="c1"># ③ 记录耗时（★ 生成时间是被单独计时的）</span>
+        <span class="n">status</span><span class="p">[</span><span class="s2">&quot;timing/generation&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">generation_time</span>
+
+        <span class="c1"># ④ 存 checkpoint / 评测</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">save_logs_and_checkpoints</span><span class="p">(</span><span class="n">global_step</span><span class="p">,</span> <span class="n">status</span><span class="p">,</span> <span class="n">client_states</span><span class="p">)</span>
+</code></pre></div>
+
+<p>⚠️ <strong>这就是 <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 的「buffer 深度 0」，20 行说完。</strong><br />
+<code>generate_samples()</code> 是阻塞的，它返回之前训练什么都干不了。和 slime <code>train.py</code> L53 那个 <code>ray.get(...generate...)</code> 是完全一样的形状（见 <a href="slime拆解.html">slime拆解 §4</a>）。</p>
+<p>✅ 两个值得注意的细节：</p>
+<ol>
+<li><strong><code>status["timing/generation"]</code> 被单独计时</strong>——框架自己就认为「生成占多久」是首要指标。</li>
+<li><strong><code>filter_pass_rate</code></strong> 是 <code>generate_samples</code> 的返回值之一，配 <code>--algo.dynamic_filtering_enable</code>。这就是 <a href="05-算法与框架的接口.html">05 章 §5.5</a> 讲的动态过滤，<strong>而 pass rate 被当作一个要记录的训练指标</strong>——⚠️ 说明这个数字在实践中确实需要盯着。</li>
+</ol>
+<hr />
+<h2 id="4">4 · ★★★ 异步主循环：三个源码级的概念印证</h2>
+<p>✅ <code>openrlhf/trainer/ppo_trainer_async.py</code>（353 行）是本目录<strong>印证密度最高的一个文件</strong>。</p>
+<h3 id="1-trainasync_queue_size-buffer">① <code>--train.async_queue_size</code> 就是 buffer 深度</h3>
+<p>✅ <code>openrlhf/cli/train_ppo_ray.py:275</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--train.async_queue_size&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="nb">int</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                    <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Queue size for async sampler&lt;-&gt;trainer&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p>✅ 用在 <code>ppo_trainer_async.py:287-297</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">queue_size</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">strategy</span><span class="o">.</span><span class="n">args</span><span class="o">.</span><span class="n">train</span><span class="p">,</span> <span class="s2">&quot;async_queue_size&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+<span class="k">if</span> <span class="n">queue_size</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;async_queue_size must be positive, got </span><span class="si">{</span><span class="n">queue_size</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="bp">self</span><span class="o">.</span><span class="n">rollout_queue</span> <span class="o">=</span> <span class="n">Queue</span><span class="p">(</span><span class="n">maxsize</span><span class="o">=</span><span class="n">queue_size</span><span class="p">)</span>
+
+<span class="c1"># Token pool (counting semaphore) for queue capacity.</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">rollout_slots</span> <span class="o">=</span> <span class="n">Queue</span><span class="p">(</span><span class="n">maxsize</span><span class="o">=</span><span class="n">queue_size</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">queue_size</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">rollout_slots</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">block</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+
+<p>★ <strong><a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 那张「buffer 深度四档」的表，在这里是一个整数参数。</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>对应哪一档</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不开 <code>--train.async_enable</code></td>
+<td>深度 0（同步）</td>
+</tr>
+<tr>
+<td><code>--train.async_queue_size 1</code>（默认）</td>
+<td><strong>深度 1</strong>（一步离策略）</td>
+</tr>
+<tr>
+<td><code>--train.async_queue_size K</code></td>
+<td><strong>深度 2~K</strong>（有界队列）</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 而且实现用了<strong>两个队列</strong>：<code>rollout_queue</code> 装样本，<code>rollout_slots</code> 是一个计数信号量（counting semaphore）——生成侧必须先拿到一个 slot 才能开始生成。这正是 <a href="02-架构主轴-同步到全异步.html">02 章 §2.5</a> 讲的「② 深度限制：队列满了就阻塞生成」的标准实现。<strong>深度上界是硬保证的，不是靠速率碰运气。</strong></p>
+<h3 id="2-vllmlock">② <code>VLLMLock</code> 就是中断模型</h3>
+<p>✅ <code>ppo_trainer_async.py:20-34</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@ray</span><span class="o">.</span><span class="n">remote</span><span class="p">(</span><span class="n">num_cpus</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">VLLMLock</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Cross-actor mutex for vLLM critical section.</span>
+
+<span class="sd">    Ensures generation and weight broadcast do not overlap on the same vLLM engines,</span>
+<span class="sd">    so every sample in a batch is generated with consistent weights.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+
+<p>⚠️ 注释的最后半句是重点：<em>"so every sample in a batch is generated with </em><em>consistent weights</em><em>"</em>（保证一个批次里的每个样本都由一致的权重生成）。</p>
+<p><strong>这是一个明确的架构立场</strong>：OpenRLHF 不接受 <a href="03-权重同步.html">03 章 §3.5</a> 的档 1「永不停」——它宁可用一把互斥锁把生成和权重广播隔开，也不让一条轨迹跨两个版本。</p>
+<h3 id="3-partial_rollout">③ <code>partial_rollout</code> 模式下才允许打断</h3>
+<p>✅ <code>ppo_trainer_async.py:254-265</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">broadcast_to_vllm</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="c1"># Lock prevents weight broadcast from overlapping with eval generation.</span>
+    <span class="n">ray</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">vllm_lock</span><span class="o">.</span><span class="n">acquire</span><span class="o">.</span><span class="n">remote</span><span class="p">())</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_partial_rollout</span><span class="p">:</span>
+        <span class="n">batch_vllm_engine_call</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">vllm_engines</span><span class="p">,</span> <span class="s2">&quot;pause_generation&quot;</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">broadcast_to_vllm</span><span class="p">()</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_partial_rollout</span><span class="p">:</span>
+            <span class="n">batch_vllm_engine_call</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">vllm_engines</span><span class="p">,</span> <span class="s2">&quot;resume_generation&quot;</span><span class="p">)</span>
+        <span class="n">ray</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">vllm_lock</span><span class="o">.</span><span class="n">release</span><span class="o">.</span><span class="n">remote</span><span class="p">())</span>
+</code></pre></div>
+
+<p>★ <strong><code>pause_generation</code> / <code>resume_generation</code> = <a href="03-权重同步.html">03 章 §3.5</a> 的中断模型第 3 档「软暂停」，源码级实证。</strong></p>
+<p>⚠️ 而且注意这两行只在 <code>self._partial_rollout</code> 为真时才执行。也就是说：<strong>只有开了 partial rollout，OpenRLHF 才允许「生成到一半被打断」</strong>——因为 partial rollout 本来就设计了「存下来下轮接着生成」的机制（<a href="02-架构主轴-同步到全异步.html">02 章 §2.4</a> Kimi 那一节）。没开的话，就老老实实等生成完。</p>
+<h3 id="4_1">④ 参数之间的约束关系写进了断言</h3>
+<p>✅ <code>openrlhf/cli/train_ppo_ray.py:667-698</code> 这一段，把本目录几章的结论直接写成了运行时断言：</p>
+<table>
+<thead>
+<tr>
+<th>行号</th>
+<th>断言</th>
+<th>印证了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>670-671</td>
+<td><code>if async_enable: assert not vllm.enable_sleep</code></td>
+<td>异步模式下推理引擎不能睡——它得一直在生成</td>
+</tr>
+<tr>
+<td>673-674</td>
+<td><code>if partial_rollout_enable: assert async_enable</code></td>
+<td><strong>partial rollout 依赖异步</strong>，同步模式下没有「下一轮接着生成」的概念</td>
+</tr>
+<tr>
+<td>694-698</td>
+<td><code>if vllm_generate_batch_size &gt; rollout.batch_size: assert async_enable</code><br><em>"(over-sampling needs async queue to buffer extra batches)"</em></td>
+<td>★ <strong>超采样必须有队列接着</strong></td>
+</tr>
+<tr>
+<td>667-668</td>
+<td><code>if colocate_all and async_enable:</code> 打印警告：<em>"only colocates DeepSpeed models"</em></td>
+<td>异步下 vLLM 引擎不能再和训练同置</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 最后一条和 slime 的 <code>assert not args.colocate</code>（<a href="slime拆解.html">slime拆解 §4</a>）是同一个约束的两种态度：<strong>slime 直接禁止，OpenRLHF 给个警告然后部分支持。</strong> slime 更硬，OpenRLHF 更宽松——⚠️ 对新手来说 slime 那种「早失败」更友好。</p>
+<hr />
+<h2 id="5-agent">5 · ★★ Agent 抽象：把「多轮」和「算法」拆成正交两维</h2>
+<p>这是 OpenRLHF 自称的<strong>核心创新</strong>，也是本目录 <a href="05-算法与框架的接口.html">05 章 §5.2</a> 引过的那个设计。</p>
+<p>✅ README 原文：<em>"OpenRLHF is </em><em>the first RLHF framework</em><em> to implement a </em><em>unified agent-based paradigm</em><em>. Every training run—whether standard PPO or complex multi-turn reasoning—follows a consistent agent execution pipeline."</em></p>
+<p>✅ 源码里就是 <code>openrlhf/utils/agent.py</code>（<strong>356 行</strong>）：</p>
+<div class="codehilite"><pre><span></span><code>openrlhf/utils/agent.py
+├─ L12   class AgentExecutorBase(ABC)          ← 抽象基类（TITO 核心）
+│         └─ execute()  抽象方法
+├─ L31   class MultiTurnAgentExecutor(...)     ← 多轮：reset() + step()
+└─ L184  class SingleTurnAgentExecutor(...)    ← 单轮：可选 reward_func()
+</code></pre></div>
+
+<p>⚠️ <strong>356 行就实现了整个 agent 抽象层。</strong> 对比 veRL 的 <code>agent_loop/</code> 2,831 行 + <code>tools/</code> 593 行（<a href="06-AgenticRL-环境与沙箱.html">06 章 §6.4</a>）——差 9.6 倍。差距主要在 veRL 有 816 行的 <code>tool_parser.py</code>，而 OpenRLHF 把工具解析留给用户自己实现的 executor。</p>
+<p>✅ 用户接入的方式是一个命令行参数：</p>
+<div class="codehilite"><pre><span></span><code>--train.agent_func_path &lt;你的 AgentExecutorBase 子类&gt;
+</code></pre></div>
+
+<p>✅ <code>openrlhf/trainer/ray/vllm_engine.py:19-29</code> 负责加载并校验：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">_load_agent_executor</span><span class="p">(</span><span class="n">agent_func_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AgentExecutorBase</span><span class="p">:</span>
+    <span class="o">...</span>
+    <span class="k">assert</span> <span class="nb">issubclass</span><span class="p">(</span><span class="n">agent_executor_cls</span><span class="p">,</span> <span class="n">AgentExecutorBase</span><span class="p">),</span> \
+        <span class="s2">&quot;AgentExecutor must inherit from AgentExecutorBase&quot;</span>
+</code></pre></div>
+
+<p>⚠️ 这个设计的关键在于<strong>它把用户代码放在了推理引擎那一侧</strong>（<code>ray/vllm_engine.py</code>），而不是训练侧。<strong>用户写的 agent 逻辑离生成最近、离训练最远</strong>——这和 ✅ GLM-5 的 <em>"cleanly isolates task-specific logic from the core training loop"</em>（<a href="06-AgenticRL-环境与沙箱.html">06 章 §6.2</a>）是同一条原则。<strong>三家（GLM 报告 / slime README / OpenRLHF 源码）独立表述了同一件事。</strong></p>
+<h3 id="readme">✅ 正交性写进了 README</h3>
+<p>✅ 原文标题就是：<em>"Two Execution Modes (</em><em>Orthogonal to RL Algorithms</em><em>)"</em></p>
+<div class="codehilite"><pre><span></span><code>        执行模式 →     Single-Turn        Multi-Turn
+  算法 ↓                （默认，99% 场景）   （reset + step）
+  PPO                       ✓                  ✓
+  REINFORCE++               ✓                  ✓
+  REINFORCE++-baseline      ✓                  ✓
+  GRPO                      ✓                  ✓
+  RLOO                      ✓                  ✓
+  Dr. GRPO                  ✓                  ✓
+</code></pre></div>
+
+<p>✅ 并且 README 明确写了 <em>"</em><em>Token-in-Token-out</em><em>: All sampling produces token-level trajectories → </em><em>Zero text-level mismatch</em><em>"</em>——即 <a href="04-训推一致性.html">04 章 §4.5</a> 讲的 TITO，在 OpenRLHF 里是<strong>架构基石</strong>而不是可选项。⚠️ 这也是它敢把 agent 抽象做到只有 356 行的原因之一：<strong>因为不做文本层的转换，就不需要处理转换带来的一大堆边界情况。</strong></p>
+<hr />
+<h2 id="6-modelslosspy">6 · 算法与损失：都在 <code>models/loss.py</code></h2>
+<p>✅ <code>openrlhf/models/</code>（6 文件 / 1,352 行）：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>loss.py</code></td>
+<td><strong>335</strong></td>
+</tr>
+<tr>
+<td><code>model.py</code></td>
+<td>319</td>
+</tr>
+<tr>
+<td><code>actor.py</code></td>
+<td>305</td>
+</tr>
+<tr>
+<td><code>utils.py</code></td>
+<td>186</td>
+</tr>
+<tr>
+<td><code>ring_attn_utils.py</code></td>
+<td>182</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 支持的算法（README 表，用 <code>--algo.advantage.estimator</code> 切换）：</p>
+<table>
+<thead>
+<tr>
+<th>算法</th>
+<th>参数值</th>
+<th>特点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PPO</td>
+<td>（默认）</td>
+<td>完整 critic</td>
+</tr>
+<tr>
+<td>REINFORCE++</td>
+<td><code>reinforce</code></td>
+<td>✅ <strong>由 OpenRLHF 团队于 2024/12 提出</strong></td>
+</tr>
+<tr>
+<td>REINFORCE++-baseline</td>
+<td><code>reinforce_baseline</code></td>
+<td>均值基线，适合 RLVR 推理任务</td>
+</tr>
+<tr>
+<td>RLOO</td>
+<td><code>rloo</code></td>
+<td>逐 token KL + PPO clip</td>
+</tr>
+<tr>
+<td>GRPO</td>
+<td><code>group_norm</code></td>
+<td>组归一化</td>
+</tr>
+<tr>
+<td>Dr. GRPO</td>
+<td><code>dr_grpo</code></td>
+<td>去掉组内 <code>/std</code> 归一化</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 对比 veRL 的 14 个优势估计器 + 12 个策略损失（<a href="05-算法与框架的接口.html">05 章 §5.2</a>）：<strong>OpenRLHF 只有 6 个，但 335 行就写完了。</strong> 这个对比很能说明两个框架的定位差异——veRL 要做算法研究的公共平台，OpenRLHF 要做「能跑起来的最短路径」。</p>
+<p>✅ 另外 <code>openrlhf/trainer/ppo_utils/</code> 里有几个值得注意的文件：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>experience_maker.py</code></td>
+<td>411</td>
+<td>把 rollout 变成训练用的 experience</td>
+</tr>
+<tr>
+<td><code>samples_generator.py</code></td>
+<td>314</td>
+<td>生成侧</td>
+</tr>
+<tr>
+<td><code>experience.py</code></td>
+<td>283</td>
+<td>experience 数据结构</td>
+</tr>
+<tr>
+<td><code>replay_buffer.py</code></td>
+<td><strong>177</strong></td>
+<td>★ 回放缓冲区</td>
+</tr>
+<tr>
+<td><code>length_penalty.py</code></td>
+<td>153</td>
+<td>长度惩罚</td>
+</tr>
+<tr>
+<td><code>kl_controller.py</code></td>
+<td>29</td>
+<td>KL 系数自适应</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <code>replay_buffer.py</code> 只有 177 行，而它就是 <a href="01-格局全景.html">01 章 §1.1</a> 五模块里的第 ③ 块。<strong>在同步框架里，data buffer 确实只需要这么多代码</strong>——复杂度全在异步之后才出现（对照 slime 的 <code>data_source.py</code> 229 行 + 整个 <code>fully_async_rollout.py</code> 274 行）。</p>
+<hr />
+<h2 id="7">7 · ✅ 版本时间线：能看出这个领域的演进</h2>
+<p>✅ README 的 News 部分是一条有价值的行业时间线：</p>
+<table>
+<thead>
+<tr>
+<th>时间</th>
+<th>事件</th>
+<th>⚠️ 对应本目录哪个主题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2024/12</td>
+<td>提出 <strong>REINFORCE++</strong></td>
+<td>去 critic 潮流（<a href="05-算法与框架的接口.html">05 章</a>）</td>
+</tr>
+<tr>
+<td>2025/4</td>
+<td><em>"Clean OpenRLHF: Refactored based on </em><em>Single Controller</em><em> and Unified Packing Samples"</em></td>
+<td>单控制器范式（<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.4</a>）</td>
+</tr>
+<tr>
+<td>2025/5</td>
+<td>v0.8.0：<code>--train.async_enable</code>（异步 RLHF）+ <code>--train.agent_func_path</code>（异步 agent RLHF）</td>
+<td>★ <strong>异步与 agent 同一个版本落地</strong></td>
+</tr>
+<tr>
+<td>2025/10</td>
+<td>ScaleRL</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2026/2</td>
+<td>ProRL V2</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2026/4</td>
+<td>v0.10：多轮 VLM RL + VLM RLHF</td>
+<td>多模态</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>2025/5 那一行最值得注意：异步和 agent 支持是在同一个版本一起出来的。</strong><br />
+这不是巧合——<a href="06-AgenticRL-环境与沙箱.html">06 章 §6.1</a> 讲过，agentic 任务的轨迹又长又参差，同步架构根本扛不住。<strong>agent 支持在工程上必须以异步为前提</strong>，这条在 OpenRLHF 的断言里也写着（<code>partial_rollout_enable</code> 要求 <code>async_enable</code>，见 §4④）。</p>
+<p>⚠️ 而 2025/4 的「基于单控制器重构」说明：<strong>单控制器不是从一开始就有的</strong>，是这个领域走了一段之后才收敛出来的范式。<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章</a> 讲的 HybridFlow 单/多控制器混合，在 OpenRLHF 这里是一次明确的重构事件。</p>
+<hr />
+<h2 id="8">8 · 怎么读这份源码</h2>
+<p>⚠️ 我的建议路径（按依赖顺序，读完约需一两个小时）：</p>
+<div class="codehilite"><pre><span></span><code>① openrlhf/trainer/ppo_trainer.py   L499 fit()        ← 同步主循环，20 行看懂 RL
+② openrlhf/trainer/ppo_trainer_async.py                ← 异步版，看三处差别（§4）
+③ openrlhf/utils/agent.py           356 行             ← agent 抽象全貌
+④ openrlhf/models/loss.py           335 行             ← 算法都在这
+⑤ openrlhf/cli/train_ppo_ray.py     L660-700           ← ★ 参数间的约束关系
+</code></pre></div>
+
+<p>⚠️ <strong>第 ⑤ 步最容易被跳过，但信息量最大。</strong> 那几十行断言把「哪些配置组合是非法的」写得清清楚楚，而每一条非法组合背后都是一个架构约束。读参数校验，往往比读实现更快理解一个框架的边界。</p>
+<hr />
+<h2 id="9">9 · 本篇小结</h2>
+<table>
+<thead>
+<tr>
+<th>结论</th>
+<th>分级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>13,411 行，是 veRL 的 1/12.8；差距在后端适配而非算法</td>
+<td>✅ 实测 + ⚠️</td>
+</tr>
+<tr>
+<td>Ray + vLLM + DeepSpeed 三件套；README 自陈「生成占 80% 时间」</td>
+<td>✅ 原文</td>
+</tr>
+<tr>
+<td><strong>Hybrid Engine</strong>：全部同置 + 换入换出，与 GLM 的「分离 + 异步」目标同、手段反</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>同置开关成对出现：actor+ref、critic+reward，对应 16Ψ/2Ψ 的显存搭配</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>同步 <code>fit()</code> 20 行说完 buffer 深度 0</td>
+<td>✅ L499</td>
+</tr>
+<tr>
+<td><strong><code>--train.async_queue_size</code>（默认 1）就是 buffer 深度参数</strong></td>
+<td>✅ <code>train_ppo_ray.py:275</code></td>
+</tr>
+<tr>
+<td>用 <code>rollout_queue</code> + <code>rollout_slots</code> 计数信号量硬保证深度上界</td>
+<td>✅ L292-297</td>
+</tr>
+<tr>
+<td><strong><code>VLLMLock</code></strong> 明确拒绝「永不停」：一批样本必须由一致的权重生成</td>
+<td>✅ L20-34</td>
+</tr>
+<tr>
+<td><strong><code>pause_generation</code>/<code>resume_generation</code></strong> = 中断模型第 3 档软暂停，且只在 partial rollout 下启用</td>
+<td>✅ L254-265</td>
+</tr>
+<tr>
+<td>参数断言把架构约束写死：异步禁 sleep、partial rollout 依赖异步、超采样依赖队列</td>
+<td>✅ L667-698</td>
+</tr>
+<tr>
+<td><code>agent.py</code> 仅 <strong>356 行</strong>实现整个 agent 抽象（veRL 对应部分 3,424 行，差 9.6 倍）</td>
+<td>✅ 实测</td>
+</tr>
+<tr>
+<td>用户 agent 代码挂在<strong>推理引擎侧</strong>，离生成最近离训练最远——与 GLM/slime 同一原则</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>「执行模式 × RL 算法」正交表 + TITO 作为架构基石</td>
+<td>✅ 原文</td>
+</tr>
+<tr>
+<td>6 个算法 335 行 vs veRL 26 个注册项——定位差异，不是能力差异</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td><code>replay_buffer.py</code> 仅 177 行：同步框架的 buffer 本来就简单</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td><strong>2025/5 异步与 agent 支持同版本落地</strong>——agent 在工程上以异步为前提</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>单控制器是 2025/4 的一次重构，不是与生俱来</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>读源码先读 <code>train_ppo_ray.py:660-700</code> 的参数断言，比读实现更快理解边界</td>
+<td>⚠️ 建议</td>
+</tr>
+</tbody>
+</table>
+<p><strong>下一篇</strong> → <a href="07-选型与实践.html">07-选型与实践.md</a></p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

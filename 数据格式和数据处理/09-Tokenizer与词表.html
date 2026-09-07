@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · Tokenizer 与词表：文本变成整数的那一步</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="08-去污染与隐私许可.html">← 08 去污染与隐私许可</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="10-数据配比.html">10 数据配比</a></p>
+</blockquote>
+<h1 id="09-tokenizer">09 · Tokenizer 与词表：文本变成整数的那一步</h1>
+<blockquote>
+<p><strong><a href="04-训练格式-Megatron索引.html">04 章</a>里，<code>.bin</code> 文件是一串整数。这一章讲的就是"文本怎么变成那串整数"。</strong></p>
+<p>★ 隔壁 <a href="../业界模型技术报告/大模型架构入门/02-Embedding与词表.html"><code>大模型架构入门/02-Embedding与词表.md</code></a> 从<strong>模型入口</strong>的角度讲过 Embedding；<br />
+这一章从<strong>数据侧</strong>讲：词表怎么训出来、大小怎么定、有哪些坑。</p>
+</blockquote>
+<hr />
+<h2 id="91">9.1 为什么不能按字/按词切</h2>
+<div class="codehilite"><pre><span></span><code>方案①：按【字符】切
+   &quot;hello&quot; → h, e, l, l, o
+   ✅ 词表极小（几百个）
+   ❌ ★ 序列变得极长 —— 而注意力的开销是 O(L²)
+      一篇 2000 词的文章 → 12000 个 token，成本翻好几倍
+
+方案②：按【词】切
+   &quot;hello world&quot; → hello, world
+   ✅ 序列短
+   ❌ 词表爆炸：英文常用词就几十万，加上时态变化、专有名词，无穷无尽
+   ❌ ★ 遇到没见过的词只能给一个 &lt;UNK&gt;（unknown，未知词）
+      → 模型永远学不会新词、拼写错误、代码里的变量名
+   ❌ ★★ 中文根本没有&quot;词&quot;的天然边界
+
+★★ 所以答案是【中间路线】：切成&quot;子词&quot;（subword）
+   常见词整个保留，罕见词拆成有意义的碎片
+       &quot;unbelievable&quot; → &quot;un&quot; + &quot;believ&quot; + &quot;able&quot;
+       &quot;深度学习&quot;      → &quot;深度&quot; + &quot;学习&quot;
+   ⟹ 词表可控（10 万量级）+ 序列不长 + ★ 永远不会有 &lt;UNK&gt;
+</code></pre></div>
+
+<hr />
+<h2 id="92-bpe">9.2 ★ BPE：这个领域用得最多的算法</h2>
+<p><strong>BPE</strong> = <strong>Byte Pair Encoding</strong>（字节对编码）。</p>
+<p>✅ 出处：<a href="https://arxiv.org/abs/1508.07909">arXiv:1508.07909</a>，Rico Sennrich 等，2015-08，<em>Neural Machine Translation of Rare Words with Subword Units</em>。<br />
+★ 有意思的是，BPE 原本是 1994 年的一个<strong>数据压缩</strong>算法，Sennrich 把它借来做分词——<strong>这也是为什么后面"压缩率"会成为衡量 tokenizer 的核心指标</strong>。</p>
+<h3 id="_1">算法：只有一条规则</h3>
+<blockquote>
+<p><strong>反复找出当前语料里【出现次数最多的相邻符号对】，把它合并成一个新符号。重复 N 次。</strong></p>
+</blockquote>
+<h3 id="_2">手算一遍</h3>
+<div class="codehilite"><pre><span></span><code>语料（简化成词频表）：
+    &quot;low&quot;    出现 5 次
+    &quot;lower&quot;  出现 2 次
+    &quot;newest&quot; 出现 6 次
+    &quot;widest&quot; 出现 3 次
+
+初始：全部拆成字符（末尾加 &lt;/w&gt; 表示词尾）
+    l o w &lt;/w&gt;          ×5
+    l o w e r &lt;/w&gt;      ×2
+    n e w e s t &lt;/w&gt;    ×6
+    w i d e s t &lt;/w&gt;    ×3
+
+── 第 1 轮：数所有相邻对 ──
+    (e,s): 6+3 = 9   ← ★ 最多
+    (s,t): 6+3 = 9
+    (l,o): 5+2 = 7
+    (o,w): 5+2 = 7
+    ...
+  合并 (e,s) → &quot;es&quot;
+    n e w es t &lt;/w&gt;   ×6
+    w i d es t &lt;/w&gt;   ×3
+
+── 第 2 轮 ──
+    (es,t): 9  ← 最多  → 合并成 &quot;est&quot;
+    n e w est &lt;/w&gt;    ×6
+    w i d est &lt;/w&gt;    ×3
+
+── 第 3 轮 ──
+    (est,&lt;/w&gt;): 9  → 合并成 &quot;est&lt;/w&gt;&quot;     ★ 学会了英语的最高级后缀！
+
+── 第 4 轮 ──
+    (l,o): 7  → &quot;lo&quot;
+── 第 5 轮 ──
+    (lo,w): 7 → &quot;low&quot;                     ★ 学会了词根 &quot;low&quot;
+
+最终词表 = 初始字符 + 这些合并出来的新符号
+最终【合并规则表】= [(e,s), (es,t), (est,&lt;/w&gt;), (l,o), (lo,w), ...]  ★ 有顺序！
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>关键理解：BPE 的产物是两个东西</strong><br />
+<code>① vocab   —— 所有 token 的列表（token → id）
+② merges  —— ★【有序的】合并规则表</code><br />
+<strong>编码新文本时，就是按 merges 的顺序，从头到尾把能合的都合掉。</strong><br />
+顺序不能变——变了切出来就是另一套 token。这也是为什么 tokenizer 文件必须和模型权重<strong>严格配套</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 编码：按 merges 顺序反复合并（概念版）</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">encode</span><span class="p">(</span><span class="n">word</span><span class="p">,</span> <span class="n">merges</span><span class="p">):</span>
+    <span class="n">symbols</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">word</span><span class="p">)</span> <span class="o">+</span> <span class="p">[</span><span class="s2">&quot;&lt;/w&gt;&quot;</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="ow">in</span> <span class="n">merges</span><span class="p">:</span>                       <span class="c1"># ★ 必须按训练时的顺序</span>
+        <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="k">while</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">symbols</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">==</span> <span class="n">a</span> <span class="ow">and</span> <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="n">b</span><span class="p">:</span>
+                <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">a</span> <span class="o">+</span> <span class="n">b</span><span class="p">]</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">i</span> <span class="o">+=</span> <span class="mi">1</span>
+    <span class="k">return</span> <span class="p">[</span><span class="n">vocab</span><span class="p">[</span><span class="n">s</span><span class="p">]</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">symbols</span><span class="p">]</span>
+</code></pre></div>
+
+<hr />
+<h2 id="93-bpe-byte-fallback">9.3 字节级 BPE 与 byte fallback：怎么保证"什么都能切"</h2>
+<p>上面的 BPE 是在<strong>字符</strong>上做的。但字符有 15 万种（Unicode），而且总有你没见过的（生僻字、emoji、古文字）。</p>
+<div class="codehilite"><pre><span></span><code>★ 解决办法：不在【字符】上做 BPE，在【字节】上做。
+   任何文本先转成 UTF-8 字节序列 → 只有 256 种可能的基础符号
+   ⟹ ★★ 任何输入都一定能被表示出来，永远不会有 &lt;UNK&gt;
+
+  这叫【字节级 BPE / byte-level BPE】，GPT-2 之后成为主流。
+
+  变体：byte fallback —— 平时按字符 BPE，遇到词表里没有的字符
+       才退回到字节表示。SentencePiece 的常见配置。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>对中文极其重要的一个后果：</strong><br />
+```<br />
+UTF-8 里一个汉字占 【3 个字节】<br />
+→ 如果 tokenizer 训练语料里【中文很少】，"锟"这种字没被合并成一个 token<br />
+→ 它就会被切成 3 个字节 token<br />
+⟹ ★ 同一句中文，在中文友好的 tokenizer 上是 20 个 token，<br />
+     在中文不友好的 tokenizer 上可能是 50 个<br />
+  → 存储贵 2.5 倍、训练贵 2.5 倍、推理贵 2.5 倍、上下文窗口缩水 2.5 倍</p>
+<p>★★ 这就是为什么国产模型都要【自己重训 tokenizer】，而不是直接用开源的。<br />
+```</p>
+</blockquote>
+<p><strong>其他几种算法</strong>（知道名字就够）：</p>
+<div class="codehilite"><pre><span></span><code>WordPiece   —— BERT 用的。和 BPE 几乎一样，只是合并时选的不是&quot;最高频&quot;
+               而是&quot;最能提升语言模型似然&quot;的那一对
+Unigram LM  —— SentencePiece 的另一种模式。★ 思路【反过来】：
+               先弄一个巨大的候选词表，再迭代地【删掉】贡献最小的
+SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法。
+               它同时实现了 BPE 和 Unigram 两种模式。很多人会搞混。
+               ★ 它的真正卖点是【把空格也当普通字符处理】（用 ▁ 表示），
+                 于是不需要预先分词 —— 对中文、日文这类无空格语言是必需的
+</code></pre></div>
+
+<hr />
+<h2 id="94">9.4 ★★ 词表大小怎么定：一个四方拉扯的权衡</h2>
+<div class="codehilite"><pre><span></span><code>词表 V 变大 →
+  ✅ 压缩率变好（同样的文本用更少的 token）
+     → 序列变短 → 训练和推理都变便宜
+     → 上下文窗口能装更多真实内容
+
+  ❌ Embedding 矩阵变大：V × d
+     V=15万, d=5120 → 7.68 亿参数，★ 光输入 embedding 就快 8 亿
+     再加输出层（LM head）又是一份 → ★ 15 亿参数花在&quot;查表&quot;上
+
+  ❌ 输出 softmax 变慢：每一步都要在 V 个词上算概率
+
+  ❌ ★ 罕见 token 训练不足
+     词表里排在最后的那些 token，可能在整个语料里只出现几百次
+     → 它们的 embedding 基本是随机初始化的状态
+     → ★★ 这就是&quot;glitch token&quot;（故障 token）现象的来源：
+        某些 token 一旦出现，模型行为会变得完全不可预测
+
+  ❌ ★★★ 【04 章的存储成本断崖】：
+     V ≤ 65535 → .bin 用 uint16，每 token 2 字节
+     V &gt; 65535 → .bin 用 int32，每 token 4 字节
+     → 15 T token 的数据集：30 TB vs 60 TB，★ 直接翻倍
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>现实的落点</strong>：现在的大模型词表普遍在 <strong>12 万 ~ 20 万</strong>之间。已经远超 65535，所以<strong>存储翻倍这笔账大家都认了</strong>——因为多语言能力比存储费重要得多。</p>
+</blockquote>
+<h3 id="megatron">⚠️ 一个 Megatron 特有的坑：词表要能被整除</h3>
+<div class="codehilite"><pre><span></span><code>✅ Megatron 有一个参数 --make-vocab-size-divisible-by（默认 128）
+
+原因：★ 输出层（LM head）是按【张量并行 TP】切开的，
+      V 必须能被 (TP 大小 × 128) 整除，才能均匀切分且对齐 GPU 的计算单元
+
+现象：你的 tokenizer 是 151,552 个 token，
+      但模型里的 Embedding 矩阵是 151,552 → 被补齐到某个更大的数
+      → ★ 多出来的那些行是【永远不会被用到的填充】
+
+⚠️ 新手困惑：&quot;为什么 config 里的 vocab_size 和 tokenizer 的长度对不上？&quot;
+   答案就是这个填充。★ 计算 loss 时要把填充位置屏蔽掉，否则概率质量会漏。
+</code></pre></div>
+
+<hr />
+<h2 id="95-tokenizer">9.5 ★ 压缩率：怎么衡量一个 tokenizer 好不好</h2>
+<div class="codehilite"><pre><span></span><code>压缩率 = 平均每个 token 覆盖多少个【字符】
+         ★ 越高越好（同样的文本用更少 token）
+
+别名：fertility（生育率）= 每个词平均切成几个 token，★ 越低越好
+      —— 是同一件事的倒过来说法，看到别人用哪个都不要慌
+</code></pre></div>
+
+<p>✅ <strong>openPangu-2.0 技术报告 Table 4 的实测数据</strong>（这是本章最有价值的一手数字）：</p>
+<table>
+<thead>
+<tr>
+<th>词表</th>
+<th>词表大小</th>
+<th>中文</th>
+<th>英文</th>
+<th>多语言</th>
+<th>代码</th>
+<th>行业</th>
+<th><strong>平均</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>openPangu-1.0</td>
+<td>153,376</td>
+<td>3.82</td>
+<td>4.30</td>
+<td>2.80</td>
+<td>2.80</td>
+<td>4.18</td>
+<td>2.56</td>
+</tr>
+<tr>
+<td>openPangu-2.0-<strong>3digit</strong></td>
+<td>150,400</td>
+<td><strong>4.04</strong></td>
+<td>4.27</td>
+<td><strong>3.37</strong></td>
+<td>2.77</td>
+<td><strong>4.51</strong></td>
+<td><strong>2.71</strong></td>
+</tr>
+<tr>
+<td>openPangu-2.0-<strong>single-digit</strong></td>
+<td>149,600</td>
+<td>3.82</td>
+<td>4.15</td>
+<td>3.32</td>
+<td>2.56</td>
+<td>4.27</td>
+<td>2.59</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>读法：
+  ① 中文 3.82~4.04 —— ★ 平均一个 token 覆盖将近 4 个汉字
+     这是【中文友好】tokenizer 的正常水平
+  ② 代码只有 2.56~2.80 —— ★ 代码是最难压缩的，
+     因为变量名千奇百怪、缩进和符号极多
+  ③ &quot;平均&quot;那一列比各分项都低 —— ⚠️ 说明它不是简单算术平均，
+     ✅ 报告没说加权方式，我不做推测
+</code></pre></div>
+
+<hr />
+<h2 id="96-openpangu">9.6 ★★★ 一个绝佳的教学案例：openPangu 为什么故意选了压缩率更差的那个</h2>
+<p>看上表：<strong>3digit 变体在几乎所有语料上压缩率都更好</strong>（平均 2.71 vs 2.59）。</p>
+<p>✅ <strong>但报告明确说：openPangu-2.0 最终采用的是 single-digit 变体。</strong></p>
+<p>先解释这两个变体的区别：</p>
+<div class="codehilite"><pre><span></span><code>数字 &quot;12345&quot; 怎么切？
+
+  3-digit 变体      → &quot;123&quot; + &quot;45&quot;      （按最多 3 位一组合并）
+  single-digit 变体 → &quot;1&quot;+&quot;2&quot;+&quot;3&quot;+&quot;4&quot;+&quot;5&quot;  ★ 每个数字单独一个 token
+</code></pre></div>
+
+<p>✅ 报告给出的理由（我按原文转述）：</p>
+<div class="codehilite"><pre><span></span><code>① 常规 BPE 是按【共现频率】合并数字的
+   → &quot;2024&quot; 因为常见被合成一个 token，
+     &quot;2025&quot; 可能被切成 &quot;202&quot;+&quot;5&quot;
+   ⟹ ★★ 同一个位置上的数字，切法【不一致】
+      模型很难学到&quot;个位、十位、百位&quot;这种稳定的结构
+
+② single-digit 让数字表示【完全规整】
+   ✅ 报告点名的三个受益场景：
+      · 数值推理（做算术）
+      · 多模态定位（坐标、bounding box 都是数字）
+      · 工具调用（tool 参数里全是数字）
+
+③ 代价：压缩率损失一点点（平均 2.71 → 2.59，约 4%）
+</code></pre></div>
+
+<blockquote>
+<p>★★★ <strong>这个案例值得反复琢磨，因为它推翻了一个很自然的直觉：</strong></p>
+<p><code>错误直觉：tokenizer 的目标是【压缩率最高】
+实际情况：tokenizer 的目标是【让模型好学】
+          压缩率只是其中一个因素，而且不是最重要的那个</code></p>
+<p>★ 同样的逻辑也解释了另外两个业界常见做法：<br />
+<code>· 代码模型会给【连续空格】和【制表符】专门开 token
+  （早期 GPT-2 没做，导致它写 Python 缩进特别吃力）
+· 多数模型会禁止 token【跨越换行符】合并
+  —— 否则 "。\n第" 会被合成一个 token，破坏结构</code></p>
+<p>⚠️ 我的补充：<strong>openPangu 这个选择在 2025 年之后已经接近共识</strong>——多家模型都采用了逐位数字切分。但它把"为什么"写进了报告并给了对照表，这在技术报告里是很少见的坦诚。</p>
+</blockquote>
+<hr />
+<h2 id="97-tokenizer">9.7 训练 tokenizer 的实操</h2>
+<div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">tokenizers</span><span class="w"> </span><span class="kn">import</span> <span class="n">Tokenizer</span><span class="p">,</span> <span class="n">models</span><span class="p">,</span> <span class="n">trainers</span><span class="p">,</span> <span class="n">pre_tokenizers</span><span class="p">,</span> <span class="n">decoders</span>
+
+<span class="n">tok</span> <span class="o">=</span> <span class="n">Tokenizer</span><span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">BPE</span><span class="p">(</span><span class="n">unk_token</span><span class="o">=</span><span class="kc">None</span><span class="p">))</span>       <span class="c1"># ★ 字节级 BPE 不需要 unk</span>
+
+<span class="n">tok</span><span class="o">.</span><span class="n">pre_tokenizer</span> <span class="o">=</span> <span class="n">pre_tokenizers</span><span class="o">.</span><span class="n">Sequence</span><span class="p">([</span>
+    <span class="c1"># ★ 数字逐位切开 —— 就是 9.6 说的 single-digit</span>
+    <span class="n">pre_tokenizers</span><span class="o">.</span><span class="n">Digits</span><span class="p">(</span><span class="n">individual_digits</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+    <span class="c1"># ★ 禁止 token 跨越空白与标点合并</span>
+    <span class="n">pre_tokenizers</span><span class="o">.</span><span class="n">ByteLevel</span><span class="p">(</span><span class="n">add_prefix_space</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">use_regex</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+<span class="p">])</span>
+<span class="n">tok</span><span class="o">.</span><span class="n">decoder</span> <span class="o">=</span> <span class="n">decoders</span><span class="o">.</span><span class="n">ByteLevel</span><span class="p">()</span>
+
+<span class="n">trainer</span> <span class="o">=</span> <span class="n">trainers</span><span class="o">.</span><span class="n">BpeTrainer</span><span class="p">(</span>
+    <span class="n">vocab_size</span><span class="o">=</span><span class="mi">151552</span><span class="p">,</span>
+    <span class="n">min_frequency</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+    <span class="n">special_tokens</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;&lt;|endoftext|&gt;&quot;</span><span class="p">,</span> <span class="s2">&quot;&lt;|im_start|&gt;&quot;</span><span class="p">,</span> <span class="s2">&quot;&lt;|im_end|&gt;&quot;</span><span class="p">,</span>
+                    <span class="s2">&quot;&lt;|pad|&gt;&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="p">[</span><span class="sa">f</span><span class="s2">&quot;&lt;|reserved_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">|&gt;&quot;</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">64</span><span class="p">)],</span>
+    <span class="c1">#                              ★★ 预留一批空 token！见下方说明</span>
+    <span class="n">initial_alphabet</span><span class="o">=</span><span class="n">pre_tokenizers</span><span class="o">.</span><span class="n">ByteLevel</span><span class="o">.</span><span class="n">alphabet</span><span class="p">(),</span>   <span class="c1"># 256 个字节全放进去</span>
+<span class="p">)</span>
+<span class="n">tok</span><span class="o">.</span><span class="n">train_from_iterator</span><span class="p">(</span><span class="n">sample_corpus_iter</span><span class="p">(),</span> <span class="n">trainer</span><span class="o">=</span><span class="n">trainer</span><span class="p">)</span>
+<span class="n">tok</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">&quot;tokenizer.json&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<h3 id="_3">★ 训练语料怎么选（比算法本身更重要）</h3>
+<div class="codehilite"><pre><span></span><code>① ★★ 必须【按最终训练配比采样】
+   如果你的训练数据是 中文30% 英文50% 代码20%，
+   那 tokenizer 的训练样本也要按这个比例
+   ⚠️ 一个真实的失败：拿英文语料训 tokenizer，然后训中文模型
+      → 中文全部退化成字节，成本翻 3 倍
+
+② 采样量不需要很大
+   ★ 几 GB ~ 几十 GB 就够了，因为 BPE 只看频率统计，收敛很快
+   （对比：模型训练要几十 TB）
+
+③ ⚠️ 要先做基础清洗
+   如果采样里混进大量乱码或 base64 字符串，
+   → 词表里会浪费几千个 token 在垃圾模式上
+</code></pre></div>
+
+<h3 id="reserved-token">★ 为什么要预留 reserved token</h3>
+<div class="codehilite"><pre><span></span><code>模型训完之后，你想加一个新的特殊 token（比如新的工具调用标记）：
+   → 改词表大小 = 改 Embedding 矩阵形状 = ★ 得重训
+
+⟹ 所以【一开始就预留几十上百个空 token】，以后想加什么直接占用一个
+★ 这是所有正经模型的标准做法。你在开源模型的 tokenizer 里
+  经常能看到 &lt;|reserved_special_token_37|&gt; 这类东西，就是干这个的。
+</code></pre></div>
+
+<hr />
+<h2 id="98">9.8 ⚠️ 四个真实会踩的坑</h2>
+<div class="codehilite"><pre><span></span><code>① ★★★ 换了 tokenizer 必须重跑 preprocess_data
+   .bin 里存的是【整数 id】。换词表后同一个 id 指向完全不同的词。
+   ★ 现象：loss 从第一步就停在随机水平且不下降。
+   ⚠️ 这是 04 章列的五个坑里【最隐蔽】的一个，因为程序不会报任何错。
+
+② 训练和推理用了不同版本的 tokenizer
+   哪怕只差一条 merge 规则，切出来的 token 边界就会不同
+   ★ 现象：模型在自己的评测里正常，一上线就变傻
+   ★ 这也是 GLM-5.2 报告里提到的 RL 训练&quot;重新 tokenize 会破坏对齐&quot;的同一类问题
+
+③ 特殊 token 被用户输入注入
+   用户在输入里打了 &quot;&lt;|im_start|&gt;&quot; 这几个字符 —— 
+   ⚠️ 如果 tokenizer 把它编码成【真正的特殊 token】而不是普通文本，
+      用户就能伪造对话角色。
+   ★ 正确做法：用户输入编码时必须关掉特殊 token 解析
+      （HuggingFace 里就是 tokenizer(text) 时不要开 special token 解析）
+
+④ glitch token（训练不足的 token）
+   词表尾部的罕见 token 在语料里出现次数极少 → embedding 近乎随机
+   ★ 现象：某些奇怪字符串会让模型输出完全失控
+   ★ 缓解：训完 tokenizer 后统计每个 token 在全语料的出现频次，
+          把出现次数低于阈值的 token 剔掉重训
+</code></pre></div>
+
+<hr />
+<h2 id="99">9.9 挂回真实系统</h2>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>词表大小</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>✅ <strong>128 K</strong></td>
+<td>✅ 报告原文：在 V3 的 tokenizer 上只加了几个特殊 token，<strong>词表大小保持 128K 不变</strong>；并沿用 V3 的 token-splitting 与 FIM（Fill-in-Middle，中间填充）策略</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>151,552 → <strong>154,880</strong></td>
+<td>✅ 报告披露本代扩了词表</td>
+</tr>
+<tr>
+<td><strong>MiniMax-M3</strong></td>
+<td><strong>200,064</strong></td>
+<td>★ 五家里最大</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>149,600</strong>（★ 配置表里写 <strong>151,552</strong>）</td>
+<td>✅ single-digit 变体，见 9.6。⚠️ 报告里两个数都有：149,600 是<strong>真正训出来的词表</strong>，151,552 是<strong>补齐后的 Embedding 宽度</strong>（见 9.4）——问的问题不同，不矛盾</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 一个值得注意的对比：
+   DeepSeek-V4 是五家里【唯一没有扩词表】的 —— 128K，而且明说&quot;保持不变&quot;。
+   MiniMax-M3 是 200K，★ 差了 56%。
+
+⚠️ 这说明&quot;词表越大越好&quot;远不是共识。
+   ★ 我的理解（不是报告原话）：词表一旦定死，
+     后续所有已经处理好的 .bin 数据、所有已训好的 checkpoint 都被绑定在它上面。
+     ⟹ 【不换词表】本身就是一种很有价值的工程连续性。
+</code></pre></div>
+
+<blockquote>
+<p>★ 五家里有四家落在 <strong>15 万 ~ 20 万</strong>区间，DeepSeek 是那个例外。<br />
+⚠️ 上表数字均取自 <a href="../业界模型技术报告/papers/"><code>业界模型技术报告/papers/</code></a> 下的报告正文提取；⚠️ 注意 openPangu 那一行是<strong>报告 Table 4 里的词表大小</strong>，与其 config 表中的数字可能不完全一致（见 <a href="16-五家报告的数据章节.html">16 章</a>）。</p>
+</blockquote>
+<hr />
+<h2 id="910">9.10 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 按字切 → 序列太长（注意力 O(L²)）；按词切 → 词表爆炸 + &lt;UNK&gt;
+   ⟹ 子词（subword）是中间路线
+
+② ✅ BPE（[1508.07909](https://arxiv.org/abs/1508.07909)，Sennrich 2015）只有一条规则：
+   反复合并【出现次数最多的相邻符号对】
+   产物 = vocab（token→id）+ ★【有序的】merges 规则表
+   ★ 它原本是 1994 年的数据压缩算法 —— 所以&quot;压缩率&quot;成了核心指标
+
+③ 字节级 BPE：在 UTF-8 字节上做 → 只有 256 个基础符号 → 永不 &lt;UNK&gt;
+   ⚠️ 一个汉字 3 字节：tokenizer 不含中文 → 中文成本翻 2~3 倍
+      ★ 这就是国产模型必须自己重训 tokenizer 的原因
+
+④ ★ 词表大小的四方权衡：
+   大 → 压缩率好、序列短
+      ❌ Embedding + LM head 参数暴涨（15万×5120 ≈ 15 亿参数）
+      ❌ 罕见 token 训练不足 → glitch token
+      ❌★ 04 章的断崖：V&gt;65535 → .bin 从 2 字节变 4 字节，存储【翻倍】
+   现实落点：12 万 ~ 20 万
+   ⚠️ Megatron 会把 V 补齐到能被 TP×128 整除 → config 和 tokenizer 长度对不上
+
+⑤ 压缩率 = 每 token 覆盖多少字符（越高越好）；fertility 是它的倒过来说法
+   ✅ openPangu-2.0 实测：中文 ~3.8-4.0，代码只有 ~2.6-2.8（代码最难压）
+
+⑥ ★★★ openPangu 的教学案例：
+   3digit 变体压缩率更好（2.71 vs 2.59），但最终选了 single-digit。
+   理由：★ 频率驱动的数字合并【切法不一致】，模型学不到位值结构；
+        逐位切分让数值推理、多模态坐标、工具参数都规整
+   ⟹ ★★ tokenizer 的目标不是&quot;压缩率最高&quot;，是&quot;让模型好学&quot;
+
+⑦ 训 tokenizer：★ 采样必须按最终训练配比；几十 GB 就够；
+   ★ 一定要预留几十个 reserved token（否则以后加特殊 token 要重训）
+
+⑧ ⚠️ 四个坑：换词表没重跑 preprocess（loss 卡在随机且不报错）/
+   训推 tokenizer 版本不一致 / 用户输入里的特殊 token 注入 / glitch token
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><a href="08-去污染与隐私许可.html">← 08 去污染与隐私许可</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="10-数据配比.html">10 数据配比</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

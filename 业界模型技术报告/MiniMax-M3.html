@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniMax M3（含 M2 复盘）架构与技术报告解析</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="minimax-m3-m2">MiniMax M3（含 M2 复盘）架构与技术报告解析</h1>
+<blockquote>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p><strong>本文的特殊之处</strong>：这是五家里<strong>唯一一个把三条路线都跑过、并且把失败原因写进正式论文的团队</strong>。<br />
+线性注意力（MiniMax-01 / M1）→ 退回全注意力（M2）→ 块稀疏注意力（M3）。中间那一步"退回"，别家都没有公开记录。</p>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>来源</th>
+<th>可靠性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MSA 的机制、训练配方、kernel、消融、效率数字</td>
+<td><strong>MSA 论文 arXiv:2606.13392</strong>（30 页，正文提取核对）</td>
+<td>高（一手，但实验模型是 109B/6B，<strong>不是 M3 本身</strong>）</td>
+</tr>
+<tr>
+<td>M3 的实际架构超参</td>
+<td><strong>HF <code>config.json</code> 原文</strong></td>
+<td>高（一手，出货配置）</td>
+</tr>
+<tr>
+<td>M2 退回全注意力的完整论证 + SWA 消融表</td>
+<td><strong>M2 系列报告 arXiv:2605.26494 §2.2.2 + Table 2/3</strong>（35 页，正文提取核对）</td>
+<td>高（一手）</td>
+</tr>
+<tr>
+<td>M3 的 9×/15×/1-20 加速比、评测分数</td>
+<td>官方博客 + HF 模型卡</td>
+<td>中（厂商自述）</td>
+</tr>
+<tr>
+<td>M3 的训练数据量、训练流程、后训练配方</td>
+<td><strong>缺失</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本地论文</strong>：<a href="papers/MiniMax-Sparse-Attention-arXiv-2606.13392.pdf">papers/MiniMax-Sparse-Attention-arXiv-2606.13392.pdf</a>（30 页）· <a href="papers/MiniMax-MSA-正文提取.txt">papers/MiniMax-MSA-正文提取.txt</a> · <a href="papers/MiniMax-M2-Series-arXiv-2605.26494.pdf">papers/MiniMax-M2-Series-arXiv-2605.26494.pdf</a>（35 页）· <a href="papers/MiniMax-M2-正文提取.txt">papers/MiniMax-M2-正文提取.txt</a><br />
+<strong>横向对比</strong>：见 <a href="模型技术对比.html">模型技术对比.md</a>（DeepSeek-V4 / Kimi K3 / GLM-5.2 / MiniMax M3 / openPangu-2.0 五方）<br />
+<strong>同系列</strong>：<a href="DeepSeek-V4.html">DeepSeek-V4.md</a> ｜ <a href="Kimi-K3.html">Kimi-K3.md</a> ｜ <a href="GLM-5.2.html">GLM-5.2.md</a> ｜ <a href="openPangu-2.0-Pro.html">openPangu-2.0-Pro.md</a></p>
+</blockquote>
+<hr />
+<h2 id="_1">一、一句话总览</h2>
+<p><strong>MiniMax M3 = 428B 总参 / ~23B 激活的原生多模态 MoE，1M 上下文，注意力换成自研的 MSA 块稀疏注意力。</strong></p>
+<p>但真正值得读的不是 M3 本身，而是<strong>这条三段式的路线图</strong>：</p>
+<div class="codehilite"><pre><span></span><code>MiniMax-01 / M1  （2025）  Lightning Attention 线性注意力 × 全注意力混合
+        ↓  失败：大规模下多跳推理出现明确缺陷，且推理基建不成熟
+M2       （2025-10）      全部换回 full attention + GQA
+        ↓  这一步是&quot;退&quot;，但退得有理有据，并写进了论文
+M3       （2026-06）      MSA：保留精确 softmax，但只在选中的块上算
+</code></pre></div>
+
+<p><strong>M3 的选择本质上是一个折中</strong>：它没有回到线性注意力（丢精度），也没有停在全注意力（太贵），而是走了"<strong>softmax 保持精确、但把 receptive field 限制成动态选出来的 2048 个 token</strong>"这条路。这和 DeepSeek 的 DSA、Kimi 的 KDA 是三种不同的答案。</p>
+<hr />
+<h2 id="m2">二、先看 M2：一次公开的"撤退"</h2>
+<blockquote>
+<p>本节全部来自 M2 系列报告 arXiv:2605.26494 §2.2.2，可在 <a href="papers/MiniMax-M2-正文提取.txt">papers/MiniMax-M2-正文提取.txt</a> 里 grep 核对。</p>
+</blockquote>
+<p>M2 的配置本身很朴素：<strong>229.9B 总参 / 9.8B 激活，62 层，hidden 3072，48 个 query head / 8 个 KV head 的 GQA 全注意力，全模型 RoPE，256 个细粒度专家选 8，sigmoid 门控 + 可学习专家 bias，192K 上下文，29.2T tokens 预训练</strong>（恒定阶段 19.9T + 衰减阶段 9.3T，上下文 8K → 32K → 192K 三段扩展）。</p>
+<p>真正的内容在报告为什么这么选。原文把理由拆成四块：</p>
+<h3 id="1">① 评测本身才是瓶颈</h3>
+<blockquote>
+<p>开发 MiniMax-Text-01 时，我们的混合注意力模型在标准 benchmark（MMLU / BBH / MATH / LongBench）上<strong>看起来追平了全注意力</strong>，但<strong>在更大规模上，复杂多跳推理出现了明确的缺陷</strong>。</p>
+</blockquote>
+<p>于是他们做了代理指标去补这个洞，但报告紧接着说了最要命的一句：</p>
+<blockquote>
+<p><strong>代理指标和真实下游表现之间的相关性是脆弱的</strong>——它可能在更大规模上、或在没见过的任务分布上就不成立了。</p>
+</blockquote>
+<p>再加上：统计显著的评测所需算力随任务复杂度快速增长；不同架构和数据分布、训练配方之间的交互不可预测。<strong>"可靠的比较异常困难"。</strong></p>
+<p>这一条的分量在于：它说的不是"线性注意力不行"，而是"<strong>我们没有能力可靠地判断它行不行</strong>"。</p>
+<h3 id="2">② 基建差距</h3>
+<p>原文列了三个推理侧的未解问题（外加一个训练侧的）：</p>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>原文说法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>低精度存储</strong></td>
+<td>线性注意力对数值精度的敏感度远高于全注意力，和低精度 KV cache 的工程实践冲突</td>
+</tr>
+<tr>
+<td><strong>前缀缓存</strong></td>
+<td>缺乏原生 prefix caching 支持</td>
+</tr>
+<tr>
+<td><strong>投机解码</strong></td>
+<td>与投机解码的集成方式不明确</td>
+</tr>
+<tr>
+<td>（训练侧）</td>
+<td>许多线性架构<strong>即使在训练时也是访存受限的</strong>——不做激进的 IO 优化，理论算力优势就被抵消掉了</td>
+</tr>
+</tbody>
+</table>
+<h3 id="3-hybrid-swa">③ Hybrid SWA 实验：全面失败，而且给了表</h3>
+<p>这是最有价值的部分——<strong>别家只说"我们评估过并放弃了"，MiniMax 把消融表放出来了</strong>。</p>
+<p>实验规模：<strong>在 M2 架构量级上，续训了"数千亿到数万亿 tokens"</strong>，扫过的维度包括：</p>
+<ul>
+<li>SWA / 全注意力的比例</li>
+<li>RoPE 设置的调整</li>
+<li><strong>层内（intra-layer）与层间（inter-layer）两种混合方式</strong></li>
+<li>注意力模式分析（induction heads、retrieval heads）</li>
+<li>SWA 里加 sink token</li>
+</ul>
+<p><strong>预训练阶段结果（报告 Table 2，全注意力基线 vs 混合 SWA）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>Baseline</th>
+<th>w/ SWA</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MMLU</td>
+<td>85.5</td>
+<td><strong>85.6</strong></td>
+<td>+0.1</td>
+</tr>
+<tr>
+<td>MATH</td>
+<td>60.3</td>
+<td>60.3</td>
+<td>0</td>
+</tr>
+<tr>
+<td>RULER 32K CWE</td>
+<td>99.0</td>
+<td>99.0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>RULER 32K MQ</td>
+<td>99.0</td>
+<td>99.0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>HELMET ICL</strong></td>
+<td><strong>75.8</strong></td>
+<td>72.7</td>
+<td><strong>−3.1</strong></td>
+</tr>
+<tr>
+<td><strong>RULER 128K CWE</strong></td>
+<td><strong>90.0</strong></td>
+<td>72.0</td>
+<td><strong>−18.0</strong></td>
+</tr>
+<tr>
+<td><strong>RULER 128K MQ</strong></td>
+<td><strong>99.0</strong></td>
+<td>93.0</td>
+<td><strong>−6.0</strong></td>
+</tr>
+<tr>
+<td><strong>MTOB K-e Bleurt</strong></td>
+<td><strong>60.0</strong></td>
+<td>45.0</td>
+<td><strong>−15.0</strong></td>
+</tr>
+<tr>
+<td><strong>MTOB e-k ChrF</strong></td>
+<td><strong>44.8</strong></td>
+<td>27.2</td>
+<td><strong>−17.6</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>这张表把话说得非常清楚：32K 以内完全打平，128K 直接崩，上下文学习（MTOB 是低资源语言的书内翻译）崩得最狠。</strong></p>
+<p><strong>SFT 之后差距进一步放大（报告 Table 3）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Baseline</th>
+<th>w/ SWA</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AIME 2025</td>
+<td>86.7</td>
+<td>86.7</td>
+<td>打平</td>
+</tr>
+<tr>
+<td>ARC-AGI-1</td>
+<td>38.9</td>
+<td><strong>39.6</strong></td>
+<td>SWA 略胜</td>
+</tr>
+<tr>
+<td><strong>GPQA-Diamond</strong></td>
+<td><strong>75.3</strong></td>
+<td>72.7</td>
+<td>−2.6</td>
+</tr>
+<tr>
+<td>MMLU-Pro</td>
+<td><strong>80.5</strong></td>
+<td>80.1</td>
+<td>−0.4</td>
+</tr>
+<tr>
+<td><strong>IFBench</strong></td>
+<td>23.1</td>
+<td><strong>27.2</strong></td>
+<td><strong>SWA 大胜 +4.1</strong></td>
+</tr>
+<tr>
+<td><strong>SWE-verified</strong></td>
+<td><strong>54.7</strong></td>
+<td>50.2</td>
+<td><strong>−4.5</strong></td>
+</tr>
+<tr>
+<td><strong>Terminal-Bench</strong></td>
+<td><strong>26.7</strong></td>
+<td>23.8</td>
+<td>−2.9</td>
+</tr>
+<tr>
+<td><strong>BrowseComp-zh</strong></td>
+<td><strong>32.8</strong></td>
+<td>28.7</td>
+<td>−4.1</td>
+</tr>
+<tr>
+<td>GAIA-103</td>
+<td><strong>53.4</strong></td>
+<td>51.5</td>
+<td>−1.9</td>
+</tr>
+<tr>
+<td><strong>XBench-ds</strong></td>
+<td>58.0</td>
+<td><strong>63.0</strong></td>
+<td><strong>SWA 大胜 +5.0</strong></td>
+</tr>
+<tr>
+<td><strong>τ²-Bench retail</strong></td>
+<td>62.3</td>
+<td><strong>67.5</strong></td>
+<td><strong>SWA 大胜 +5.2</strong></td>
+</tr>
+<tr>
+<td><strong>τ²-Bench telecom</strong></td>
+<td><strong>32.5</strong></td>
+<td>21.0</td>
+<td><strong>−11.5</strong></td>
+</tr>
+</tbody>
+</table>
+<p>报告自己的归纳：</p>
+<blockquote>
+<p>超过 32K 上下文的 benchmark（agent 任务和复杂长上下文评测）上，<strong>SWA 变体显著差于全注意力</strong>。32K 以内差异是混合的、绝对值也小——SWA 在某些指令遵循和短周期 agent 任务上甚至反超，而全注意力在知识密集型评测上保持优势。</p>
+</blockquote>
+<p><strong>⚠️ 这张表里有一个容易被忽略的信息</strong>：SWA 在 IFBench、XBench-ds、τ²-retail 上是<strong>真的赢了</strong>，而且赢得不小。也就是说这不是"SWA 全面更差"，而是"<strong>SWA 换来的收益和损失落在不同的任务上，而它损失的那一类恰好是 MiniMax 要做的 agent 长任务</strong>"。同一张表换一家公司、换一个产品定位，结论完全可能相反。</p>
+<h3 id="4">④ 但结论不是"永不"</h3>
+<p>报告的 Outlook 一节：</p>
+<blockquote>
+<p>随着上下文长度增长、GPU 算力扩展放缓，<strong>次二次方注意力会变得越来越重要</strong>。我们正在投入更好的长上下文数据、评测方法和基建来支撑这个转变。</p>
+</blockquote>
+<p><strong>M3 就是这句话的兑现，中间只隔了 8 个月。</strong></p>
+<h3 id="5">⑤ 一个必须澄清的事实</h3>
+<p>M2 系列报告<strong>通篇只有 §2.2.2 这一节讲注意力</strong>，全文其余部分（35 页里的 30 页）讲的是 agent 数据管线、Forge RL 系统、和 M2.7 的自演化。<strong>它不是一份架构报告。</strong> 网上把它当成"MiniMax 架构报告"来引用是不准确的。</p>
+<hr />
+<h2 id="m3-hf-configjson">三、M3 的实际架构（来自 HF <code>config.json</code> 一手）</h2>
+<div class="codehilite"><pre><span></span><code><span class="nt">&quot;hidden_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">6144</span><span class="p">,</span><span class="w">          </span><span class="nt">&quot;num_hidden_layers&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
+<span class="nt">&quot;num_attention_heads&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;num_key_value_heads&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;head_dim&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">128</span><span class="p">,</span>
+<span class="nt">&quot;rotary_dim&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span><span class="w">             </span><span class="nt">&quot;partial_rotary_factor&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;rope_theta&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000000</span><span class="p">,</span>
+<span class="nt">&quot;vocab_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200064</span><span class="p">,</span><span class="w">         </span><span class="nt">&quot;max_position_embeddings&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1048576</span><span class="p">,</span>
+<span class="nt">&quot;num_local_experts&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">128</span><span class="p">,</span><span class="w">     </span><span class="nt">&quot;num_experts_per_tok&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;n_shared_experts&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="nt">&quot;intermediate_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3072</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;dense_intermediate_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12288</span><span class="p">,</span>
+<span class="nt">&quot;scoring_func&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sigmoid&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;use_routing_bias&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;routed_scaling_factor&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.0</span><span class="p">,</span>
+<span class="nt">&quot;hidden_act&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;swigluoai&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;swiglu_alpha&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.702</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;swiglu_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">7.0</span><span class="p">,</span>
+<span class="nt">&quot;use_qk_norm&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w">          </span><span class="nt">&quot;qk_norm_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;per_head&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;use_gemma_norm&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="nt">&quot;num_mtp_modules&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span>
+</code></pre></div>
+
+<p>整理成表，和 M2 对照：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>M2</strong></th>
+<th><strong>M3</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总参 / 激活</td>
+<td>229.9B / 9.8B</td>
+<td><strong>428B / ~23B</strong></td>
+</tr>
+<tr>
+<td>层数</td>
+<td>62</td>
+<td><strong>60</strong>（前 3 层 dense + 57 层 MoE）</td>
+</tr>
+<tr>
+<td>Hidden dim</td>
+<td>3,072</td>
+<td><strong>6,144</strong>（翻倍）</td>
+</tr>
+<tr>
+<td>注意力</td>
+<td><strong>全注意力 GQA</strong></td>
+<td><strong>MSA 块稀疏</strong>（前 3 层仍是全注意力）</td>
+</tr>
+<tr>
+<td>Query / KV heads</td>
+<td>48 / 8</td>
+<td><strong>64 / 4</strong></td>
+</tr>
+<tr>
+<td>Head dim</td>
+<td>—</td>
+<td>128</td>
+</tr>
+<tr>
+<td>位置编码</td>
+<td>全 RoPE</td>
+<td><strong>Partial RoPE</strong>（前 64 维，θ=5e6）</td>
+</tr>
+<tr>
+<td>QK Norm</td>
+<td>—</td>
+<td><strong>per-head QK-Norm</strong></td>
+</tr>
+<tr>
+<td>上下文</td>
+<td>192K</td>
+<td><strong>1,048,576（1M）</strong></td>
+</tr>
+<tr>
+<td>路由专家</td>
+<td>256 选 8</td>
+<td><strong>128 选 4</strong> + 1 共享</td>
+</tr>
+<tr>
+<td>门控</td>
+<td>sigmoid + 专家 bias</td>
+<td>同（+ routed_scaling 2.0）</td>
+</tr>
+<tr>
+<td>激活函数</td>
+<td>—</td>
+<td><strong><code>swigluoai</code></strong>（α=1.702, limit=7.0）</td>
+</tr>
+<tr>
+<td>MTP</td>
+<td>K=1 预训练 → 权重复制扩到 K=3</td>
+<td><strong>7 个 MTP module</strong></td>
+</tr>
+<tr>
+<td>词表</td>
+<td>200,064</td>
+<td>200,064</td>
+</tr>
+<tr>
+<td>多模态</td>
+<td>纯文本</td>
+<td><strong>原生多模态</strong>（32 层 ViT，patch 14，3D RoPE，2×2 patch merge）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>参数量自洽性验算</strong>（我自己按 config 算的，非官方口径）：<br />
+<code>57 × 128 × 3 × 6144 × 3072 ≈ 412.9B</code>（路由专家）<code>+ 3.2B</code>（共享专家）<code>+ 6.7B</code>（60 层注意力，含 index 分支）<code>+ 0.7B</code>（3 层 dense FFN）<code>+ 2.5B</code>（embedding + 输出头）<strong>≈ 426B</strong>，加上 MTP 和 ViT 与官方 428B 吻合。<br />
+激活：<code>57 × (4+1) × 3 × 6144 × 3072 ≈ 16.1B + 6.7B + 0.7B ≈ 23.5B</code>，与 ~23B 吻合。</p>
+<h3 id="_2">三个值得单独指出的设计</h3>
+<p><strong>① <code>swigluoai</code> + <code>swiglu_limit: 7.0</code> —— 又一家给 SwiGLU 加上限的</strong></p>
+<p><code>swigluoai</code> 是 gpt-oss 的截断版 SwiGLU：<code>α=1.702</code> 让 <code>Swish</code> 逼近 GELU，<code>limit=7.0</code> 把两个分支都夹住。</p>
+<p><strong>四家现在全都在给 SwiGLU 加界</strong>：DeepSeek-V4 硬截断到 <code>[−10,10]</code>、Kimi K3 用 <code>SiTU-GLU</code> 的 tanh 软上限（β₁=4, β₂=25）、MiniMax M3 用 gpt-oss 式的 clamp（limit=7）。<strong>唯一没这么做的是 GLM-5.2。</strong> 动机完全一致：低精度算术下的激活离群值。</p>
+<p><strong>② 激活参数从 9.8B 涨到 ~23B —— "mini activations"这条原则被放宽了</strong></p>
+<p>M2 系列报告的标题是《<strong>Mini Activations</strong> Unleashing Max Real-World Intelligence》，整篇论文的中心论点就是"极小激活量也能出前沿能力"。M3 把激活量提到 2.3 倍，专家数反而从 256 减到 128、top-k 从 8 减到 4——<strong>这是一个方向上的调整，但官方没有给出任何解释</strong>（没有 M3 技术报告）。合理猜测是省下来的注意力算力被换成了 FFN 容量，以及原生多模态需要更大的容量，但这<strong>纯属推测，无一手依据</strong>。</p>
+<p><strong>③ KV head 从 8 减到 4</strong></p>
+<p>这一条对解码速度是<strong>独立于 MSA 的额外收益</strong>：M3 每层每 token 的 KV cache 只有 M2 的一半。后面讲加速比口径时会用到这一点。</p>
+<hr />
+<h2 id="msa">四、MSA 是什么：一张图讲完</h2>
+<blockquote>
+<p>本节全部来自 MSA 论文 §3，公式编号沿用原文。</p>
+</blockquote>
+<h3 id="_3">两个分支</h3>
+<div class="codehilite"><pre><span></span><code>                 ┌─────────────── Index Branch（轻量，负责&quot;选&quot;）
+输入 X ──┤
+                 └─────────────── Main Branch（精确 softmax，负责&quot;算&quot;）
+</code></pre></div>
+
+<p><strong>Index Branch</strong>：每个 GQA 组一个 index query head，<strong>所有组共享同一个 index key head</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Q_idx = stopgrad(X) · W_q^idx  ∈ R^(N × H_kv × d_idx)     ← M3: H_kv=4, d_idx=128
+K_idx = stopgrad(X) · W_k^idx  ∈ R^(N × 1   × d_idx)     ← 只有 1 个头！
+</code></pre></div>
+
+<p>打分 → <strong>按块取最大值</strong>（block-max-pool）→ 每组各自取 Top-k：</p>
+<div class="codehilite"><pre><span></span><code>S^idx,(r)_{i,j} = Q_idx^(r)_i · K_idx_j^T / √d_idx
+M^idx,(r)_{i,b} = max_{j ∈ B_b, j ≤ i} S^idx,(r)_{i,j}      ← 块内取 max，不是平均
+I^(r)_i = TopK_b( M^idx,(r)_{i,·} , k )                     ← 每个 GQA 组独立选
+</code></pre></div>
+
+<p><strong>Main Branch</strong>：在选中的块上做<strong>标准的、精确的</strong> scaled dot-product attention。没有近似。</p>
+<div class="codehilite"><pre><span></span><code>O^(h)_i = softmax( Q^(h)_i · K^(r)[I^(r)_i]^T / √d_h ) · V^(r)[I^(r)_i]
+</code></pre></div>
+
+<p><strong>M3 出货配置</strong>：<code>B_k = 128</code>（块大小），<code>k = 16</code>（每组选 16 块）→ <strong>每个 query、每个 GQA 组恒定看 <code>k·B_k = 2,048</code> 个 KV token</strong>。上下文从 32K 涨到 1M，这个数字不变。</p>
+<h3 id="_4">关键设计选择：为什么是"每组独立选"</h3>
+<p>这是 MSA 和 DSA 最本质的区别。论文附录 A 给了可视化证据：</p>
+<blockquote>
+<p>不同的 GQA 组追踪<strong>不同的长程条带</strong>，同时共享相同的局部对角线和 sink 列——说明学到的 indexer <strong>捕捉到了 group-specific 的稀疏模式，而不是坍缩成单一的全局选择模式</strong>。</p>
+</blockquote>
+<p>代价是每组要各存一份 top-k 索引；收益是不同组能看不同的地方。<strong>DSA 走的是相反的选择：所有头共用一个 Top-k</strong>（见 <a href="GLM-5.2.html">GLM-5.2.md</a> §五）。</p>
+<hr />
+<h2 id="top-k-indexer">五、训练：Top-k 不可导，怎么教 indexer</h2>
+<p>Top-k 是离散的，LM loss 传不到 <code>W_q^idx / W_k^idx</code>。MSA 用<strong>四件套</strong>解决：</p>
+<h3 id="1-kl">① KL 对齐损失：让索引分布去追主分支</h3>
+<div class="codehilite"><pre><span></span><code>P_idx^(r)_{i,j} = softmax over 选中的 token 集合 ( S^idx )
+P^(r)_{i,j}     = (1/G) Σ_{ℓ ∈ H_r} softmax( S^(ℓ) )      ← G 个 query 头的注意力分布在概率层面取平均
+
+L_KL = (1/(N·H_kv)) ΣᵢΣᵣ D_KL( stopgrad(P) ‖ P_idx )
+
+总损失：L = L_LM + λ · Σ_layers L_KL
+</code></pre></div>
+
+<p>注意教师 <code>P</code> 是<strong>主分支 G 个头的概率平均</strong>——indexer 学的是"这一组整体想看哪"。</p>
+<h3 id="2-gradient-detach">② Gradient Detach：这是最关键的一个补丁</h3>
+<div class="codehilite"><pre><span></span><code>Q_idx = stopgrad(X) · W_q^idx
+K_idx = stopgrad(X) · W_k^idx
+</code></pre></div>
+
+<p><strong>为什么必须 detach</strong>（论文 §B.3 给了失败现象）：</p>
+<p>如果不 detach，KL 梯度会经过 index 的 Q/K 投影回流到 hidden state，再经残差进主干。于是<strong>KL loss 变成了对主干的一个额外目标</strong>。两个失效模式：</p>
+<ol>
+<li><strong>KL 系数大一点就炸</strong>：偶发的 KL 梯度尖峰传进主干，几百步内引起 grad-norm 尖峰和 LM loss 发散。</li>
+<li><strong>系数稳定时也会慢性退化</strong>：标准短上下文 benchmark 在训练中逐渐回退。论文的解释非常精彩——</li>
+</ol>
+<blockquote>
+<p>我们把这个退化归因于一种<strong>自蒸馏效应</strong>：主干可以通过<strong>把主分支的注意力分布简化掉</strong>来降低 KL loss，而不是通过改进 Index Branch。</p>
+</blockquote>
+<p><strong>换句话说：不 detach 的话，模型会作弊——它不去学"选得更准"，而是去学"让答案变得更容易选"。</strong></p>
+<h3 id="3-indexer-warmup">③ Indexer Warmup：先用全注意力热身</h3>
+<p>论文 §B.4 观察到：训练最初阶段主分支的<strong>注意力熵急剧下降</strong>（从平滑分布迅速变尖），之后才进入缓慢的表示学习期。如果第 0 步就开稀疏选择，indexer 要在自己还近乎随机的时候去追一个飞快移动的目标，错误的选择又会把主分支路由到无信息的 token 上，<strong>双向恶化</strong>。</p>
+<p>做法：前 <code>T_warm</code> 步两个分支都跑全注意力，只用 KL 训 index 投影；之后再切到稀疏。</p>
+<p><strong>M3 的两条训练路线都用了这个</strong>：从零训（MSA-PT）是 40B token warmup；从全注意力 checkpoint 转换（MSA-CPT）也是 40B token warmup。</p>
+<h3 id="4-local-block">④ Local Block：只强制一个块</h3>
+<p>每个 query 位置所在的那个（不完整的）局部块<strong>永远被选中</strong>，占掉 16 个名额里的 1 个，防止退化成"连自己旁边都不看"。</p>
+<p><strong>⚠️ 这里有个反直觉的消融结论（论文 §C.2）</strong>：早期版本还额外强制了 <strong>sink 块（序列第一块）</strong> 和一个<strong>固定的局部窗口</strong>。后来发现<strong>这些先验不需要硬编码</strong>——去掉之后模型自己就长出了这两种结构，标准指标几乎不变。所以最终配方<strong>只强制那个不完整的自身块</strong>。</p>
+<p><strong>这一条在 M3 的出货 config 里得到了直接印证</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">&quot;sparse_init_block&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w">     </span><span class="err">←</span><span class="w"> </span><span class="err">不强制</span><span class="w"> </span><span class="err">si</span><span class="kc">n</span><span class="err">k</span><span class="w"> </span><span class="err">块</span>
+<span class="nt">&quot;sparse_local_block&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="w">     </span><span class="err">←</span><span class="w"> </span><span class="err">只强制</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="err">个局部块</span>
+</code></pre></div>
+
+<hr />
+<h2 id="kernel">六、Kernel：这篇论文一半的分量在这里</h2>
+<p>MSA 论文有整整一章（§4）讲 GPU kernel，而且开源了（<a href="https://github.com/MiniMax-AI/MSA">github.com/MiniMax-AI/MSA</a>）。<strong>这是它区别于 NSA/MoBA 这类"论文里说得通"的方案的地方。</strong></p>
+<h3 id="1-exp-top-k">① 免 exp 的 Top-k</h3>
+<p>softmax 是保序的（<code>s_i ≤ s_j ⟺ softmax(s)_i ≤ softmax(s)_j</code>），所以选 top-k 时<strong>根本不用算 softmax</strong>——直接对原始分数排序。前向直接跳过 max / exp / sum。</p>
+<h3 id="2_1">② 每线程寄存器最小堆</h3>
+<p><code>B_k</code> 和 <code>k</code> 是<strong>和 top-k kernel 协同设计的</strong>：<code>B_k</code> 大 → 注意力算术强度高；在这个 <code>B_k</code> 下 <code>k</code> 小 → 候选块数 <code>B</code> 和 <code>k</code> 都落在通用 top-k kernel（radix 多轮分桶 / <code>O(B log²B)</code> 双调排序）的甜点<strong>以下</strong>。于是自己写：warp 的 32 个 lane 各扫 1/32 步长，各维护一个 k 元素最小堆（堆顶缓存在寄存器、延迟写入），最后 k 轮 shuffle merge。共享内存布局让每个 lane 固定映射到一个 bank，<strong>零 bank conflict</strong>。</p>
+<p><strong>基准（H800, fp32，中位数）</strong>：deployed 配置下相对 <code>torch.topk</code> 和 TileLang radix-select 有明显优势（论文 Table 1，128K/2048/32 配置下 5378 / 3630 / <strong>1991 μs</strong>，即 2.7× / 1.8×）。</p>
+<h3 id="3-kv-outer-q-gather">③ KV-outer 迭代 + Q gather —— 全章最重要的一条</h3>
+<p>传统做法是 query 放外层循环。MSA 反过来，<strong>把 KV 块放外层，然后去 gather 选中了这个块的所有 query</strong>。论文给了完整的 FLOPs/IO 推导：</p>
+<div class="codehilite"><pre><span></span><code>Q 外层：  FLOPs = 4 H_q N d_h k B_k
+          IO    = 2·2·H_q N d_h + 2·2·H_kv N k B_k d_h
+          ⟹ FLOPs/IO ≈ G                    （G = GQA 比 = 16）
+
+KV 外层： FLOPs 相同
+          IO    = 2·2·H_kv N d_h + 2·2·H_q N k d_h + 2·H_q N (k+1) d_h
+          ⟹ FLOPs/IO ≈ (2/3)·B_k            （= 85.3）
+</code></pre></div>
+
+<p><strong>算术强度差 5 倍以上</strong>（85.3 vs 16）。所以选 KV-outer。</p>
+<h3 id="4-tile-sink">④ 预调度的 tile 分块：消灭 sink 行的负载不均</h3>
+<p>一个 CTA 一个 tile 会被 <strong>sink 行</strong>打死——序列开头某个 KV 块几乎被所有 query 选中，那一个 CTA 要干所有活。</p>
+<p>做法：调度 kernel 先把每个 KV tile 沿 query 维切成<strong>不超过 ~2·k·B_k 个 query 的 chunk</strong>，把热点 tile 铺开到多个共享同一份 K/V 加载的 CTA 上。因为一个 query 的 k 份部分结果现在由 k 个 CTA 产出，调度器<strong>预先给每个 (query, chunk) 分配好 <code>O_buf</code> 里的槽位 <code>s ∈ [0,k)</code></strong>（和 query index 打包成 32 位句柄）——于是<strong>注意力 kernel 写部分结果时完全不需要 atomic</strong>。</p>
+<p>其余：两阶段 forward + combine 用 Programmatic Dependent Launch 串起来；query 拼接成 128×128 的 score MMA；LSE 融合进主分支从而<strong>省掉 KL 的一次前向</strong>。</p>
+<hr />
+<h2 id="_5">七、效率：三个不同的加速数字，别混</h2>
+<p>这是整篇里最容易被二手解读弄错的地方。<strong>目前流传着三组数字，口径完全不同</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>数字</th>
+<th>比较对象</th>
+<th>测量对象</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MSA 论文 §5.4</strong></td>
+<td><strong>28.4× FLOPs / 14.2× prefill / 7.6× decode</strong> @1M, H800</td>
+<td><strong>同配置的 dense GQA</strong>（同样 64q/4kv/d_h=128）</td>
+<td><strong>注意力这一层</strong>的理论 FLOPs 和实测延迟</td>
+</tr>
+<tr>
+<td><strong>M3 官方博客 / 模型卡</strong></td>
+<td><strong>每 token 计算量 1/20 / prefill &gt;9× / decode &gt;15×</strong> @1M</td>
+<td><strong>M2</strong>（不同模型：48q/8kv、9.8B 激活、全注意力）</td>
+<td>未明确说明</td>
+</tr>
+<tr>
+<td>第三方解读</td>
+<td>9.7× prefill / 15.6× decode</td>
+<td>同上</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么 decode 一个是 7.6× 一个是 15×？</strong> 我的分析（<strong>非官方说法</strong>）：论文的 7.6× 是"MSA vs GQA、其他全部相同"的干净对照；官方的 15× 是"M3 vs M2"，而 M3 相对 M2 还额外拿到了 <strong>KV head 从 8 减到 4</strong> 这一项——解码是访存受限的，KV cache 读取量减半本身就能贡献接近 2× 的独立收益。7.6 × 2 ≈ 15。两个数字不矛盾，只是<strong>一个是控制变量的，一个是端到端的</strong>。</p>
+<p><strong>论文自己非常坦率地解释了为什么实测跟不上 FLOPs 比</strong>：</p>
+<blockquote>
+<p>稀疏注意力引入了索引构建、top-k 选择、<strong>反向索引物化</strong>、query gather 和负载均衡的开销，而且访存模式不如稠密注意力规则。因此运行时加速小于理论 FLOPs 缩减，<strong>但会随上下文长度增长</strong>——因为稠密基线继续随全序列扩展，而 MSA 的主注意力预算是固定的。</p>
+</blockquote>
+<p><strong>这段话应该被更多论文抄。</strong> 28.4× 是理论上限，14.2× 是能兑现的部分，差的那一半就是稀疏本身的开销。</p>
+<hr />
+<h2 id="msa_1">八、MSA 到底掉不掉点：论文的实验（注意规模）</h2>
+<h3 id="_6">⚠️ 先说清楚适用范围</h3>
+<p><strong>MSA 论文的所有实验都在一个 109B 总参 / 6B 激活的模型上做的，不是 M3。</strong> 配置：41 层（3 dense + 38 MoE）、<code>d_model=3072</code>、64q/4kv/head_dim 128/RoPE 维 64、128 专家选 4 + 1 共享、200K 词表、原生多模态。总预算 3T tokens。</p>
+<p><strong>这个 pilot 和 M3 的关系</strong>：head 配比、专家结构、词表、<code>B_k=128</code>、<code>k=16</code> 全部一致，只有 <code>d_model</code>（3072 vs 6144）和层数（41 vs 60）不同。所以它是 M3 的<strong>同族缩小版</strong>，但<strong>不能替 M3 的能力背书</strong>——这一点和 <a href="GLM-5.2.html">GLM-5.2.md</a> 的情形完全同构。</p>
+<h3 id="_7">两条转换路线</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>MSA-PT</strong>（从零稀疏训练）</th>
+<th><strong>MSA-CPT</strong>（从全注意力转换）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>起点</td>
+<td>从零</td>
+<td>一个训了 2.6T tokens 的 GQA 全注意力 checkpoint</td>
+</tr>
+<tr>
+<td>预算</td>
+<td>3T 全程稀疏（40B warmup 后）</td>
+<td><strong>只续训 400B tokens</strong>（含 40B warmup）</td>
+</tr>
+<tr>
+<td>特点</td>
+<td>数学、图像、视频、长上下文检索最强</td>
+<td>更保守，尽量保留原 checkpoint 行为</td>
+</tr>
+</tbody>
+</table>
+<p><strong>训练动态（Fig. 2/3）</strong>：3T tokens 全程，MSA-PT 和全注意力的 <strong>LM loss 曲线几乎重合</strong>（最后 50B 窗口放大后仍然叠在一起，约 1.21），梯度范数也在同一区间。CPT 路线上，warmup 阶段 KL loss 快速下降，切到稀疏后保持低位；<strong>block recall 和 score recall 都稳定在 0.7~0.95</strong>，且 score recall 一直高于 block recall——<strong>说明漏掉的块本来注意力质量就低</strong>。</p>
+<h3 id="table-2">主结果（论文 Table 2，摘要）</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Full</th>
+<th>MSA-PT</th>
+<th>MSA-CPT</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MMLU</td>
+<td>67.0</td>
+<td><strong>67.2</strong></td>
+<td>66.8</td>
+</tr>
+<tr>
+<td>BBH</td>
+<td><strong>67.7</strong></td>
+<td>66.6</td>
+<td>66.1</td>
+</tr>
+<tr>
+<td>GSM8K</td>
+<td>76.2</td>
+<td><strong>77.7</strong></td>
+<td>73.7</td>
+</tr>
+<tr>
+<td>HumanEval</td>
+<td>61.0</td>
+<td><strong>64.0</strong></td>
+<td>57.9</td>
+</tr>
+<tr>
+<td><strong>RULER-8K</strong></td>
+<td>79.8</td>
+<td><strong>84.2</strong></td>
+<td>77.2</td>
+</tr>
+<tr>
+<td>RULER-32K</td>
+<td>75.0</td>
+<td><strong>77.5</strong></td>
+<td>75.7</td>
+</tr>
+<tr>
+<td>VisualWebBench</td>
+<td>55.6</td>
+<td><strong>68.4</strong></td>
+<td>59.4</td>
+</tr>
+<tr>
+<td>EgoSchema</td>
+<td>29.6</td>
+<td><strong>37.6</strong></td>
+<td>25.8</td>
+</tr>
+<tr>
+<td>VideoMME</td>
+<td>41.1</td>
+<td><strong>45.5</strong></td>
+<td>39.7</td>
+</tr>
+<tr>
+<td>MMMU</td>
+<td><strong>46.8</strong></td>
+<td>45.9</td>
+<td>44.5</td>
+</tr>
+<tr>
+<td>SWE PPL ↓</td>
+<td><strong>1.216</strong></td>
+<td>1.218</td>
+<td><strong>1.216</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>MSA-PT 在相当多项上反超了全注意力</strong>，尤其视频和长上下文检索。论文的解释是"原生稀疏预训练能让表示适应稀疏模式"。<strong>但要注意这是 3T tokens 预算下的对照，不是无限训练下的结论。</strong></p>
+<h3 id="table-3">长上下文扩展（论文 Table 3）</h3>
+<p>MSA-CPT 再训 ~140B tokens 长上下文后：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Full</th>
+<th>MSA-CPT</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HELMET-128K Overall</td>
+<td>46.53</td>
+<td>45.93</td>
+<td><strong>−0.60</strong></td>
+</tr>
+<tr>
+<td>— ICL</td>
+<td>70.40</td>
+<td><strong>72.80</strong></td>
+<td>+2.40</td>
+</tr>
+<tr>
+<td>— Rerank/RAG</td>
+<td><strong>34.60</strong></td>
+<td>32.50</td>
+<td>−2.10</td>
+</tr>
+<tr>
+<td>RULER-128K Overall</td>
+<td>72.00</td>
+<td><strong>72.12</strong></td>
+<td><strong>+0.12</strong></td>
+</tr>
+<tr>
+<td>— MK/MQ/MV</td>
+<td>96.63</td>
+<td><strong>98.87</strong></td>
+<td>+2.24</td>
+</tr>
+<tr>
+<td>— CWE/FWE</td>
+<td><strong>46.35</strong></td>
+<td>45.00</td>
+<td>−1.35</td>
+</tr>
+</tbody>
+</table>
+<p><strong>在每个 query / GQA 组只看 2,048 个 KV token 的前提下，128K 的长上下文能力基本持平。</strong> 这是全文最有说服力的一个结果。</p>
+<p><strong>把这个和 M2 的 SWA 表并排看，对照极其鲜明</strong>：同样是"限制 receptive field"，SWA 在 RULER-128K CWE 上掉了 18 分，MSA 只掉 1.35 分。<strong>差别就在"固定位置" vs "动态按内容选"。</strong></p>
+<p>论文 §B.6 还专门做了这个对照：一个 <strong>FLOPs 对齐的滑窗基线</strong>（去掉 Index Branch，固定看第一块 + 同样 token 预算的局部窗口），结果在 agent 任务的困惑度上<strong>全程劣于 MSA</strong>。</p>
+<h3 id="_8">其他消融（论文附录）</h3>
+<table>
+<thead>
+<tr>
+<th>消融</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>indexer 的梯度来源</strong>（§B.2）</td>
+<td>只用 LM loss → 短上下文保住了，长上下文检索很差；只用 KL loss → 检索好了，短上下文掉；<strong>LM + KL 最平衡</strong>。但配上 warmup 之后，Index Branch 的 value 头就不需要了</td>
+</tr>
+<tr>
+<td><strong>块大小</strong>（§C.1）</td>
+<td><code>B_k</code> 从 32 到 128，PPL 几乎不动，RULER 无明显退化 → <strong>可以用大块换 kernel 效率</strong></td>
+</tr>
+<tr>
+<td><strong>强制 sink / 局部窗口</strong>（§C.2）</td>
+<td>去掉后模型自己长出来，指标几乎不变 → <strong>最终配方不强制</strong></td>
+</tr>
+<tr>
+<td><strong>Index Branch value 头</strong>（§C.3）</td>
+<td>有无差别小且随 benchmark 而异 → <strong>去掉</strong>。推理时 top-k 只需要 <code>Q_idx K_idx^T</code> 的块内最大值，<strong>完全避开 value 聚合和指数运算</strong></td>
+</tr>
+<tr>
+<td><strong>可学习 attention sink</strong>（§B.5）</td>
+<td>试了 gpt-oss 式的可学习 sink logit，<strong>吸走了一部分注意力质量但没能消除原有的首 token sink</strong>，在 agent PPL 上没有一致优势 → <strong>不采用</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="msa-vs-dsa-vs-nsa-vs-moba">九、MSA vs DSA vs NSA vs MoBA：逐条对照</h2>
+<p>这是本文最有实用价值的一节——<strong>MSA 和 GLM-5.2 用的 DSA 是可以直接逐项对比的</strong>。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>MSA</strong>（MiniMax M3）</th>
+<th><strong>DSA</strong>（DeepSeek → GLM-5.2）</th>
+<th><strong>NSA</strong>（DeepSeek 早期）</th>
+<th><strong>MoBA</strong>（Moonshot）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>底座注意力</td>
+<td><strong>GQA</strong></td>
+<td><strong>MLA</strong>（MQA 模式）</td>
+<td>MQA / MHA</td>
+<td>GQA</td>
+</tr>
+<tr>
+<td>选择粒度</td>
+<td><strong>块级</strong>（<code>B_k=128</code>）</td>
+<td><strong>token 级</strong></td>
+<td>块级</td>
+<td>块级（<strong>块很大</strong>）</td>
+</tr>
+<tr>
+<td>谁来选</td>
+<td><strong>每个 GQA 组独立 Top-k</strong></td>
+<td><strong>所有头共用一个 Top-k</strong></td>
+<td>三条支路</td>
+<td>每组</td>
+</tr>
+<tr>
+<td>打分方式</td>
+<td>index Q/K 点积 → <strong>块内取 max</strong></td>
+<td>ReLU lightning indexer</td>
+<td>压缩表示</td>
+<td><strong>块内 key 取平均</strong></td>
+</tr>
+<tr>
+<td>indexer 头数</td>
+<td>每组 1 个 Q 头 + <strong>全局共享 1 个 K 头</strong></td>
+<td>32 头 / dim 128（GLM-5.2 配置）</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>支路数</td>
+<td><strong>1 条</strong>（只有选择）</td>
+<td>1 条</td>
+<td><strong>3 条</strong>（压缩 + 选择 + 滑窗）</td>
+<td>1 条</td>
+</tr>
+<tr>
+<td>indexer 怎么训</td>
+<td><strong>KL 对齐 + 梯度 detach</strong></td>
+<td>—</td>
+<td>LM 梯度</td>
+<td><strong>只有 LM 梯度</strong></td>
+</tr>
+<tr>
+<td>每 query 预算</td>
+<td><strong>k·B_k = 16×128 = 2,048</strong></td>
+<td><strong>top-2,048</strong></td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>几个值得单独说的点</strong>：</p>
+<ol>
+<li>
+<p><strong>两家独立走到了同一个 2048。</strong> MSA 是 <code>16 块 × 128</code>，DSA 是直接选 2048 个 token。<strong>不同底座、不同粒度、不同团队，落到了同一个数字上</strong>——这大概是当前长上下文的一个经验甜点。</p>
+</li>
+<li>
+<p><strong>MSA 相对 NSA 是做减法。</strong> NSA 有压缩、选择、滑窗三条支路；MSA <strong>只保留选择</strong>。论文自己把这叫"deliberately streamlined"，理由是"<strong>便于在广泛的 GPU 上高效部署</strong>"。少一条支路 = 少一套 kernel = 直接能挂进 vLLM / SGLang。<strong>这是一个明确的工程优先于精巧的选择。</strong></p>
+</li>
+<li>
+<p><strong>块内 max vs 块内平均。</strong> MoBA 用块内 key 的平均值代表整块，MSA 用<strong>块内 token 得分的最大值</strong>。直觉上 max 更适合"这一块里有没有我要找的东西"这个问题——平均会被块内的无关 token 稀释。这一条论文没有做直接消融，属于设计取向的差异。</p>
+</li>
+<li>
+<p><strong>每组独立选 vs 全局共选。</strong> MSA 花额外的索引存储换组间的差异化（附录 A 的可视化证明它确实被用上了），DSA 用全局单一 Top-k 换更省的实现。<strong>没有哪个一定更好，取决于底座是 GQA 还是 MLA</strong>——MLA 在解码时本来就是 MQA 形态，全局共选是自然选择。</p>
+</li>
+</ol>
+<hr />
+<h2 id="m3">十、评测（M3 官方模型卡，厂商自述）</h2>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th><strong>MiniMax M3</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SWE-bench Verified</td>
+<td><strong>80.5</strong></td>
+</tr>
+<tr>
+<td>SWE-bench Pro</td>
+<td>59</td>
+</tr>
+<tr>
+<td>Long-Horizon-Terminal-Bench</td>
+<td>38.5</td>
+</tr>
+<tr>
+<td>BrowseComp</td>
+<td>83.5</td>
+</tr>
+<tr>
+<td>MMMU_Pro</td>
+<td>78.1</td>
+</tr>
+<tr>
+<td>Video-MME-v2</td>
+<td>85.4</td>
+</tr>
+<tr>
+<td>claw-eval</td>
+<td>74.5</td>
+</tr>
+<tr>
+<td>apex-agents</td>
+<td>27.7</td>
+</tr>
+</tbody>
+</table>
+<p>发布形态：<code>MiniMax-M3</code> + <code>MiniMax-M3-MXFP8</code> 量化版；minimax-community 许可；<code>thinking</code> 三档（enabled / adaptive / disabled）；推荐 temperature 1.0 / top_p 0.95；SGLang / vLLM / Transformers / KTransformers / unsloth / ATOM 支持。API 最高 1M，保障至少 512K 可用。</p>
+<blockquote>
+<p><strong>⚠️ 交叉核对提示</strong>：<a href="GLM-5.2.html">GLM-5.2.md</a> §十一的对比表里 "MiniMax M3" 一列（HLE 37、GPQA-Diamond 93、SWE-bench Pro 59、Terminal Bench 65）来自 Z.ai 的模型卡。<strong>SWE-bench Pro 的 59 两边对得上</strong>，可以互证。</p>
+</blockquote>
+<hr />
+<h2 id="_9">十一、这条路线告诉我们什么</h2>
+<p>把 M1 → M2 → M3 连起来看，能读出三个别处读不到的东西：</p>
+<h3 id="1_1">① "退回去"是可以公开的，而且比"没试过"更有信息量</h3>
+<p>M2 报告花了一整节讲一个失败的实验，还附了两张消融表。<strong>这是四家报告里唯一一处系统性的负面结果披露。</strong> DeepSeek、Kimi、Z.ai 都只说自己选了什么，不说自己放弃了什么（GLM-5 报告的 SWA 消融是个部分例外，见 <a href="GLM-5.2.html">GLM-5.2.md</a> §五）。</p>
+<h3 id="2_2">② 三家对同一个问题给了三个不同答案，而且都能跑通</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>长上下文的解法</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek V4</strong></td>
+<td><strong>压缩</strong> KV（CSA 4:1 + HCA 128:1），仍是 softmax</td>
+<td>压缩必然有损，需要重叠压缩、反向 RoPE 一堆补丁</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>换掉</strong> 3/4 的注意力（KDA 线性 + 1/4 MLA）</td>
+<td>线性注意力的固定状态会遗忘；靠 NoPE + 1/4 全局层兜底</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>限制</strong> receptive field（MSA 选 2048 个精确算）</td>
+<td>选错就漏了；靠 KL 对齐 + detach + warmup 保证选得准</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td><strong>限制</strong> + 跨层复用索引（DSA + IndexShare）</td>
+<td>同上，且 indexer 本身成了新瓶颈</td>
+</tr>
+</tbody>
+</table>
+<p><strong>MiniMax 和 Z.ai 落在同一格里</strong>（都是"精确 softmax + 动态稀疏选择 + 2048 预算"），DeepSeek 和 Kimi 各占一格。</p>
+<h3 id="3-msa-m2">③ MSA 论文对"评测"的态度，正好补上了 M2 报告的那个洞</h3>
+<p>M2 报告说"<strong>发现真正的问题往往比解决它难得多</strong>"，而 MSA 论文的做法是——不再依赖某几个 benchmark，而是给<strong>训练动态</strong>（LM loss 曲线重合、梯度范数同区间）、给 <strong>indexer 的 recall 曲线</strong>（block recall / score recall）、给 <strong>FLOPs 对齐的对照实验</strong>（滑窗基线）。<strong>这是对自己两年前那个教训的直接回应。</strong></p>
+<hr />
+<h2 id="_10">十二、可靠性说明</h2>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>来源</th>
+<th>可信度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MSA 的公式、训练四件套、kernel 设计、6 组消融、Table 1–6</td>
+<td><strong>MSA 论文正文提取</strong></td>
+<td>一手，可在 <a href="papers/MiniMax-MSA-正文提取.txt">papers/MiniMax-MSA-正文提取.txt</a> grep 核对</td>
+</tr>
+<tr>
+<td>M2 的架构、退回全注意力的四条理由、SWA 消融 Table 2/3</td>
+<td><strong>M2 系列报告正文提取</strong></td>
+<td>一手，见 <a href="papers/MiniMax-M2-正文提取.txt">papers/MiniMax-M2-正文提取.txt</a></td>
+</tr>
+<tr>
+<td>M3 的 60 层 / 6144 / 64q4kv / 128 专家选 4 / <code>B_k=128,k=16</code> / <code>init_block=0,local_block=1</code> / MTP×7</td>
+<td><strong>HF <code>config.json</code></strong></td>
+<td>一手，出货配置</td>
+</tr>
+<tr>
+<td>28.4× / 14.2× / 7.6×</td>
+<td>MSA 论文 §5.4</td>
+<td>一手，但<strong>是 109B pilot 上 MSA vs GQA，不是 M3 vs M2</strong></td>
+</tr>
+<tr>
+<td>1/20 计算量、9× prefill、15× decode、评测分数</td>
+<td>官方博客 + HF 模型卡</td>
+<td><strong>厂商自述，无论文</strong></td>
+</tr>
+<tr>
+<td>参数量验算、"decode 15× ≈ 7.6× × KV head 减半"的解释、"激活量从 9.8B 到 23B 是原则放宽"</td>
+<td><strong>我自己的推算/分析</strong></td>
+<td><strong>推测，无一手依据</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>最需要保留怀疑的四处</strong>：</p>
+<ol>
+<li><strong>MSA 论文的实验模型是 109B/6B，不是 428B/23B 的 M3。</strong> 论文全文没有一句话描述 M3 自己的训练流程、数据配比或语料规模。<strong>它证明的是"MSA 这个机制在 109B 上不掉点"，不是"M3 很强"。</strong> 出货 config 里的超参与论文完全一致这一点，把这个 gap 缩小了很多，但没有消除。</li>
+<li><strong>三组加速数字口径不同</strong>，混用会得出错误结论。引用时必须带上比较对象。</li>
+<li><strong>M3 没有技术报告。</strong> 激活参数为什么从 9.8B 涨到 23B、专家数为什么从 256 减到 128、原生多模态怎么从第 0 步就联合训练、后训练怎么做的——<strong>全部无公开材料</strong>。</li>
+<li><strong>M2 的 SWA 消融不能推广成"SWA 不行"。</strong> 那张表里 SWA 在 IFBench / XBench-ds / τ²-retail 上是赢的。它证明的是"<strong>在 MiniMax 关心的长程 agent 任务上，SWA 的覆盖限制是致命的</strong>"，这是一个和产品定位绑定的结论。</li>
+</ol>
+<hr />
+<h2 id="_11">参考来源</h2>
+<ul>
+<li><a href="https://arxiv.org/abs/2606.13392">MiniMax Sparse Attention (arXiv:2606.13392)</a> — 本地：<a href="papers/MiniMax-Sparse-Attention-arXiv-2606.13392.pdf">papers/MiniMax-Sparse-Attention-arXiv-2606.13392.pdf</a></li>
+<li><a href="https://arxiv.org/abs/2605.26494">The MiniMax-M2 Series: Mini Activations Unleashing Max Real-World Intelligence (arXiv:2605.26494)</a> — 本地：<a href="papers/MiniMax-M2-Series-arXiv-2605.26494.pdf">papers/MiniMax-M2-Series-arXiv-2605.26494.pdf</a></li>
+<li><a href="https://huggingface.co/MiniMaxAI/MiniMax-M3">MiniMaxAI/MiniMax-M3 (Hugging Face)</a> — <code>config.json</code> 是本文架构表的唯一一手来源</li>
+<li><a href="https://github.com/MiniMax-AI/MSA">MiniMax-AI/MSA (GitHub)</a> — 开源推理 kernel</li>
+<li><a href="https://www.minimaxi.com/blog/minimax-m3">MiniMax M3 官方博客</a></li>
+<li><a href="https://www.minimax.io/news/why-did-m2-end-up-as-a-full-attention-model">Why did M2 end up as a full attention model?（官方复盘）</a> · <a href="https://huggingface.co/blog/MiniMax-AI/why-did-m2-end-up-as-a-full-attention-model">Hugging Face 博客镜像</a></li>
+<li><a href="https://lmsys.org/blog/2025-11-04-miminmax-m2/">LMSYS: MiniMax-M2 部署分析</a></li>
+</ul>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

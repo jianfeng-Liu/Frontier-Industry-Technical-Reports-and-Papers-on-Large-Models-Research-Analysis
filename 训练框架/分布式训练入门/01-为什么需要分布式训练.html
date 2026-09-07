@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · 为什么需要分布式训练</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="README.html">目录</a> ｜ 下一章 → <a href="02-显存去哪了.html">02 显存去哪了</a></p>
+</blockquote>
+<h1 id="01">01 · 为什么需要分布式训练</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：让你对"一张卡到底不够在哪"有具体的、可以心算的感觉。<br />
+读完你应该能回答：一张 H100 能训多大的模型？为什么"多买几张卡"不是把问题解决了，而是把问题换了一个？</p>
+</blockquote>
+<hr />
+<h2 id="11-gpu">1.1 先认识主角：GPU</h2>
+<p><strong>GPU</strong>（<strong>G</strong>raphics <strong>P</strong>rocessing <strong>U</strong>nit，图形处理器）现在早就不只是画图的了，它是训练大模型的唯一主力硬件。你只需要记住它的<strong>三个数字</strong>：</p>
+<div class="codehilite"><pre><span></span><code>以 NVIDIA H100（2022 年发布，2024–2026 年的主流训练卡）为例：
+
+  ① 显存容量    80 GB          ← 「能装多少东西」
+  ② 显存带宽    3.35 TB/s      ← 「装的东西搬进搬出有多快」
+  ③ 算力        ~989 TFLOP/s   ← 「算得有多快」（BF16 稠密算力）
+                                  ⚠️ 官方标称含稀疏加速时是两倍，
+                                     训练一般用稠密数，本教程一律用稠密数
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>TFLOP/s</strong> = <strong>T</strong>era <strong>FLOP</strong>s per <strong>s</strong>econd，每秒万亿次浮点运算。<br />
+<strong>FLOP</strong> = <strong>FL</strong>oating-point <strong>OP</strong>eration，一次浮点运算（一次加法或一次乘法算一次）。<br />
+989 TFLOP/s 就是「每秒能做 989 万亿次乘加」。</p>
+</blockquote>
+<p><strong>这三个数字里，① 显存容量是本教程前半部分的全部矛盾来源。</strong></p>
+<hr />
+<h2 id="12">1.2 第一个坎：装不下</h2>
+<h3 id="70b">一个 70B 模型有多大</h3>
+<p><strong>70B</strong> = 700 亿个参数（<strong>B</strong> = <strong>B</strong>illion，十亿）。每个参数是一个数。</p>
+<div class="codehilite"><pre><span></span><code>    假设每个数用 BF16 存（2 个字节，10 章会讲什么是 BF16）：
+
+        70 × 10^9 个参数 × 2 字节 = 140 × 10^9 字节 = 140 GB
+
+    而一张 H100 只有 80 GB。
+
+    ★ 光是【把权重放进去】就已经装不下了。
+</code></pre></div>
+
+<p><strong>而且这还只是权重。</strong> 训练的时候你还需要：</p>
+<div class="codehilite"><pre><span></span><code>    ① 权重            140 GB     ← 模型本身
+    ② 梯度            140 GB     ← 每个参数对应一个梯度
+    ③ 优化器状态      840 GB     ← Adam 每个参数要存 3 个额外的数（02 章细讲）
+    ④ 激活值          ？？ GB     ← 前向过程中的所有中间结果，和 batch、序列长度成正比
+    ─────────────────────────
+    总计            &gt; 1120 GB    ★ 需要至少 14 张 H100 才装得下，而且还没算 ④
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是第一个、也是最硬的动机</strong>：<br />
+<strong>不是"多张卡训得快"，而是"一张卡根本训不了"。</strong> 快是第二位的，装得下是第一位的。</p>
+</blockquote>
+<h3 id="_1">推理为什么没这么惨</h3>
+<p><strong>你可能见过"单卡跑 70B 模型"的说法。那是【推理】，不是【训练】。</strong></p>
+<div class="codehilite"><pre><span></span><code>    推理只需要 ①权重（还能量化到 4 bit，只要 35 GB）
+    训练需要   ①+②+③+④，是推理的【8 倍以上】
+
+    ★ 训练和推理的显存需求完全不是一个量级。
+</code></pre></div>
+
+<hr />
+<h2 id="13">1.3 第二个坎：太慢</h2>
+<p><strong>就算装得下，时间也扛不住。</strong></p>
+<h3 id="_2">训练要算多少次</h3>
+<p>有一个非常好用的经验公式（这是这个领域的通用估算式）：</p>
+<p>$$\text{总计算量} \approx 6 \times \Psi \times D$$</p>
+<ul>
+<li>$\Psi$ = 参数量</li>
+<li>$D$ = 训练用的 token 总数</li>
+<li><strong>6 是怎么来的</strong>：前向每个参数每个 token 要做 1 次乘 + 1 次加 = 2 FLOP；反向大约是前向的 2 倍 = 4 FLOP；合起来 6。</li>
+</ul>
+<div class="codehilite"><pre><span></span><code>    举例：训一个 70B 模型，喂 15 T token（15 × 10^12 个）
+
+        6 × 70×10^9 × 15×10^12 = 6.3 × 10^24 FLOP
+
+    一张 H100 满打满算 989 × 10^12 FLOP/s：
+
+        6.3×10^24 ÷ 989×10^12 = 6.4 × 10^9 秒 ≈ 202 年   ⚠️ 我的估算
+
+    ★ 而且这是【理论峰值】。真实能跑到峰值的 40~55% 就很不错了（12 章讲 MFU）。
+      按 45% 算 → 约 450 年。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以 10,000 张卡不是"豪华配置"，是"唯一能在合理时间内训完的配置"</strong>：<br />
+450 年 ÷ 10,000 张 ≈ <strong>16 天</strong>。这才是能接受的数字。</p>
+</blockquote>
+<h3 id="_3">✅ 真实数字做个校准</h3>
+<p><strong>Llama 3.1 405B 的公开数字</strong>（TorchTitan 论文 §1 引用，<a href="../papers/TorchTitan-arXiv-2410.06511.pdf">papers/TorchTitan-arXiv-2410.06511.pdf</a>）：</p>
+<blockquote>
+<p>✅ 原文：<em>"Llama 3.1 (405B parameters, 15T tokens, 30.84M GPU hours, 16K H100 GPUs)"</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    30.84 M GPU 小时 ÷ 16,000 张卡 = 1,928 小时 ≈ 80 天
+
+    ★ 这是真实世界的量级：405B 模型 + 16,000 张 H100 + 80 天。
+</code></pre></div>
+
+<hr />
+<h2 id="14">1.4 于是问题变成了：切什么</h2>
+<p><strong>既然一张卡装不下，就要把东西分到多张卡上。</strong> 问题是——<strong>分什么？</strong></p>
+<p>一次训练迭代里，一共只有这么几样东西：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│                    一次训练迭代里有什么                        │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│   数据：  一个 batch，B 条样本，每条 L 个 token               │
+│           ↓  能切 B      → 数据并行 DP        （04 章）       │
+│           ↓  能切 L      → 上下文并行 CP      （08 章）       │
+│                                                              │
+│   模型：  l 层，每层几个大矩阵                                │
+│           ↓  能切 层     → 流水线并行 PP      （07 章）       │
+│           ↓  能切 矩阵   → 张量并行 TP        （06 章）       │
+│           ↓  能切 专家   → 专家并行 EP        （09 章，MoE）  │
+│                                                              │
+│   状态：  梯度、优化器状态                                    │
+│           ↓  能切 状态   → ZeRO / FSDP        （05 章）       │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>★ 这张图就是整个第二部分的目录。</strong> 每一章讲一种切法。</p>
+<hr />
+<h2 id="15">1.5 天下没有免费的午餐</h2>
+<p><strong>每一种切法，都要付一样的代价：通信。</strong></p>
+<div class="codehilite"><pre><span></span><code>    东西切开了 →  这张卡算的时候需要别张卡手里的那一半
+              →  必须【等】它传过来
+              →  等的时候 GPU 在空转，算力被浪费
+
+    ★ 分布式训练的全部工程，就是在打这一件事：
+         让「传」和「算」尽量【同时发生】，而不是排队。
+</code></pre></div>
+
+<p><strong>具体有多痛？看一组真实数字</strong>（Horovod 论文，<a href="../papers/Horovod-arXiv-1802.05799.pdf">papers/Horovod-arXiv-1802.05799.pdf</a>）：</p>
+<blockquote>
+<p>✅ 原文：<em>"we lost about half of our resources due to communication overhead when training on 128 GPUs"</em><br />
+✅ 原文：<em>"both the Inception V3 and ResNet-101 models were unable to leverage nearly half of our GPU resources"</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 128 张卡，一半的算力被通信吃掉了 —— 这是 2018 年的现实。
+      整个领域此后的努力，很大一部分就是在把这一半抢回来。
+</code></pre></div>
+
+<p><strong>而现在做到了什么程度？</strong>（MegaScale 论文，<a href="../papers/MegaScale-10000-GPUs-arXiv-2402.15627.pdf">papers/MegaScale-10000-GPUs-arXiv-2402.15627.pdf</a>）：</p>
+<blockquote>
+<p>✅ 原文：<em>"MegaScale achieves 55.2% Model FLOPs Utilization (MFU) when training a 175B LLM model on 12,288 GPUs"</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    12,288 张卡，55.2% 的算力真正用在了模型的计算上。
+    ★ 这就是当前工业界的水位线。12 章会讲 MFU 具体怎么算。
+</code></pre></div>
+
+<hr />
+<h2 id="16-cpu">1.6 一个容易搞混的问题：为什么不用 CPU 内存</h2>
+<p><strong>"服务器内存有 2 TB，为什么不把模型放内存里？"</strong></p>
+<div class="codehilite"><pre><span></span><code>    因为【带宽】差太多：
+
+        GPU 显存 (HBM)     3.35 TB/s      ← H100
+        CPU 内存 (DDR5)    ~0.4 TB/s      ← 差 8 倍
+        PCIe 5.0 (卡↔内存)  ~0.06 TB/s     ← ★ 差 55 倍
+
+    ★ 数据从 CPU 内存搬到 GPU 上，走的是最窄的那根管子（PCIe）。
+      模型每一层都要搬一次的话，GPU 会 99% 的时间在等数据。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>但这条路不是完全没用</strong>：<strong>ZeRO-Offload</strong> 和 <strong>ZeRO-Infinity</strong> 这两篇论文就是专门做这件事的（05 章会提），它们的定位是<strong>"用速度换可行性"</strong>——在只有少量卡的时候，让原本跑不了的模型能跑起来。<strong>工业界大规模训练不用它。</strong></p>
+</blockquote>
+<hr />
+<h2 id="17">1.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 一张 H100 = 80 GB 显存 / 3.35 TB/s 带宽 / ~989 TFLOP/s 算力
+② 训练一个 70B 模型至少要 1120 GB 显存 —— ★ 一张卡装不下，这是第一动机
+   训练显存 ≈ 推理显存的 8 倍以上（多了梯度、优化器状态、激活）
+③ 总计算量 ≈ 6 × 参数量 × token 数
+   → 70B × 15T token ≈ 6.3×10^24 FLOP，单卡要几百年 —— 这是第二动机
+   ✅ 真实校准：Llama 3.1 405B = 16K 张 H100 × 80 天
+④ 能切的东西只有六样：batch / 序列 / 层 / 矩阵 / 专家 / 优化器状态
+   → 对应 DP / CP / PP / TP / EP / ZeRO，就是第二部分的六章
+⑤ ★ 每一种切法的代价都是【通信】。全部工程都在打「让传和算同时发生」
+   ✅ 2018 年 128 卡就丢掉一半算力；2024 年 12,288 卡能保住 55.2%
+⑥ CPU 内存不能救场：PCIe 带宽比显存带宽窄 55 倍
+</code></pre></div>
+
+<p><strong>下一章讲全教程最重要的一件事：那 1120 GB 到底是怎么算出来的。</strong> 这张账本你记住了，后面每一种并行"省了什么"就都是一句话的事。</p>
+<hr />
+<blockquote>
+<p><a href="README.html">目录</a> ｜ 下一章 → <a href="02-显存去哪了.html">02 显存去哪了</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

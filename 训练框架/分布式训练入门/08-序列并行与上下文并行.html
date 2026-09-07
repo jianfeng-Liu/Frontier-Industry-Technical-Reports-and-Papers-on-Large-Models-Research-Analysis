@@ -1,0 +1,2039 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · 序列并行 SP 与上下文并行 CP</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="07-流水线并行PP.html">← 07 流水线并行 PP</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-专家并行EP.html">09 专家并行 EP</a></p>
+</blockquote>
+<h1 id="08-sp-cp">08 · 序列并行 SP 与上下文并行 CP</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：把 <a href="06-张量并行TP.html">06 章</a>留下的那个洞补上，并解决"序列本身太长"这个独立的问题。<br />
+读完你应该能回答：TP 为什么会漏掉一部分激活？序列并行凭什么能"零通信开销"地补上？<strong>SP 和 CP 这两个名字为什么这么容易搞混，它们到底不一样在哪？</strong> softmax 明明要"所有分数到齐"才算得出来，Ring Attention 凭什么能一块一块地算？Ulysses 的两次 all-to-all 到底把张量变成了什么形状？两者各自适合什么场景、又各自会栽在哪里？</p>
+<p>⚠️ <strong>先打个预防针</strong>：本章是全教程<strong>术语最混乱</strong>的一章——<strong>同一个词"序列并行"在不同论文里指两个不同的东西</strong>。§8.4 会专门用一节来拆这个混乱。<strong>如果你只读一节，读 §8.4。</strong></p>
+</blockquote>
+<hr />
+<h2 id="81-tp">8.1 TP 漏掉了什么</h2>
+<p><strong>回忆 <a href="06-张量并行TP.html">06 章</a></strong>：TP 把注意力和 MLP 的<strong>矩阵</strong>切开了。但一个 Transformer 层不只有矩阵：</p>
+<div class="codehilite"><pre><span></span><code>    一个 Transformer 层的完整流程（Pre-Norm）：
+
+        X ──► LayerNorm ──► Attention ──► Dropout ──► (+X) ──►
+              ▲▲▲▲▲▲▲▲▲     ✅ TP 切了     ▲▲▲▲▲▲▲    ▲▲▲▲
+              ❌ 没切                       ❌ 没切     ❌ 没切
+          ──► LayerNorm ──► MLP ────────► Dropout ──► (+) ──► 输出
+              ❌ 没切        ✅ TP 切了      ❌ 没切     ❌ 没切
+
+    ★ 为什么没切：LayerNorm 要对【整个 hidden 维】求均值和方差，
+      每张卡只有 1/t 的维度就算不出来
+      → 所以 TP 的做法是：在这些地方【每张卡都存一份完整的】激活
+</code></pre></div>
+
+<blockquote>
+<p>✅ 这不是我的推断，是 Megatron-3 论文（<a href="../papers/Megatron-3-Reducing-Activation-Recomputation-arXiv-2205.05198.pdf">papers/Megatron-3-...-arXiv-2205.05198.pdf</a>）自己承认的：<br />
+<em>"In this approach, there are parts of the transformer where activations are not split across tensor parallel ranks, adding to activation memory overhead."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 后果：t 张卡各存一份【一模一样】的 LayerNorm/Dropout/残差激活
+    → 这部分显存【完全不随 t 减少】
+    → t 开得越大，浪费的比例越高
+</code></pre></div>
+
+<hr />
+<h2 id="82-megatron-sp">8.2 ★ Megatron 的序列并行 SP：在没切的地方，按序列切</h2>
+<blockquote>
+<p>📌 <strong>SP</strong> = <strong>S</strong>equence <strong>P</strong>arallel，序列并行。<strong>注意：本节讲的是 Megatron 语境下的 SP</strong>，和 §8.5 的 CP 是两码事（§8.4 会说清）。</p>
+</blockquote>
+<h3 id="821">8.2.1 先把"漏掉的那部分"精确到每一个张量</h3>
+<p>§8.1 说"LayerNorm/Dropout 没被切"还是太笼统。论文 §4.1 把一层里<strong>每一个需要存下来给反向用的张量</strong>都点了名，我们把它们按"TP 切不切得动"分成两堆：</p>
+<table>
+<thead>
+<tr>
+<th>存下来的是哪个张量</th>
+<th>大小（字节）</th>
+<th>TP 切得动吗</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LayerNorm ① 的输入</td>
+<td><code>2sbh</code></td>
+<td>❌ 每卡一份</td>
+<td>LayerNorm 沿 h 求均值/方差，h 不能切</td>
+</tr>
+<tr>
+<td>QKV 三个矩阵乘的<strong>共享输入</strong></td>
+<td><code>2sbh</code></td>
+<td>❌ 每卡一份</td>
+<td>列并行（<a href="06-张量并行TP.html">06 章</a>）的输入必须是完整的 h</td>
+</tr>
+<tr>
+<td>Q、K（留给 QKᵀ 用）</td>
+<td><code>4sbh</code></td>
+<td>✅ ÷t</td>
+<td>按注意力头切了</td>
+</tr>
+<tr>
+<td>softmax 输出</td>
+<td><code>2as²b</code></td>
+<td>✅ ÷t</td>
+<td>按头切了</td>
+</tr>
+<tr>
+<td>softmax 后的 dropout 掩码</td>
+<td><code>as²b</code></td>
+<td>✅ ÷t</td>
+<td>按头切了</td>
+</tr>
+<tr>
+<td>V + softmax-dropout 输出</td>
+<td><code>2as²b + 2sbh</code></td>
+<td>✅ ÷t</td>
+<td>按头切了</td>
+</tr>
+<tr>
+<td>注意力输出 linear 的输入</td>
+<td><code>2sbh</code></td>
+<td>✅ ÷t</td>
+<td>行并行，输入本来就是按 h 切开的</td>
+</tr>
+<tr>
+<td>注意力后的 dropout 掩码</td>
+<td><code>sbh</code></td>
+<td>❌ 每卡一份</td>
+<td>此刻已 all-reduce 回完整 h</td>
+</tr>
+<tr>
+<td>LayerNorm ② 的输入</td>
+<td><code>2sbh</code></td>
+<td>❌ 每卡一份</td>
+<td>同 ①</td>
+</tr>
+<tr>
+<td>MLP 第一层 <code>h→4h</code> 的输入</td>
+<td><code>2sbh</code></td>
+<td>❌ 每卡一份</td>
+<td>列并行，输入必须完整</td>
+</tr>
+<tr>
+<td>GeLU 输入 + MLP 第二层 <code>4h→h</code> 的输入</td>
+<td><code>8sbh + 8sbh</code></td>
+<td>✅ ÷t</td>
+<td>中间维 4h 被切了</td>
+</tr>
+<tr>
+<td>MLP 后的 dropout 掩码</td>
+<td><code>sbh</code></td>
+<td>❌ 每卡一份</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    把两堆分别加起来：
+
+    ❌ 切不动的： 2+2+1+2+2+1 = ★★ 10 sbh ★★   ← t 张卡各存一份【完全一样】的
+    ✅ 切得动的： 4+2+2+8+8   =    24 sbh  +  5as²b
+
+    → ✅ 这正好就是论文式 2：
+
+           TP 之后每层激活 = sbh( 10 + 24/t + 5as/(ht) )
+
+    ✅ 论文原话：&quot;Quantitatively, the 10sbh part of Equation 2 is due to
+       these replicated operations and as a result they are not divided by
+       the tensor parallel size t.&quot;
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>归属说明</strong>：上面这张【逐张量】的表，论文没有直接列出来。但表里每一项的大小都是 ✅ 论文 §4.1 逐条写明的，"哪些不被切"也是 ✅ 论文明说的（<em>"the input activations to these blocks (for example input to the Q,K, and V matrix multiplies or input to the h→4h linear layer) are not parallelized"</em>）。<strong>这张表是我把两处对齐后拼出来的，两边加总都能对上 10 / 24 / 34，可以放心用。</strong></p>
+<p>📌 顺带修正一个常见说法：很多博客说"残差加法也占了没切的显存"——其实<strong>残差相加不需要存任何东西</strong>（它的反向就是把梯度原样传给两条支路）。真正占那 10sbh 的是 <strong>2 个 LayerNorm 的输入 + 2 个模块的输入 + 2 个 dropout 掩码</strong>。</p>
+</blockquote>
+<h3 id="822-10sbh">8.2.2 具体感受一下"10sbh"有多浪费</h3>
+<p><strong>接着 <a href="02-显存去哪了.html">02 章 §2.3</a> 那个算例</strong>：<code>s=4096, b=1, h=8192, a=64</code>，BF16。</p>
+<div class="codehilite"><pre><span></span><code>    先算出&quot;1 个 sbh 单位&quot;是多少：
+        sbh = 4096 × 1 × 8192 = 33.55 M 字节 ≈ ★ 33.6 MB
+    （论文公式里的系数已经把&quot;每元素 2 字节&quot;算进去了，
+      所以一个完整的 [s,b,h] BF16 张量 = 2sbh = 67.1 MB，
+      和 06 章 §6.4 那个&quot;每次 all-reduce 传 67 MB&quot;是同一个数）
+
+    ┌──────────────┬──────────────────┬──────────────────┐
+    │              │  不并行（式1）    │  TP=8（式2）      │
+    ├──────────────┼──────────────────┼──────────────────┤
+    │ ❌ 切不动的   │  10 sbh = 336 MB │  10 sbh = 336 MB │ ← ★ 一点没少
+    │ ✅ 切得动的   │ 184 sbh = 6.17 GB│  23 sbh = 772 MB │ ← ÷8 了
+    ├──────────────┼──────────────────┼──────────────────┤
+    │ 合计/层       │ 194 sbh = 6.51 GB│  33 sbh = 1.11 GB│
+    └──────────────┴──────────────────┴──────────────────┘
+                                          ▲
+              ★★ 336 MB ÷ 1.11 GB = 30% 的激活显存是【纯浪费】★★
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 而且 t 开得越大，浪费的【比例】越高（因为分子不变、分母在缩）：
+
+        t = 2 :  10 / (10 + 12 + 80) = 10/102 =  9.8%
+        t = 4 :  10 / (10 +  6 + 40) = 10/56  = 17.9%
+        t = 8 :  10 / (10 +  3 + 20) = 10/33  = 30.3%   ← 实践中最常用的 t
+
+    → ★ 这就是&quot;为什么非得补这个洞&quot;：t=8 时你花了 8 张卡，
+      却有近三分之一的激活显存在做无意义的复制。
+</code></pre></div>
+
+<h3 id="823">8.2.3 核心想法：换一个维度切</h3>
+<div class="codehilite"><pre><span></span><code>    激活张量的形状是 [s, b, h]（序列长 × batch × hidden）
+
+    TP 切的是 h 这一维  →  但 LayerNorm 沿 h 求统计量，所以 h 不能切
+    ★ 那就换一维切：切 s ！
+
+    LayerNorm 是【逐 token 独立】的：
+        第 5 个 token 的 LayerNorm 结果，
+        ★ 只用到第 5 个 token 自己的 h 维，和别的 token 完全无关
+    → ★★ 沿 s 切开，各算各的，数学上完全等价 ★★
+
+    Dropout、残差加法同理，都是逐元素/逐 token 的操作。
+</code></pre></div>
+
+<p><strong>把 <code>[s, b, h]</code> 想象成一张表格</strong>（先忽略 batch 维）：<strong>行 = token，列 = hidden 的每一维</strong>。两种并行就是这张表的两种切法：</p>
+<div class="codehilite"><pre><span></span><code>                    【TP 切法】按列切              【SP 切法】按行切
+                  每卡拿到 全部token × 1/t 的列    每卡拿到 1/t 的token × 全部列
+
+    token 1  ┐    ┌────┬────┬────┬────┐        ┌───────────────────┐ ┐
+    token 2  │    │卡0 │卡1 │卡2 │卡3 │        │       卡 0        │ ┘ 卡0
+    token 3  │    │    │    │    │    │        ├───────────────────┤ ┐
+    token 4  │ →  │    │    │    │    │   或   │       卡 1        │ ┘ 卡1
+    token 5  │    │    │    │    │    │        ├───────────────────┤ ┐
+    token 6  │    │    │    │    │    │        │       卡 2        │ ┘ 卡2
+    token 7  │    │    │    │    │    │        ├───────────────────┤ ┐
+    token 8  ┘    └────┴────┴────┴────┘        │       卡 3        │ ┘ 卡3
+                                                └───────────────────┘
+
+    ★★ 两种切法是【正交】的：同一个张量，一个横着切一个竖着切。
+       Megatron SP 干的事，就是让张量在一层里【在这两种切法之间来回切换】：
+         矩阵乘的地方用竖切（TP），非矩阵的地方用横切（SP）。
+</code></pre></div>
+
+<h3 id="824">8.2.4 ★★ 跟着一个具体张量走完一层</h3>
+<p><strong>参数</strong>：<code>t = 8</code>（8 路 TP+SP）、<code>s = 4096</code>、<code>b = 1</code>、<code>h = 8192</code>、<code>a = 64</code> 个头，BF16。</p>
+<p>于是：每卡的序列分片 <code>s/t = 512</code>，每卡的头数 <code>a/t = 8</code>，MLP 中间维每卡 <code>4h/t = 4096</code>。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>这一步做什么</th>
+<th>每张卡手里的张量</th>
+<th>每卡字节</th>
+<th>所在区域</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>层输入（上一层的输出）</td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>【SP】按 s 切</td>
+</tr>
+<tr>
+<td>2</td>
+<td>LayerNorm ①（逐 token 独立 ✓）</td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>【SP】</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>g：all-gather 沿 s</strong> ⟵ 换切法</td>
+<td><code>[4096, 1, 8192]</code></td>
+<td>67.1 MB</td>
+<td>🔄</td>
+</tr>
+<tr>
+<td>4</td>
+<td>QKV 列并行（每卡 8 个头的 Q/K/V）</td>
+<td><code>[4096, 1, 3072]</code></td>
+<td>25.2 MB</td>
+<td>【TP】按 h 切</td>
+</tr>
+<tr>
+<td>5</td>
+<td>注意力计算（8 个头各算各的）</td>
+<td><code>[4096, 1, 1024]</code></td>
+<td>8.4 MB</td>
+<td>【TP】</td>
+</tr>
+<tr>
+<td>6</td>
+<td>输出 linear 行并行 → <strong>部分和</strong></td>
+<td><code>[4096, 1, 8192]</code> ⚠️ 数值不完整</td>
+<td>67.1 MB</td>
+<td>【TP】</td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>ḡ：reduce-scatter 沿 s</strong> ⟵ 换切法</td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>🔄</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Dropout + 残差相加</td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>【SP】</td>
+</tr>
+<tr>
+<td>9</td>
+<td>LayerNorm ②</td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>【SP】</td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>g：all-gather 沿 s</strong> ⟵ 换切法</td>
+<td><code>[4096, 1, 8192]</code></td>
+<td>67.1 MB</td>
+<td>🔄</td>
+</tr>
+<tr>
+<td>11</td>
+<td>MLP <code>h→4h</code> 列并行 + GeLU</td>
+<td><code>[4096, 1, 4096]</code></td>
+<td>33.6 MB</td>
+<td>【TP】</td>
+</tr>
+<tr>
+<td>12</td>
+<td>MLP <code>4h→h</code> 行并行 → <strong>部分和</strong></td>
+<td><code>[4096, 1, 8192]</code> ⚠️ 数值不完整</td>
+<td>67.1 MB</td>
+<td>【TP】</td>
+</tr>
+<tr>
+<td>13</td>
+<td><strong>ḡ：reduce-scatter 沿 s</strong> ⟵ 换切法</td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>🔄</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Dropout + 残差 → <strong>层输出</strong></td>
+<td><code>[512, 1, 8192]</code></td>
+<td>8.4 MB</td>
+<td>【SP】</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 读这张表要抓住三件事：
+
+    ① 第 1 步和第 14 步形状一模一样 → ★ 层与层之间【一直是 SP 切法】，
+      所以整个网络的&quot;层间张量&quot;只占 8.4 MB/卡，而不是 67.1 MB/卡。
+
+    ② 第 6 / 12 步那个 &quot;[4096,1,8192] 但数值不完整&quot; 是行并行的特点（06 章 §6.1 切法B）：
+      ★ 8 张卡各算出一个&quot;部分和&quot;，形状是对的，但必须 8 份加起来才是正确答案。
+      → 所以下一步不能只是&quot;切开&quot;，必须【先加起来再切开】= reduce-scatter。
+
+    ③ 第 3 / 10 步那两个 67.1 MB 的完整张量是【临时的】，
+      算完当场丢掉、反向时再 all-gather 一次拿回来。
+      ★ 所以它不进&quot;激活显存&quot;这本账 —— 这正是 §8.2.7「唯一的小代价」在说的事。
+</code></pre></div>
+
+<p><strong>对照一下纯 TP（<a href="06-张量并行TP.html">06 章</a>）的同一层</strong>：第 1、2、8、9、14 步全都是 <code>[4096, 1, 8192]</code> = 67.1 MB/卡，<strong>而且 8 张卡上的内容一模一样</strong>。SP 把这几步压成了 8.4 MB —— 正好 ÷8。</p>
+<h3 id="825-all-gather-reduce-scatter">8.2.5 为什么换切法非得是 all-gather / reduce-scatter</h3>
+<p>这是最容易一带而过、但其实最该讲清的一步。</p>
+<div class="codehilite"><pre><span></span><code>    【SP → TP】为什么要 all-gather？
+
+    ⚠️ 一个容易踩的直觉误区：
+       &quot;SP 区域里每张卡都有完整的 h 维啊，那直接做矩阵乘不就行了？&quot;
+
+    ★ 不行。因为 TP 的列并行是&quot;每张卡只有权重 A 的 1/t 列&quot;：
+       卡 i 手里只有 A^c_i。它拿自己那 512 个 token 去乘 A^c_i，
+       只能算出【自己那 512 个 token × 自己那 1/8 的输出维】。
+
+       但下一步的行并行 B^r_i 需要的是
+       【全部 4096 个 token × 自己那 1/8 的输出维】。
+
+    → ★★ 所以必须先把 token 补齐：沿 s 做 all-gather。★★
+       换句话说：TP 要求&quot;每卡处理【所有 token】的【一部分维度】&quot;，
+                 SP 给的是&quot;每卡持有【一部分 token】的【所有维度】&quot;，
+                 补齐 token 就是 all-gather。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    【TP → SP】为什么是 reduce-scatter 而不是 scatter？
+
+    行并行算完，卡 i 手里是 W_i，形状 [4096,1,8192]，
+    ★ 但它是【部分和】：真正的答案 W = W_0 + W_1 + ... + W_7
+
+    纯 TP 的做法：all-reduce 把 8 份加起来 → 每卡都拿到完整的 W（67.1 MB）
+
+    TP+SP 的做法：我根本不需要完整的 W，
+                 ★ 我只需要【我负责的那 512 个 token 那部分的正确答案】
+    → 加起来（reduce）+ 只留我那份（scatter）= ★ reduce-scatter，一步到位
+</code></pre></div>
+
+<blockquote>
+<p>✅ Megatron-3 论文原文（MLP 部分的推导，本章最关键的引用之一）：<br />
+<em>"The linear layer with GeLU non-linearity requires the entire input Y and therefore we need to perform an </em><em>all-gather</em><em>. ... These two tensors are not parallel anymore and need to be summed as W = W₁ + W₂ before they are fed into the dropout layer. However, dropout needs its input to be parallel in the sequence dimension s. </em><em>Instead of summing and then parallelizing in the sequence dimension, we combine these two operations into a reduce-scatter operation.</em><em>"</em></p>
+</blockquote>
+<p><strong>四个算子的对照表</strong>（<code>f / f̄</code> 是纯 TP 的，<code>g / ḡ</code> 是 TP+SP 的）：</p>
+<table>
+<thead>
+<tr>
+<th>算子</th>
+<th>前向</th>
+<th>反向</th>
+<th>出现在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>f</code></td>
+<td>无操作</td>
+<td>all-reduce</td>
+<td>纯 TP，进入 TP 区域时</td>
+</tr>
+<tr>
+<td><code>f̄</code></td>
+<td>all-reduce</td>
+<td>无操作</td>
+<td>纯 TP，离开 TP 区域时</td>
+</tr>
+<tr>
+<td><strong><code>g</code></strong></td>
+<td><strong>all-gather（沿 s）</strong></td>
+<td><strong>reduce-scatter</strong></td>
+<td>TP+SP，SP→TP（上表第 3、10 步）</td>
+</tr>
+<tr>
+<td><strong><code>ḡ</code></strong></td>
+<td><strong>reduce-scatter（沿 s）</strong></td>
+<td><strong>all-gather</strong></td>
+<td>TP+SP，TP→SP（上表第 7、13 步）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ 论文原话：<em>"g and ḡ are conjugate of each other. g is an all-gather in the forward pass and a reduce-scatter in the backward pass, and ḡ is a reduce-scatter in the forward pass and an all-gather in the backward pass."</em></p>
+<p>📌 <strong>"共轭（conjugate）"</strong> 就是"前向做 A、反向做 A 的逆操作"的意思。all-gather 的反向天然就是 reduce-scatter：前向把碎片拼全，反向就要把梯度加起来再切碎还回去。</p>
+</blockquote>
+<h3 id="826">8.2.6 换切法要通信，但是【免费的】</h3>
+<div class="codehilite"><pre><span></span><code>    数一数一层里的通信次数：
+
+    纯 TP：       前向 2 次 all-reduce（注意力后 f̄、MLP 后 f̄）
+                  反向 2 次 all-reduce（两个 f）
+                  ────────────────────────────
+                  ★ 一层 fwd+bwd = 4 次 all-reduce
+
+    TP + SP：     前向 2 次 all-gather（两个 g）+ 2 次 reduce-scatter（两个 ḡ）
+                  反向 2 次 reduce-scatter（g 的反向）+ 2 次 all-gather（ḡ 的反向）
+                  ────────────────────────────
+                  ★ 一层 fwd+bwd = 4 次 all-gather + 4 次 reduce-scatter
+
+    ⚠️ 乍一看：8 次 &gt; 4 次，好像变贵了一倍！
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 这就是 [03 章 §3.3](03-通信原语.md) 那个恒等式的价值兑现时刻 ★★★
+
+        Ring All-Reduce  =  Reduce-Scatter  +  All-Gather
+
+    → 一次 all-reduce 本来【内部就是】一次 RS + 一次 AG。
+      TP+SP 只是把这两个阶段【拆开、中间插进了有用的计算】而已。
+      ★ 次数翻倍了，但每次只有原来的一半 → 总字节数完全相同。
+</code></pre></div>
+
+<p><strong>具体算一遍字节数</strong>（还是 <code>t=8, s=4096, b=1, h=8192</code>，被通信的张量是 <code>[s,b,h]</code> = 67.1 MB）：</p>
+<div class="codehilite"><pre><span></span><code>    用 03 章 §3.3 的环形通信量公式，每张卡实际收发的字节：
+
+        Ring All-Reduce      : 2 × (t−1)/t × 67.1 MB = 2 × 7/8 × 67.1 = 117.4 MB
+        Ring Reduce-Scatter  : 1 × (t−1)/t × 67.1 MB =     7/8 × 67.1 =  58.7 MB
+        Ring All-Gather      : 1 × (t−1)/t × 67.1 MB =     7/8 × 67.1 =  58.7 MB
+                                                                        ───────
+                                                    RS + AG          =  117.4 MB
+                                                                     ★ 完全相等 ★
+
+    ┌────────────────────────────────────────────────────────────┐
+    │  一层（前向+反向）每张卡的通信总量                            │
+    │                                                            │
+    │   纯 TP  ：4 × 117.4 MB                        = 469.8 MB  │
+    │   TP+SP ：4 × 58.7 MB (AG) + 4 × 58.7 MB (RS) = 469.8 MB  │
+    │                                          ★★ 一个字节不多 ★★ │
+    └────────────────────────────────────────────────────────────┘
+
+    → 而换来的是：每层激活从 1.11 GB 降到 0.81 GB（见 §8.3）
+    → ★ 白捡的显存节省。这在分布式训练里是极其罕见的&quot;没有代价&quot;。
+
+    ⚠️ 严格说还有一笔小账没算进上面这张表：反向为了张量 Y 还要多做
+       2 次 all-gather（§8.2.7）。论文因为&quot;可以重叠掉&quot;没把它计入对比，
+       但字节确实是多花了 —— 完整的账在 §8.2.8。
+</code></pre></div>
+
+<blockquote>
+<p>✅ Megatron-3 原文：<br />
+<em>"</em><em>Tensor parallelism requires four all-reduces in a single forward and backward pass</em><em> whereas tensor together with sequence parallelism requires four all-gathers and four reduce-scatters in a single forward and backward pass. At the first look, it seems that tensor with sequence parallelism requires more communications... </em><em>However, we note that a ring all-reduce is composed of two steps: a reduce-scatter followed by an all-gather. As a result, the communication bandwidth used for tensor parallelism and tensor together with sequence parallelism are the same. Therefore, sequence parallelism does not introduce any communication overhead.</em><em>"</em></p>
+<p>📌 顺带印证了 <a href="06-张量并行TP.html">06 章 §6.4</a> 说的"一层 4 次 all-reduce"——✅ 论文原话就是 "four all-reduces in a single forward and backward pass"。</p>
+<p>⚠️ 一个数字上的对账：06 章为了简化，是按"张量本身多大"来估通信量的（67 MB × 4 × 80 层 ≈ 21 GB）。这里因为要<strong>精确比较 all-reduce 和 RS+AG</strong>，必须用环形算法的真实每卡收发量 <code>2(t−1)/t × 张量大小</code>，所以数字会比 06 章大约 1.75 倍。两者不矛盾，只是精度不同。</p>
+</blockquote>
+<h3 id="827-y">8.2.7 唯一的小代价：那个叫 Y 的张量</h3>
+<p><strong>回到 §8.2.4 的表</strong>：第 3 步和第 10 步 all-gather 出来的那个完整张量（论文里叫 <strong>Y</strong>，就是 LayerNorm 的输出、也是列并行 linear 的输入），有个麻烦：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 反向传播算【权重 A 的梯度】时，公式是  dA = Yᵀ · dZ
+      → 必须要有完整的 Y（全部 4096 个 token）
+
+    ⚠️ 如果老老实实把它存下来：67.1 MB/卡 —— 这一项就没被 ÷t，
+       &quot;整除以 t&quot;的漂亮结论就破了。
+
+    ★ Megatron 的做法：只存自己那片 Y^s_i（[512,1,8192] = 8.4 MB），
+      反向时【临时再 all-gather 一次】把 Y 拼回来。
+      → 用一次额外通信，换回 67.1 → 8.4 MB 的显存
+      → 而这次额外通信可以和&quot;算 Y 的梯度&quot;这个计算【重叠】掉（03 章 §3.4）
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<em>"sequence parallelism along with tensor parallelism divides all the activations required for the backward pass along the parallel dimension </em><em>except for the tensor Y that is required for the first linear operation</em><em>. To alleviate this issue, we do not store the full tensor Y... Instead, we store only the Yᵢˢ part on the i-th tensor parallel rank and </em><em>perform an extra all-gather in the backward pass</em><em>. To eliminate the latency introduced by this extra all-gather, we </em><em>overlap this communication with the computation</em><em>."</em></p>
+<p>📌 <strong>串起来看</strong>：这个 Y，正是 §8.2.1 表里那两行 ❌「QKV 三个矩阵乘的共享输入 2sbh」和「MLP 第一层 h→4h 的输入 2sbh」。<strong>它们本来是"切不动"的 10sbh 里最硬的一块骨头，是靠"不存 + 反向重新 all-gather"这个技巧才被啃下来的。</strong></p>
+<p>⚠️ 论文是以 MLP 那一侧为例推导的，注意力那一侧同理——所以一层里其实有两个这样的 Y。</p>
+</blockquote>
+<h3 id="828-all-gather">8.2.8 ★ 把这笔"额外 all-gather"的账算到底</h3>
+<p>上一节说"多一次额外通信"，但<strong>一层里到底多几次？多花多少字节？前向也多吗？</strong> 论文没展开，这里补齐——结论先放上：</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 每层【反向】多 2 次 all-gather，【前向】一次都不多 ★★
+
+    → 不是&quot;每层多 1 次&quot;（论文只举了 MLP 那一侧）
+    → 也不是&quot;前向反向各多&quot;（前向根本不需要 Y 的梯度）
+    → 一层反向的 all-gather 从 2 次变成 4 次
+</code></pre></div>
+
+<p><strong>一层的完整通信账本</strong>（术语回顾：<strong>AG</strong> = all-gather 全收集，每卡把自己那片发出去、凑齐完整张量；<strong>RS</strong> = reduce-scatter 规约散射，先求和再按维度切开、每卡只拿走自己那片）：</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>前向</th>
+<th>反向（共轭算子）</th>
+<th>反向额外</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注意力入口：LN 输出 → QKV <strong>列并行</strong> linear</td>
+<td>AG（g）</td>
+<td>RS</td>
+<td><strong>★ AG（重拼 Y）</strong></td>
+</tr>
+<tr>
+<td>注意力出口：<strong>行并行</strong> proj</td>
+<td>RS（ḡ）</td>
+<td>AG</td>
+<td>—</td>
+</tr>
+<tr>
+<td>MLP 入口：LN 输出 → h→4h <strong>列并行</strong> linear</td>
+<td>AG（g）</td>
+<td>RS</td>
+<td><strong>★ AG（重拼 Y）</strong></td>
+</tr>
+<tr>
+<td>MLP 出口：<strong>行并行</strong> 4h→h</td>
+<td>RS（ḡ）</td>
+<td>AG</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>小计</strong></td>
+<td><strong>2 AG + 2 RS</strong></td>
+<td><strong>2 AG + 2 RS</strong></td>
+<td><strong>+2 AG</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>★ 为什么恰好是 2 次，不是 4 次？</strong> 关键在列并行和行并行的输入形状不一样：</p>
+<div class="codehilite"><pre><span></span><code>    列并行 linear（QKV、h→4h）：
+        输入 = LayerNorm 的输出，被 SP 沿【序列维】切了 → 每卡只有 [s/t, b, h]
+        反向 dA = Yᵀ·dZ 要完整的 Y  → ★ 必须 all-gather ← 额外通信在这
+
+    行并行 linear（proj、4h→h）：
+        输入 = 上一层的输出，被 TP 沿【隐藏维】切了 → 每卡有 [s, b, 4h/t]
+        这一片【本来就是完整的自己那份】，序列维一个 token 都没少
+        反向算自己那块 A_i 的梯度只用这一片 → ✅ 不需要任何 gather
+
+    → 一层里只有 2 个列并行 linear（QKV、fc1）→ 只有 2 个 Y → 只有 2 次额外 AG
+</code></pre></div>
+
+<p><strong>多花多少字节</strong>（沿用 §8.2.6 的 <code>t=8, s=4096, b=1, h=8192</code>，一次 AG/RS 每卡收发 58.7 MB）：</p>
+<div class="codehilite"><pre><span></span><code>    ┌──────────────────────────────────────────────────────────────┐
+    │  一层（前向+反向）每张卡的通信总量 —— 补上额外 AG 之后         │
+    │                                                              │
+    │   纯 TP        ：4 × 117.4                        = 469.8 MB │
+    │   TP+SP（基线）：4 × 58.7 (AG) + 4 × 58.7 (RS)   = 469.8 MB │
+    │   TP+SP（实际）：469.8 + 2 × 58.7（额外 AG）     = 587.2 MB │
+    │                                                              │
+    │                              ★ 比纯 TP 多 25%（不是 0）★     │
+    └──────────────────────────────────────────────────────────────┘
+
+    ⚠️ 那论文说的&quot;no communication overhead&quot;错了吗？没错，它说的是
+       【带宽/字节】口径下 4×AR 与 4×AG+4×RS 相等这件事（§8.2.6），
+       额外那 2 次 AG 论文是单独承认的，理由是【延迟被重叠掉】：
+
+           发出异步 all-gather（不阻塞）
+                ↓  同时在 GPU 上跑
+           grad_input = dZ · Aᵀ        ← 一个大矩阵乘，几百微秒
+                ↓
+           handle.wait()               ← 通信早就跑完了
+                ↓
+           dA = Yᵀ · dZ                ← 这时才真正用到拼好的 Y
+
+    → ★ 所以准确的说法是：【字节 +25%，但墙上时间 ≈ +0】
+      前提是通信和计算真的能并行（见下面的 CUDA_DEVICE_MAX_CONNECTIONS）
+</code></pre></div>
+
+<p><strong>✅ 源码对照</strong>（<a href="../源码/Megatron-LM/megatron/core/tensor_parallel/layers.py">layers.py</a>，<code>LinearWithGradAccumulationAndAsyncCommunication</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ── 前向：存的是 all-gather【之前】的分片，正是论文说的&quot;只存 Yᵢˢ&quot; ──</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">save_for_backward</span><span class="p">(</span><span class="nb">input</span><span class="p">,</span> <span class="n">weight</span><span class="p">)</span>      <span class="c1"># input = [s/t, b, h]  ← 8.4 MB</span>
+<span class="k">if</span> <span class="n">sequence_parallel</span><span class="p">:</span>
+    <span class="n">dist_all_gather_func</span><span class="p">(</span><span class="n">all_gather_buffer</span><span class="p">,</span> <span class="nb">input</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">tp_group</span><span class="p">)</span>
+    <span class="n">total_input</span> <span class="o">=</span> <span class="n">all_gather_buffer</span>       <span class="c1"># 临时 buffer，用完即弃，不进 ctx</span>
+
+<span class="c1"># ── 反向：为了 wgrad 重新 all-gather，异步发出 ──</span>
+<span class="k">if</span> <span class="n">wgrad_compute</span><span class="p">:</span>                         <span class="c1"># ★ 门控：只有要算 dA 时才 gather</span>
+    <span class="k">if</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sequence_parallel</span><span class="p">:</span>
+        <span class="n">handle</span> <span class="o">=</span> <span class="n">dist_all_gather_func</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># ← 那次额外通信</span>
+        <span class="n">total_input</span> <span class="o">=</span> <span class="n">all_gather_buffer</span>
+
+<span class="n">grad_input</span> <span class="o">=</span> <span class="n">grad_output</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">weight</span><span class="p">)</span>   <span class="c1"># ← dY = dZ·Aᵀ，通信在这底下跑（重叠）</span>
+
+<span class="k">if</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sequence_parallel</span> <span class="ow">and</span> <span class="n">wgrad_compute</span><span class="p">:</span>
+    <span class="n">handle</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>                         <span class="c1"># ← 算完 dY 才等 gather 落地</span>
+</code></pre></div>
+
+<blockquote>
+<p>📌 <code>if wgrad_compute:</code> 这个门控是最好的佐证：<strong>这次 all-gather 唯一的存在理由就是 <code>dA = Yᵀ·dZ</code></strong>，和 <code>dY = dZ·Aᵀ</code> 那条链路毫无关系——所以它才能安全地和 <code>dY</code> 的计算重叠。</p>
+<p>⚠️ <strong>重叠不是自动的</strong>：源码注释里明确写了依赖环境变量 <code>CUDA_DEVICE_MAX_CONNECTIONS=1</code>（限制 GPU 上的硬件工作队列只有一条），才能保证通信 kernel 被排在计算 kernel【之前】下发出去、真正跑起来。这也是 Megatron 启动脚本里几乎必设这个变量的原因之一——设错了，这 25% 就从"藏起来的"变成"实打实的延迟"。</p>
+<p>⚠️ 两个边界情况（源码可见、论文未展开）：<br />
+- 开了<strong>完整重计算</strong> <code>--recompute-granularity full</code> 时，反向本来就要重跑一遍前向，这次 AG 变成重计算的一部分，不再是"额外"的。<br />
+- 走<strong>延迟 wgrad</strong> 路径（<code>grad_output_buffer</code> 缓冲、<code>wgrad_deferral_limit</code>）时 <code>wgrad_compute=False</code>，此处不发 AG，推迟到真正算权重梯度时再发。</p>
+</blockquote>
+<hr />
+<h2 id="83-t">8.3 效果：激活显存整整齐齐 ÷ t</h2>
+<p><strong>回忆 <a href="02-显存去哪了.html">02 章 §2.3</a> 的公式（Megatron-3 式 1）</strong>：</p>
+<p>$$\text{每层激活} = sbh\left(34 + \frac{5as}{h}\right)$$</p>
+<p><strong>加上 SP 之后（✅ 论文式 4）</strong>：</p>
+<p>$$\text{每层激活} = \frac{sbh}{t}\left(34 + \frac{5as}{h}\right)$$</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 就是原式【整除以 t】—— 一点边角料都没剩下 ★★
+
+    ✅ 论文原话：&quot;The above equation is now Equation 1 divided by the
+       tensor parallel size.&quot;
+</code></pre></div>
+
+<p><strong>用 §8.2.2 那个算例把三行数字并排看</strong>（<code>s=4096, b=1, h=8192, a=64, t=8</code>，1 sbh = 33.6 MB）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>公式</th>
+<th>代入 t=8</th>
+<th>每层激活</th>
+<th>对比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>什么都不开</td>
+<td><code>sbh(34 + 5as/h)</code> ✅式1</td>
+<td>194 sbh</td>
+<td><strong>6.51 GB</strong></td>
+<td>基准</td>
+</tr>
+<tr>
+<td>只有 TP</td>
+<td><code>sbh(10 + 24/t + 5as/(ht))</code> ✅式2</td>
+<td>33 sbh</td>
+<td><strong>1.11 GB</strong></td>
+<td>÷5.9 ⚠️ 不是 ÷8</td>
+</tr>
+<tr>
+<td><strong>TP + SP</strong></td>
+<td><code>sbh/t · (34 + 5as/h)</code> ✅式4</td>
+<td>24.25 sbh</td>
+<td><strong>0.81 GB</strong></td>
+<td>✅ <strong>÷8，整整齐齐</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 抓住这一行：TP=8 本该省 8 倍，实际只省了 5.9 倍。
+      ★ 少省的那一截，全卡在那 10 sbh = 336 MB 的重复副本上。
+      ★★ SP 把这 336 MB 变成了 42 MB（336÷8），差价 294 MB/层 ★★
+
+      80 层的模型 → ★ 每张卡省下 294 MB × 80 ≈ 23 GB ★
+      （⚠️ 我的算例；真实数字还要看重计算策略，见 11 章）
+
+    → 而 §8.2.6 已经算过：这 23 GB 的通信代价是【0】。
+</code></pre></div>
+
+<p><strong>✅ 论文式 5（考虑流水线，第一个 stage 的总激活）</strong>：</p>
+<p>$$\text{总激活} = \frac{sbhL}{t}\left(34 + \frac{5as}{h}\right)$$</p>
+<blockquote>
+<p>★ <strong>注意这个式子里【没有 p】</strong>——流水线深度不出现在分母里。这是一个非常反直觉、也非常重要的结论：</p>
+<p>✅ 论文的解释：<em>"To keep the pipeline pressurized and avoid extra idle time, the first stage must store activations for p microbatches. Each stage contains L/p layers so the first stage must store </em><em>p × L/p = L layers worth of activations regardless of the pipeline parallel size p</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★★ PP 【不省】激活显存 ★★★
+
+    每张卡的层数少了 p 倍（L/p），
+    但为了填满流水线，第一个 stage 必须同时压着 p 份 micro-batch 的激活
+    → p × (L/p) = L，★ 正好抵消 ★
+
+    → 这解释了 [02 章 §2.5](02-显存去哪了.md) 路由表里
+      &quot;PP 只省 ①②③（模型状态），不省 ④（激活）&quot; 那一格。
+      ⚠️ 严格说是&quot;第一个 stage 不省&quot;，后面的 stage 会好一些。
+</code></pre></div>
+
+<p><strong>✅ 论文的总成绩</strong>（<a href="02-显存去哪了.html">02 章</a>引用过，这里给出归属）：</p>
+<table>
+<thead>
+<tr>
+<th>技术</th>
+<th>激活显存</th>
+<th>重计算开销</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只有 TP</td>
+<td><code>sbh(34 + 5as/h)</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>+ SP</strong></td>
+<td><code>sbh/t · (34 + 5as/h)</code></td>
+<td>✅ 零通信开销</td>
+</tr>
+<tr>
+<td><strong>+ 选择性重计算</strong></td>
+<td><code>34sbhL/t</code>（✅ 式 6）</td>
+<td>✅ 仅 2.7% / 1.6% FLOPs</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <em>"by using selective activation recomputation we can save 70% and 65% of the required memory for activations for the GPT-3 and MT-NLG models, respectively. The recomputation of these activations introduces only 2.7% and 1.6% FLOPs overhead"</em></p>
+<p>📌 选择性重计算是 <a href="11-重计算与激活优化.html">11 章</a>的主题，这里只是先看到它和 SP 是同一篇论文的两个贡献。</p>
+</blockquote>
+<hr />
+<h2 id="84-sp-cp">8.4 ★★ 最容易搞混的一点：SP 和 CP 不是一回事</h2>
+<p><strong>这是本章最重要的一节。</strong></p>
+<div class="codehilite"><pre><span></span><code>    两个名字里都有&quot;序列&quot;，切的也都是序列维度，但★解决的是完全不同的问题★：
+
+┌─────────────────────────────────────────────────────────────────┐
+│  ① Megatron 的 SP（Sequence Parallel，本章 §8.2）                │
+│                                                                 │
+│     ★ 是 TP 的【附属品】，并行度【必须等于 t】，不是独立旋钮       │
+│     ★ 只在 LayerNorm/Dropout/残差 这些【非矩阵】区域生效          │
+│     ★ 注意力计算【完全不受影响】——进注意力前会 all-gather 回完整序列│
+│     ★ 目的：补 TP 的漏，省激活显存                                │
+│     ★ 因为要 all-gather 回完整序列，所以 ❌【解决不了序列本身太长】  │
+│                                                                 │
+│     Megatron 参数：--sequence-parallel（一个开关，没有度数）      │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  ② CP（Context Parallel，上下文并行，§8.5）                      │
+│                                                                 │
+│     ★ 是【独立的一维并行】，有自己的度数 cp                        │
+│     ★ 全程都切着，★★ 包括注意力计算本身 ★★                       │
+│     ★ 目的：让【单条序列】能超过单卡容纳的长度（1M token 那种）    │
+│     ★ 难点：注意力天生要&quot;每个 token 看到所有 token&quot; → 必须专门设计  │
+│                                                                 │
+│     Megatron 参数：--context-parallel-size N                    │
+└─────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 一句话记住区别：
+
+      SP：注意力照常算（进去前拼回完整序列），只是【前后的边角料】切了
+      CP：注意力★本身★就是切着算的 —— 这才是真正的难点
+
+    ★ 落到 §8.2.4 那张表上，区别就是【第 4~6 步】：
+        SP：第 3 步 all-gather 之后，第 4~6 步拿到的是【完整的 4096 个 token】
+            → 注意力和单卡时一模一样，代码都不用改
+            → ❌ 所以 s 大到单卡放不下时，SP 一样死在第 3 步
+        CP：第 4~6 步每张卡手里【始终只有 512 个 token 的 Q】，
+            KV 靠环形传递或 all-to-all 补 → ★ 注意力算子本身要重写
+
+    ⚠️ 更混乱的是：DeepSpeed 把它的 CP 类方案【也叫 &quot;sequence parallelism&quot;】
+       （Ulysses 论文全篇用的都是 &quot;sequence parallelism&quot; 这个词）。
+       ★ 所以读论文时，要看它切的是不是【注意力内部】来判断到底是哪一种。
+</code></pre></div>
+
+<hr />
+<h2 id="85-cp">8.5 CP：让注意力也切着算</h2>
+<blockquote>
+<p>📌 <strong>CP</strong> = <strong>C</strong>ontext <strong>P</strong>arallel，上下文并行。也有论文叫它 sequence parallelism（见 §8.4 的警告）。</p>
+<p><strong>本节的记号约定</strong>（和 §8.2.4 保持一致，方便对照）：<br />
+<code>s</code> = 序列长度、<code>b</code> = micro-batch、<code>h</code> = hidden 维、<code>a</code> = 注意力头数、<code>d = h/a</code> = 每个头的维度、<code>cp</code> = CP 并行度。<br />
+<strong>贯穿全节的算例</strong>：<code>cp = 4</code>、<code>s = 32768</code>（32K）、<code>b = 1</code>、<code>h = 8192</code>、<code>a = 64</code> 个头（<code>d = 128</code>）、BF16（每个数 2 字节）。<br />
+于是每张卡分到 <code>s/cp = 8192</code> 个 token。</p>
+</blockquote>
+<h3 id="851">8.5.1 为什么需要</h3>
+<blockquote>
+<p>✅ Ring Attention 论文（<a href="../papers/Ring-Attention-arXiv-2310.01889.pdf">papers/Ring-Attention-arXiv-2310.01889.pdf</a>）给的场景：<br />
+<em>"The memory demands imposed by Transformers limit their ability to handle long sequences, thereby posing challenges in utilizing videos, actions, and other long-form sequences."</em></p>
+<p>⚠️ 一个量级感：注意力分数矩阵是 <code>[b, a, s, s]</code>，<strong>s 翻倍，它翻 4 倍</strong>。s = 1M 时这个矩阵光是一个头就有 10¹² 个元素——<strong>任何单卡都放不下</strong>。</p>
+<p>✅ 论文自己算的一笔账（注意它算的<strong>不是</strong>注意力矩阵，而是<strong>每层输出</strong>这种"绕不过去的"激活）：<br />
+<em>"processing 100 million tokens with a batch size of 1 requires over </em><em>1000GB of memory</em><em> even for a modest model with a hidden size of 1024. In contrast, modern GPUs and TPUs typically provide </em><em>less than 100GB</em><em> of high-bandwidth memory (HBM)."</em></p>
+<p>📌 <strong>注意这里的因果链</strong>：<a href="11-重计算与激活优化.html">11 章</a>的 FlashAttention 已经把那个 <code>[s,s]</code> 矩阵消掉了（不 materialize），<strong>但每层的输出 <code>[s, b, h]</code> 是消不掉的</strong>——下一层的注意力要用到上一层<strong>所有</strong> token 的输出。所以 s 长到一定程度，<strong>光靠单卡优化已经无解，必须把序列摊到多张卡上</strong>。这就是 CP 存在的理由。</p>
+</blockquote>
+<h3 id="852">8.5.2 难在哪：注意力是"全对全"的依赖</h3>
+<div class="codehilite"><pre><span></span><code>    把 32K 序列切成 4 段放 4 张卡（因果注意力，即每个 token 只看它自己和之前的）：
+
+        卡0: token 0~8191    卡1: 8192~16383   卡2: 16384~24575   卡3: 24576~32767
+
+    ★ 逐 token 独立的算子（LayerNorm、GeLU、Dropout、残差、MLP）
+      → 每张卡拿自己那 8192 个 token 算就行，★ 完全不需要通信 ★
+      → 这部分 CP 和 SP 一样容易
+
+    ★★ 但注意力不是逐 token 独立的 ★★
+        卡3 上的 token 30000 要 attend 到卡0 上的 token 100
+        → 卡3 必须拿到卡0 的 K 和 V
+        → ★★ 数据必须在卡之间流动，绕不过去 ★★
+
+    ⚠️ 注意：需要跨卡的只有 K 和 V，★ Q 不需要 ★
+       因为注意力的输出形状是跟着 Q 走的：Q 有多少个 token，输出就有多少个 token。
+       每张卡只负责算&quot;自己那 8192 个 token 的输出&quot;，所以它的 Q 一直待在本地。
+       → ★ 这个不对称性，是理解下面两种方案的钥匙。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 两种让数据流动的方式，就是两种 CP 方案：★★★
+
+      A. Ring Attention：Q 不动，★ 让 KV 沿着一个环走一圈 ★
+                         → 用 P2P（点对点）通信，通信和计算重叠
+
+      B. Ulysses：      不搬 KV，★ 干脆把&quot;切序列&quot;临时换成&quot;切头&quot; ★
+                         → 用 all-to-all（全交换）通信，换完每张卡自给自足
+</code></pre></div>
+
+<hr />
+<h3 id="853-softmax">8.5.3 先补一块积木：softmax 为什么能分块算</h3>
+<p><strong>这是 Ring Attention 的数学地基。不搞懂这一步，"KV 转圈"看起来就像是在耍赖。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 先看清楚问题在哪：
+
+      softmax(x)_i = e^{x_i} / Σ_j e^{x_j}
+                                 ▲▲▲▲▲▲
+                          ★ 分母要【所有】分数都到齐才算得出来
+
+    → 卡3 第一轮只拿到了卡3 自己的 KV，它算出的分数只是全部分数的 1/4
+    → 分母是错的 → 得到的注意力权重是错的
+    ⚠️ 那&quot;先各算各的、最后加起来&quot;显然不行 —— 加权平均的权重都不对，加起来也没意义
+</code></pre></div>
+
+<p><strong>解法叫 online softmax（在线 softmax）：不存权重，存两个"修正用的统计量"，等新块来了再回头把旧结果按比例改一改。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 每张卡为它的 Q 块维护三样东西（每一行 Q 各一份）：
+
+        m  = 到目前为止见过的【最大分数】       ← 防指数爆炸用的
+        l  = 到目前为止的【分母累加值】
+        Õ  = 到目前为止的【未归一化输出】       （Õ 读作 &quot;O tilde&quot;）
+
+    ★ 来了一个新的 KV 块，做四件事：
+
+        ① 算这一块的局部分数 S = QKᵀ/√d，取局部最大 m_new
+        ② l_new = Σ e^{S - m_new}            （这一块自己的分母）
+           Õ_new = e^{S - m_new} · V         （这一块自己的未归一化输出）
+        ③ ★ 合并：取 m* = max(m, m_new)，把新旧两边都缩放到同一个基准上
+              l  ← e^{m - m*}·l  +  e^{m_new - m*}·l_new
+              Õ  ← e^{m - m*}·Õ  +  e^{m_new - m*}·Õ_new
+              m  ← m*
+        ④ 所有块都过完之后：O = Õ / l          ← ★ 到最后一刻才做除法
+
+    ★★ 关键在第 ③ 步那两个 e^{m - m*}：它就是&quot;回头把旧结果改一改&quot;的动作 ★★
+</code></pre></div>
+
+<p><strong>用一个能手算的例子验一遍</strong>（为了能手算，取 <code>d = 1</code>、一行 Q、两个 KV 块）：</p>
+<div class="codehilite"><pre><span></span><code>    块1： 分数 S₁ = [1, 3]     值 V₁ = [10, 20]
+    块2： 分数 S₂ = [2, 5]     值 V₂ = [30, 40]
+
+    ── 一次性算（标准答案）───────────────────────────────
+      e¹=2.718  e³=20.086  e²=7.389  e⁵=148.413   分母 = 178.606
+      权重 = [0.0152, 0.1125, 0.0414, 0.8310]
+      O = 0.0152×10 + 0.1125×20 + 0.0414×30 + 0.8310×40 = 36.8806
+
+    ── 分块算 ──────────────────────────────────────────
+      块1： m=3   l = e⁻²+e⁰ = 1.1353    Õ = 0.1353×10 + 1×20 = 21.3534
+      块2： m=5   l = e⁻³+e⁰ = 1.0498    Õ = 0.0498×30 + 1×40 = 41.4936
+
+      合并（m* = max(3,5) = 5，旧的那份要乘 e^{3-5} = 0.1353）：
+        l = 0.1353 × 1.1353 + 1 × 1.0498 = 1.2034
+        Õ = 0.1353 × 21.3534 + 1 × 41.4936 = 44.3835
+
+      O = 44.3835 / 1.2034 = ★ 36.8806 ★   ←── 和标准答案【逐位相同】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 三个必须记住的结论 ★★★
+
+    ① 这是【精确】的，不是近似。分块 softmax 和一次性 softmax 的结果按位相同。
+       （浮点舍入会有微小差异，但这和&quot;近似算法&quot;是两回事。）
+
+    ② 块的【顺序无所谓】。先算块2 再算块1，结果一样。
+       ✅ 论文管这叫 permutation invariance（置换不变性）：
+          &quot;the self-attention between a query block and a group of key-value blocks
+           can be computed in any order, as long as the statistics of each block
+           are combined correctly for rescaling&quot;
+       ★★ 正因为顺序无所谓，KV 才可以&quot;随便按什么顺序转到你这里&quot; ★★
+
+    ③ 每张卡要额外存的只有 (m, l)：每行 Q 两个标量。
+       s/cp = 8192 行 × 2 个数 —— 相比 134 MB 的 KV 块，可以忽略不计。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>这和 <a href="11-重计算与激活优化.html">11 章 §11.5</a> 的 FlashAttention 是【同一个技巧】</strong>：FlashAttention 用它在<strong>一张卡内部</strong>分块（在 SRAM 和 HBM 之间），Ring Attention 用它在<strong>多张卡之间</strong>分块。<br />
+<strong>★ 一句话概括两者的关系：Ring Attention = FlashAttention 的外层循环被拆到了多张卡上。</strong></p>
+</blockquote>
+<hr />
+<h3 id="854-aring-attention-kv">8.5.4 ★★ 方案 A：Ring Attention —— 让 KV 转圈</h3>
+<h4 id="_1">一句话</h4>
+<div class="codehilite"><pre><span></span><code>    ★ Q 不动（每张卡永远只算自己那 8192 个 token 的输出），
+      让 K、V 沿着一个环【一站一站传下去】，
+      每转到一站就用 §8.5.3 的公式把结果【累加修正】一次，
+      转满 cp 轮，每张卡就见过了全世界的 KV。
+</code></pre></div>
+
+<h4 id="4">跟着 4 张卡走完一次前向</h4>
+<p><strong>环的方向约定</strong>：卡 i 把自己手里的 KV 发给卡 (i+1) mod 4，同时从卡 (i−1) mod 4 收。</p>
+<table>
+<thead>
+<tr>
+<th>轮次</th>
+<th>卡0 用谁的 KV</th>
+<th>卡1</th>
+<th>卡2</th>
+<th>卡3</th>
+<th>同时在传的是</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>第 1 轮</td>
+<td><strong>KV₀</strong>（自己的）</td>
+<td>KV₁</td>
+<td>KV₂</td>
+<td>KV₃</td>
+<td>把手里的 KV 发给下家</td>
+</tr>
+<tr>
+<td>第 2 轮</td>
+<td>KV₃</td>
+<td><strong>KV₀</strong></td>
+<td>KV₁</td>
+<td>KV₂</td>
+<td>继续往下家传</td>
+</tr>
+<tr>
+<td>第 3 轮</td>
+<td>KV₂</td>
+<td>KV₃</td>
+<td><strong>KV₀</strong></td>
+<td>KV₁</td>
+<td>继续</td>
+</tr>
+<tr>
+<td>第 4 轮</td>
+<td>KV₁</td>
+<td>KV₂</td>
+<td>KV₃</td>
+<td><strong>KV₀</strong></td>
+<td>传完，不用再发了</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 竖着看每一列：卡 i 依次见到了 KV_i, KV_{i-1}, ..., 全部 4 块 ✓
+    ★ 横着看每一行：任一时刻，4 块 KV 分散在 4 张卡上，★ 没有任何一张卡持有全部 KV ★
+      → 这正是省显存的地方
+
+    ★ 一共 cp 步计算 + (cp − 1) 次传递。
+</code></pre></div>
+
+<blockquote>
+<p>📌 ⚠️ 论文的伪代码（Algorithm 1）把"算"和"传"写在同一个循环里、循环 <code>Nh − 1</code> 次，读起来像是少了一轮；实际实现里最后一轮只算不传。这是伪代码的简写，不影响理解。</p>
+</blockquote>
+<h4 id="_2">每一轮里，一张卡具体在干什么</h4>
+<div class="codehilite"><pre><span></span><code>    ★★ 关键是【三件事同时发生】★★
+
+    卡 i 在第 k 轮：
+
+      ┌─ ① 计算（占满 SM）：
+      │     用本地 Q_i 和手里这块 KV_j，跑一次 FlashAttention
+      │     → 得到这一块的 (m_new, l_new, Õ_new)
+      │     → 用 §8.5.3 第 ③ 步合并进本地的 (m, l, Õ)
+      │
+      ├─ ② 发送（占通信引擎，不占 SM）：
+      │     isend(KV_j) → 卡 (i+1)          ← ★ 非阻塞
+      │
+      └─ ③ 接收（占通信引擎，不占 SM）：
+            irecv(KV_{j-1}) ← 卡 (i-1)      ← ★ 非阻塞，收进另一块缓冲区
+
+    ★ 这一轮结束时才 wait 一次，确认 ②③ 完成，然后把缓冲区一换，进入下一轮。
+
+    ★★★ 所以只要 ①的时间 ≥ ②③的时间，通信就完全被算掩盖住了 ★★★
+    → 这是 [03 章 §3.4](03-通信原语.md) 那个&quot;能不能和计算重叠&quot;在 CP 上的具体兑现。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<br />
+<em>"each host efficiently coordinates by concurrently </em><em>sending key-value blocks being used for attention computation to the next host while receiving key-value blocks from the preceding host</em><em>, effectively overlapping transferring of blocks with blockwise computation."</em><br />
+<em>"</em><em>If the computation time exceeds the time required for transferring key-value blocks, this results in no additional communication cost.</em><em>"</em><br />
+<em>"Our approach enables training and inference of sequences that are </em><em>up to device count times longer</em><em> than those achievable by prior memory-efficient Transformers, </em><em>without resorting to approximations or incurring additional communication and computation overheads</em><em>."</em></p>
+</blockquote>
+<h4 id="_3">★ "只要计算 ≥ 通信" 这个条件，到底苛刻不苛刻</h4>
+<p><strong>这是 Ring Attention 最实用的一段，论文把它推成了一个只有两个变量的不等式。</strong></p>
+<div class="codehilite"><pre><span></span><code>    设：每张卡算力 F（FLOPS），卡间单向带宽 B（字节/秒），块大小 c（token 数），头维 d。
+
+    ★ 一轮的计算量：QKᵀ 要 2dc²，(权重)·V 再要 2dc²  →  合计 4dc² FLOPs
+    ★ 一轮的通信量：K 块 + V 块  →  合计 4cd 字节
+
+    重叠条件：   4dc² / F   ≥   4cd / B
+                ▲▲▲▲▲▲▲       ▲▲▲▲▲▲
+                 算的时间       传的时间
+
+    ★★★ 两边约掉 4cd，得到：   c ≥ F / B   ★★★
+
+    → 每张卡上的序列长度只要【大于算力带宽比】，通信就是免费的。
+    → ★ 注意 c 是【平方】增长的计算 vs 【线性】增长的通信 —— 序列越长，越容易藏住。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<em>"To achieve an overlap between communication and computation, the following condition must hold: <code>4dc²/F ≥ 4cd/B</code>. This implies that the block size, denoted as c, should be greater than or equal to <code>F/B</code>. Effectively, this means that </em><em>the block size needs to be larger than the ratio of FLOPs over bandwidth</em><em>."</em></p>
+</blockquote>
+<p><strong>✅ 论文 Table 2 直接把这个比值算成了具体数字</strong>（<code>最小序列长度 = 6 × 最小块大小</code>，那个 6 的来历见下一小节）：</p>
+<table>
+<thead>
+<tr>
+<th>硬件</th>
+<th>单卡算力 F</th>
+<th>卡间单向带宽 B</th>
+<th><strong>最小块大小 c = F/B</strong></th>
+<th><strong>每卡最小序列长度 6c</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A100 + <strong>NVLink</strong>（机内）</td>
+<td>312 TF</td>
+<td>300 GB/s</td>
+<td><strong>1.0 K</strong></td>
+<td><strong>6.2 K</strong></td>
+</tr>
+<tr>
+<td>A100 + <strong>InfiniBand</strong>（机间）</td>
+<td>312 TF</td>
+<td><strong>12.5 GB/s</strong></td>
+<td><strong>24.5 K</strong></td>
+<td>⚠️ <strong>149.5 K</strong></td>
+</tr>
+<tr>
+<td>TPU v3</td>
+<td>123 TF</td>
+<td>112 GB/s</td>
+<td>1.1 K</td>
+<td>6.6 K</td>
+</tr>
+<tr>
+<td>TPU v4</td>
+<td>275 TF</td>
+<td>268 GB/s</td>
+<td>1.0 K</td>
+<td>6.2 K</td>
+</tr>
+<tr>
+<td>TPU v5e</td>
+<td>196 TF</td>
+<td>186 GB/s</td>
+<td>1.1 K</td>
+<td>6.3 K</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>NVLink</strong> = 英伟达的机内 GPU 直连总线；<strong>InfiniBand（IB）</strong> = 机器之间的高速网络。两者带宽差约 <strong>24 倍</strong>——见 <a href="03-通信原语.html">03 章 §3.1</a>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★★ 这张表是本节最该记住的一个结论 ★★★
+
+    机内（NVLink）：每卡 6K token 就够藏住通信 → ★ Ring 几乎总是划算
+    机间（IB）：    ⚠️ 每卡要 150K token 才藏得住！
+                   → cp=4 跨 4 台机，意味着总序列要 600K 才不亏
+                   → ★ 序列没那么长的时候，跨机 Ring 会【暴露】通信，明显掉速
+
+    ⚠️ 所以&quot;Ring 适合跨机&quot;这句流传很广的话是【有前提】的：
+       前提是序列真的足够长。否则跨机 Ring 一样会被通信卡住。
+</code></pre></div>
+
+<p><strong>⚠️ 用本节算例再验一遍这个结论</strong>（以下是我的推算，不是论文数字）：</p>
+<div class="codehilite"><pre><span></span><code>    cp = 4、s = 32768 → 每卡 8192 token，h = 8192，BF16
+
+    每轮通信：K 块 + V 块 = 2 × (8192 × 8192 × 2 B) = ★ 268.4 MB ★
+    每轮计算：4 × 8192 × 8192 × 8192 = 2.20 TFLOP
+              （= 4·s_q·s_kv·h，已对 64 个头求和过了）
+
+              @ A100 峰值 312 TFLOPS → 7.05 ms
+              @ 实际 ~50% 利用率     → 约 14 ms
+
+    ── 机内 NVLink 300 GB/s：268.4 MB ÷ 300 GB/s = ★ 0.89 ms ★
+       0.89 ms ≪ 7.05 ms  → ✅ 完全藏住，通信免费
+
+    ── 机间 IB 12.5 GB/s：  268.4 MB ÷ 12.5 GB/s = ⚠️ 21.5 ms ⚠️
+       21.5 ms &gt; 7.05 ms   → ❌ 藏不住，每轮要干等 14 ms
+       → ★ 和 Table 2 说的&quot;IB 要 149.5K 才够&quot;完全对得上（这里每卡只有 8K）
+</code></pre></div>
+
+<h4 id="6bch">显存账：为什么是 6bch</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 一张卡在任意时刻要同时握着【六块】（每块 = c 个 token × h 维）：
+
+        ① Q 块           （自己的，全程不变）
+        ② 当前的 K 块     ┐
+        ③ 当前的 V 块     ┤ 正在被算的这一份
+        ④ 接收缓冲的 K 块  ┐
+        ⑤ 接收缓冲的 V 块  ┤ ★ 必须是【另一块】缓冲区，否则边收边算会写坏正在用的数据
+        ⑥ 输出块 Õ       （形状跟 Q 一样）
+
+    → ★ 总计 6bch 字节，★★ 和序列总长 s 完全无关 ★★
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<em>"a total of </em><em>six blocks</em><em> are required, which translates to </em><em>6bch bytes</em><em> of memory... our method exhibits the advantage of </em><em>linear memory scaling with respect to the block size c, and is independent of the input sequence length s</em><em>."</em><br />
+由此也解释了上表那个 6：<em>"the model needs to have a sequence length of </em><em>s = 6c</em><em>, which is six times the minimal block size."</em></p>
+<p>✅ 论文 Table 1 的横向对比（每层激活字节数，BF16）：</p>
+<table>
+<thead>
+<tr>
+<th>架构</th>
+<th>注意力部分</th>
+<th>FFN 部分</th>
+<th>合计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>朴素 Transformer</td>
+<td><code>2bns²</code></td>
+<td><code>8bsh</code></td>
+<td><code>2bhs²</code> ⚠️ <strong>s 的平方</strong></td>
+</tr>
+<tr>
+<td>+ 高效注意力（FlashAttention 类）</td>
+<td><code>2bsh + 4bch</code></td>
+<td><code>8bsh</code></td>
+<td><code>8bsh</code></td>
+</tr>
+<tr>
+<td>+ 分块 FFN（BPT）</td>
+<td><code>2bsh</code></td>
+<td><code>2bsh</code></td>
+<td><code>2bsh</code></td>
+</tr>
+<tr>
+<td><strong>Ring Attention</strong></td>
+<td><code>6bch</code></td>
+<td><code>2bch</code></td>
+<td>✅ <strong><code>6bch</code>（不含 s！）</strong></td>
+</tr>
+</tbody>
+</table>
+<p>📌 <strong>怎么读这张表</strong>：<code>n</code> 是头数、<code>c</code> 是块大小。最后一列是"<strong>最大</strong>激活量"而不是两列相加（论文表题写的就是 <em>maximum activation sizes</em>）——因为注意力和 FFN 是<strong>先后</strong>执行的，峰值取较大者。<br />
+⚠️ 第一行的 <code>2bns²</code> 和 <code>2bhs²</code> 里 <code>n</code> 与 <code>h</code> 对不上，⚠️ <strong>这大概率是论文的笔误</strong>；不影响要看的结论：<strong>前三行都带 <code>s</code>（还有一行是 <code>s²</code>），只有 Ring Attention 那一行把 <code>s</code> 彻底消掉了。</strong></p>
+<p>✅ 实测规模（论文 Table 3，"Ours vs SOTA" 那一列就是相对上一行 SOTA 的倍数）：<br />
+8×A100 NVLink 上 7B 模型：32K → <strong>256K</strong>（8×）；32×A100 InfiniBand 上 7B：128K → <strong>4096K</strong>（32×）；TPUv4-1024 上 3B：32K → <strong>16384K</strong>（512×）。<br />
+<em>"If a model can be trained with context size s on n GPUs using the blockwise attention and feedforward, with our Ring Attention approach, it becomes possible to train a model with a context size of </em><em>ns</em><em>."</em></p>
+</blockquote>
+<h4 id="_4">反向传播怎么办</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 反向要算三个梯度：dQ、dK、dV。
+
+      dQ_i 只跟【卡 i 自己的 Q】有关  → ★ 留在本地累加，好办
+      dK_j / dV_j 属于【KV 块的原主人卡 j】
+        → ⚠️ 但计算它的是【正在用这块 KV 的那张卡】，不是卡 j
+        → ★ 所以 dK/dV 也得跟着 KV 一起在环上转，边转边累加，最后回到原主人手里
+
+    ★ 实现上就是：反向再转一圈，这一圈传的是 (K, V, dK, dV) 四样东西
+      → ⚠️ 反向的单轮通信量约是前向的【2 倍】
+      → 但反向的计算量也大约是前向的 2 倍，所以重叠条件 c ≥ F/B 大体仍然成立
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文只用一句话带过：<em>"This overlapping mechanism applies to </em><em>both forward and backward passes</em><em> of our approach since the same operations and techniques can be used."</em></p>
+<p>⚠️ 上面那段"传四样东西 / 通信量翻倍"是我根据反向传播的依赖关系推出来的，<strong>论文没有展开写</strong>。各家实现（Megatron 的 <code>ring_exchange</code>、flash-attn 的 <code>ring_flash_attn</code>）在这一步的细节不完全一样。</p>
+</blockquote>
+<h4 id="_5">⚠️ 最大的工程坑：因果掩码让负载严重不均</h4>
+<p><strong>⚠️ 论文全文没有讨论这个问题（它的实验用的是完整注意力的分析），但这是任何真实实现都必须处理的头号问题。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 因果注意力：token 只能看到自己和之前的 token。
+      → 卡 i 的 Q 块，只需要 KV 块 0 ~ i，★ 后面的全被 mask 掉，算了也白算 ★
+
+    ── 朴素切法（卡 i 拿第 i 段连续序列）的真实工作量 ──
+
+        卡0（最早的 token）: 只需要 KV₀            → 1 块的活
+        卡1:                需要 KV₀, KV₁          → 2 块
+        卡2:                需要 KV₀, KV₁, KV₂     → 3 块
+        卡3（最晚的 token）: 需要全部 4 块         → 4 块  ← ★ 最忙
+
+    ⚠️ 但环是【同步】的：每一轮所有卡一起走，一轮的耗时由最忙的那张卡决定。
+       总工作量 = 1+2+3+4 = 10 块
+       实际耗时 ≈ 4 轮 × 每轮满负载 = 16 块的时间
+       → ★ 利用率只有 10/16 = 62.5%，cp 越大越糟（一般是 (cp+1)/(2cp) → 趋近 50%）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 修法：把序列切成 2·cp 块，每张卡拿【一头一尾】两块 ★★★
+
+    cp = 4 → 切成 8 块，卡 i 拿第 i 块和第 (2·cp − 1 − i) 块：
+
+        卡0 ← 块0 + 块7        卡1 ← 块1 + 块6
+        卡2 ← 块2 + 块5        卡3 ← 块3 + 块4
+
+    ★ 验算每张卡的工作量（块 j 作为 query 时要看 j+1 块）：
+        卡0：(0+1) + (7+1) = 9
+        卡1：(1+1) + (6+1) = 9
+        卡2：(2+1) + (5+1) = 9
+        卡3：(3+1) + (4+1) = 9      ←── ★★ 完全相等 ★★
+
+    ★ 一般式：(i+1) + (2·cp − i) = 2·cp + 1，★ 和 i 无关 ★ → 恒等配平
+
+    ⚠️ 代价：token 在卡上不再连续，所以【进 CP 前要重排、出 CP 后要还原】，
+       位置编码（RoPE）也必须用【原始位置】而不是卡上的局部位置。
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>这不是我编的，Megatron-LM 源码里就是这么写的</strong>（<a href="../源码/Megatron-LM/megatron/core/utils.py">源码/Megatron-LM/megatron/core/utils.py</a>，<code>_get_batch_on_this_cp_rank_per_sequence_balancing</code>）：</p>
+<p><code>python
+val = val.view(..., 2 * cp_size, val.shape[seq_dim] // (2 * cp_size), ...)
+index = torch.zeros(2, dtype=torch.int64, device=val.device)
+index[0].fill_(cp_rank)                      # ← 第 i 块
+index[1].fill_(2 * cp_size - cp_rank - 1)    # ← 第 (2·cp − 1 − i) 块
+val = val.index_select(seq_dim, index)</code></p>
+<p>源码的注释也把这套切法直接叫 <strong>zigzag</strong>（之字形）：<em>"The sequence is split into <code>2 * cp_size</code> equal chunks and assigned in a zigzag pattern: for CP=2, the 4 chunks are assigned as (chunk_0, chunk_3) -&gt; GPU 0 and (chunk_1, chunk_2) -&gt; GPU 1, balancing..."</em></p>
+<p>⚠️ 但要分清来源：<strong>zigzag 是【框架的工程实现】，不是 Ring Attention 论文的内容</strong>——论文全文没有讨论因果掩码的负载问题。上面那个 <code>(i+1) + (2cp−i) = 2cp+1</code> 的配平验算是我推的，只是用来让你确信它真的均匀。</p>
+<p>⚠️ 还有一个连带约束：序列长度<strong>必须能被 <code>2 × cp</code> 整除</strong>（源码里对文档长度不整除的情况另有一条分支）。</p>
+</blockquote>
+<hr />
+<h3 id="855-bdeepspeed-ulysses">8.5.5 ★★ 方案 B：DeepSpeed-Ulysses —— 让切法换一次</h3>
+<h4 id="_6">一句话</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 既然注意力要&quot;每个头看完整序列&quot;，那就【在进注意力之前把切法换掉】：
+
+      注意力之外：每张卡持有 【1/cp 的序列】 × 【全部的头】     ← 省激活显存
+      注意力之内：每张卡持有 【完整的序列】 × 【1/cp 的头】     ← 每张卡自给自足！
+
+    ★★ 换完之后，每张卡手上是&quot;完整序列的若干个完整头&quot;
+       → 它可以【原封不动地调用单卡 FlashAttention】，注意力算子一行都不用改 ★★
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<br />
+<em>"DeepSpeed-Ulysses partitions individual samples along the sequence dimension among participating GPUs. Then </em><em>right before the attention computation, it employs all-to-all communication collective on the partitioned queries, keys and values such that each GPU receives the full sequence but only for a non-overlapping subset of the attention heads</em><em>. This allows the participating GPUs to compute attention for different attention heads in parallel. Finally, DeepSpeed-Ulysses employs </em><em>another all-to-all to gather the results along the attention heads while re-partitioning along the sequence dimension</em><em>."</em></p>
+</blockquote>
+<h4 id="_7">跟着张量形状走完一层的注意力部分</h4>
+<p><strong>算例</strong>：<code>cp = 4</code>、<code>s = 32768</code>、<code>b = 1</code>、<code>h = 8192</code>、<code>a = 64</code> 头（<code>d = 128</code>）、BF16。<br />
+每卡序列分片 <code>s/cp = 8192</code>；换完之后每卡头数 <code>a/cp = 16</code>，对应 <code>h/cp = 2048</code> 维。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>这一步做什么</th>
+<th>每张卡手里的形状</th>
+<th>每卡字节</th>
+<th>切法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>层输入</td>
+<td><code>[8192, 1, 8192]</code></td>
+<td>134.2 MB</td>
+<td>【切序列】</td>
+</tr>
+<tr>
+<td>2</td>
+<td>LayerNorm（逐 token 独立 ✓）</td>
+<td><code>[8192, 1, 8192]</code></td>
+<td>134.2 MB</td>
+<td>【切序列】</td>
+</tr>
+<tr>
+<td>3</td>
+<td>QKV 投影（本地矩阵乘，✅ 无通信）</td>
+<td>Q/K/V 各 <code>[8192, 1, 8192]</code></td>
+<td>各 134.2 MB</td>
+<td>【切序列】</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>★ all-to-all #1</strong>（对 Q、K、V 各做一次）</td>
+<td>Q/K/V 各 <code>[32768, 1, 2048]</code></td>
+<td><strong>各 134.2 MB</strong></td>
+<td>🔄 <strong>【切头】</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>注意力（本地 FlashAttention，16 个完整的头，✅ <strong>无通信</strong>）</td>
+<td><code>[32768, 1, 2048]</code></td>
+<td>134.2 MB</td>
+<td>【切头】</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>★ all-to-all #2</strong>（把输出换回来）</td>
+<td><code>[8192, 1, 8192]</code></td>
+<td><strong>134.2 MB</strong></td>
+<td>🔄 【切序列】</td>
+</tr>
+<tr>
+<td>7</td>
+<td>输出投影 + Dropout + 残差</td>
+<td><code>[8192, 1, 8192]</code></td>
+<td>134.2 MB</td>
+<td>【切序列】</td>
+</tr>
+<tr>
+<td>8</td>
+<td>LayerNorm ② + MLP（全部逐 token 独立，✅ 无通信）</td>
+<td><code>[8192, 1, 8192]</code></td>
+<td>134.2 MB</td>
+<td>【切序列】</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 读这张表要抓住三件事 ★★★
+
+    ① 第 4 步前后的字节数【一模一样】都是 134.2 MB：
+         8192 × 8192  ←→  32768 × 2048
+       ★ all-to-all 不增不减，它只是【把数据重新分配了一遍】
+       ★★ 对比 §8.2.4 的第 3 步：那里 all-gather 把 8.4 MB 变成了 67.1 MB（膨胀 8 倍）
+          → ★ 这是 Ulysses 相对 Megatron-SP 最本质的省法：它【从不制造完整副本】
+
+    ② 第 5 步【完全没有通信】，而且用的就是普通的单卡注意力核。
+       ★ 论文强调这一点叫 &quot;attention agnostic&quot;（与注意力实现无关）：
+         稠密、稀疏、causal、cross-attention、FlashAttention v2 全都直接能用。
+
+    ③ 除了第 4、6 两步，★ 整层其余部分【一次通信都没有】★
+       → 因为它们全是逐 token 独立的（§8.5.2 说过）
+       → ⚠️ 对比 Megatron-SP：那里每层有 4 次集合通信（§8.2.6 的 g/ḡ 各两次）
+</code></pre></div>
+
+<h4 id="all-to-all">为什么恰好是 all-to-all</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 回忆 [03 章 §3.2 ⑤](03-通信原语.md)：all-to-all 的本质是【一次分布式矩阵转置】。
+
+    把每张卡的数据想成一张表：行 = 序列段，列 = 头组。
+
+      换之前（每卡持有【1 个序列段】× 全部 4 个头组）：
+        卡0: [段0头组0][段0头组1][段0头组2][段0头组3]
+        卡1: [段1头组0][段1头组1][段1头组2][段1头组3]
+        卡2: [段2头组0][段2头组1][段2头组2][段2头组3]
+        卡3: [段3头组0][段3头组1][段3头组2][段3头组3]
+
+      ★ 每张卡把自己的第 i 块发给卡 i —— 这正是 all-to-all 的定义
+
+      换之后（每卡持有【全部 4 个序列段】× 1 个头组）：
+        卡0: [段0头组0][段1头组0][段2头组0][段3头组0]   ← ★ 头组0 的完整序列
+        卡1: [段0头组1][段1头组1][段2头组1][段3头组1]
+        卡2: [段0头组2][段1头组2][段2头组2][段3头组2]
+        卡3: [段0头组3][段1头组3][段2头组3][段3头组3]
+
+    ★★ &quot;切序列 → 切头&quot;和&quot;切头 → 切序列&quot;是【同一个转置的两个方向】
+       → 所以进出注意力用的是同一个原语，第 6 步就是第 4 步反着做一次。
+</code></pre></div>
+
+<h4 id="4nhp-p">★ 通信量：为什么是 <code>4Nh/P</code>，为什么那个 <code>/P</code> 是全部的重点</h4>
+<div class="codehilite"><pre><span></span><code>    ★ 前提（论文的假设）：在 NVSwitch / 胖树 IB 这类网络上，
+      总消息量 M 的 all-to-all，★ 摊到每条链路上是 M/P ★
+      直觉：all-to-all 里每张卡只往每个对端发 1/P 的数据，天然被 P 分摊了。
+
+    一层的账（论文记号：N = 序列长度，h = hidden，P = 并行度）：
+
+      all-to-all #1：Q、K、V 各一次   →  总消息量 3Nh
+      all-to-all #2：输出一次         →  总消息量  Nh
+                                        ───────────
+                                        合计 4Nh
+      ★★★ 每条链路：4Nh / P ★★★
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<em>"DS-Sequence performs all-to-all for the QKV projections with an aggregate message size of </em><em>3Nh</em><em> before the attention computation, and another all-to-all for output context projection with a size </em><em>Nh</em><em> for each transformer layer. Therefore, DeepSpeed sequence parallelism incurs an aggregate communication volume per link of </em><em>4Nh/P</em><em> (or with the complexity of O(N/P)). Note that </em><em>this communication volume is constant when both N and P are increased proportionally</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 和 Megatron-SP（§8.2）比一比 —— 这是论文最想说的那句话 ★★
+
+    Megatron-SP 每层：2 次 all-gather（各 Nh）+ 2 次 reduce-scatter（各 Nh）= 4Nh
+    ⚠️ 但 all-gather / reduce-scatter 的【每链路】代价，在 P 很大时仍然是 M，不是 M/P
+       （直觉：all-gather 最终每张卡都要收到【全部】数据，所以它收的字节数就是 M，
+         不管有多少张卡分摊——[03 章 §3.3](03-通信原语.md) 的 ring 算法也是这个结论）
+
+      → Megatron-SP 每链路 = 4Nh        ★ 和 P 无关
+      → Ulysses    每链路 = 4Nh / P     ★ 被 P 分摊
+      ★★★ 差【P 倍】★★★
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<em>"the cost of each all-gather and reduce-scatter of size M </em><em>remains M when P » 1, instead of M/P</em><em>. Therefore, Megatron-LM sequence parallelism incurs a communication volume per link of </em><em>4Nh</em><em> which is </em><em>P times larger</em><em> than that for DeepSpeed sequence parallelism."</em></p>
+</blockquote>
+<p><strong>⚠️ 代入本节算例（我的推算）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    N = 32768、h = 8192、BF16 → Nh = 536.9 MB
+
+      Ulysses     每层每链路 = 4 × 536.9 / 4 = ★ 536.9 MB ★
+      Megatron-SP 每层每链路 = 4 × 536.9     = ⚠️ 2.15 GB ⚠️     ← 4 倍
+
+    ★ 而且这个差距【随 cp 线性拉大】：cp = 8 差 8 倍，cp = 16 差 16 倍。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ &quot;N 和 P 同比放大时通信量恒定&quot;是什么意思、为什么重要 ★★★
+
+      序列 32K 用 4 卡  →  每链路 4Nh/P
+      序列 64K 用 8 卡  →  N 翻倍、P 翻倍 → ★ 每链路【不变】★
+
+    → 意味着&quot;想训更长的序列，就多加同样比例的卡&quot;这条路是【可以一直走下去】的。
+      ✅ 论文实测：1.2B 模型一路做到 100 万 token。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文披露的实测结果（<a href="../papers/DeepSpeed-Ulysses-Sequence-Parallel-arXiv-2309.14509.pdf">papers/DeepSpeed-Ulysses-...-arXiv-2309.14509.pdf</a>）：<br />
+<em>"trains </em><em>2.5x faster with 4x longer sequence length</em><em> than the existing method SOTA baseline"</em><br />
+<em>"Communication reduction of over </em><em>10x</em><em> compared to existing systems, resulting in throughput improvements of up to 2.5x, and sustained throughput of over </em><em>175 TFlops/GPU (over 54% of hardware peak)</em><em>"</em>、<em>"enabling training with sequences with </em><em>over a million tokens</em><em>"</em></p>
+<p>✅ 并行扩展性（论文 Table 2 / Table 3，GPT-7B，A100）：</p>
+<table>
+<thead>
+<tr>
+<th>实验</th>
+<th>序列长度</th>
+<th>GPU 数</th>
+<th>单卡 TFLOPs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>固定序列、加卡</strong>（强扩展）</td>
+<td>131,072</td>
+<td>64 → 128 → 256</td>
+<td>165.5 → 157.4 → <strong>136.1</strong></td>
+</tr>
+<tr>
+<td><strong>序列和卡同比放大</strong>（弱扩展）</td>
+<td>65,536 → 131,072 → 262,144</td>
+<td>64 → 128 → 256</td>
+<td>161.4 → 157.4 → <strong>147.4</strong></td>
+</tr>
+</tbody>
+</table>
+<p>📌 <strong>怎么读这张表</strong>：下面一行（同比放大）的吞吐掉得<strong>明显更少</strong>（161→147，掉 9%；上面一行掉 18%）——这就是 "4Nh/P 在同比放大时恒定" 在实测上的体现。⚠️ 注意力本身是 O(s²)，所以并不能指望完全持平。</p>
+</blockquote>
+<h4 id="_8">❌ 硬约束：并行度不能超过头数</h4>
+<div class="codehilite"><pre><span></span><code>    ★ Ulysses 是【按头切】的 → 头分完就没得切了。
+
+      a = 64 个头，cp = 64  → 每卡 1 个头 ✓ 这是极限
+      a = 64 个头，cp = 128 → ❌ 分不下去
+
+    ⚠️ 真正卡人的是 GQA：
+    📌 GQA = Grouped-Query Attention，分组查询注意力：多个 Q 头【共享】同一组 K/V 头，
+       用来省推理时的 KV cache（见 [业界模型技术报告/大模型架构入门-小白向.md](../../业界模型技术报告/大模型架构入门-小白向.md)）。
+
+      一个典型配置：64 个 Q 头，但只有 8 个 KV 头
+      → K、V 只能切 8 份
+      → ★ Ulysses 实际上限就是 8，再往上就得【把 KV 复制多份】，白白多花显存和通信
+
+    ★★ 对比：Ring Attention 【没有这个上限】——它切的是序列，序列要多长有多长。
+       这是两者最本质的分工来源。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这条约束论文没有明写</strong>，它只说了 <em>"each GPU receives the full sequence but only for a </em><em>non-overlapping subset of the attention heads</em><em>"</em>——"非重叠的头子集"隐含了"份数不能超过头数"。上面关于 GQA 的具体推论是我补的工程常识。</p>
+</blockquote>
+<h4 id="zero-3">它不省模型状态，所以要配 ZeRO-3</h4>
+<div class="codehilite"><pre><span></span><code>    ⚠️ Ulysses（和所有 CP 一样）只切【激活】，不切【参数/梯度/优化器状态】。
+       → 序列能开到 1M，但模型本身还是得放得下
+
+    ★ DeepSpeed 的解法：让 ZeRO-3 把模型状态切在【DP 组 × CP 组】合并成的大组上
+      → 相当于分母从 dp 变成了 dp × cp，模型状态切得更碎
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文原文：<em>"with sequence parallelism, training data can be considered in both batch (sample) and sequence dimensions and the associated parallel groups combined to form a </em><em>larger group for ZeRO parallelism</em><em>... ZeRO </em><em>partitions model states across both sequence and data parallel group</em><em>."</em></p>
+<p>📌 <strong>ZeRO-3</strong> 是 <a href="05-ZeRO与FSDP.html">05 章</a>的主题：把参数、梯度、优化器状态都切开、用时再 all-gather。</p>
+</blockquote>
+<hr />
+<h3 id="856">8.5.6 两者对比</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Ring Attention</strong></th>
+<th><strong>DeepSpeed-Ulysses</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>核心想法</td>
+<td>Q 不动，<strong>KV 沿环转一圈</strong></td>
+<td>进注意力前<strong>把切法从"切序列"换成"切头"</strong></td>
+</tr>
+<tr>
+<td>全程切法</td>
+<td>始终切序列</td>
+<td>注意力<strong>内部</strong>切头，其余切序列</td>
+</tr>
+<tr>
+<td>通信原语</td>
+<td><strong>P2P</strong>（isend/irecv），只和左右邻居说话</td>
+<td><strong>all-to-all</strong>（<a href="03-通信原语.html">03 章 §3.2⑤</a>）</td>
+</tr>
+<tr>
+<td>每层通信次数</td>
+<td>cp − 1 次 P2P（前向，⚠️ 反向再来一圈）</td>
+<td><strong>2 个 all-to-all 阶段</strong>（QKV 一次 + 输出一次；QKV 那次可拆成 3 次也可融成 1 次）</td>
+</tr>
+<tr>
+<td>每链路通信量</td>
+<td>⚠️ 随 s 线性增长（但可被计算重叠掉）</td>
+<td>✅ <code>4Nh/P</code>，N 与 P 同比放大时<strong>恒定</strong></td>
+</tr>
+<tr>
+<td>通信能否藏住</td>
+<td>✅ 能，条件 <strong><code>c ≥ F/B</code></strong>（机内 6K token 就够，⚠️ 机间要 150K）</td>
+<td>⚠️ 是<strong>同步阻塞</strong>的，藏不住，靠"量本来就小"取胜</td>
+</tr>
+<tr>
+<td>并行度上限</td>
+<td>✅ <strong>无上限</strong>（切序列，要多长有多长）</td>
+<td>❌ <strong>≤ 头数</strong>（GQA 时 ≤ KV 头数，常常只有 8）</td>
+</tr>
+<tr>
+<td>注意力算子</td>
+<td>⚠️ <strong>要改</strong>（要能吐出并合并 (m, l) 统计量）</td>
+<td>✅ <strong>不用改</strong>，原样调用单卡 FlashAttention</td>
+</tr>
+<tr>
+<td>额外显存</td>
+<td><code>6bch</code>（六块缓冲，与 s 无关）</td>
+<td>换切法前后字节数不变，✅ 不额外膨胀</td>
+</tr>
+<tr>
+<td>主要工程坑</td>
+<td>⚠️ <strong>因果掩码负载不均</strong>，要做 2·cp 块交叉分配</td>
+<td>⚠️ all-to-all 对网络<strong>延迟和拓扑</strong>敏感，跨机容易掉速</td>
+</tr>
+<tr>
+<td>最适合</td>
+<td><strong>极长序列</strong>、跨机、头数不够切的时候</td>
+<td><strong>机内</strong>（NVLink/NVSwitch）、中等长度、头数够用时</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 一句话选型 ★★★
+
+      机内 8 卡、序列 32K~128K、头数够      →  ★ Ulysses（2 次 a2a 走 NVLink，最省事）
+      要开到 512K / 1M，或者要跨机          →  ★ Ring（唯一没有并行度上限的路）
+      GQA 只有 8 个 KV 头，但想开 cp = 32   →  ★ 只能靠 Ring，或者下面的混合
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>其实还有第三条更笨的路</strong>：干脆 all-gather 把完整 KV 收到每张卡上再算。它不用改注意力算子、也没有头数上限，但<strong>既不省 KV 的显存、也不能和计算重叠</strong>。Megatron 把它作为 <code>--cp-comm-type all_gather</code> 保留着——详见 §8.7 那张对照表。</p>
+</blockquote>
+<h3 id="857-usp">8.5.7 USP：把两者乘起来</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 两种方案切的是【不同的维度】（一个切序列、一个切头）
+      → ★★ 它们可以【同时用】，并行度相乘 ★★
+
+    典型摆法（2 机 × 8 卡 = 16 卡，总 CP 度 = 16）：
+
+        ┌── 机器 A ────────────┐   ┌── 机器 B ────────────┐
+        │ 卡0 卡1 ... 卡7      │   │ 卡8 卡9 ... 卡15     │
+        │ ★ 机内 Ulysses = 8   │   │ ★ 机内 Ulysses = 8   │
+        └──────────┬───────────┘   └──────────┬───────────┘
+                   └──── ★ 机间 Ring = 2 ─────┘
+
+    ★ 为什么这么配：
+      机内 NVLink 带宽高、延迟低 → all-to-all 跑得飞快 → 用 Ulysses
+      机间 IB 带宽低            → 但 P2P 能和计算重叠   → 用 Ring
+      ★★ 并且绕开了 Ulysses 的头数上限：真正的 CP 度 = 8 × 2 = 16，
+         而按头切的只有 8 份 ★★
+
+    这套组合叫 USP = Unified Sequence Parallelism（统一序列并行），
+    也叫 Hybrid / 2D Sequence Parallelism。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ USP 不在本章引的这两篇论文里，它是社区在两篇之上做的工程组合（<code>yunchang</code>、<code>ring-flash-attention</code> 等库）。</p>
+<p>✅ <strong>但"机内 a2a × 机间 p2p"这个具体配法，Megatron-LM 已经把它做成了一个官方选项</strong>——<code>--cp-comm-type a2a+p2p</code>。源码注释（<a href="../源码/Megatron-LM/megatron/core/transformer/transformer_config.py">源码/Megatron-LM/megatron/core/transformer/transformer_config.py</a>）写得比任何二手解读都清楚：</p>
+<p><em>"</em><em>"a2a+p2p"</em><em>: A hierarchical implementation of context parallelism to attention. It uses </em><em>A2A communications in low-level CP groups (e.g., via NVLink)</em><em>, and </em><em>P2P communications in high-level CP groups (e.g., via IBLink)</em><em>."</em></p>
+<p>★ 也就是说：<strong>上面那张图不是我画的理想方案，就是 Megatron 的实际做法。</strong></p>
+</blockquote>
+<hr />
+<h2 id="86-cp">8.6 ⚠️ CP 不是免费的</h2>
+<div class="codehilite"><pre><span></span><code>    ① 只对【长序列】有意义
+       s = 4096 时开 CP 纯属浪费 —— 通信开销远大于收益
+       ★ 经验：s ≥ 32K 才开始考虑 CP
+
+       ★★ 这个&quot;经验值&quot;其实是有出处的，就是 §8.5.4 那个 c ≥ F/B：
+          每卡序列太短 → 一轮的计算量（∝ c²）压不住通信量（∝ c）
+          → 通信暴露在关键路径上，CP 变成纯亏本
+          ✅ 论文 Table 2：A100+NVLink 每卡至少 6.2K token，
+             ⚠️ A100+InfiniBand 每卡要 149.5K
+          → ★ 所以&quot;32K 才开 CP&quot;这句话，机内偏保守、跨机则远远不够
+
+    ② ★ 它不省【模型状态】（参数/梯度/优化器）
+       回忆 [02 章 §2.5](02-显存去哪了.md) 的路由表：
+       CP 属于&quot;治激活&quot;那一类药，不治&quot;模型放不下&quot;这个病
+
+    ③ 它占用总卡数预算
+       ★ 铁律：TP × PP × CP × DP = N
+       开 CP=4 意味着 DP 少 4 倍 → global batch 变小 → 又回到 04 章那个约束
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>④ ⚠️ **CP 和 TP 同时用时，TP 的价值会被部分挤压**
+
+```
+★ TP 的收益分两块：
+  一块是【切权重】（参数/梯度/优化器状态）
+  一块是【切激活】（就是 §8.2 的 SP，省 LayerNorm/Dropout/残差 区域的激活）
+
+第一块【完全不受影响】：
+  → CP（包括所有 CP 方案）只切激活，从来不切模型状态
+  → &quot;模型太大放不下&quot;这个病，CP 治不了，TP 还是唯一的解
+
+第二块【边际价值下降】：
+  → SP 的任务是把非注意力区域按序列切开，省 1/t
+  → 但 CP 已经把序列切成了 1/cp，这些区域的激活本来就小了
+  → ★ 效果依然在叠加（总激活 ∝ 1/(t·cp)），但 SP 这一层不再是救命稻草
+```
+
+**⚠️ 更要命的卡点：头数约束会让两者【互相抢预算】**
+
+```
+回忆 §8.5.5：Ulysses 在注意力内部按【头】切
+而 TP 在 QKV 投影矩阵上也是按【头】切（§8.2）
+→ 两者同时用时，每张卡持有 a/(t·cp) 个头
+
+★★ 联合约束：t × cp ≤ 头数 ★★
+
+代入 GQA 常见配置（8 个 KV 头）：
+  cp = 4  →  TP 最多只能开到 t = 2   （8 ÷ 4 = 2）
+  cp = 8  →  TP 只剩 t = 1，即【不能用 TP 切头了】
+
+→ ★ Ulysses 用得越多，留给 TP 的头预算就越少
+  → 反过来【限制了 TP 能切多少权重】
+  → 这是两者最实质的互相挤压
+```
+
+&gt; ⚠️ **Ring Attention 没有这个头数约束**（它切序列不切头），
+&gt; 所以跨机场景 Ring 可以无限堆 CP 度、不挤压 TP；
+&gt; 而机内 Ulysses 用满 8 头之后，TP 的权重切分空间就被锁死了。
+
+**⚠️ 通信代价也在叠加**（两者都走 NVLink，同一条总线）：
+
+```
+TP + SP 每层需要：reduce-scatter + all-gather（§8.2.6 的 g/ḡ 各两次）
+Ulysses  每层需要：2 个 all-to-all 阶段（§8.5.5）
+→ 叠在一起意味着同一条总线上的通信压力翻倍
+```
+
+&gt; ⚠️ **实践中的典型配法**（我的工程观察，非论文披露）：
+&gt;
+&gt; 机内 8 卡，Ulysses cp=4，GQA 8 个 KV 头：
+&gt;   → TP 最多只能开 t=2（8 ÷ 4 = 2）
+&gt;   → dp = 8 ÷ 2 ÷ 4 = 1，每组 TP×CP 就是一份完整的模型状态
+&gt;   → 这时候模型状态靠 ZeRO-3 在 DP×CP 合并组上切（§8.5.5 末尾）
+&gt;
+&gt; 跨机场景（§8.5.7 的 USP，机内 Ulysses cp=8 × 机间 Ring cp=2）：
+&gt;   → Ulysses 已经把 8 个 KV 头全用完 → TP 往往就不开了
+&gt;
+&gt; ★★ 一句话：CP 度越高，TP 的生存空间越小 ★★
+</code></pre></div>
+
+<hr />
+<h2 id="87-megatron">8.7 挂回 Megatron 源码</h2>
+<div class="codehilite"><pre><span></span><code>    --sequence-parallel                ← §8.2 的 SP（开关，度数 = TP 度）
+    --context-parallel-size N          ← §8.5 的 CP（独立度数）
+    --cp-comm-type {p2p | a2a | a2a+p2p | all_gather}
+                                       ← ★★ 选用 §8.5 的哪一种 CP 方案 ★★
+</code></pre></div>
+
+<p><strong>★ <code>--cp-comm-type</code> 这个开关，正好就是 §8.5 那两条路的选择器</strong>（✅ 以下引号内是 <a href="../源码/Megatron-LM/megatron/core/transformer/transformer_config.py">源码/Megatron-LM/.../transformer_config.py</a> 的原注释）：</p>
+<table>
+<thead>
+<tr>
+<th>取值</th>
+<th>对应本章哪一节</th>
+<th>源码原话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>p2p</code></strong></td>
+<td>§8.5.4 <strong>Ring Attention</strong></td>
+<td><em>"Exchange KV chunks with P2P communications in ring topology. </em><em>P2P is async and can be overlapped with attention compute</em><em>."</em> ← ★ 就是 §8.5.4 那个"通信藏在计算后面"</td>
+</tr>
+<tr>
+<td><strong><code>a2a</code></strong></td>
+<td>§8.5.5 <strong>Ulysses</strong></td>
+<td><em>"</em><em>Like DeepSpeed Ulysses</em><em>, scatter attention heads across the CP group, and gather to get full sequence of QKV."</em></td>
+</tr>
+<tr>
+<td><strong><code>a2a+p2p</code></strong></td>
+<td>§8.5.7 <strong>USP 混合</strong></td>
+<td><em>"A hierarchical implementation... </em><em>A2A in low-level CP groups (e.g., via NVLink)</em><em>, and </em><em>P2P in high-level CP groups (e.g., via IBLink)</em><em>."</em></td>
+</tr>
+<tr>
+<td><code>all_gather</code></td>
+<td>（本章没细讲的第三条路）</td>
+<td><em>"All-gather to get full sequence of KV before attention. The all-gather is </em><em>not async, and cannot be overlapped</em><em>."</em></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 关于第四个选项 all_gather —— 值得看一眼，因为它是【最笨但最简单】的做法：
+      每张卡直接把全部 KV 收齐再算注意力。
+      ✅ 好处：注意力算子完全不用改，也没有头数上限
+      ❌ 代价：① 每张卡都要存【完整的 KV】→ 显存优势基本没了（只省了 Q 那一份）
+              ② 源码明说它【不能和计算重叠】→ 通信实打实地暴露在关键路径上
+      → ★ 所以它只在&quot;序列不算太长、图省事&quot;时才用。
+
+    ★★ 把四个选项排成一条线看，本章的逻辑就全串起来了：
+        all_gather  →  ❌ 不省显存、不能重叠      （最朴素）
+        p2p         →  ✅ 省显存、能重叠          （Ring，§8.5.4）
+        a2a         →  ✅ 通信量被 P 分摊         （Ulysses，§8.5.5）
+        a2a+p2p     →  ✅✅ 各用在各自擅长的网络层级（USP，§8.5.7）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    源码位置：
+      megatron/core/tensor_parallel/mappings.py
+          ★ 这里定义了 §8.2 那对 all-gather / reduce-scatter 的
+            前向-反向共轭关系（f / f̄ / g / ḡ）
+      megatron/core/transformer/transformer_config.py
+          ★ cp_comm_type 的定义和上面那段注释
+      megatron/core/utils.py
+          ★ get_batch_on_this_cp_rank()：§8.5.4 那个 zigzag 负载均衡切分
+      megatron/core/transformer/attention.py
+      megatron/core/parallel_state.py
+          ★ get_context_parallel_group() 等，管 CP 通信组的划分
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>实践提醒之一</strong>：<code>--sequence-parallel</code> <strong>必须和 <code>--tensor-model-parallel-size &gt; 1</code> 一起用</strong>，单独开没有意义（因为它切的就是 TP 那 t 张卡）。</p>
+<p>⚠️ <strong>实践提醒之二</strong>：开了 CP，<strong>序列长度必须能被 <code>2 × cp</code> 整除</strong>（§8.5.4 的 zigzag 切分要求），不是被 <code>cp</code> 整除就行——这是很常见的一个报错来源。</p>
+</blockquote>
+<hr />
+<h2 id="88">8.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① ★ TP 有个漏洞：LayerNorm / Dropout / 残差 这些【非矩阵】操作没被切
+   ✅ 论文自己承认：&quot;there are parts of the transformer where activations
+      are not split across tensor parallel ranks&quot;
+   → t 张卡各存一份完全相同的激活，纯浪费
+
+② ★ Megatron SP：在那些区域改按【序列维】切
+   凭据：LayerNorm/Dropout 都是【逐 token 独立】的
+   → 切法转换需要 all-gather ⇄ reduce-scatter（前向 g / ḡ，反向互为共轭）
+   → ★ 那 10sbh 的具体成分：2 个 LayerNorm 输入(4) + 2 个模块输入(4)
+        + 2 个 dropout 掩码(2)；残差加法【不占】显存
+
+③ ★★★ 而这是【免费】的，因为 All-Reduce = Reduce-Scatter + All-Gather
+   ✅ 论文原话：&quot;the communication bandwidth used for tensor parallelism
+      and tensor together with sequence parallelism are the same.
+      Therefore, sequence parallelism does not introduce any communication overhead.&quot;
+   → 03 章那个恒等式在这里兑现了价值
+   → 效果：每层激活从 sbh(34+5as/h) 变成 【整除以 t】
+   → ⚠️ 但不是【零成本】：反向要为张量 Y 多做 2 次 all-gather（每层，前向不多），
+      字节 +25%，靠与 dY 的矩阵乘重叠把延迟藏掉（§8.2.8）
+
+④ ★★ 一个反直觉的重要结论：PP 不省激活显存
+   ✅ &quot;the first stage must store p × L/p = L layers worth of activations
+      regardless of the pipeline parallel size p&quot;
+   → 层数少了 p 倍，但要压 p 份 micro-batch，正好抵消
+
+⑤ ★★ SP ≠ CP（本章最容易错的一点）
+   SP：TP 的附属品，度数 = t，注意力照常算（进去前拼回完整序列）
+       → ❌ 解决不了&quot;序列本身太长&quot;
+   CP：独立一维，注意力【本身】切着算
+       → ✅ 这才是长上下文的解药
+   ⚠️ DeepSpeed 把它的 CP 也叫 &quot;sequence parallelism&quot; —— 看它切不切注意力内部
+
+⑥ ★ 一块必备积木：online softmax（§8.5.3）
+   softmax 的分母要&quot;所有分数到齐&quot;才算得出来 → 分块算看似不可能
+   ★ 解法：存 (m, l, Õ) 三个统计量，新块来了就把旧结果按 e^{m-m*} 缩放一下再合并
+   → ✅ 结果和一次性算【逐位相同】，是精确不是近似
+   → ✅ 论文管这叫 permutation invariance：块的【顺序无所谓】
+   ★★ 正因为顺序无所谓，KV 才可以&quot;随便转到你这里&quot; —— 这就是 Ring 的地基
+   → 和 [11 章](11-重计算与激活优化.md) FlashAttention 是同一个技巧，
+     ★ Ring Attention ≈ FlashAttention 的外层循环被拆到多张卡上
+
+⑦ CP 两条路（§8.5.4 / §8.5.5）：
+
+   ── Ring Attention：Q 不动，KV 沿环转 cp 圈，边转边用 ⑥ 的公式合并
+     ✅ &quot;up to device count times longer ... without resorting to approximations&quot;
+     ✅ 重叠条件推成了一个不等式：4dc²/F ≥ 4cd/B  ⟹  ★ c ≥ F/B ★
+        （计算是 c 的平方、通信是 c 的一次方 → 序列越长越容易藏住）
+     ✅ 论文 Table 2 代成数字：A100+NVLink 每卡 6.2K token 就够藏住，
+        ⚠️ 但 A100+InfiniBand 要 149.5K！★ 所以&quot;Ring 适合跨机&quot;是【有前提】的
+     ✅ 显存 6bch（Q/K/V/收 K/收 V/输出 六块），★ 和 s 完全无关
+     ⚠️ 头号工程坑：因果掩码下卡 i 只需要 KV₀~KVᵢ → 利用率降到 ~50%
+        ★ 修法：切成 2·cp 块，卡 i 拿第 i 块和第 (2cp−1−i) 块
+          → 每卡工作量 = (i+1)+(2cp−i) = 2cp+1，★ 和 i 无关，恒等配平
+        （这是 Megatron 的实现做法，⚠️ 不在论文里）
+
+   ── Ulysses：注意力前后各一次 all-to-all，把【切序列】换成【切头】
+     ★ 换完每张卡是&quot;完整序列 × 1/cp 的头&quot; → 注意力算子【一行都不用改】
+     ✅ all-to-all 不增不减字节数（134.2 MB → 134.2 MB），★ 从不制造完整副本
+        （对比 §8.2.4 第 3 步的 all-gather：8.4 MB → 67.1 MB，膨胀 8 倍）
+     ✅ 通信量 3Nh(QKV) + Nh(输出) = 4Nh，每链路 4Nh/P，N 与 P 同比放大时恒定
+        ⚠️ 而 Megatron-SP 的 all-gather/reduce-scatter 每链路仍是 4Nh（不被 P 分摊）
+        → ★ 差整整 P 倍
+     ✅ 2.5× 加速 / 4× 长度 / &gt;1M token / 175 TFLOPs 每卡（54% 峰值）
+     ❌ 并行度 ≤ 头数；⚠️ GQA 只有 8 个 KV 头时，实际上限就是 8
+     ★ 配 ZeRO-3 把模型状态切在 DP×CP 合并组上，才能既长又大
+
+   ── USP：机内 Ulysses × 机间 Ring，并行度相乘，还绕开了头数上限（§8.5.7）
+
+   ★★ 这三条路在 Megatron 里就是一个开关的三个取值（§8.7）：
+      --cp-comm-type p2p / a2a / a2a+p2p   （外加最笨的 all_gather）
+      ✅ 源码注释自己写着 &quot;a2a: Like DeepSpeed Ulysses&quot;、
+         &quot;a2a+p2p: A2A in low-level CP groups (NVLink), P2P in high-level (IBLink)&quot;
+      → ★ 论文里的两个名字，落到代码里就是这一个 flag
+
+⑧ ⚠️ CP 不省模型状态，且占总卡数预算（TP × PP × CP × DP = N）
+   s &lt; 32K 一般不值得开
+</code></pre></div>
+
+<p><strong>下一章讲第五种切法</strong>，也是唯一一种<strong>为特定架构（MoE）而生</strong>的并行方式：<strong>专家并行 EP</strong>。</p>
+<hr />
+<blockquote>
+<p><a href="07-流水线并行PP.html">← 07 流水线并行 PP</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-专家并行EP.html">09 专家并行 EP</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 量化</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="09">09 量化</h1>
+<blockquote>
+<p><strong>一句话</strong>：把数字存得更短。这是唯一一个<strong>同时</strong>打中「权重搬运量」和「KV Cache 大小」两个瓶颈的手段——所以它是投入产出比最高的优化。</p>
+</blockquote>
+<hr />
+<h2 id="91">9.1 量化在推理里为什么比在训练里重要得多</h2>
+<div class="codehilite"><pre><span></span><code>    训练：主要用 BF16，因为★ 反向传播对数值精度敏感，
+          梯度是小量，精度不够会累积误差、训练发散。
+
+    推理：★★ 只有前向，误差【不累积到梯度里】。
+          而且 01 章说了，Decode 阶段是【访存受限】——
+          ⟹ 权重从 16 位变 8 位，搬运量直接【减半】，速度直接【翻倍】
+
+    ⟹ ★ 训练量化是「省显存」，推理量化是「省显存【并且】提速」。
+       性质完全不同。
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>量化（quantization）</strong>——用更少的比特表示同一个数值。<br />
+BF16（16 位）→ FP8（8 位）→ INT4（4 位）。<br />
+每降一档，显存和搬运量减半。</p>
+</blockquote>
+<hr />
+<h2 id="92">9.2 三个可以独立量化的对象</h2>
+<p>初学者最容易混淆的一点：<strong>「量化」这个词在不同语境下指的是不同的东西</strong>。</p>
+<div class="codehilite"><pre><span></span><code>┌─────────────┬────────────────────┬─────────────────────────────┐
+│  量化对象    │  收益               │  难度                       │
+├─────────────┼────────────────────┼─────────────────────────────┤
+│ ① 权重      │ ★ 显存↓ + 搬运↓    │ ✅ 容易——权重是静态的，       │
+│  (Weight)   │   ⟹ Decode 直接提速│    可以离线慢慢算最优量化点   │
+├─────────────┼────────────────────┼─────────────────────────────┤
+│ ② 激活值    │ ★ 能用上 INT8/FP8  │ ⚠️ 难——激活值随输入变化，     │
+│ (Activation)│   的【计算单元】    │    而且有【离群值】（见 9.4） │
+│             │   ⟹ 算力翻倍       │                             │
+├─────────────┼────────────────────┼─────────────────────────────┤
+│ ③ KV Cache  │ ★★ 直接决定并发数   │ ✅ 中等——FP8 几乎无损         │
+└─────────────┴────────────────────┴─────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 命名规则：常见的 W4A16、W8A8 就是在说前两项
+       W4A16 = Weight 4 位、Activation 16 位   （只量化权重）
+       W8A8  = Weight 8 位、Activation 8 位    （权重和激活都量化）
+
+    ★ 为什么 W4A16 更常见？
+      因为 Decode 是【访存受限】——瓶颈在搬权重，不在算。
+      量化激活值只能提升算力，而算力本来就是空的。
+      ⟹ ★ 只量化权重，就已经吃到了大部分收益。
+      ⟹ 而 Prefill 是算力受限，W8A8 才对 Prefill 有意义。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这解释了一个实践现象</strong>：同一个 INT4 模型，Decode 快了一倍，Prefill 却几乎没变化。<strong>不是量化没生效，是 Prefill 的瓶颈不在那儿。</strong></p>
+</blockquote>
+<hr />
+<h2 id="93">9.3 权重量化的两大流派</h2>
+<p>先说清楚<strong>基线</strong>是什么，不然看不出这两个流派到底在解决什么问题。</p>
+<div class="codehilite"><pre><span></span><code>    📖 RTN（round-to-nearest，最近邻取整）——最朴素的量化：
+       每个权重【各自】四舍五入到最近的格子点，一次性搞完，不需要任何数据。
+
+    ⚠️ RTN 的毛病：它在优化【错的东西】。
+       它让「每个权重」尽量接近原值，
+       ★★ 但我们真正想要的是「这一层的【输出】」尽量接近原值。
+
+    ⟹ 这两件事不是一回事。权重是要【乘上输入】再相加的：
+       一个权重错 0.01，如果它对应的输入是 100，输出就错 1；
+       另一个权重错 0.05，如果它对应的输入是 0.1，输出才错 0.005。
+       ★ 后者错得更多，但对输出的伤害小 20 倍。
+
+    ⟹ ★★ 两条路线就从这个缺口分叉：
+       GPTQ：错了【当场补】       —— 事后补偿
+       AWQ ：让重要的权重【少错】 —— 事前保护
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>先解释一个容易卡住的地方：为什么这一节满屏 FP16，而 9.1 说训练用 BF16？</strong></p>
+<p>两者都是 <strong>16 位</strong>，区别只在于这 16 位怎么切：<br />
+<strong>FP16</strong>（half precision，半精度）= 1 符号 + <strong>5 指数</strong> + <strong>10 尾数</strong><br />
+<strong>BF16</strong>（bfloat16，brain float）= 1 符号 + <strong>8 指数</strong> + <strong>7 尾数</strong><br />
+⟹ BF16 的指数位和 FP32 一样宽 ⟹ <strong>动态范围大、不易溢出</strong> ⟹ 训练偏爱它（9.1 那段的原因）。<br />
+⟹ FP16 尾数多 3 位 ⟹ <strong>同样范围内更精确</strong>，但范围窄，训练时得配 loss scaling 兜着。</p>
+<p>✅ 这两篇论文（2022 / 2023）<strong>通篇只用 FP16，BF16 一次都没出现</strong>——这不是笔误：<br />
+AWQ 论文第 3 页明写它的推理 kernel 就是 <code>FP16×INT4 GEMM</code>；<br />
+⚠️（背景补充，非论文原文）它们评测的 OPT / LLaMA 系列，发布的权重也确实是 FP16 的。</p>
+<p>⟹ ★★ <strong>但这对理解本节毫无影响</strong>：这里的「FP16」只是在说<br />
+<strong>【没被量化的 16 位原始精度】</strong>。真正的对比是 <strong>16 位 vs 3/4 位</strong>，<br />
+不是 FP16 vs BF16。你在心里把它读成「原始精度」就行。<br />
+⚠️ 反过来说，<strong>照抄论文口径写 FP16 是对的</strong>，换成 BF16 反而会把人家的 kernel 实现说错。</p>
+</blockquote>
+<h3 id="1-gptq">① GPTQ：逐层重建，用二阶信息补偿</h3>
+<blockquote>
+<p>✅ 论文 arXiv 2210.17323（<code>papers/GPTQ-Post-Training-Quantization-arXiv-2210.17323.pdf</code>）<br />
+📖 名字来源：论文脚注 1 说明，GPTQ = <strong>OPT</strong>（模型家族名）+ <strong>PTQ</strong>（post-training quantization，训练后量化）。</p>
+</blockquote>
+<p><strong>它优化的目标，论文公式 (1) 写得很直白：</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ argmin ‖ W·X − Ŵ·X ‖²      （X = 校准数据在这一层的【输入激活】）
+       └── 注意：不是 ‖W − Ŵ‖。
+       ★★ 目标里根本没要求「量化后的权重接近原权重」，
+          只要求【这一层的输出接近】。
+
+    ⟹ 这就给了 GPTQ 一张许可证：
+       ★ 只要输出对得上，它可以【故意把某个权重改远一点】。
+</code></pre></div>
+
+<p><strong>★ 一个具体例子（数字是我编的，为了让格子粗到肉眼可见）</strong></p>
+<div class="codehilite"><pre><span></span><code>    设某一行有 2 个权重：w = [0.7, 0.2]，输出 y = 0.7·x₁ + 0.2·x₂
+    量化网格粗到只有 3 个格子：{ 0.0 , 0.5 , 1.0 }
+    再设：校准数据上观察到 x₁ 和 x₂ 【几乎总是同时出现、大小相近】（记作 x）
+          ⟹ 真实输出 y ≈ 0.7x + 0.2x = 0.9x
+
+  ── RTN 的做法：各自四舍五入 ──────────────────────
+    0.7 → 0.5     （0.7 离 0.5 更近）
+    0.2 → 0.0     （0.2 离 0.0 更近）
+    ŷ = 0.5x + 0.0x = 0.5x
+    ⚠️ 误差 = 0.5x − 0.9x = −0.4x        ← 差了将近一半
+
+  ── GPTQ 的做法：量化一个，补一个 ────────────────
+    第 1 步  量化 w₁：0.7 → 0.5
+            ★ 记账：输出【欠了】 0.2·x₁
+    第 2 步  ★★ 在量化 w₂ 之前，先把这笔亏空【转嫁】给它。
+            因为 x₂ ≈ x₁，用 w₂ 去补是等效的：
+            w₂ ← 0.2 + 0.2 = 0.4      ← 注意：0.4 已经【离原值 0.2 很远了】
+    第 3 步  量化 w₂：0.4 → 0.5        （0.4 离 0.5 更近）
+            ŷ = 0.5x + 0.5x = 1.0x
+    ✅ 误差 = 1.0x − 0.9x = +0.1x       ← 误差缩小到 1/4
+
+    ★ 看懂这一点就看懂 GPTQ 了：
+      它把 w₂ 从 0.2 改成 0.4（单看权重是「改错了」），
+      ⟹ 却让【整层的输出】更准了。
+</code></pre></div>
+
+<p><strong>那 Hessian（海森矩阵）在里面扮演什么角色？</strong></p>
+<div class="codehilite"><pre><span></span><code>    上面那步「转嫁」我偷懒用了一个假设：x₁ ≈ x₂。
+    ★ 真实情况下，通道之间的相关性各不相同，
+      「w₁ 欠的账该往 w₂ 上加多少」需要算出来。这就是 Hessian 的活。
+
+    ✅ 论文（第 3 页公式 (2)）：H = 2·X·Xᵀ
+       ⟹ ★★ 它不是对训练 loss 求二阶导，
+            而是对上面那个【逐层输出误差】对权重求的二阶导。
+       ⟹ 展开看，X·Xᵀ 就是【输入通道两两之间的相关矩阵】：
+            第 (i,j) 项 = 通道 i 和通道 j 在校准数据上有多「同进同退」。
+
+    ✅ 补偿公式（论文公式 (2)）：
+       δ = −(w_q − quant(w_q)) / [H⁻¹]_qq  ·  (H⁻¹)_{:,q}
+            └───── 刚犯的误差 ─────┘         └─ 按相关性分摊给剩下的权重 ─┘
+
+    ⟹ ★ 一个很有用的直觉：
+       通道之间【越相关】，补偿越有效；
+       如果所有通道【完全不相关】（H 是对角阵），一个权重的账没人能接，
+       ⟹ GPTQ 就【退化成 RTN】。
+       这解释了为什么它在大模型上收益更明显——大模型的通道冗余更多。
+
+    ✅ 关键性质（论文第 4 页）：H 只依赖【输入 X】，不依赖权重值。
+       ⟹ 所以同一层里【所有行可以共用一份 H⁻¹】。这是全部提速的根基。
+</code></pre></div>
+
+<p><strong>★ 论文的三个工程改进（Section 4，原文就叫 Step 1/2/3）</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ Step 1  Arbitrary Order Insight（任意顺序）
+       前身 OBQ（Optimal Brain Quantization）每次挑「当前误差最小」的权重先量化，
+       ⚠️ 导致每一行的顺序都不同 ⟹ 每行都要单独维护 H⁻¹。
+       ★ 论文发现：贪心选序【收益很小】，索性所有行【按列统一顺序】。
+       ⟹ H⁻¹ 更新次数从「每个权重一次」降到「每列一次」，
+          复杂度降低 min{行数, 列数} 倍。
+
+    ✅ Step 2  Lazy Batch-Updates（惰性批量更新）
+       ⚠️ 瓶颈居然不是算力，是【访存】——每次更新要刷一遍巨大的矩阵，
+          却只做几次浮点运算，GPU 算力全空转。
+       ★ 观察：第 i 列的取整决策，只受【这一列自己】的更新影响。
+       ⟹ 一次攒 B = 128 列，更新先只在这 128 列的小块里做，
+          整块做完再统一刷全局矩阵一次。
+       ✅ 理论计算量【一点没降】，但实测「快一个数量级」。
+
+    ✅ Step 3  Cholesky Reformulation（Cholesky 重构）
+       ⚠️ 数值不稳：H⁻¹ 反复更新会退化成【不定矩阵】，
+          导致算法朝错误方向猛改权重，整层量化直接报废。
+       ✅ 论文原话：模型超过几十亿参数时，这「几乎必然发生在至少几层上」。
+       ★ 小模型加阻尼就够（λ 取对角线均值的 1%），大模型不够。
+       ⟹ 洞察：整个过程真正需要的只是 H⁻¹ 的【第 q 行、从对角线往右那一段】，
+          可以用一次 Cholesky 分解【全部预先算好】，不再反复更新。
+</code></pre></div>
+
+<p><strong>✅ 关键数字（全部来自论文，单张 NVIDIA A100-80GB）</strong></p>
+<div class="codehilite"><pre><span></span><code>    校准数据：128 条 × 2048 token，取自 C4（随机网页文本）
+              ★ 不含任何任务数据，所以结果仍算 zero-shot
+
+    量化耗时：OPT-175B  4.2 小时     BLOOM-176B  3.8 小时
+              （摘要里概括为「约 4 GPU 小时」）
+              对比：OPT-13B 20.9 分钟、OPT-30B 44.9 分钟
+
+    质量（WikiText2 困惑度 perplexity，越低越好）：
+        OPT-175B   FP16 8.34  →  GPTQ 4bit 8.37   ★ 只掉 0.03
+                              →  RTN  4bit 10.54  ⚠️ 掉 2.2
+                              →  GPTQ 3bit 8.68
+        ⟹ ★ 反常识：论文明确说【模型越大越好量化】。
+           小模型 OPT-125M：27.65 → 4bit 31.12，掉得多得多。
+
+    加速（3bit OPT-175B，batch size = 1，生成 128 token，逐 token 延迟）：
+        A100-80GB   230ms → 71ms    3.24×   （5 张卡 → 1 张）
+        A6000-48GB  589ms → 130ms   4.53×   （8 张卡 → 2 张）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 论文自己写明的两条限制，很容易被引用时忽略：
+    ① 加速只在 batch=1 这种【访存受限】场景成立。
+       大 batch / Prefill 是算力受限，论文说 kernel「不直接适用」，
+       ⟹ ★ 那种场景下 GPTQ 的价值退化成【省卡，而不是提速】。
+       （和 9.2 节 W4A16 那段是同一个道理）
+    ② 论文的方案【不含激活量化】，乘法本身没有变快——
+       快的原因只是【搬的字节少了】，算之前还要解压回 FP16。
+</code></pre></div>
+
+<h3 id="2-awq-1">② AWQ：★ 保护那 1% 的重要权重</h3>
+<blockquote>
+<p>✅ 论文 arXiv 2306.00978（<code>papers/AWQ-Activation-Aware-Quantization-arXiv-2306.00978.pdf</code>）<br />
+📖 <strong>AWQ</strong> = <strong>A</strong>ctivation-aware <strong>W</strong>eight <strong>Q</strong>uantization，激活感知的权重量化。</p>
+</blockquote>
+<p><strong>★★ 先看那个一锤定音的实验（论文 Table 1）</strong></p>
+<p>论文问了一个很干脆的问题：如果允许把 <strong>1% 的权重通道留在 FP16 不量化</strong>，那这 1% 该怎么挑？</p>
+<div class="codehilite"><pre><span></span><code>    ✅ OPT-6.7B，INT3 + group size 128，WikiText 困惑度（越低越好）：
+
+    ┌──────────────────────────────┬────────┬──────────────────┐
+    │ FP16 原始模型（天花板）       │ 10.86  │                  │
+    │ RTN 全量化（地板）            │ 23.54  │ ⚠️ 崩了           │
+    ├──────────────────────────────┼────────┼──────────────────┤
+    │ ★ 按【激活值】大小挑 1%       │ 11.39  │ ✅ 几乎救回来了   │
+    │   按【权重】大小挑 1%         │ 22.37  │ ⚠️ 几乎没用       │
+    │   ★ 随机挑 1%                 │ 24.23  │ ⚠️ 没用           │
+    └──────────────────────────────┴────────┴──────────────────┘
+
+    ★★ 看第 3、4 行：按权重自己的大小去挑（22.37），
+       和【随机乱挑】（24.23）几乎一个水平！
+    ⟹ 这就是论文标题里 Activation-aware 的全部含义：
+       ★ 权重重不重要，看的是【和它相乘的那个激活值有多大】，
+         不是权重自己有多大。
+</code></pre></div>
+
+<p><strong>⚠️ 但这个方案不能直接用</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ 论文 Limitations 段的原话大意：
+       留 1% 的 FP16 会造成【混合精度数据类型】，
+       ⟹ 同一个矩阵里既有 INT3 又有 FP16，
+          排布不规整，kernel 没法高效跑 ——【硬件不友好】。
+
+    ⟹ ★ 于是 AWQ 换了个思路：
+       「不真的保留 FP16，但要达到同样的保护效果。」
+</code></pre></div>
+
+<p><strong>★ 解法：把重要通道【放大】再量化</strong></p>
+<p>先看论文用的量化公式（公式 (1)）：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ Q(w) = Δ · Round(w / Δ)  ，  Δ = max(|w|) / 2^(N−1)
+       ★ 划重点：Δ（格子间距）由【整个 group 的最大值】决定，
+                 和某个单独的权重无关。这是下面全部魔法的前提。
+</code></pre></div>
+
+<p><strong>★ 一个具体例子</strong></p>
+<div class="codehilite"><pre><span></span><code>    设：INT4（N=4 ⟹ 2^(N−1) = 8），某个 group 里最大权重是 0.80
+        ⟹ Δ = 0.80 / 8 = 0.1
+        ⟹ 可以表示的值是 { 0 , 0.1 , 0.2 , 0.3 , … }
+
+    设：这个 group 里有一个【重要通道】的权重 w = 0.24
+        （之所以重要，是因为和它相乘的激活值很大）
+
+  ── 直接量化 ────────────────────────────────
+    0.24 / 0.1 = 2.4  →  Round = 2  →  Q(w) = 0.2
+    ⚠️ 误差 = 0.04
+
+  ── AWQ：先把它放大 s = 2 倍 ──────────────────
+    ★ 关键：0.24 × 2 = 0.48 &lt; 0.80，
+      ⟹ group 的最大值【没变】 ⟹ Δ 也【没变】，还是 0.1
+      ⟹ ★★ 也就是说：这次放大【没让任何别人吃亏】
+
+    0.48 / 0.1 = 4.8  →  Round = 5  →  0.5
+    推理时再除回 s = 2  →  0.5 / 2 = 0.25
+    ✅ 误差 = 0.01                      ← 小了
+    ⚠️ 别被这个 4 倍唬住：单个权重的误差是【碰运气】的，
+       论文保证的是【平均】按 1/s 缩小，这里刚好赶上个好位置。
+
+    ★★ 换个角度看，会更清楚为什么必然变好：
+       量化结果除以 s 之后，这个权重能落到的值变成了
+         { 0 , 0.05 , 0.10 , 0.15 , … }      ← ★ 格子密了一倍
+       ⟹ 放大 s 倍，等价于给这个通道【多了 log₂(s) 位有效精度】，
+          而【一个比特都没多存】。这就是 AWQ 的全部戏法。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ✅ 论文的形式化说法（公式 (3)）：
+       误差之比 = (Δ′ / Δ) · (1 / s)
+       其中 Δ′ 是放大后的新格距。
+       ★ 因为 Round(·) 的平均误差恒定在 0.25 不随 s 变，
+         只要 Δ′ ≈ Δ，误差就【按 1/s 缩小】。
+
+&gt; **📖 插一句：那个 0.25 是怎么来的？**
+&gt;
+&gt; ★ 关键是**看清单位**：`Round(w/Δ)` 里被取整的是 `w/Δ`，即「w 相当于**几个格子**」。
+&gt; 所以 RoundErr 的单位是**格子数**，不是权重的绝对大小。
+&gt;
+&gt; ```
+&gt;  w/Δ 的小数部分 :  .0   .1   .2   .3   .4   .5   .6   .7   .8   .9
+&gt;  离最近整数的距离:  0.0  0.1  0.2  0.3  0.4  0.5  0.4  0.3  0.2  0.1
+&gt;                                          ↑ 最惨就是卡在两格正中间
+&gt;  ⟹ 平均 = 2.5 / 10 = 0.25
+&gt; ```
+&gt;
+&gt; 一般地：四舍五入的误差落在 `[−0.5, +0.5]`，取绝对值后落在 `[0, 0.5]`；
+&gt; 只要 `w/Δ` 的小数部分**均匀分布**，`|误差|` 就均匀分布在 `[0, 0.5]` 上，
+&gt; ⟹ 均匀分布的均值取中点 ⟹ `(0 + 0.5) / 2 = **0.25**`。
+&gt; ⟹ 换回绝对值：**平均误差 ≈ 0.25 × Δ**。
+&gt;
+&gt; ★★ **AWQ 为什么非强调这一点不可**：0.25 是个**常数**——不随 s 变、不随 Δ 变、不随 w 变。
+&gt; 真实误差是 `Δ × 0.25`，缩放后是 `Δ′ × 0.25`，
+&gt; ⟹ 做比值时那个 0.25 **直接约掉了**，才剩下干净的 `(Δ′/Δ) · (1/s)`。
+&gt; ⟹ 如果取整误差本身会随 s 变，这整套推导就塌了。
+&gt;
+&gt; ⚠️ 它依赖「权重在**一个格子内**均匀分布」这个假设。权重整体是钟形分布，
+&gt; 但在单个格子那么窄的区间里近似是平的，所以站得住。
+&gt; ✅ 论文自己的措辞也是 `roughly` 和 `We empirically find`——**经验结论，不是定理**。
+</code></pre></div>
+
+<p><strong>⚠️ 那 s 为什么不能取 100？（论文 Table 2 直接测了）</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ OPT-6.7B，把 1% 重要通道乘以 s：
+
+    s        =    1       1.25     1.5      2        4
+    Δ 被改变的比例  0%      2.8%     4.4%     8.2%     21.2%
+    平均 Δ′/Δ      1       1.005    1.013    1.038    1.213
+    ★ 有效误差比   1       0.804    0.676    0.519    0.303
+    WikiText 困惑度 23.54  12.87    12.48   ★11.92    12.36 ⚠️
+
+    ★★ 读这张表：
+       重要通道的误差一路降到 0.303（s=4 时），
+       ⟹ 但困惑度在 s=2 触底，s=4 反而【变差了】。
+    ⟹ 原因：s 太大时，放大后的权重顶破了 group 的最大值，
+       Δ′ 被撑大（s=4 时有 21.2% 的 group 中招，平均涨 21.3%），
+       ★ 于是【剩下 99% 的普通通道全部陪葬】。
+    ⟹ ★ 保护少数派是有代价的，代价由多数派承担。s=2 是这个平衡点。
+</code></pre></div>
+
+<p><strong>★ 所以 s 到底怎么定？</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ 论文的目标函数（公式 (4)）——注意它优化的是【整层输出】，
+       和 GPTQ 的目标其实是同一个：
+       s* = argmin ‖ Q(W·diag(s)) · (diag(s)⁻¹·X) − W·X ‖
+
+    ⚠️ 但 Round(·) 不可导，没法反向传播。
+    ⟹ ★ 论文的处理简单得有点朴素：把搜索空间【压缩到一维】
+       ✅ s = sₓ^α          （sₓ = 该通道激活值的【平均幅度】）
+          α = 0  ⟹ 完全不缩放
+          α = 1  ⟹ 最激进的缩放
+       ⟹ 在 [0, 1] 上【网格搜索】一个 α 就完事了。
+    ⟹ ★★ 所以 AWQ 全程【不需要反向传播、不需要回归求解】，
+         它只需要统计每个通道激活值的平均大小。
+</code></pre></div>
+
+<p><strong>✅ 关键数字（全部来自论文）</strong></p>
+<div class="codehilite"><pre><span></span><code>    质量（OPT，INT3-g128，WikiText 困惑度）：
+                        1.3B    2.7B    6.7B    13B     30B
+        FP16            14.62   12.47   10.86   10.13   9.56
+        RTN            119.47  298.00   23.54   46.04  18.80  ⚠️
+        1% FP16（上界）  16.91   13.69   11.39   10.43   9.85
+        ★ AWQ           16.32   13.58   11.39   10.56   9.77
+        ⟹ ★★ AWQ 追平甚至反超了「留 1% FP16」这个上界，
+           而且【没有混合精度】，kernel 跑得动。
+
+    ★ 校准数据：16 条序列即可达到好效果
+                 ——论文对比 GPTQ 需要 192 条，【小 10 倍】
+       ⚠️ 注意口径：这个「192 条」是 AWQ 论文【自己复现 GPTQ】测出来的；
+          GPTQ 原论文用的是 128 条（见上文）。
+          ★ 两个数字不矛盾，但引用时别混着用。
+
+    ★★ 对校准集分布的鲁棒性（换成完全不同领域的语料再量化）：
+        AWQ  困惑度只涨 0.5 ~ 0.6
+        GPTQ 困惑度涨   2.3 ~ 4.9      ⚠️ 差了一个量级
+        ⟹ 原因很直观：AWQ 只从校准集里取【每通道激活的平均幅度】
+           这一个粗糙统计量，天然不容易过拟合；
+           GPTQ 要用校准集解一个逐层回归，拟合得更紧，也就更容易跑偏。
+
+    加速：TinyChat 上 INT4 相对 HuggingFace FP16 实现
+          平均 3.2 ~ 3.3×（桌面 4090 / 笔记本 4070 / 移动端 Jetson Orin）
+</code></pre></div>
+
+<h3 id="3">③ 怎么选</h3>
+<div class="codehilite"><pre><span></span><code>    ┌──────────────┬─────────────────────┬─────────────────────┐
+    │              │  GPTQ               │  AWQ                │
+    ├──────────────┼─────────────────────┼─────────────────────┤
+    │ 核心思路      │ 错了【当场补】       │ 重要的【少错】       │
+    │ 用到的信息    │ 输入的【相关矩阵】   │ 输入的【平均幅度】   │
+    │              │ H = 2XXᵀ            │ sₓ                  │
+    │ 计算代价      │ ⚠️ 逐层解回归        │ ✅ 搜一个标量 α      │
+    │ 校准集需求    │ ⚠️ 192 条            │ ✅ 16 条             │
+    │ 换校准集分布  │ ⚠️ +2.3~4.9 困惑度   │ ✅ +0.5~0.6          │
+    │ 生态         │ ✅ 更老，模型更全     │ ⚠️ 稍晚但已很普及    │
+    └──────────────┴─────────────────────┴─────────────────────┘
+
+    ⟹ ★ 实践默认：AWQ（对校准数据不挑食，出问题的概率低）。
+      找不到 AWQ 版本的模型时用 GPTQ。
+    ⟹ ★ 论文说两者是【正交的】，可以叠加——
+      极端低位宽（INT2）下 AWQ + GPTQ 一起上效果最好。
+
+    两个 vLLM 都支持：
+    ✅ [auto_awq.py](../源码/vLLM/vllm/model_executor/layers/quantization/auto_awq.py)
+    ✅ [auto_gptq.py](../源码/vLLM/vllm/model_executor/layers/quantization/auto_gptq.py)
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 一个必须提醒的口径问题：
+       上面 GPTQ 和 AWQ 的困惑度【不能直接横向比】。
+       两篇论文的模型、位宽、group size、评测设置各不相同，
+       ★ 只有【同一张表里的数字】才可比。
+</code></pre></div>
+
+<hr />
+<h2 id="94">9.4 ★ 激活值量化的拦路虎：离群值</h2>
+<blockquote>
+<p>✅ SmoothQuant 论文 arXiv 2211.10438（<code>papers/SmoothQuant-arXiv-2211.10438.pdf</code>）</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 现象：大模型的激活值里，有极少数几个通道的数值
+       比其他通道大【上百倍】。这叫【离群值（outlier）】。
+
+    ⟹ 量化要把整个范围映射到 256 个格子（INT8）。
+       如果范围被一个 100 倍的离群值撑开了，
+       ★ 剩下 99% 的正常数值全都被挤进了前 2 个格子
+       ⟹ 精度彻底崩掉
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ SmoothQuant 的解法（一个非常优雅的技巧）：
+       激活值难量化、权重好量化 ⟹ ★ 把难度【从激活转移一部分给权重】
+
+       Y = (X · diag(s)⁻¹) · (diag(s) · W)
+            └────┬─────┘     └─────┬────┘
+            激活除以 s，变平滑    权重乘以 s，变陡一点
+       ★ 数学上完全等价，但两边现在【都好量化了】
+       ★ 而且 diag(s) 可以【离线融合进前一层】，运行时零开销
+</code></pre></div>
+
+<h3 id="scale-vs">★★ 那 scale 到底什么时候定？——动态量化 vs 静态量化</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 先厘清一件事：这个区分【只对激活值有意义，对权重没有】。
+      权重在推理时不会变 ⟹ scale 离线算好就行，永远是「静态」的。
+      ✅ vLLM 源码里权重的量化描述符直接写死 static=True（kFp8StaticTensorSym）
+
+    ⟹ ★★ 所以「动态 / 静态」问的其实是同一个问题：
+       【激活值的缩放系数 scale，是什么时候定下来的？】
+
+       📖 静态量化（static）：★ 离线定。
+          拿校准数据跑一遍，记下激活值的范围，
+          把 scale 【固化进 checkpoint】，推理时直接读。
+
+       📖 动态量化（dynamic）：★ 当场定。
+          推理时拿到真实激活值，【现场求 max、现场算 scale】。
+</code></pre></div>
+
+<p><strong>★ 一个具体例子</strong>（量化到 INT8，<code>scale = max|x| / 127</code>）</p>
+<div class="codehilite"><pre><span></span><code>    校准时看到的 max|x| = 6.0  ⟹  scale = 6.0 / 127 = 0.047（固化进权重文件）
+
+    线上来了个请求，实际 max|x| = 18.0（比校准时见过的大得多）
+
+  ── 静态 ──────────────────────────────────
+    18.0 / 0.047 = 381  &gt;  127
+    ⚠️ 超出 INT8 上限 ⟹ 被【截断（clip）】到 127
+    ⟹ ★ 本来是 18 的值被当成了 6，信息【直接丢掉】，而且无法挽回
+
+  ── 动态 ──────────────────────────────────
+    当场看到 max|x| = 18.0 ⟹ scale = 18.0 / 127 = 0.142
+    ✅ 18 被正确表示，不截断
+
+    ⚠️ 代价：必须【先把整个 tensor 扫一遍求 max】才能开始量化
+       ⟹ 多一次读，而且难和上一个 kernel 融合
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ┌──────────────┬────────────────────┬────────────────────┐
+    │              │  静态 static        │  动态 dynamic       │
+    ├──────────────┼────────────────────┼────────────────────┤
+    │ scale 何时定  │ 离线，校准时        │ 运行时，每次现算    │
+    │ 需要校准集    │ ⚠️ 需要             │ ✅ 不需要           │
+    │ 运行时开销    │ ✅ 零（直接读常数） │ ⚠️ 多扫一遍激活值   │
+    │ kernel 融合   │ ✅ 可融进上一层     │ ⚠️ 要先做一次归约   │
+    │ 分布漂移      │ ⚠️ 会截断，掉精度   │ ✅ 自动适应         │
+    └──────────────┴────────────────────┴────────────────────┘
+</code></pre></div>
+
+<p><strong>⚠️⚠️ 一个必须澄清的误解：动态量化【不解决】离群值问题</strong></p>
+<div class="codehilite"><pre><span></span><code>    这两件事经常被混为一谈，但它们根本不是一个层面的：
+
+    ┌────────────────┬──────────────────────────┬──────────────┐
+    │ 问题            │ 是什么                    │ 谁来解决      │
+    ├────────────────┼──────────────────────────┼──────────────┤
+    │ 静态 → 动态     │ ★【跨请求】的范围漂移     │ 动态 scale    │
+    │                │  （校准集没覆盖到线上分布）│              │
+    ├────────────────┼──────────────────────────┼──────────────┤
+    │ 离群值          │ ★【同一个 tensor 内部】， │ SmoothQuant  │
+    │                │  某个通道比别人大上百倍   │              │
+    └────────────────┴──────────────────────────┴──────────────┘
+
+    ⟹ ★★ 动态量化只是把 scale 【调大到能装下那个离群值】，
+       剩下 99% 的正常值【照样被挤进前几个格子】——
+       就是本节开头说的那个问题，一点没变。
+    ⟹ ★ 所以就算用了动态量化，SmoothQuant 依然必要。
+       这两者是【正交的】，要一起上。
+</code></pre></div>
+
+<p><strong>★ 为什么推理框架默认用动态？</strong></p>
+<div class="codehilite"><pre><span></span><code>    ✅ vLLM 的默认值就是 &quot;dynamic&quot;
+       （fp8.py 的 Fp8Config：activation_scheme: str = &quot;dynamic&quot;）
+
+    ⟹ ★ 理由是账算得过来：AWQ 论文 Figure 3(c) 测过，
+       【权重的访存量比激活值大 1~3 个数量级】（图上标注 79× 和 1700×）
+       ⟹ 多扫一遍激活值，相对于搬权重的开销【几乎不要钱】
+       ⟹ 而且省掉了整个校准环节，部署简单，还没有分布漂移的风险
+
+    ✅ vLLM 里 block-wise（分块）量化更是【强制】dynamic——
+       配成 static 会直接抛错。
+
+    ⟹ ★ 那什么时候才用静态？
+       追求极致延迟、且能把 scale 融进上一个 kernel 的 epilogue 时。
+       ⚠️ 但前提是你的校准集真的覆盖了线上分布——这个前提很脆。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 最后提醒一个【正交维度】，很容易和上面搞混：【粒度】
+      per-tensor（整个张量一个 scale）
+      per-token （每个 token 一个）
+      per-channel（每个通道一个）
+
+    ⟹ ★★「静态/动态」管的是【何时定】，「粒度」管的是【定几个】，
+       两个维度可以任意组合。
+    ✅ vLLM 把它们拆得很干净：ScaleDesc(dtype, static, group_shape) 三元组，
+       所以源码里 kStaticTokenScale 和 kDynamicTokenScale 是并存的。
+</code></pre></div>
+
+<blockquote>
+<p>✅ <a href="../源码/vLLM/vllm/model_executor/layers/quantization/fp8.py">fp8.py</a>（<code>ACTIVATION_SCHEMES = ["static", "dynamic"]</code>，静态时才注册 <code>input_scale</code> 参数）<br />
+✅ <a href="../源码/vLLM/vllm/model_executor/layers/quantization/utils/quant_utils.py">quant_utils.py</a>（<code>ScaleDesc</code> / <code>GroupShape</code> 的定义）</p>
+</blockquote>
+<hr />
+<h2 id="95-kv-cache">9.5 ★★ KV Cache 量化——对推理最直接的收益</h2>
+<p>这是三项里<strong>对并发数影响最直接</strong>的一项。回到 02 章的账：</p>
+<div class="codehilite"><pre><span></span><code>    Llama-3-8B，BF16 KV：  每 token 128 KB
+    ★ 换成 FP8 KV：        每 token  64 KB
+
+    一张 H100 的 58 GB KV 空间：
+      BF16 ⟹ 47.5 万 token
+      FP8  ⟹ ★★ 95 万 token   ⟹ 并发数【直接翻倍】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 为什么 KV 量化几乎无损？（⚠️ 我的理解，非论文原文）
+      ① KV 只被 softmax 加权求和消费，softmax 本身有归一化的平滑作用
+      ② 误差不会像权重那样在层间【反复相乘放大】
+    ⟹ 实践上 FP8 KV Cache 是「几乎白拿」的，很多部署默认就开
+    ⚠️ 但 INT4 KV 就有明显损失了，尤其在长上下文任务上
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>源码可查</strong>：vLLM 有专门的 KV 量化模块<br />
+<a href="../源码/vLLM/vllm/model_executor/layers/quantization/kv_cache.py">quantization/kv_cache.py</a>，<br />
+启动参数是 <code>--kv-cache-dtype fp8</code>。</p>
+</blockquote>
+<hr />
+<h2 id="96">9.6 硬件才是真正的裁判</h2>
+<p><strong>一个初学者最容易忽略的事实</strong>：量化能不能提速，取决于<strong>这张卡有没有对应的计算单元</strong>。</p>
+<div class="codehilite"><pre><span></span><code>┌──────────┬───────────────────────────────────────────────┐
+│  精度     │  硬件支持情况                                  │
+├──────────┼───────────────────────────────────────────────┤
+│  BF16    │  A100 起全面支持                               │
+│  ★ FP8   │  ★ H100 / H200 起【原生 Tensor Core 支持】     │
+│          │  ⟹ 在 H100 上，FP8 是【最优选择】：            │
+│          │    显存减半 + 算力翻倍 + 几乎无损               │
+│  ★ MXFP4 │  ★ Blackwell (B200) 起原生支持                 │
+│  INT4    │  ⚠️ 没有原生 INT4 Tensor Core                  │
+│          │  ⟹ 实际做法：存 4 位，★ 算之前【解压回 16 位】  │
+│          │  ⟹ 省了搬运（Decode 提速）✅                   │
+│          │     但没省计算（Prefill 不提速）⚠️              │
+└──────────┴───────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ vLLM 的量化目录直接反映了这个硬件版图：<br />
+<code>fp8.py</code>、<code>input_quant_fp8.py</code>、<code>fbgemm_fp8.py</code>（FP8 一族）、<br />
+<code>mxfp4.py</code>（Blackwell）、<code>moe_wna16.py</code>（MoE 专用的权重量化）、<br />
+<code>experts_int8.py</code>、<code>torchao.py</code>、<code>modelopt.py</code>（对接 NVIDIA 的量化工具链）。<br />
+★ 从文件数量就能看出：<strong>FP8 是当前的主战场</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="97">9.7 怎么选——一张决策表</h2>
+<p>⚠️ 以下是经验法则，不是论文结论：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 有 H100/H200，追求稳妥          ⟹ FP8 权重 + FP8 KV Cache
+      （几乎无损，显存减半，算力翻倍，是当前的默认答案）
+
+    ★ 卡是 A100，显存不够            ⟹ AWQ / GPTQ 的 W4A16
+      （A100 没有 FP8 单元，只能靠 INT4 省搬运）
+
+    ★ 单卡放不下，想避免上多卡通信    ⟹ 先量化，再考虑 TP（回收 06 章 §6.6）
+
+    ★ 并发数是瓶颈（而不是模型放不下）⟹ ★ 优先量化 KV Cache，
+      这比量化权重对并发的帮助更直接
+
+    ⚠️ 任何量化上线前都要跑一遍你【自己场景】的评测。
+       论文里的困惑度（perplexity）持平，不代表你的业务指标持平。
+</code></pre></div>
+
+<hr />
+<h2 id="98">9.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  ① ★ 推理量化 ≠ 训练量化：推理是访存受限，                     │
+│     权重位宽减半 ⟹ 搬运减半 ⟹ ★ Decode 直接提速               │
+│                                                              │
+│  ② 三个独立对象：权重 / 激活值 / KV Cache                     │
+│     ★ W4A16 常见，因为 Decode 瓶颈在搬权重不在算              │
+│     ★ Prefill 算力受限，只有 W8A8 才对它有用                  │
+│                                                              │
+│  ③ 权重量化：GPTQ（Hessian 逐层补偿）/ ★ AWQ（保护 1% 重要通道）│
+│     激活量化的拦路虎是【离群值】                               │
+│     ⟹ ★ SmoothQuant：把量化难度从激活转移给权重，数学等价      │
+│     ★ 动态/静态 = scale【何时定】，与离群值正交，别混为一谈    │
+│                                                              │
+│  ④ ★★ KV Cache 量化收益最直接：FP8 ⟹ 并发数【翻倍】，几乎无损  │
+│                                                              │
+│  ⑤ ★ 硬件是裁判：H100 起 FP8 原生，Blackwell 起 MXFP4 原生；   │
+│     INT4 没有原生单元 ⟹ 只省搬运不省算力                       │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="10-PD分离.html">10 PD 分离</a><br />
+03 章留下的那个悬念——「两个阶段最优配置不同，混在一起只能用一套」——<br />
+现在来解决它。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · 训练侧：损失、AdamW、Muon</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="12-MTP与投机解码.html">← 12 MTP 与投机解码</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="14-量化.html">14 量化</a></p>
+</blockquote>
+<h1 id="13-adamwmuon">13 · 训练侧：损失、AdamW、Muon</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：讲清这一代<strong>最重要的训练侧变化</strong>。五家里至少四家换了优化器，这在过去八年里是没有发生过的事（AdamW 从 2017 年统治到 2025 年）。<br />
+读完你应该能回答：Adam 的三行公式各自在治什么病？AdamW 的那个 "W" 为什么重要？<strong>Muon 到底在做什么——不是"把奇异值拉平"这种表面描述，而是它作为"谱范数下的最速下降"的真正含义</strong>？为什么 embedding 不能用它？五家在正交化粒度上的分歧说明了什么？</p>
+</blockquote>
+<hr />
+<h2 id="131">13.1 训练目标：就是一个多分类</h2>
+<p>$$\mathcal{L} = -\frac{1}{L}\sum_{t=1}^{L} \log P_\theta(x_{t+1}\mid x_{\le t})$$</p>
+<p><strong>就这一个式子。</strong> 几十 T tokens 的预训练，全部就是在最小化这个交叉熵。</p>
+<div class="codehilite"><pre><span></span><code><span class="n">logits</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>                          <span class="c1"># [L, V]</span>
+<span class="n">loss</span> <span class="o">=</span> <span class="n">cross_entropy</span><span class="p">(</span><span class="n">logits</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">x</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span>   <span class="c1"># 每个位置预测下一个</span>
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>注意 <a href="05-注意力机制.html">05 章 §5.4</a> 的因果掩码在这里的作用</strong>：因为有掩码，<strong>一次前向就能同时算出 $L$ 个位置的 loss</strong>，而每个位置都只看到了它该看到的历史。<strong>没有掩码，训练就得像 RNN 一样一步一步来，慢 $L$ 倍。</strong></p>
+</blockquote>
+<hr />
+<h2 id="132-sgd-adamw">13.2 从 SGD 走到 AdamW：每一步在治什么病</h2>
+<p>这一节把优化器的演化拆成五步，<strong>每一步只解决一个具体的病</strong>。</p>
+<h3 id="1-sgd">① SGD：最朴素的</h3>
+<p>$$\theta \leftarrow \theta - \eta\, g$$</p>
+<div class="codehilite"><pre><span></span><code>❌ 病 1：不同参数的梯度尺度差几个数量级
+        统一的学习率 η 对某些参数太大（发散），对另一些太小（不动）
+❌ 病 2：在&quot;峡谷&quot;型的损失曲面上来回震荡
+        ╱╲╱╲╱╲   ← 沿陡峭方向反复横跳，沿平缓方向几乎不前进
+</code></pre></div>
+
+<h3 id="2">② 动量：治震荡</h3>
+<p>$$m_t = \beta_1 m_{t-1} + (1-\beta_1)g_t,\qquad \theta \leftarrow \theta - \eta\, m_t$$</p>
+<div class="codehilite"><pre><span></span><code>    动量 = 梯度的【指数滑动平均】
+
+    震荡方向：正负梯度互相抵消    → 被【平滑掉】
+    一致方向：同号梯度不断累加    → 被【放大】
+
+    ★ 像一个有惯性的球滚下山，而不是每步重新看方向
+</code></pre></div>
+
+<h3 id="3-adagrad-rmsprop">③ AdaGrad / RMSProp：治尺度不一</h3>
+<p>$$v_t = \beta_2 v_{t-1} + (1-\beta_2)g_t^2,\qquad \theta\leftarrow\theta - \eta\,\frac{g_t}{\sqrt{v_t}+\epsilon}$$</p>
+<div class="codehilite"><pre><span></span><code>    v 是【梯度平方的滑动平均】= 这个参数历史上梯度有多大
+
+    历史梯度大 → 除以一个大数 → 步子迈小点
+    历史梯度小 → 除以一个小数 → 步子迈大点
+
+    ★ 相当于给【每一个参数】配了一个自己的学习率
+</code></pre></div>
+
+<h3 id="4-adam-23">④ Adam：把 ②③ 合起来</h3>
+<p>$$\theta_t \leftarrow \theta_{t-1} - \eta\,\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon},\qquad \hat m_t = \frac{m_t}{1-\beta_1^t},\ \ \hat v_t = \frac{v_t}{1-\beta_2^t}$$</p>
+<p><strong>那个 $\hat{\cdot}$ 是偏差修正</strong>：$m_0 = 0$，所以前几步的 $m_t$ 被"零"拉小了，除以 $1-\beta_1^t$ 把它修正回来。$t$ 大时这个因子趋近 1，自动失效。</p>
+<blockquote>
+<p>🔑 <strong>一个很有用的观察</strong>：当 $\beta_2\to 1$ 且忽略动量时，<br />
+$$\frac{m}{\sqrt{v}} \approx \frac{g}{|g|} = \text{sign}(g)$$<br />
+<strong>Adam 本质上很接近 signSGD——它主要在决定"往哪个方向走"，而不太在乎"梯度有多大"。</strong><br />
+<strong>这个视角在 §13.4 会派上大用场。</strong></p>
+</blockquote>
+<h3 id="5-adamw-w">⑤ AdamW：那个 "W" 到底解决了什么</h3>
+<p><strong>权重衰减（weight decay）的目的</strong>是防止权重变得太大。原始做法是把 $\frac{\lambda}{2}|\theta|^2$ 加进损失，于是梯度多了一项 $\lambda\theta$：</p>
+<p>$$g_t \leftarrow g_t + \lambda\theta_{t-1}\qquad\text{（L2 正则，Adam 的原始做法）}$$</p>
+<div class="codehilite"><pre><span></span><code>    ❌ 问题：这个 λθ 会【进入 v 的统计】，然后被 √v 除掉
+
+    某个参数梯度一直很大 → v 大 → 它的衰减项 λθ 也被 √v 除小了
+    → ★ 需要被约束的参数，反而衰减得最少 —— 完全反了
+</code></pre></div>
+
+<p><strong>AdamW 的修正：把衰减从梯度里拿出来，直接作用在参数上。</strong></p>
+<p>$$\boxed{\ \theta_t \leftarrow \theta_{t-1} - \eta\left(\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon} + \lambda\,\theta_{t-1}\right)\ }$$</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 衰减项【不经过 √v】，对所有参数一视同仁
+    ✅ 学习率 η 和衰减强度 λ 【解耦】，可以独立调
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>回忆 <a href="04-归一化.html">04 章 §4.2</a></strong>：有了归一化之后，权重的<strong>模长不影响输出</strong>，只影响有效学习率。<strong>所以权重衰减在现代模型里的角色，与其说是"正则化"，不如说是"控制有效学习率"。</strong> 这也是它必须和 $\eta$ 解耦的一个原因。</p>
+</blockquote>
+<hr />
+<h2 id="133-adam">13.3 Adam 的一个盲点：它不知道参数排成了矩阵</h2>
+<p><strong>这是引出 Muon 的关键。</strong></p>
+<div class="codehilite"><pre><span></span><code>    Adam 的所有操作（m, v, 除法）都是【逐元素】的
+
+    → 把一个 [5120, 13824] 的权重矩阵拉平成 7000 万个独立的标量
+    → 每个标量各调各的学习率，互不相干
+
+    ★★ 它完全不知道这些数排成了一个矩阵，
+        也完全不知道这个矩阵是一个【线性映射】 ★★
+</code></pre></div>
+
+<p><strong>但矩阵是有结构的。</strong> 一个权重矩阵 $W$ 的作用是把向量映射到向量：$y = Wx$。<strong>它的"性格"由奇异值分解决定</strong>：</p>
+<p>$$W = U\Sigma V^\top,\qquad \Sigma = \text{diag}(\sigma_1 \ge \sigma_2 \ge \cdots)$$</p>
+<div class="codehilite"><pre><span></span><code>    W 把输入空间的 v_i 方向，拉伸 σ_i 倍，映射到输出空间的 u_i 方向
+
+    σ_1 = 100, σ_2 = 0.01  →  ★ 这个矩阵几乎只在【一个方向】上起作用
+                               其他方向的信息几乎被压没了
+</code></pre></div>
+
+<h3 id="_1">梯度矩阵也有这个问题</h3>
+<p>$$G = U_G\Sigma_G V_G^\top$$</p>
+<div class="codehilite"><pre><span></span><code>    如果 Σ_G 的奇异值差距极大（这在实践中非常常见）：
+
+        σ_1 = 50, σ_2 = 3, σ_3 = 0.2, ..., σ_100 = 0.001
+
+    → 这次更新几乎【全部集中在第 1 个主方向上】
+    → 其余 99 个方向几乎没被更新
+    → ★ 参数矩阵的&quot;有效秩&quot;在训练中不断塌缩，表达力被浪费
+</code></pre></div>
+
+<hr />
+<h2 id="134-muon">13.4 ★ Muon 的真正含义：谱范数下的最速下降</h2>
+<blockquote>
+<p><strong>网上常见的说法是"Muon 把奇异值都拉成 1"。这是对的，但它是【结果】，不是【理由】。真正的理由如下。</strong></p>
+</blockquote>
+<h3 id="_2">一切优化器都是"在某个范数下的最速下降"</h3>
+<p>考虑这个通用形式：<strong>在"步长不超过 $\eta$"的约束下，让损失下降最多</strong>。</p>
+<p>$$\Delta\theta^\star = \arg\min_{|\Delta|\ \le\ \eta}\ \langle G,\ \Delta\rangle$$</p>
+<p><strong>关键在于：$|\cdot|$ 用哪个范数？不同的选择给出完全不同的优化器。</strong></p>
+<table>
+<thead>
+<tr>
+<th>用什么范数衡量"步长"</th>
+<th>得到的更新</th>
+<th>对应的优化器</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>$\ell_2$</strong>（欧氏范数）</td>
+<td>$\Delta \propto -G$</td>
+<td><strong>SGD</strong></td>
+</tr>
+<tr>
+<td><strong>$\ell_\infty$</strong>（每个元素都不超过 $\eta$）</td>
+<td>$\Delta = -\eta\,\text{sign}(G)$</td>
+<td><strong>≈ Adam</strong>（见 §13.2 ⑤ 的观察）</td>
+</tr>
+<tr>
+<td><strong>谱范数</strong>（矩阵的最大奇异值）</td>
+<td>$\Delta = -\eta\,U_GV_G^\top$</td>
+<td>⭐ <strong>Muon</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_3">谱范数那一行的推导</h3>
+<p><strong>谱范数</strong> $|A|<em _max="\max">2 = \sigma</em>(A)$，它的<strong>对偶范数是核范数</strong> $|A|_* = \sum_i\sigma_i$。</p>
+<p>设 $G = U\Sigma V^\top$，要求解</p>
+<p>$$\min_{|\Delta|<em _124_Delta_124__2_le_eta="|\Delta|_2\le\eta">2\le\eta}\ \langle G,\Delta\rangle = \min</em>(G^\top\Delta)$$}\ \text{tr</p>
+<p><strong>答案是</strong></p>
+<p>$$\boxed{\ \Delta^\star = -\eta\,UV^\top,\qquad \text{最优值} = -\eta\sum_i\sigma_i = -\eta|G|_*\ }$$</p>
+<div class="codehilite"><pre><span></span><code>    ★ UVᵀ 就是把 G 的所有奇异值【替换成 1】的结果
+    → 这不是一个&quot;启发式技巧&quot;，它是【谱范数球上线性优化的精确解】
+</code></pre></div>
+
+<h3 id="_4">为什么谱范数是"对"的范数</h3>
+<p><strong>这一步是全章最重要的直觉。</strong></p>
+<p>$$|\Delta W\,x|_2 \le |\Delta W|_2\cdot|x|_2$$</p>
+<div class="codehilite"><pre><span></span><code>    ★ 谱范数 = 这个权重更新，最多能把一个单位输入的输出改变多少
+
+    → 约束谱范数 = 【约束这一层的函数行为改变了多少】
+                   而不是&quot;参数的数值改变了多少&quot;
+
+    ★★ 我们真正关心的从来就是&quot;网络的函数变了多少&quot;，
+        参数变了多少只是一个代理指标 ★★
+</code></pre></div>
+
+<p><strong>对比一下</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ℓ₂ 范数（SGD）：      &quot;所有参数的改动量平方和不超过 η²&quot;
+                         → 但 7000 万个参数一起动一点点，
+                           对函数的影响可能巨大，也可能微乎其微
+                           【完全不受控】
+
+    谱范数（Muon）：      &quot;这一层的输出改变量不超过 η×输入&quot;
+                         → ★ 直接控制了我们真正在乎的东西
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话总结 Muon</strong>：<br />
+<strong>Adam 在"每个参数改多少"这个坐标系里做最速下降；Muon 在"这一层的函数改多少"这个坐标系里做最速下降。</strong></p>
+<p>后者才是和"网络在学什么"对齐的度量。</p>
+</blockquote>
+<h3 id="_5">副产品：更新方向的各向同性</h3>
+<div class="codehilite"><pre><span></span><code>    ΣG = diag(50, 3, 0.2, ..., 0.001)   →   全部变成 1
+
+    → 每个奇异方向被【平等地】更新
+    → 参数矩阵的有效秩不再塌缩
+    → 表达力被完整利用
+</code></pre></div>
+
+<hr />
+<h2 id="135-newton-schulz-gpu-uvtop">13.5 Newton-Schulz：怎么在 GPU 上算 $UV^\top$</h2>
+<p><strong>真做 SVD 太贵</strong>（$O(n^3)$，而且 GPU 上极不友好，涉及大量串行的迭代和分支）。</p>
+<p><strong>观察：我们不需要 $U$ 和 $V$，只需要它们的乘积 $UV^\top$。</strong></p>
+<p>$$UV^\top = \left(GG^\top\right)^{-1/2}G$$</p>
+<p><strong>这是矩阵的"极分解"（polar decomposition）的正交因子。</strong> 而 $(\cdot)^{-1/2}$ 可以用<strong>只含矩阵乘法</strong>的迭代来逼近：</p>
+<p>$$X \leftarrow aX + b\,(XX^\top)X + c\,(XX^\top)^2X$$</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">newton_schulz</span><span class="p">(</span><span class="n">G</span><span class="p">,</span> <span class="n">steps</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">a</span><span class="o">=</span><span class="mf">3.4445</span><span class="p">,</span> <span class="n">b</span><span class="o">=-</span><span class="mf">4.7750</span><span class="p">,</span> <span class="n">c</span><span class="o">=</span><span class="mf">2.0315</span><span class="p">):</span>
+    <span class="n">X</span> <span class="o">=</span> <span class="n">G</span> <span class="o">/</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">G</span><span class="p">)</span> <span class="o">+</span> <span class="mf">1e-7</span><span class="p">)</span>        <span class="c1"># 先归一化，把奇异值压进 (0, 1]</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">steps</span><span class="p">):</span>
+        <span class="n">A</span> <span class="o">=</span> <span class="n">X</span> <span class="o">@</span> <span class="n">X</span><span class="o">.</span><span class="n">T</span>
+        <span class="n">X</span> <span class="o">=</span> <span class="n">a</span><span class="o">*</span><span class="n">X</span> <span class="o">+</span> <span class="n">b</span><span class="o">*</span><span class="p">(</span><span class="n">A</span> <span class="o">@</span> <span class="n">X</span><span class="p">)</span> <span class="o">+</span> <span class="n">c</span><span class="o">*</span><span class="p">(</span><span class="n">A</span> <span class="o">@</span> <span class="n">A</span> <span class="o">@</span> <span class="n">X</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">X</span>                                   <span class="c1"># ≈ U V^T</span>
+</code></pre></div>
+
+<h3 id="_6">为什么这个迭代能工作</h3>
+<p><strong>关键：这个迭代对 $X$ 的每个奇异值 $\sigma$ 的作用，等价于一个标量多项式</strong></p>
+<p>$$\sigma \ \leftarrow\ p(\sigma) = a\sigma + b\sigma^3 + c\sigma^5$$</p>
+<div class="codehilite"><pre><span></span><code>    因为 X = UΣVᵀ 时：
+        XXᵀ = UΣ²Uᵀ,  (XXᵀ)X = UΣ³Vᵀ,  (XXᵀ)²X = UΣ⁵Vᵀ
+    → U 和 V 【完全不变】，只有 Σ 被逐个作用了 p(·)
+
+    ★ 所以问题化归成：找一个 5 次奇多项式 p，
+      使得对任意 σ ∈ (0,1]，反复迭代 p 都收敛到 1
+</code></pre></div>
+
+<p><strong>那三个系数 $(3.4445,\ -4.7750,\ 2.0315)$ 就是这么调出来的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① p&#39;(0) = a = 3.4445 很大  →  ★ 极小的奇异值也能被【快速拉起来】
+       （这是关键：谱里最小的那些方向，正是最需要救的）
+    ② 在 σ ≈ 1 附近保持稳定，不发散
+    ③ 代价：它【不严格收敛到 1】，而是在 1 附近的一个小带里振荡
+
+    ⚠️ 但这完全够用 —— 我们要的是&quot;近似正交化&quot;，不是精确的 UVᵀ
+       5 次迭代通常就足够了
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>这是一个很典型的"为 GPU 重新设计算法"的例子</strong>，和 <a href="05-注意力机制.html">05 章</a> 的 FlashAttention、<a href="08-高效注意力.html">08 章</a> MiniMax 按块选 top-k 是同一种思维：<strong>放弃精确解，换来只用矩阵乘法就能算完。</strong></p>
+</blockquote>
+<h3 id="_7">两个必须知道的工程细节</h3>
+<p><strong>① Muon 作用在动量上，不是原始梯度上</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">m</span> <span class="o">=</span> <span class="n">beta</span> <span class="o">*</span> <span class="n">m</span> <span class="o">+</span> <span class="n">g</span>                    <span class="c1"># 先做动量</span>
+<span class="n">update</span> <span class="o">=</span> <span class="n">newton_schulz</span><span class="p">(</span><span class="n">m</span><span class="p">)</span>           <span class="c1"># 再正交化【动量】</span>
+<span class="n">theta</span> <span class="o">-=</span> <span class="n">lr</span> <span class="o">*</span> <span class="n">scale</span> <span class="o">*</span> <span class="n">update</span>
+</code></pre></div>
+
+<p><strong>② 需要缩放来对齐 Adam 的更新幅度</strong></p>
+<div class="codehilite"><pre><span></span><code>    正交化后的矩阵，所有奇异值都是 1
+    → 它的元素级 RMS 是固定的，和 Adam 的更新幅度对不上
+    → 要乘一个和矩阵形状相关的常数（常见形式 ∝ √max(m,n)），
+      这样超参可以从 AdamW 的经验值平移过来
+
+    ✅ openPangu 报告给出的缩放系数 γ = 0.2
+</code></pre></div>
+
+<p><strong>③ 一个白赚的好处：省显存</strong></p>
+<div class="codehilite"><pre><span></span><code>    AdamW：每个参数要存 m 和 v 两份状态  →  2× 参数量的优化器显存
+    Muon ：只需要动量 m 一份            →  1× ★
+
+    对一个 505B 的模型，这是几百 GB 的差别（虽然实际用的是混合：
+    矩阵参数用 Muon，其余用 AdamW）
+</code></pre></div>
+
+<hr />
+<h2 id="136-muon">13.6 哪些参数用 Muon，哪些不用</h2>
+<p><strong>五家高度一致：</strong></p>
+<div class="codehilite"><pre><span></span><code>✅ 用 Muon ：矩阵形参数 —— MoE 专家权重、注意力的各个投影矩阵、FFN 的 W_gate/W_up/W_down
+❌ 不用    ：embedding、LM head、所有 RMSNorm 权重、各种 bias 和门控
+</code></pre></div>
+
+<h3 id="embedding">为什么 embedding 不能用</h3>
+<p><strong>回忆 §13.4：Muon 的全部逻辑建立在"这个矩阵是一个线性映射，它的奇异值谱刻画了它的函数行为"之上。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ Embedding 矩阵【不是】一个作用于向量空间的线性映射
+
+    它只是 15 万个【彼此独立的行向量】堆在一起
+    第 1234 行（&quot;今天&quot;的向量）和第 5678 行（&quot;天气&quot;的向量）之间
+    没有任何&quot;共同参与一次线性变换&quot;的关系
+
+    → &quot;限制它的谱范数&quot;这句话，对应不到任何有意义的函数行为约束
+    → 对它做 SVD 正交化【没有意义】
+</code></pre></div>
+
+<p><strong>同理</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    RMSNorm 的 g：是一个【向量】，逐元素缩放，根本没有矩阵结构
+    bias：       同上
+    LM head：    虽然形状是矩阵，但它的每一列对应一个独立的词，
+                 和 embedding 是同一个问题
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这个判据很好用</strong>：<strong>问"这个参数是不是在做一次真正的线性变换？"</strong> 是 → Muon；否 → AdamW。</p>
+</blockquote>
+<hr />
+<h2 id="137">13.7 五家的分歧：正交化的"粒度"</h2>
+<p><strong>这是五家在优化器上唯一的真分歧，而且时间线很清楚。</strong></p>
+<h3 id="_8">问题在哪</h3>
+<div class="codehilite"><pre><span></span><code>    注意力的 W_Q（或 MLA 的 W_UQ）形状是 [d, H × d_h]
+    它【逻辑上是 H 个头各自的投影矩阵拼在一起】
+
+    ❌ 如果整个矩阵一起正交化：
+       H = 64 个头被当成【一个耦合的块】
+       → 梯度尺度大的那几个 head，会【主导】共享的更新方向
+       → 梯度小的 head 得不到应有的更新
+       → ★ 这正是 Muon 本来要解决的问题，在 head 这个层面上重新出现了
+</code></pre></div>
+
+<h3 id="_9">三家的解法与时间线</h3>
+<table>
+<thead>
+<tr>
+<th>时间</th>
+<th>谁</th>
+<th>做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2026-02</strong></td>
+<td><strong>GLM-5</strong></td>
+<td>⭐ <strong>Muon Split</strong>：按 head 切开，<strong>每个 head 单独正交化</strong>（最早）</td>
+</tr>
+<tr>
+<td><strong>2026-07</strong></td>
+<td><strong>Kimi K3</strong></td>
+<td><strong>Per-Head Muon</strong>：同一个想法，同一个动机</td>
+</tr>
+<tr>
+<td><strong>2026-07</strong></td>
+<td><strong>openPangu</strong>（华为）</td>
+<td><strong>分成 4 组 head</strong>（不是逐 head）——在正交化粒度和<strong>算子效率</strong>之间取折中</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>华为那个"4 组"很值得玩味</strong>：<br />
+```<br />
+逐 head 正交化 → 64 个【很小】的矩阵，每个都要跑 5 次 Newton-Schulz<br />
+                 → GPU/NPU 上小矩阵乘的效率极低，kernel 启动开销占主导</p>
+<p>分 4 组       → 4 个中等矩阵，算子效率高得多<br />
+                 → 牺牲一点粒度，换实际吞吐<br />
+```<br />
+<strong>这和 openPangu 全篇"推理成本优先、工程可落地优先"的取向完全一致</strong>（见 <a href="01-鸟瞰全景.html">01</a> / <a href="10-MoE.html">10 章</a> 的"四个最"）。</p>
+</blockquote>
+<h3 id="swiglu-w_gate-w_up">⭐ 同一个问题的另一半：SwiGLU 里的 <code>W_gate</code> 和 <code>W_up</code> 要不要分开？</h3>
+<p><strong>上面讲的是"一个矩阵里塞了 H 个头"。完全相同的毛病还有第二处，而且更隐蔽——<a href="09-FFN与激活函数.html">09 章</a>的 SwiGLU：</strong></p>
+<div class="codehilite"><pre><span></span><code>    SwiGLU:   FFN(x) = ( SiLU(x·W_gate) ⊙ (x·W_up) ) · W_down
+
+    ★ 几乎所有实现（Megatron / vLLM / HF）为了少做一次 GEMM，
+      都把这两个矩阵【物理上拼成一个】：
+
+          W_fused = [W_gate ; W_up]     形状 [d, 2·d_ff]
+                     └── 一次矩阵乘算出两半，再 chunk 开 ──┘
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>于是问题来了</strong>：如果你对 <code>W_fused</code> <strong>整体</strong>做 Newton-Schulz 正交化，<br />
+你正交化的是一个<strong>根本不存在的线性映射</strong>——<code>W_gate</code> 和 <code>W_up</code> 在网络里<br />
+走的是<strong>两条不同的路</strong>（一条过 SiLU 当门，一条直连当值），它们<strong>从来不作为一个整体作用于任何东西</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ❌ 融合着一起正交化的后果：
+       · 二者的奇异值谱被【强行耦合】，共享同一个缩放
+       · 而它们的梯度尺度天然不同（门控那一路过了 SiLU，尺度更小）
+       → ★ 尺度大的 W_up 会主导，W_gate 拿不到应有的更新
+       → 这和 §13.7 开头那个 &quot;H 个头被耦合&quot; 是【同一个病】
+
+    ✅ 正确做法：先 chunk 成两个 [d, d_ff]，各自正交化，再拼回去
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这不是我的推断，业界已经在做同一件事了</strong>——只不过公开写出来的那次是在<strong>注意力</strong>上：<br />
+<code>✅ GLM-5 报告原文（2026-02）：
+   "In the original recipe, we apply matrix orthogonalization to the
+    up-projection matrices W_UQ, W_UK, W_UV ... Instead, we split these
+    matrices into smaller matrices for different heads and apply matrix
+    orthogonalization to these independent matrices."
+   —— 这就是 Muon Split</code><br />
+★ <strong>GLM 的动机和上面一模一样：物理上拼在一起 ≠ 逻辑上是一个线性映射。</strong> 它在注意力上把这件事做对了，<br />
+而 <code>W_gate</code> / <code>W_up</code> 是<strong>同一条原则在 FFN 上的直接推论</strong>。</p>
+<p>⚠️ <strong>但要诚实说明边界</strong>：✅ 报告里明确写的是<strong>注意力投影</strong>按 head 切；<br />
+<strong>五家没有任何一份公开说明它们怎么处理 SwiGLU 的融合张量</strong>。<br />
+⟹ 所以"SwiGLU 也该分开"是 ⚠️ <strong>我按同一条原则做的推断，不是任何一家的披露</strong>。<br />
+★ 好在这件事<strong>验证成本极低</strong>：<code>assert</code> 一下你的优化器拿到的张量最后一维是 <code>d_ff</code> 还是 <code>2·d_ff</code> 就知道了。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ★ 一个可以直接抄的检查：Muon 拿到的到底是不是&quot;一个真正的线性映射&quot;</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">model</span><span class="o">.</span><span class="n">named_parameters</span><span class="p">():</span>
+    <span class="k">if</span> <span class="n">p</span><span class="o">.</span><span class="n">ndim</span> <span class="o">!=</span> <span class="mi">2</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">use_muon</span><span class="p">(</span><span class="n">name</span><span class="p">):</span>
+        <span class="k">continue</span>
+    <span class="k">if</span> <span class="s2">&quot;gate_up&quot;</span> <span class="ow">in</span> <span class="n">name</span> <span class="ow">or</span> <span class="s2">&quot;w13&quot;</span> <span class="ow">in</span> <span class="n">name</span><span class="p">:</span>        <span class="c1"># 常见的融合命名</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;⚠️ </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="nb">tuple</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span><span class="si">}</span><span class="s2"> 是【融合张量】—— 应先 chunk(2, dim=-1) 再各自正交化&quot;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s2">&quot;qkv&quot;</span> <span class="ow">in</span> <span class="n">name</span><span class="p">:</span>                              <span class="c1"># QKV 也常被融合</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;⚠️ </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="nb">tuple</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span><span class="si">}</span><span class="s2"> 融合了 Q/K/V —— 至少要按 Q/K/V 切开，最好再按 head 切&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>一句话记住</strong>：<strong>Muon 的正交化对象，应该是"逻辑上的一个线性映射"，而不是"显存里连续的一块"。</strong><br />
+融合张量是为了 GEMM 效率做的<strong>工程打包</strong>，优化器不该被它误导。</p>
+</blockquote>
+<hr />
+<h2 id="138">13.8 ⭐ 三种互斥归因：一个值得警惕的案例</h2>
+<p><strong>三家都观察到同一个现象：用了 Muon 之后，attention logits 全程不爆炸。</strong></p>
+<div class="codehilite"><pre><span></span><code>    背景（回忆 [04 章 §4.5](04-归一化.md)）：
+    attention logits 变大 → softmax 饱和 → 梯度消失 → loss spike
+    这是大模型训练最常见的不稳定来源之一
+</code></pre></div>
+
+<p><strong>但三家把这个功劳归给了完全不同的组件</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>谁</th>
+<th>归因给</th>
+<th>属于哪一层</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GLM</strong></td>
+<td><strong>Muon Split</strong></td>
+<td>优化器侧</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td><strong>QK-RMSNorm</strong></td>
+<td>算子侧 · 局部</td>
+</tr>
+<tr>
+<td><strong>openPangu</strong>（华为）</td>
+<td><strong>sandwich norm + block post-norm</strong></td>
+<td>算子侧 · 全局</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 三个归因【互相排斥】：如果 GLM 是对的，那 V4 的 QK-Norm 就是多余的；
+        反之亦然。而三家都跑通了 —— 说明【至少有两家把功劳归错了地方】，
+        或者这三条路各自独立地都能达到同一个效果 ★★
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>只有华为给了具体数字</strong>（logits 全程 ≈ 20），<strong>也只有华为承认自己没做消融</strong>：</p>
+<blockquote>
+<p>"We leave a more systematic ablation of this phenomenon to future work."</p>
+</blockquote>
+<p>🔑 <strong>这个案例的方法论价值大于技术价值</strong>：<br />
+```<br />
+当多家报告对同一个现象给出【互斥的归因】，而没有一家做了控制变量实验，<br />
+那么这三条解释的可信度都应该【显著打折】。</p>
+<p>技术报告不是论文：它记录"我们做了什么、结果如何"，<br />
+但"为什么有效"那一部分往往是【事后叙述】，而非受控验证。<br />
+```<br />
+<strong>完整分析见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.8。</strong></p>
+</blockquote>
+<hr />
+<h2 id="139">13.9 挂回五家</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>优化器</th>
+<th>正交化粒度</th>
+<th>特别的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td><strong>Muon</strong></td>
+<td>未细分</td>
+<td>把稳定性归因给 QK-RMSNorm</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>Per-Head Muon</strong></td>
+<td>逐 head</td>
+<td>93 层，粒度最细</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td><strong>Muon Split</strong></td>
+<td>逐 head</td>
+<td>⭐ <strong>最早（2026-02）</strong></td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>—</td>
+<td>—</td>
+<td>报告未明确</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>Muon</strong></td>
+<td><strong>4 组 head</strong></td>
+<td>缩放系数 γ = 0.2；⚠️ 唯一用 <strong>FP16 + 动态 loss scaling</strong>（非 BF16）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="openpangu-fp16">⚠️ openPangu 那个 FP16</h3>
+<blockquote>
+<p><strong>这是一个非常反常的选择</strong>：BF16 从 2020 年起就是训练的事实标准，因为它的<strong>指数位和 FP32 一样多（8 位）</strong>，动态范围极大，几乎不会溢出。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    FP16：  5 位指数，最大值约 65504     → ★ 很容易溢出
+            但 10 位尾数（BF16 只有 7 位） → ★ 精度更高
+
+    FP16 训练必须配【动态 loss scaling】：
+        把 loss 乘一个大数（比如 1024）再反传 → 让小梯度不下溢
+        更新前再除回去
+        如果检测到 inf/nan → 把这个 scale 减半，跳过这一步
+</code></pre></div>
+
+<p><strong>⚠️ 我的推断（华为报告未给理由）</strong>：这大概率是<strong>昇腾 NPU 的硬件特性决定的</strong>——如果硬件上 FP16 的算力显著高于 BF16，那么用工程复杂度（动态 loss scaling）去换算力是划算的。</p>
+<blockquote>
+<p>📌 <strong>这一格再次呼应了 openPangu 的整体取向</strong>：它的很多选择（4 组 head 而非逐 head、W8A8 而非 4-bit、50 层最浅）都指向同一件事——<strong>在特定硬件上把工程效率做到极致，而不是追求学术上最优的方案。</strong></p>
+</blockquote>
+<hr />
+<h2 id="1310">13.10 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 训练目标就是一个交叉熵，靠因果掩码一次算出 L 个位置的 loss
+② 优化器演化，每一步治一个病：
+   SGD → 动量（治震荡）→ RMSProp（治尺度不一）→ Adam（合并）
+   → AdamW（把权重衰减从梯度里拿出来，不再被 √v 除掉）
+   ★ Adam ≈ signSGD：它主要在决定&quot;往哪走&quot;，不太在乎&quot;梯度多大&quot;
+③ ★ Adam 的盲点：它是【逐元素】的，完全不知道参数排成了矩阵
+④ ★★ Muon 的真正含义：不是&quot;把奇异值拉平&quot;这个技巧，而是
+   【谱范数球上的最速下降】—— Δ* = −η·UVᵀ 是精确解，不是启发式
+   为什么谱范数是对的：‖ΔW·x‖ ≤ ‖ΔW‖₂‖x‖
+   → 约束谱范数 = 约束【这一层的函数行为改变多少】
+   → 而这才是我们真正在乎的，参数改了多少只是代理指标
+   一句话：Adam 在&quot;参数改多少&quot;里最速下降，Muon 在&quot;函数改多少&quot;里最速下降
+⑤ Newton-Schulz：X ← aX + b(XXᵀ)X + c(XXᵀ)²X
+   等价于对每个奇异值作用多项式 p(σ)=aσ+bσ³+cσ⁵
+   系数 (3.4445, −4.7750, 2.0315) 的设计意图：p&#39;(0) 极大 → 快速拉起极小奇异值
+   代价是在 1 附近振荡而非精确收敛 —— 够用
+   工程上：作用在动量上、需要缩放对齐 AdamW、只存 1 份状态（省显存）
+⑥ 判据：这个参数是不是在做一次真正的线性变换？
+   是 → Muon；否（embedding / LM head / norm 权重 / bias）→ AdamW
+⑦ 五家唯一的真分歧是【正交化粒度】：
+   GLM Muon Split（2026-02，最早）/ K3 Per-Head / 华为 4 组（换算子效率）
+⑧ ⭐ 三种互斥归因（GLM→优化器 / V4→QK-Norm / 华为→norm 布局），
+   没有一家做控制变量实验，只有华为承认了这一点
+   → 技术报告里的&quot;为什么有效&quot;往往是事后叙述，要打折看
+</code></pre></div>
+
+<p><strong>下一章</strong>是最后一块工程内容：量化。它会把前面埋的所有伏笔——softmax 和为 1、attention sink、SwiGLU 无界——全部收口。</p>
+<hr />
+<blockquote>
+<p><a href="12-MTP与投机解码.html">← 12 MTP 与投机解码</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="14-量化.html">14 量化</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

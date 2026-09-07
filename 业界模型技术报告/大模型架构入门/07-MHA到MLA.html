@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 · 省 KV 的四条路：MHA → MQA → GQA → MLA</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="06-KV-cache.html">← 06 KV cache</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="08-高效注意力.html">08 高效注意力</a></p>
+</blockquote>
+<h1 id="07-kv-mha-mqa-gqa-mla">07 · 省 KV 的四条路：MHA → MQA → GQA → MLA</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：回答 <a href="06-KV-cache.html">06 章</a>四个下手点里的第 ② 个——<strong>每层到底要存多少东西</strong>。<br />
+读完你应该能回答：MQA/GQA 为什么会掉效果？MLA 的低秩压缩是怎么做到"存得少还不掉效果"的？<strong>矩阵吸收</strong>是什么魔法？以及一个很多人讲不清的问题：<strong>为什么 RoPE 和 MLA 天然冲突，必须做 decoupled RoPE？</strong></p>
+</blockquote>
+<hr />
+<blockquote>
+<p>📖 <strong>先把这四个缩写的全称和中文列出来</strong>（本章从头到尾就在讲它们）：</p>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>全称</th>
+<th>中文</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MHA</strong></td>
+<td><strong>M</strong>ulti-<strong>H</strong>ead <strong>A</strong>ttention</td>
+<td>多头注意力</td>
+<td>原版。每个头一套自己的 K、V</td>
+</tr>
+<tr>
+<td><strong>MQA</strong></td>
+<td><strong>M</strong>ulti-<strong>Q</strong>uery <strong>A</strong>ttention</td>
+<td>多查询注意力</td>
+<td>所有头<strong>共用一套</strong> K、V</td>
+</tr>
+<tr>
+<td><strong>GQA</strong></td>
+<td><strong>G</strong>rouped-<strong>Q</strong>uery <strong>A</strong>ttention</td>
+<td>分组查询注意力</td>
+<td>折中：分几组，<strong>组内共用</strong></td>
+</tr>
+<tr>
+<td><strong>MLA</strong></td>
+<td><strong>M</strong>ulti-head <strong>L</strong>atent <strong>A</strong>ttention</td>
+<td>多头潜在注意力</td>
+<td>不共用，改成<strong>压缩</strong>成低维再存</td>
+</tr>
+</tbody>
+</table>
+<p>记忆线索：<strong>前三个在讨论"几个头共用一套 KV"，只有 MLA 换了个思路——"存之前先压缩"。</strong></p>
+</blockquote>
+<hr />
+<h2 id="71">7.1 问题重述</h2>
+<p>回忆 <a href="05-注意力机制.html">05 章</a>的多头注意力：$H$ 个头，每个头有自己的 $K^i, V^i$，都是 $d_h$ 维。</p>
+<p>$$\text{每 token 每层要存：} \quad 2\times H \times d_h = 2d \quad\text{个数}$$</p>
+<div class="codehilite"><pre><span></span><code>d = 5120，BF16：  2 × 5120 × 2 字节 = 20 KB / token / 层
+</code></pre></div>
+
+<p><strong>这一章的四种方案，就是把这个 $2d$ 变小的四种办法。</strong></p>
+<hr />
+<h2 id="72">7.2 演化的四步</h2>
+<div class="codehilite"><pre><span></span><code>┌── MHA (2017) Multi-Head Attention 多头注意力 ──────────────┐
+│                                                             │
+│   Q:  q1  q2  q3  q4  q5  q6  q7  q8      8 个 query 头     │
+│        │   │   │   │   │   │   │   │                        │
+│   K:  k1  k2  k3  k4  k5  k6  k7  k8      8 个 KV 头        │
+│   V:  v1  v2  v3  v4  v5  v6  v7  v8                        │
+│                                                             │
+│   存储：2 × 8 × d_h = 2d          效果：★★★★★  存储：×1     │
+└─────────────────────────────────────────────────────────────┘
+
+┌── MQA (2019) Multi-Query Attention 多查询注意力 ───────────┐
+│                                                             │
+│   Q:  q1  q2  q3  q4  q5  q6  q7  q8                        │
+│        └───┴───┴───┴───┴───┴───┴───┘                        │
+│                    ▼                                        │
+│   K:              k                【所有 query 头共享 1 组 KV】│
+│   V:              v                                         │
+│                                                             │
+│   存储：2 × 1 × d_h = 2d/8        效果：★★★    存储：×1/8   │
+└─────────────────────────────────────────────────────────────┘
+
+┌── GQA (2023) Grouped-Query Attention 分组查询注意力 ───────┐
+│                                                             │
+│   Q:  q1  q2 │ q3  q4 │ q5  q6 │ q7  q8                     │
+│       └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘                       │
+│   K:     k1      k2      k3      k4    【分 4 组，组内共享】  │
+│   V:     v1      v2      v3      v4                         │
+│                                                             │
+│   存储：2 × 4 × d_h = 2d/2        效果：★★★★   存储：×1/2   │
+└─────────────────────────────────────────────────────────────┘
+
+┌── MLA (2024, DeepSeek) Multi-head Latent Attention 多头潜在 ┐
+│                                                             │
+│   不共享，而是【压缩】：                                      │
+│   把整个 KV 压成一个低维 latent 向量 c，用的时候再解压出来     │
+│                                                             │
+│   存储：c 的维度（比如 576）      效果：★★★★★  存储：×1/17  │
+│   ★ 这是唯一一个【存得更少、效果反而不掉】的方案               │
+└─────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<h3 id="mqagqa">MQA/GQA 为什么会掉效果</h3>
+<p>回忆 <a href="05-注意力机制.html">05 章 §5.6</a>：多头的价值在于<strong>不同的头可以关注不同的模式</strong>。</p>
+<div class="codehilite"><pre><span></span><code>MHA：  头 3 的 K 专门编码&quot;我是主语&quot;，头 17 的 K 专门编码&quot;我是物品&quot;
+       → 每个头有【自己的一套语义空间】
+
+MQA：  所有 8 个头共用同一份 K
+       → K 必须同时满足所有头的需求 → 被迫编码一个&quot;通用&quot;的、模糊的表示
+       → 头之间的【专业化被削弱了】
+
+GQA：  折中，组内共享。组数越多越接近 MHA
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>MiniMax M3 是五家里唯一还在用 GQA 的</strong>：<strong>64 个 query 头 / 4 个 KV 头</strong>（GQA-16，即 16 个 query 共享一组 KV）。</p>
+<p>⚠️ 这不是"落后"。M3 只有 230B / 10B 激活，走的是<strong>小而快</strong>的路线，GQA 的工程成熟度和算子支持是最好的。<strong>MLA 需要重写一整套推理核函数。</strong></p>
+</blockquote>
+<hr />
+<h2 id="73-mla">7.3 MLA：核心思路是低秩压缩</h2>
+<h3 id="_1">直觉</h3>
+<p><strong>观察</strong>：MHA 存的 $2d$ 个数里有大量冗余——$K$ 和 $V$ 都是从同一个 $x$（$d$ 维）线性投影出来的，<strong>信息量上限就是 $d$ 维</strong>，却存了 $2d$。</p>
+<p><strong>那就不存 $K$ 和 $V$，存一个能重建出它们的【压缩表示】。</strong></p>
+<div class="codehilite"><pre><span></span><code>    x  [d=5120]
+     │
+     │  W^DKV：向下投影（Down-projection）
+     ▼
+    c  [512]      ★★★ 只存这个！
+     │
+     ├──── W^UK：向上投影 ───→  K  [d]     ┐
+     │                                     ├ 用的时候现场解压
+     └──── W^UV：向上投影 ───→  V  [d]     ┘
+</code></pre></div>
+
+<p>$$c^{KV} = W^{DKV}x \in \mathbb{R}^{512},\qquad K = W^{UK}c^{KV},\qquad V = W^{UV}c^{KV}$$</p>
+<h3 id="_2">为什么这不是"有损压缩导致效果下降"</h3>
+<p><strong>关键在于：$W^{UK}$ 和 $W^{UV}$ 是【可学习的】，而且训练时它们和 $W^{DKV}$ 一起学。</strong></p>
+<div class="codehilite"><pre><span></span><code>❌ 错误理解：先有一个完整的 K，然后压缩，丢失了信息
+✅ 正确理解：K 从来就【不是】独立存在的。
+             整个 x → c → K 的通路是端到端学出来的，
+             模型自己决定&quot;什么信息值得留在 512 维里&quot;
+
+    这等价于给 W_K 这个矩阵加了一个【低秩约束】：
+        W_K = W^UK · W^DKV      rank ≤ 512
+
+    而实践发现：注意力的 K/V 投影矩阵【本来就近似低秩】
+    → 这个约束几乎没有代价
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是 MLA 优于 MQA/GQA 的机制性理由</strong>：<br />
+```<br />
+MQA/GQA：削减【头的数量】→ 直接损失表达的多样性<br />
+MLA：    削减【秩】       → 只要真实秩本来就低，就没有损失</p>
+<p>而且 MLA 解压出来的每个头【依然是不同的】（各有各的 W^UK 分块）<br />
+→ 头的专业化被完整保留了 ★<br />
+```</p>
+</blockquote>
+<hr />
+<h2 id="74-mla">7.4 矩阵吸收：MLA 真正的杀手锏</h2>
+<p>上面有个明显的问题：<strong>每次用都要解压，那不是白省了吗？</strong></p>
+<div class="codehilite"><pre><span></span><code>    存 512 维，但每次计算前要展开成 5120 维 → 计算量没省，还多了解压的开销
+</code></pre></div>
+
+<p><strong>答案：根本不用解压。</strong></p>
+<h3 id="_3">推导</h3>
+<p>注意力分数是 $q^\top k$。代入 MLA 的定义（$q = W^{UQ}c^Q$，$k = W^{UK}c^{KV}$）：</p>
+<p>$$q^\top k = \left(W^{UQ}c^{Q}\right)^\top\left(W^{UK}c^{KV}\right) = c^{Q\top}\underbrace{\left(W^{UQ\top}W^{UK}\right)}_{\text{★ 这一坨与输入无关}}c^{KV}$$</p>
+<p>$$\boxed{\ q^\top k = c^{Q\top}\,\widetilde{W}\,c^{KV},\qquad \widetilde{W} = W^{UQ\top}W^{UK}\ \text{（训练完就固定了，可预先算好）}\ }$$</p>
+<div class="codehilite"><pre><span></span><code>    ★★★ 全程在【512 维的压缩空间】里做内积，从来没有展开到 5120 维 ★★★
+
+    W^UQᵀ W^UK  可以在模型加载时算一次，融进权重里
+    → 推理时的计算量【也】变小了
+</code></pre></div>
+
+<p><strong>输出侧同理</strong>：$o = \sum_j A_j v_j = \sum_j A_j W^{UV}c_j^{KV} = W^{UV}\left(\sum_j A_j c_j^{KV}\right)$，$W^{UV}$ 可以吸收进后面的 $W_O$。</p>
+<blockquote>
+<p>🔑 <strong>这就是"矩阵吸收"（matrix absorption）</strong>：<br />
+<code>MQA/GQA：省了存储，计算量不变
+MLA：    ★ 存储和计算【同时】变小，而且效果不掉</code><br />
+<strong>这是 MLA 成为主流的真正原因。</strong></p>
+</blockquote>
+<hr />
+<h2 id="75-rope-mla">7.5 ⚠️ RoPE 和 MLA 的天然冲突</h2>
+<p><strong>这是很多人讲不清、但极其关键的一点。</strong></p>
+<h3 id="_4">冲突在哪</h3>
+<p><a href="11-位置编码RoPE.html">11 章</a>会详讲 RoPE，这里只需要一个性质：<strong>RoPE 是在 $q$ 和 $k$ 上乘一个依赖位置的旋转矩阵</strong>：</p>
+<p>$$q_m \leftarrow R_m q_m,\qquad k_n \leftarrow R_n k_n$$</p>
+<p>现在把 RoPE 加进 §7.4 的推导：</p>
+<p>$$q_m^\top k_n = \left(R_m W^{UQ}c^{Q}<em _text_="\text{★" 依赖="依赖">m\right)^\top\left(R_n W^{UK}c^{KV}_n\right) = c_m^{Q\top}\,W^{UQ\top}\underbrace{R_m^\top R_n}</em>$$} m, n}W^{UK}\,c_n^{KV</p>
+<div class="codehilite"><pre><span></span><code>    ★ 问题来了：R_mᵀ R_n = R_{n−m} 【夹在中间】，而它依赖具体的位置对 (m,n)
+
+    → W^UQᵀ R_{n−m} W^UK 无法预先算好，因为 (n−m) 每对位置都不同
+    → ★★ 矩阵吸收失效了 ★★
+    → 必须真的把 c 解压成 5120 维、加 RoPE、再算内积
+    → MLA 的全部优势消失
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话说清冲突</strong>：<br />
+<strong>矩阵吸收要求"$W^{UQ\top}W^{UK}$ 是常数"，而 RoPE 在两者之间插入了一个"随位置变化"的矩阵。二者不可兼得。</strong></p>
+</blockquote>
+<h3 id="decoupled-rope-rope">解法：Decoupled RoPE（解耦 RoPE）</h3>
+<p><strong>DeepSeek 的方案：把 K 拆成两部分，一部分不加 RoPE（可吸收），一部分专门加 RoPE（不吸收，但很小）。</strong></p>
+<p>$$k = \Big[\ \underbrace{W^{UK}c^{KV}}<em RoPE，直接存="RoPE，直接存" _text_解耦部分，有="\text{解耦部分，有">{\text{压缩部分，无 RoPE，可吸收}}\ ;\ \underbrace{\text{RoPE}(W^{KR}x)}</em>\ \Big]$$}</p>
+<p><strong>分数变成两项相加</strong>：</p>
+<p>$$q^\top k = \underbrace{c^{Q\top}\widetilde{W}c^{KV}}<em 64="64" _text_在="\text{在" 维小空间算，带位置信息="维小空间算，带位置信息">{\text{在 512 维压缩空间算，吸收生效}} + \underbrace{q^{R\top}k^{R}}</em>$$}</p>
+<h3 id="openpangu-20-pro">✅ openPangu-2.0-Pro 的真实配置</h3>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────┐
+│  c^KV = W^DKV · x           压缩的 KV latent    512 维    │
+│  k^R  = RoPE(W^KR · x)      解耦的位置分量       64 维    │
+│  ─────────────────────────────────────────────────────   │
+│  ★ 每 token 每层入 cache 的总维度 = 512 + 64 = 576        │
+└──────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>注意 $k^R$ 只有 64 维，而且它是【所有头共享的】</strong>（像 MQA 那样）——因为位置信息本身不需要每个头有一套。</p>
+<h3 id="_5">省了多少</h3>
+<div class="codehilite"><pre><span></span><code>                        每 token 每层     50 层，BF16     128K 上下文
+    MHA (d=5120)          2×5120 = 10240      20 KB          128 GB
+    MLA (576)                       576      1.13 KB         7.2 GB
+                                            ────────       ─────────
+                                            压缩 17.8×      省 121 GB
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是 <a href="06-KV-cache.html">06 章</a>那个"1 MB/token"变成"56 KB/token"的过程。</strong><br />
+结合 <a href="08-高效注意力.html">08 章</a> 的稀疏化，才有了 DeepSeek-V4 报告的"<strong>1M 上下文下 KV cache 仅约 2%</strong>"。</p>
+</blockquote>
+<hr />
+<h2 id="76">7.6 挂回五家</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>方案</th>
+<th>关键数字</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td><strong>CSA + HCA</strong> 双注意力</td>
+<td>CSA 4:1 重叠压缩；HCA 128:1 稠密</td>
+<td>⚠️ <strong>V4 已经不用 MLA 了</strong>：报告全文没出现过 MLA，CSA/HCA 的内核是<strong>共享 KV 的 MQA</strong>。见 <a href="08-高效注意力.html">08 章</a></td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>MLA</strong>（与 KDA 按 3:1 交错）</td>
+<td>每 4 层里 1 层是 MLA</td>
+<td>3 层线性 + 1 层全注意力</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td><strong>MLA-256</strong> + DSA</td>
+<td>latent 维 256</td>
+<td>五家里压得最狠的 latent</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>GQA-16</strong></td>
+<td>64 q 头 / 4 kv 头</td>
+<td>唯一还用 GQA 的</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>MLA</strong>（512 + 64 = 576）</td>
+<td>+ DSA-SWA 1:2，另加 PAS 128 KV/层</td>
+<td>配置在报告里给得最完整</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>一个很有信息量的观察</strong>：<strong>五家里四家用 MLA 系，只有 M3 用 GQA。</strong></p>
+<p>对比 <a href="03-残差流.html">03 章 §3.7</a> 残差改造的"三改两不改"——<strong>MLA 已经形成共识，残差改造还没有。</strong> 这是判断一项技术成熟度的一个实用标尺。</p>
+</blockquote>
+<hr />
+<h2 id="77-numpy">7.7 numpy 走一遍</h2>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ---------- 标准 MHA 的 KV cache ----------</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MHACache</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">H</span><span class="p">,</span> <span class="n">d_h</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">K</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">V</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>           <span class="c1"># 每步 append 一个 [H, d_h]</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">W_K</span><span class="p">,</span> <span class="n">W_V</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">K</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">W_K</span><span class="p">)</span>             <span class="c1"># 存 H*d_h 个数</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">V</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">W_V</span><span class="p">)</span>             <span class="c1"># 再存 H*d_h 个数</span>
+
+<span class="c1"># ---------- MLA 的 KV cache ----------</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MLACache</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">C</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">KR</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">W_DKV</span><span class="p">,</span> <span class="n">W_KR</span><span class="p">,</span> <span class="n">pos</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">C</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">W_DKV</span><span class="p">)</span>                    <span class="c1"># 512 维</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">KR</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">rope</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">W_KR</span><span class="p">,</span> <span class="n">pos</span><span class="p">))</span>         <span class="c1"># 64 维</span>
+        <span class="c1"># ★ 一共只存 576 个数，而不是 10240 个</span>
+
+<span class="c1"># ---------- 矩阵吸收后的分数计算 ----------</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">mla_scores</span><span class="p">(</span><span class="n">cQ</span><span class="p">,</span> <span class="n">qR</span><span class="p">,</span> <span class="n">cache</span><span class="p">,</span> <span class="n">W_absorbed</span><span class="p">):</span>
+    <span class="c1"># W_absorbed = W_UQ.T @ W_UK，加载时算一次</span>
+    <span class="n">C</span>  <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">cache</span><span class="o">.</span><span class="n">C</span><span class="p">)</span>                  <span class="c1"># [L, 512]</span>
+    <span class="n">KR</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">cache</span><span class="o">.</span><span class="n">KR</span><span class="p">)</span>                 <span class="c1"># [L, 64]</span>
+    <span class="n">part1</span> <span class="o">=</span> <span class="n">cQ</span> <span class="o">@</span> <span class="n">W_absorbed</span> <span class="o">@</span> <span class="n">C</span><span class="o">.</span><span class="n">T</span>           <span class="c1"># ★ 全程 512 维，没解压</span>
+    <span class="n">part2</span> <span class="o">=</span> <span class="n">qR</span> <span class="o">@</span> <span class="n">KR</span><span class="o">.</span><span class="n">T</span>                       <span class="c1"># 64 维的位置项</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">part1</span> <span class="o">+</span> <span class="n">part2</span><span class="p">)</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">d_h</span><span class="p">)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="78">7.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 问题：MHA 每 token 每层要存 2d 个数（d=5120 → 20 KB）
+② MQA（共享 1 组 KV）/ GQA（分组共享）省了存储，但削弱了头的专业化，掉效果
+   且【计算量一点没省】
+③ MLA 换了思路：不共享，而是【低秩压缩】
+   x → c(512 维) → 用的时候解压出 K、V
+   因为 W^UK/W^UV 是端到端学的，等价于给 W_K 加低秩约束，几乎无损
+④ ★ 矩阵吸收：qᵀk = c^Qᵀ (W^UQᵀ W^UK) c^KV
+   括号里与输入无关，可预先算好 → 全程在 512 维算，【存储和计算同时变小】
+⑤ ★ RoPE 与 MLA 天然冲突：R_mᵀR_n = R_{n−m} 夹在中间，随位置变化，吸收失效
+   解法 = decoupled RoPE：K 拆成【可吸收的压缩部分】+【带 RoPE 的小部分】
+   openPangu：512 + 64 = 576 维入 cache，相比 MHA 压缩 17.8×
+⑥ 五家四家用 MLA 系，只有 M3 用 GQA → MLA 已形成共识
+</code></pre></div>
+
+<p><strong>下一章</strong>回答另一半问题：不是"每个 token 存多少"，而是"<strong>到底要不要看那么多 token</strong>"。这是五家分歧最大、创新最密集的一章。</p>
+<hr />
+<blockquote>
+<p><a href="06-KV-cache.html">← 06 KV cache</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="08-高效注意力.html">08 高效注意力</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

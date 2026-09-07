@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · 训推一致性：同一个模型算出两种概率</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="04">04 · 训推一致性：同一个模型算出两种概率</h1>
+<blockquote>
+<p><strong>这一篇干什么</strong>：解释 RL 里最隐蔽、也最容易让训练悄悄掉点的一类 bug，以及五家的解法。<br />
+<strong>难度</strong> ★★ · <strong>前置</strong>：<a href="02-架构主轴-同步到全异步.html">02-架构主轴</a><br />
+<strong>本篇 🌐 材料统一出处</strong>：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>（下称「HF 横评」），访问于 2026-08，以官方仓库现状为准。</p>
+</blockquote>
+<hr />
+<h2 id="41">4.1 问题是什么</h2>
+<p>RL 训练需要知道「模型生成某个 token 的概率是多少」。这个概率被用了两次：</p>
+<div class="codehilite"><pre><span></span><code>推理引擎（vLLM / SGLang）生成答案 ──► 顺手记下每个 token 的 logprob   ← 第一次
+                                                   │
+                                                   ▼
+训练引擎（Megatron / FSDP）重新前向一遍 ──► 又算出一份 logprob        ← 第二次
+                                                   │
+                                                   ▼
+                          policy loss 里要用它们的比值 π_new / π_old
+</code></pre></div>
+
+<p><strong>理论上这两份应该完全一样</strong>——同一份权重、同一段输入。</p>
+<p><strong>实际上它们不一样。</strong> 而且不一样的地方会被直接塞进 loss 的分母里。当比值本该是 1.0 却变成 1.3 时，梯度就被放大了 30%——不是因为策略真的变了，而是因为两个引擎算错了同一件事。</p>
+<p>⚠️ 这件事的恶劣之处在于<strong>它不会报错</strong>。训练照跑，loss 曲线看着也正常，只是模型效果慢慢变差，或者某一步突然梯度爆炸。</p>
+<hr />
+<h2 id="42-openpangu">4.2 ✅ openPangu 的三分类：五家里唯一给出诊断框架的</h2>
+<p>五份技术报告里，四家是在陈述「我们做到了训推一致」，<strong>只有 openPangu 把「为什么会不一致」拆成了分类学</strong>。这是本章的骨架。</p>
+<blockquote>
+<p>✅ 来源：openPangu-2.0-Pro 报告 §10.3，详见 <a href="../业界模型技术报告/openPangu-2.0-Pro.html">业界模型技术报告/openPangu-2.0-Pro.md</a></p>
+</blockquote>
+<h3 id="a">A 类 · 显式定义失配（数学上就不等价）</h3>
+<p>训练引擎和推理引擎是两套独立实现的代码库，公式本身就有差别。这类最好查，但也最难改——要改就得改一边的实现。</p>
+<h3 id="b">B 类 · 计算图重排失配（数学等价，数值发散）</h3>
+<p>公式一样，但<strong>算的顺序不一样</strong>。浮点加法不满足结合律，<code>(a+b)+c ≠ a+(b+c)</code>，顺序一变结果就变。三个来源：</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>具体表现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 部署策略</strong></td>
+<td>✅ MLA 在 decode 走 <strong>Absorptive 模式（等价于 MQA）</strong>、在训练/prefill 走 <strong>Non-Absorptive 模式（MHA）</strong>——同一份权重在两条路径上跑的是<strong>不同的算子形状</strong><br>✅ MoE 的专家累加：训练侧按 <strong>Expert-ID 升序</strong>，推理侧按 <strong>Top-k 分数降序</strong></td>
+</tr>
+<tr>
+<td><strong>② 并行策略</strong></td>
+<td>训练和推理偏好不同的并行切法，切法一变，浮点累加的精度与顺序就变</td>
+</tr>
+<tr>
+<td><strong>③ 融合算子</strong></td>
+<td>kernel 融合会隐式重写计算图（不同 FlashAttention 家族、MoE 的 dispatch/combine kernel、采样算子）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>术语</strong>：MLA = Multi-head Latent Attention（多头潜在注意力），DeepSeek 提出的注意力变体，大幅压缩 KV cache。MQA = Multi-Query Attention（多查询注意力），所有注意力头共享一份 K/V。MHA = Multi-Head Attention（多头注意力），标准形式。MoE = Mixture of Experts（混合专家）。</p>
+</blockquote>
+<p>⚠️ <strong>①那条最值得单独记：MLA 在训练和推理走的根本不是同一条算子路径。</strong> 这不是实现疏忽，是性能优化的必然结果——decode 阶段吸收成 MQA 才快。所以只要用了 MLA，这个失配源就天然存在。</p>
+<h3 id="c">C 类 · 硬件调度非确定性（同一次运行到下一次都会变）</h3>
+<p>最底层、也最没法从框架层面解决的一类。✅ openPangu 举的是昇腾 NPU 的例子——按输入 shape 自动选 tiling 策略：</p>
+<ul>
+<li><strong>SplitK</strong>：把矩阵乘的 K 轴累加拆到多个计算核上，累加顺序不固定</li>
+<li><strong>K 轴 swizzling</strong>：交错访存提升带宽，同样改变顺序</li>
+<li><strong>AtomicAdd</strong>：多核异步收集结果，<strong>核到达的顺序是随机的</strong></li>
+<li>AllReduce 的 Ring / Tree 拓扑算法选择进一步放大发散</li>
+</ul>
+<p>⚠️ C 类的特点是：<strong>你连「复现问题」都做不到</strong>，因为跑两次结果就不同。</p>
+<hr />
+<h2 id="43">4.3 五家怎么解的</h2>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>主要手段</th>
+<th>层次</th>
+<th>✅ 出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td><strong>batch-invariant 与确定性 kernel 库</strong>，目标是训推之间的<strong>逐位可复现（bitwise reproducibility）</strong></td>
+<td>kernel 工程</td>
+<td>专章 <em>High-Performance Batch-Invariant and Deterministic Kernel Libraries</em></td>
+</tr>
+<tr>
+<td><strong>Kimi-K3</strong></td>
+<td>全程 <strong>MXFP4 QAT</strong>（量化感知训练）——训练时就用推理的精度</td>
+<td>数值格式</td>
+<td>§5</td>
+</tr>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td>FP8 rollout + <strong>bitwise 量化 kernel</strong>；<strong>TITO</strong> 保证 token 级一致</td>
+<td>数值格式 + 接口</td>
+<td>§3.6.2、§4.1.2</td>
+</tr>
+<tr>
+<td><strong>openPangu</strong></td>
+<td><strong>FP16 替代 BF16</strong> + <strong>KPop</strong> 校正 + <strong>R3 路由重放</strong> + 两阶段白盒对齐</td>
+<td>全栈</td>
+<td>§10.3</td>
+</tr>
+<tr>
+<td><strong>MiniMax</strong></td>
+<td><strong>CISPO</strong>（算法侧的 IS 修正）</td>
+<td>算法</td>
+<td>§6.2</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这张表读出来的分层很清楚——同一个问题可以在<strong>四个不同层次</strong>上解：</p>
+<div class="codehilite"><pre><span></span><code>算法层    ── 承认不一致，在 loss 里修正它        MiniMax(CISPO)、openPangu(KPop)
+   ▲
+接口层    ── 不让 tokenize/detokenize 引入新误差  GLM(TITO)、OpenRLHF(token-in-token-out)
+   ▲
+数值层    ── 让两边用同一种精度                  Kimi(MXFP4 QAT)、GLM(FP8)、Pangu(FP16)
+   ▲
+kernel层  ── 让两边逐位相同                      DeepSeek(batch-invariant kernel)
+</code></pre></div>
+
+<p><strong>越往下越根治，也越贵。</strong> DeepSeek 走的是最彻底但工程量最大的一条；MiniMax 走的是最省事的一条（改 loss 函数而已）。⚠️ 大多数团队应该从上往下走：先用算法侧修正兜住，只有当兜不住时才往下沉。</p>
+<h3 id="openpangu-fp16">★ openPangu 的 FP16 是个逆潮流选择</h3>
+<p>✅ openPangu 用 <strong>FP16 替代 BF16</strong>（配动态 loss scaling 处理梯度下溢）。<strong>这是五家里唯一一个这么做的。</strong></p>
+<p>⚠️ 为什么反潮流：BF16 之所以成为训练默认，是因为它的<strong>指数位多、动态范围大</strong>，不容易溢出；代价是尾数位少、精度低。而训推一致性关心的恰恰是<strong>精度</strong>不是范围——FP16 尾数位多，两边算出来的数更接近。openPangu 是把「不溢出」的问题交给 loss scaling，换取「更精确」。这个取舍只有在训推一致性成为首要矛盾时才成立。</p>
+<hr />
+<h2 id="44-r3-keep-routing">4.4 ★★ 一处独立收敛：R3 ↔ Keep Routing</h2>
+<p>这是本目录里我认为最有价值的一处交叉印证。</p>
+<p><strong>MoE 模型有一个 dense 模型没有的失配源</strong>：每个 token 走哪几个专家，是由一个路由器（router）决定的。而路由器的输出对数值扰动极其敏感——B 类的一点点数值差异，可能让某个 token 在推理时走专家 {3, 17}、在训练时走专家 {3, 21}。<strong>走的专家都不一样了，算出来的概率当然不同。</strong> 而且这个误差不是渐变的，是跳变的。</p>
+<p>两家独立给出了同一个解法：<strong>把推理时的路由选择录下来，训练时重放</strong>。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>✅ openPangu</th>
+<th>🌐 DeepSeek</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>名字</td>
+<td><strong>Rollout Routing Replay（R3）</strong></td>
+<td><strong>Keep Routing</strong> / <strong>Keep Sampling Mask</strong></td>
+</tr>
+<tr>
+<td>核心</td>
+<td>推理时记录每个 token 的专家选择，训练时强制用同一套</td>
+<td>同</td>
+</tr>
+</tbody>
+</table>
+<p>✅ openPangu 在基础 R3 之上做了<strong>四点增强</strong>，每一点都对应一个真实踩过的坑：</p>
+<table>
+<thead>
+<tr>
+<th>增强</th>
+<th>解决的问题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>流式传输路由</strong></td>
+<td>通过 OpenAI 兼容的流式 API 增量推送路由记录，把带宽需求摊到整个生成时间线上，而不是最后一次性传</td>
+</tr>
+<tr>
+<td><strong>元数据/数据分离</strong></td>
+<td>只把元数据放进 DataProto，<strong>路由记录走 HCCL</strong>，避开 Ray 的瓶颈和序列长度 padding</td>
+</tr>
+<tr>
+<td><strong>Masked R3</strong> ⚠️</td>
+<td>观察到隐状态随 MoE 层加深、序列逐 token 推进而<strong>累积发散</strong>，此时强制全量重放会<strong>严重扭曲 logits、PCC 骤降、可能梯度爆炸</strong>。解法：自适应阈值——只有训练侧提出的专家选择与推理侧记录的<strong>重合度超过阈值</strong>时，才对该 token 重放</td>
+</tr>
+<tr>
+<td><strong>Cached R3</strong></td>
+<td>agentic RL 多轮推理时，已解码的 token 在后续轮次会被<strong>重新 prefill</strong>，而 prefill 可能给出与当初生成时<strong>不同的路由</strong>。解法：持久化每个 token 首次生成时的路由，训练时重放缓存值</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>PCC = Pearson Correlation Coefficient（皮尔逊相关系数），这里用来衡量训练侧与推理侧算出的 logits 有多像。</p>
+</blockquote>
+<p>⚠️ <strong>Masked R3 这一条最反直觉，也最有信息量</strong>：全量重放不是「越多越好」。强行让训练侧走推理侧的路由，在隐状态已经发散的深层，反而是在<strong>用错误的专家算错误的输入</strong>，比不重放更糟。所以要设阈值——只在两边本来就接近的地方对齐。这是「一致性」和「正确性」的一次直接冲突。</p>
+<h3 id="_1">⚠️ 这件事的真正含义：接口契约要变了</h3>
+<p>推理引擎交给训练引擎的东西，长期以来就是三元组：</p>
+<div class="codehilite"><pre><span></span><code>(token_ids, logprobs, finish_reason)
+</code></pre></div>
+
+<p>R3 / Keep Routing 意味着这个契约必须扩展：</p>
+<div class="codehilite"><pre><span></span><code>(token_ids, logprobs, finish_reason, routing_records, sampling_mask, ...)
+</code></pre></div>
+
+<p>🌐 HF 那篇横评把这件事称为「<strong>a breaking change everywhere</strong>」（一处到处都要改的破坏性变更）——所有推理引擎要吐出路由，所有传输层要传路由，所有训练引擎要吃路由。</p>
+<p>⚠️ 我的判断：<strong>这是未来一到两年 RL 框架最确定的演进方向之一。</strong> 两家不同架构（昇腾 NPU / 英伟达 GPU）、不同团队、不同模型的实验室独立收敛到同一个方案，说明这不是某家的特殊需求，而是 MoE + 异步 RL 组合下的结构性问题。</p>
+<hr />
+<h2 id="45-tito">4.5 接口层：TITO</h2>
+<p>✅ GLM-5 §4.1.2 给了一个定义清楚的对比：</p>
+<blockquote>
+<p><em>"</em><em>token-in-token-out (TITO)</em><em> means the training pipeline consumes the exact tokenization and decoded-token stream produced by the inference engine"</em><br />
+（TITO 指训练管线直接消费推理引擎产出的那份 token 流，不做任何重新分词。）</p>
+</blockquote>
+<p>对立面是 <strong>Text-in-Text-out</strong>：推理引擎把 token 解码成文字 → 传给训练侧 → 训练侧重新分词。</p>
+<p>⚠️ 问题在于 <strong>tokenize(detokenize(x)) ≠ x 不总是成立</strong>。多字节字符被切在中间、特殊 token 的边界、连续空格的合并——都可能让重新分词出来的序列和原来不一样。序列一变，logprob 就完全对不上了。</p>
+<p>✅ GLM-5 的判断很硬：</p>
+<blockquote>
+<p><em>"We find token-in-token-out is </em><em>critical</em><em> for asynchronous RL training."</em></p>
+</blockquote>
+<p>✅ 这不是 GLM 一家的观点。OpenRLHF 把 TITO 直接做成了架构基石——它的 README 把 <code>AgentExecutorBase</code> 标注为 <em>"(Token-in-Token-out Core)"</em>，并在设计原则表里写明：</p>
+<table>
+<thead>
+<tr>
+<th>原则</th>
+<th>描述</th>
+<th>收益</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Token-in-Token-out</strong></td>
+<td>所有采样都产出 token 级轨迹</td>
+<td><strong>零文本级失配</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这是本章里<strong>最便宜的一条建议</strong>：TITO 不需要改 kernel、不需要改精度、不需要改算法，只需要在接口上别做多余的解码-再编码。<strong>如果你的 RL 管线还在传文本，先把这个改了。</strong></p>
+<hr />
+<h2 id="46-is">4.6 算法层：IS 修正家族</h2>
+<p>如果前面几层都兜不住，最后一道防线是在 loss 里做<strong>重要性采样（Importance Sampling, IS）修正</strong>——承认 <code>π_推理 ≠ π_训练</code>，然后乘一个比值把偏差纠回来。</p>
+<p>🌐 常见的几个变体：</p>
+<table>
+<thead>
+<tr>
+<th>名称</th>
+<th>全称</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TIS</strong></td>
+<td>Truncated Importance Sampling</td>
+<td>给 IS 比值设上限，防止个别 token 权重爆炸</td>
+</tr>
+<tr>
+<td><strong>OPSM</strong></td>
+<td>Off-Policy Sampling Mask</td>
+<td>用 mask 屏蔽掉偏差过大的 token</td>
+</tr>
+<tr>
+<td><strong>TOPR</strong></td>
+<td>Truncated/Tapered Off-Policy REINFORCE</td>
+<td>截断式的离策略 REINFORCE</td>
+</tr>
+<tr>
+<td><strong>CISPO</strong></td>
+<td>Clipped Importance Sampling Policy Optimization</td>
+<td>裁剪<strong>重要性权重本身</strong>而不是裁剪比值，MiniMax 用的就是这个</td>
+</tr>
+<tr>
+<td><strong>KPop</strong></td>
+<td>（openPangu 自研）</td>
+<td>替代 IcePop 和常规拒绝采样的主校正机制</td>
+</tr>
+</tbody>
+</table>
+<p>✅ <strong>KPop 有个值得单独记的设计——shadow 超参机制</strong>：训练初期并行评估多个候选 <code>φ</code>，先估计它们的 mask 行为再定值。经验规则是：<strong>train-rollout PCC &lt; 0.99 时用更严的 mask；&gt; 0.99 时用更松的 <code>φ</code> 以保留探索能力</strong>。</p>
+<p>⚠️ 这条经验规则本身就是本章的一个总结：<strong>当训推已经足够一致（PCC &gt; 0.99）时，过度修正反而有害</strong>，因为它会压掉本该保留的探索。修正的强度应该跟着实测的一致性程度走，而不是设一个固定值。</p>
+<h3 id="verl">✅ 这些算法在 veRL 里是可查的</h3>
+<p>veRL 把 policy loss 做成了注册表。✅ 本地实测（commit <code>b256ebf</code>，<code>verl/trainer/ppo/core_algos.py</code>），共 <strong>12 个</strong> <code>@register_policy_loss</code>：</p>
+<table>
+<thead>
+<tr>
+<th>行号</th>
+<th>注册名</th>
+<th></th>
+<th>行号</th>
+<th>注册名</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1285</td>
+<td><code>vanilla</code></td>
+<td></td>
+<td>1742</td>
+<td><code>clip_cov</code></td>
+</tr>
+<tr>
+<td>1379</td>
+<td><code>dppo_tv</code></td>
+<td></td>
+<td>1847</td>
+<td><code>kl_cov</code></td>
+</tr>
+<tr>
+<td>1460</td>
+<td><code>dppo_kl</code></td>
+<td></td>
+<td>1927</td>
+<td><code>geo_mean</code></td>
+</tr>
+<tr>
+<td><strong>1545</strong></td>
+<td><strong><code>gspo</code></strong></td>
+<td></td>
+<td>2013</td>
+<td><code>dro</code></td>
+</tr>
+<tr>
+<td>1621</td>
+<td><code>sapo</code></td>
+<td></td>
+<td><strong>2046</strong></td>
+<td><strong><code>cispo</code></strong></td>
+</tr>
+<tr>
+<td>1706</td>
+<td><code>gpg</code></td>
+<td></td>
+<td>2412</td>
+<td><code>bypass_mode</code></td>
+</tr>
+</tbody>
+</table>
+<p>★ 一处三方交叉验证：<br />
+- ✅ MiniMax-M2 报告说 Forge 的训练引擎算的是 <strong>CISPO</strong> 梯度<br />
+- ✅ veRL <code>core_algos.py:2046</code> 确实注册了 <code>cispo</code><br />
+- 🌐 ROLL 被 HF 横评点名为 IS 修正菜单最全的一家</p>
+<p><strong>一个算法从技术报告走到开源框架的注册表，这条路径是可以逐条回查的。</strong></p>
+<hr />
+<h2 id="47">4.7 本章小结</h2>
+<table>
+<thead>
+<tr>
+<th>结论</th>
+<th>分级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训推不一致不会报错，只会让模型悄悄变差或突然爆炸</td>
+<td>⚠️</td>
+</tr>
+<tr>
+<td>openPangu 的三分类（A 定义失配 / B 计算图重排 / C 硬件非确定性）是唯一的诊断框架</td>
+<td>✅ §10.3</td>
+</tr>
+<tr>
+<td>MLA 在 decode 走 MQA、训练走 MHA，是结构性失配源，用了 MLA 就有</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>解法分四层：算法 / 接口 / 数值 / kernel，越往下越根治越贵</td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
+<td>openPangu 用 FP16 替代 BF16，五家里唯一，因为它要的是精度不是范围</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>openPangu R3 与 DeepSeek Keep Routing 独立收敛到同一方案</td>
+<td>✅ + 🌐</td>
+</tr>
+<tr>
+<td>Masked R3：全量路由重放反而有害，要设重合度阈值</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>推理→训练的接口契约要从三元组扩到含 routing 与 mask，是全行业的破坏性变更</td>
+<td>🌐 + ⚠️</td>
+</tr>
+<tr>
+<td>TITO 是最便宜的一条改进，GLM 称其对异步 RL 是 critical，OpenRLHF 做成了架构基石</td>
+<td>✅ 双方</td>
+</tr>
+<tr>
+<td>KPop 的 shadow 超参：PCC &gt; 0.99 就该放松修正</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>veRL 注册了 12 个 policy loss，含 <code>gspo</code>(1545) 与 <code>cispo</code>(2046)</td>
+<td>✅ 实测</td>
+</tr>
+</tbody>
+</table>
+<p><strong>下一篇</strong> → <a href="03-权重同步.html">03-权重同步.md</a></p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

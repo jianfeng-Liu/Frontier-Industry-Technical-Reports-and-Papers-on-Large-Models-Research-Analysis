@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · 偏好对齐：RLHF 与 DPO</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="03-分训与合训.html">← 03 分训与合训</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="05-RLVR-可验证奖励.html">05 RLVR：可验证奖励</a></p>
+</blockquote>
+<h1 id="04-rlhf-dpo">04 · 偏好对齐：RLHF 与 DPO</h1>
+<blockquote>
+<p><strong>RLHF</strong> = <strong>Reinforcement Learning from Human Feedback</strong>（基于人类反馈的强化学习）<br />
+<strong>DPO</strong> = <strong>Direct Preference Optimization</strong>（直接偏好优化）</p>
+<p><strong>这一章讲 2022～2024 年后训练的主线。</strong> 读完你应该能回答：为什么 SFT 不够、非要上强化学习？奖励模型是怎么训出来的？以及——<strong>为什么 DPO 火了两年之后，2026 年的工业报告里几乎看不见它了。</strong></p>
+</blockquote>
+<hr />
+<h2 id="41-sft">4.1 为什么 SFT 不够：一个很具体的缺口</h2>
+<div class="codehilite"><pre><span></span><code>SFT 的数据是【问题 → 一个标准答案】。
+它只能告诉模型：&quot;这样答是对的&quot;。
+
+但它【无法表达】下面这件事：
+
+   问：&quot;帮我写个删除文件的脚本&quot;
+
+   回答 A：给出 rm -rf 一行命令
+   回答 B：给出命令，并提示先确认路径、建议加 -i
+
+   两个都&quot;对&quot;。但 B 更好。
+   ★★ SFT 没有任何机制表达&quot;B 比 A 好&quot;这个信息。
+</code></pre></div>
+
+<p><strong>要表达"更好"，你需要的数据形状不一样：</strong></p>
+<div class="codehilite"><pre><span></span><code>SFT 数据：     { prompt, response }               ← 一条
+偏好数据：     { prompt, chosen, rejected }        ← 一对，外加&quot;谁赢&quot;
+</code></pre></div>
+
+<p>★ 这个数据形状的改变，是整个 RLHF 体系的起点。</p>
+<hr />
+<h2 id="42-instructgpt-2022">4.2 InstructGPT 的三步走（2022 年确立的范式）</h2>
+<p>✅ <strong>Training language models to follow instructions with human feedback</strong><br />
+（<a href="https://arxiv.org/abs/2203.02155">arXiv:2203.02155</a>，Long Ouyang 等，2022-03）</p>
+<div class="codehilite"><pre><span></span><code>第一步：SFT
+   人工写示范回答 → 监督微调                        （= 本教程 02 章）
+
+第二步：训一个【奖励模型】RM（Reward Model）
+   对同一个问题采样 4~9 个回答
+        ↓
+   人来排序：C &gt; A &gt; D &gt; B
+        ↓
+   用这些排序训一个模型：输入(问题, 回答) → 输出一个分数
+   ★ 这个模型在【模仿人的口味】
+
+第三步：用 PPO 做强化学习
+   模型生成回答 → RM 打分 → 分高的提概率、分低的降概率
+        ↓
+   ★ 加一个约束：别跑得离 SFT 模型太远（KL 惩罚）
+</code></pre></div>
+
+<h3 id="bradley-terry">奖励模型怎么训（Bradley-Terry，一句话版）</h3>
+<div class="codehilite"><pre><span></span><code>你有一对回答：chosen（人选的）和 rejected（人没选的）
+
+训练目标：让 RM 给 chosen 的分【高于】给 rejected 的分
+          具体形式：最大化 log σ( r(chosen) − r(rejected) )
+                            ↑ sigmoid，把分差映射到 0~1 的&quot;胜率&quot;
+
+★ 注意 RM 学的是【相对排序】，不是绝对分数。
+  它输出的 3.7 分本身没有意义，只有和另一个回答比才有意义。
+</code></pre></div>
+
+<h3 id="kl">为什么要有 KL 惩罚（这一步很重要）</h3>
+<div class="codehilite"><pre><span></span><code>如果不加约束，RL 会找到 RM 的漏洞：
+
+   RM 恰好偏好长回答
+      ↓
+   模型发现&quot;写得越长分越高&quot;
+      ↓
+   最终输出变成没有信息量的超长废话，但 RM 给它打 9.9 分
+
+★★ 这叫【奖励攻击 reward hacking】，是 RL 后训练永恒的敌人 → 06 章
+
+KL 惩罚 = &quot;你可以变好，但不许离原来的自己太远&quot;
+   ⟹ 相当于给优化加了一根绳子
+</code></pre></div>
+
+<hr />
+<h2 id="43-ppo">4.3 PPO 为什么难用</h2>
+<p><strong>PPO</strong> = <strong>Proximal Policy Optimization</strong>（近端策略优化），是 InstructGPT 用的 RL 算法。</p>
+<div class="codehilite"><pre><span></span><code>跑一次 PPO，内存里要同时装【四个模型】：
+
+   ① 策略模型 π_θ        ← 正在训练的那个
+   ② 参考模型 π_ref      ← SFT 后冻结的，用来算 KL 惩罚
+   ③ 奖励模型 RM         ← 打分的
+   ④ 价值模型 Critic     ← 估计&quot;从这里往后大概能得多少分&quot;
+
+⚠️ ④ 是最麻烦的一个：它和策略模型一样大，要单独训，还很难训稳。
+</code></pre></div>
+
+<p><strong>PPO 的三个实际痛点</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 显存 4 份模型，训练成本高
+② Critic 难训 → 训不好则优势估计有偏 → 整个训练崩掉
+③ 超参极其敏感，复现困难（2023 年这是公开的痛）
+</code></pre></div>
+
+<p>★ <strong>后面所有算法演进，几乎都在解决"怎么把这四个模型减掉几个"。</strong></p>
+<hr />
+<h2 id="44-dpo-rl">4.4 DPO：把 RL 整个拆掉</h2>
+<p>✅ <strong>Direct Preference Optimization: Your Language Model is Secretly a Reward Model</strong><br />
+（<a href="https://arxiv.org/abs/2305.18290">arXiv:2305.18290</a>，Rafael Rafailov 等，2023-05）</p>
+<p><strong>DPO 做的事，用一句话说：</strong></p>
+<blockquote>
+<p><strong>数学上可以证明，"训一个 RM 再用 PPO 优化它"这个两步流程，等价于在偏好数据上直接做一个类似监督学习的损失。既然等价，那就跳过中间步骤。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>PPO 路线：偏好数据 → 训 RM → rollout → RM 打分 → PPO 更新
+                              ↑ 贵、慢、要四个模型
+
+DPO 路线：偏好数据 → 【直接一个 loss】更新模型
+                     ↑ 只要两个模型（策略 + 参考），不用 rollout，不用 RM
+
+★ 训练代码复杂度和 SFT 差不多。
+</code></pre></div>
+
+<p><strong>DPO 的 loss 在直觉上做什么</strong>：</p>
+<div class="codehilite"><pre><span></span><code>对每一对 (chosen, rejected)：
+   提高  chosen  的相对概率
+   降低 rejected 的相对概率
+   &quot;相对&quot;是相对参考模型而言的 —— 这就是隐式的 KL 约束
+
+★ 你可以把 DPO 理解成&quot;带方向的 SFT&quot;：
+  SFT 只会说&quot;学这个&quot;，DPO 会说&quot;学这个，别学那个&quot;。
+</code></pre></div>
+
+<p><strong>DPO 的影响</strong>：门槛暴跌。2023～2024 年，开源社区的对齐几乎全线改用 DPO 及其变体（IPO、KTO、SimPO、ORPO…）。</p>
+<hr />
+<h2 id="45-2026-dpo">4.5 ★★ 那为什么 2026 年的报告里几乎没有 DPO 了</h2>
+<p><strong>这是本章最值得记住的一段。DPO 有一个结构性的短板：它是 off-policy 的。</strong></p>
+<div class="codehilite"><pre><span></span><code>DPO 的训练数据是【事先准备好的】一对对回答。
+   ⟹ 这些回答不是模型【当前这一版】写出来的
+   ⟹ 训着训着，模型已经变了，但数据还是老的
+   ⟹ 数据里的 rejected 可能是模型早就不会犯的错误
+      数据里的 chosen 可能是模型现在已经能超越的水平
+
+★★ 结果：训到一定程度，DPO 就【没有信息可给了】。
+</code></pre></div>
+
+<p><strong>对比 on-policy 的 RL</strong>：</p>
+<div class="codehilite"><pre><span></span><code>on-policy：每一步都让【当前模型】重新生成，
+           所以永远在学&quot;我现在还不会的那部分&quot;
+           ⟹ 信号永远新鲜
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>我的判断</strong>：DPO 没有"被证伪"，它在<strong>数据便宜、算力紧张、只做风格对齐</strong>的场景仍然完全够用（开源微调、垂类模型、小团队）。<br />
+<strong>它退出前沿报告的原因是：前沿的瓶颈已经不是"风格对齐"了，而是"能力"，而能力必须靠 on-policy 的试错才能长出来。</strong></p>
+</blockquote>
+<p><strong>一个折中的实践</strong>：<strong>迭代式 DPO（iterative DPO）</strong>——每训一轮就用<strong>当前模型</strong>重新采样、重新排序、重新构造偏好对。★ 这本质上是在<strong>把 DPO 往 on-policy 拉</strong>，也再次印证了 <a href="01-鸟瞰全景.html">01.4</a> 那条趋势。</p>
+<hr />
+<h2 id="46-rlhf-2026">4.6 RLHF 在 2026 年的位置：没消失，变成了最后一段</h2>
+<p><strong>五家报告里 RLHF 仍然在，只是位置变了：</strong></p>
+<div class="codehilite"><pre><span></span><code>2022：  SFT → RLHF                              ← RLHF 是全部
+2026：  SFT → RLVR → Agentic RL → 【RLHF】→ OPD  ← RLHF 是收尾的一段
+
+✅ 一个具体例子（Nemotron 3 Super，arXiv:2604.12374）：
+   RL 阶段 = Stage 1 多环境 RLVR
+           → Stage 2 SWE-RL（软件工程专项）
+           → Stage 3 【RLHF】
+   ★ RLHF 排在最后，负责&quot;可验证奖励管不到的那部分&quot;
+</code></pre></div>
+
+<p><strong>RLHF 现在负责的是这些</strong>：</p>
+<div class="codehilite"><pre><span></span><code>· 语气、人格、写作质量
+· 安全与拒答边界
+· 指令遵循的细节（&quot;用三点回答&quot;这种）
+· 帮助性 vs 无害性的权衡
+—— ★ 共同点：这些【没有客观对错】，只能靠人的偏好定义
+</code></pre></div>
+
+<hr />
+<h2 id="47">4.7 两个必须知道的副作用</h2>
+<h3 id="1-alignment-tax">① 对齐税（alignment tax）</h3>
+<div class="codehilite"><pre><span></span><code>安全对齐做得越狠，通用有用性掉得越多。
+
+   ⟹ 模型开始拒答无害问题（&quot;怎么杀死一个进程&quot; → 拒绝）
+   ⟹ 回答变得啰嗦、免责声明堆砌
+
+⚠️ 2026 年有工作把它形式化成【持续学习问题】，
+   用正交梯度投影来减轻（arXiv:2602.07892，Safety Alignment as Continual Learning）。
+   ⚠️ 学术工作，未见工业报告采用。
+</code></pre></div>
+
+<h3 id="2-rlaif">② 打分的人正在被模型替代（RLAIF）</h3>
+<p>✅ <strong>Constitutional AI: Harmlessness from AI Feedback</strong><br />
+（<a href="https://arxiv.org/abs/2212.08073">arXiv:2212.08073</a>，Yuntao Bai 等，2022-12）</p>
+<div class="codehilite"><pre><span></span><code>做法：给模型一份【原则清单】（&quot;宪法&quot;），
+      让模型自己按原则批评和修改自己的回答，
+      再用这些自我修订的结果训 RM。
+
+★★★ 这是整条演进线上一个关键的转折点：
+    【人从打分回路里被移出去了】。
+
+⟹ 因为人不 scale。这句话是 11 章那条因果链的核心。
+</code></pre></div>
+
+<hr />
+<h2 id="48">4.8 这一章的三句话总结</h2>
+<div class="codehilite"><pre><span></span><code>① SFT 只能说&quot;这样是对的&quot;，偏好数据才能说&quot;这个比那个好&quot;。
+   RLHF 三步走（SFT → RM → PPO）是 2022 年确立的范式。
+
+② DPO 把 RL 拆掉了，门槛暴跌，但它是 off-policy 的 ——
+   数据会过期，训到后面就没信息可给。这是它退出前沿的原因。
+
+③ RLHF 在 2026 年没消失，只是从&quot;全部&quot;变成了流水线最后一段，
+   负责可验证奖励管不到的东西：语气、安全、写作。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="05-RLVR-可验证奖励.html">05 RLVR：可验证奖励</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

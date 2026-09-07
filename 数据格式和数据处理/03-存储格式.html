@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · 存储格式：JSONL / Parquet / Arrow / WebDataset</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="02-数据源与文本抽取.html">← 02 数据源与文本抽取</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="04-训练格式-Megatron索引.html">04 训练格式：Megatron 索引</a></p>
+</blockquote>
+<h1 id="03-jsonl-parquet-arrow-webdataset">03 · 存储格式：JSONL / Parquet / Arrow / WebDataset</h1>
+<blockquote>
+<p><strong>这一章讲"清洗阶段"的文件格式。</strong> 训练时真正读的那个格式（<code>.bin</code> / <code>.idx</code>）是下一章。<br />
+<strong>核心只有一个概念：行存 vs 列存。</strong> 搞懂它，这一章其余部分都是推论。</p>
+</blockquote>
+<hr />
+<h2 id="31">3.1 先说清楚：为什么会有好几种格式</h2>
+<p>一份数据在生命周期里会<strong>换好几次格式</strong>，因为不同阶段的访问模式完全不同：</p>
+<div class="codehilite"><pre><span></span><code>阶段              典型操作                        想要的性质
+──────────────────────────────────────────────────────────────
+① 抓取/抽取      一条条追加写                     ★ 追加便宜、能流式处理
+                 → JSONL / WARC
+
+② 清洗/过滤      &quot;把 quality_score &lt; 2 的删掉&quot;    ★ 只读某几列要快
+                 &quot;统计各语言的 token 总数&quot;        ★ 压缩率高（省存储费）
+                 → Parquet
+
+③ 训练           &quot;给我第 8,231,904 号样本&quot;        ★ ★ 随机访问 O(1)
+                 每秒几万次随机读                  ★ 零解析开销
+                 → .bin + .idx（下一章）
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>一句话概括</strong>：<strong>JSONL 便于写和流式过，Parquet 便于筛和存，<code>.bin/.idx</code> 便于随机取。</strong><br />
+现实中的流水线就是 <code>JSONL → Parquet → .bin/.idx</code> 一路转下去。</p>
+</blockquote>
+<hr />
+<h2 id="32-jsonl">3.2 JSONL：最简单、最通用的那个</h2>
+<p><strong>JSONL</strong> = <strong>JSON Lines</strong>（每行一个 JSON 对象），有时也写作 <code>.jsonl</code> / <code>.ndjson</code>（Newline-Delimited JSON）。</p>
+<div class="codehilite"><pre><span></span><code>{&quot;id&quot;:&quot;a1&quot;,&quot;text&quot;:&quot;番茄炒蛋是一道家常菜……&quot;,&quot;url&quot;:&quot;http://...&quot;,&quot;lang&quot;:&quot;zh&quot;}
+{&quot;id&quot;:&quot;a2&quot;,&quot;text&quot;:&quot;def quicksort(arr):\n    if len(arr)…&quot;,&quot;url&quot;:&quot;http://...&quot;,&quot;lang&quot;:&quot;code&quot;}
+{&quot;id&quot;:&quot;a3&quot;,&quot;text&quot;:&quot;The mitochondrion is the powerhouse…&quot;,&quot;url&quot;:&quot;http://...&quot;,&quot;lang&quot;:&quot;en&quot;}
+     ↑ 每一行是一个【完整的、独立的】JSON 对象，行末是 \n
+</code></pre></div>
+
+<h3 id="_1">为什么它统治了这个领域的第一阶段</h3>
+<div class="codehilite"><pre><span></span><code>✅ 追加写只要 open(f,&quot;a&quot;) 然后 write(json.dumps(d)+&quot;\n&quot;)
+✅ 流式处理不需要把整个文件读进内存 —— 一行一条，读一行处理一行
+✅ 可以直接 split / cat / grep / wc -l，所有 Unix 工具都能用
+✅ 一个文件坏了半截，前半截仍然可用（每行独立）
+✅ 人能直接看懂
+✅ 天然可并行：切成 N 个文件块，N 台机器各处理一块
+
+❌ 体积大 —— 全是文本，字段名每行都要重复存一遍
+❌ 解析慢 —— 每读一条都要跑一次 JSON parser
+❌ ★ 不支持随机访问 —— 想要第 800 万条，只能从头数 800 万个 \n
+❌ 不支持&quot;只读某一列&quot; —— 要拿 lang 字段也得把整行 text 解析出来
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong><code>preprocess_data.py</code>（Megatron 的预处理脚本）的输入就是 JSONL</strong>，这是这个领域最标准的交接格式。它默认读的字段名是 <code>"text"</code>。</p>
+</blockquote>
+<h3 id="_2">一定要配的：分片 + 压缩</h3>
+<p>单个 JSONL 文件绝不能做成 2 TB，实践中一定是<strong>切成很多分片（shard）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>data/
+  ├── part-00000.jsonl.zst     ← 每片 ~500 MB（压缩后）
+  ├── part-00001.jsonl.zst
+  ├── ...
+  └── part-04095.jsonl.zst
+
+压缩格式的选择：
+  gzip  ——  最通用，压缩率一般，★ 不能并行解压
+  zstd  ——  ★ 现在的默认选择。解压快 3~5 倍，压缩率还更好
+  lz4   ——  最快但压缩率低，适合临时中间文件
+</code></pre></div>
+
+<hr />
+<h2 id="33-vs">3.3 ★ 核心概念：行存 vs 列存</h2>
+<p>这是整章唯一需要真正理解的东西。</p>
+<h3 id="_3">直觉类比</h3>
+<p>想象一个 Excel 表格要存到磁盘上，只有两种存法：</p>
+<div class="codehilite"><pre><span></span><code>原始表格：
+        id    text（很长）        lang    score
+  行1:  a1    &quot;番茄炒蛋……&quot;        zh      2.7
+  行2:  a2    &quot;def quicksort……&quot;   code    4.1
+  行3:  a3    &quot;The mitochond……&quot;   en      1.2
+
+
+【行存 row-based】—— 一行的所有字段挨着放（JSONL 就是这样）
+  磁盘布局： [a1|番茄炒蛋……|zh|2.7] [a2|def quick……|code|4.1] [a3|The mit…|en|1.2]
+                                    ↑                        ↑
+  要拿&quot;所有的 score&quot;？ → 必须把三段【全部】读进来，跳着取
+     ★ 而 text 字段极长 —— 你为了拿 3 个浮点数，读了几十 KB 文本
+
+
+【列存 columnar】—— 同一列的所有值挨着放（Parquet 就是这样）
+  磁盘布局： [a1|a2|a3] [番茄炒蛋…|def quick…|The mit…] [zh|code|en] [2.7|4.1|1.2]
+             └─ id ─┘  └────────── text ───────────┘  └─ lang ─┘  └─ score ─┘
+                                    ↑                              ↑
+  要拿&quot;所有的 score&quot;？ → ★ 只读最后那一小段，text 那一大坨【碰都不用碰】
+</code></pre></div>
+
+<h3 id="_4">列存的两个额外好处（比"少读"更重要）</h3>
+<div class="codehilite"><pre><span></span><code>① ★ 压缩率暴涨
+   同一列的数据【类型相同、取值相似】，压缩算法能吃得很饱：
+       lang 列： zh,zh,zh,en,en,en,en,zh,code,...
+                 → 字典编码：{zh:0, en:1, code:2} + [0,0,0,1,1,1,1,0,2,...]
+                 → 再游程编码：(0,×3)(1,×4)(0,×1)(2,×1)
+                 → 原本几百 MB 的字符串列 → 几 KB
+   而行存里 &quot;zh&quot; 夹在两段长文本中间，压缩器根本发现不了这个规律
+   ⚠️ 我的经验量级：同一份语料，Parquet 通常比 gzip 后的 JSONL 再小 30~60%
+
+② ★ 谓词下推（predicate pushdown）
+   Parquet 在每个数据块的页脚记了【每列的 min / max】
+   查 &quot;score &gt; 3.5&quot; 时，某个块的 score.max = 2.9 → ★ 整块直接跳过，不解压
+   → 扫 10 TB 语料做一次筛选，可能只真正读了 200 GB
+</code></pre></div>
+
+<h3 id="_5">什么时候<strong>不该</strong>用列存</h3>
+<div class="codehilite"><pre><span></span><code>❌ 要一条条追加写（列存必须凑够一批才能写一个块）
+❌ 每次都要读整行的全部字段（那列存反而多了拼装开销）
+❌ 只有一列（那就没有&quot;列&quot;的概念了）
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这正好解释了流水线的换格式点</strong>：<br />
+<strong>抽取阶段是一条条追加写 → JSONL；清洗阶段是反复按列筛选统计 → Parquet。</strong></p>
+</blockquote>
+<hr />
+<h2 id="34-parquet-arrow">3.4 Parquet 与 Arrow：一对经常被搞混的兄弟</h2>
+<div class="codehilite"><pre><span></span><code>┌─ Apache Parquet ────────────────────────────────────────────┐
+│  ★ 磁盘上的格式（on-disk）                                   │
+│  为【存储】优化：压缩、编码、谓词下推                          │
+│  读的时候必须解压 + 解码                                      │
+│  文件后缀 .parquet                                           │
+└─────────────────────────────────────────────────────────────┘
+┌─ Apache Arrow ──────────────────────────────────────────────┐
+│  ★ 内存里的格式（in-memory）                                 │
+│  为【计算】优化：不压缩，字段定长对齐，CPU 可以直接向量化处理  │
+│  ★★ 零拷贝（zero-copy）：不同进程/语言可以【共享同一块内存】  │
+│     Python 读进来的 Arrow 表，C++ 那边不用序列化就能直接用     │
+└─────────────────────────────────────────────────────────────┘
+
+关系：      Parquet（磁盘，压缩）
+              │  读取时解压展开
+              ▼
+            Arrow（内存，不压缩，可直接算）
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>HuggingFace <code>datasets</code> 库的底层就是 Arrow。</strong> 你 <code>load_dataset(...)</code> 之后它在磁盘上缓存的 <code>.arrow</code> 文件，就是把 Arrow 内存布局直接 mmap 到磁盘——所以它加载 100 GB 数据集"秒开"，因为<strong>根本没有真的读进内存，只是建立了内存映射</strong>。</p>
+</blockquote>
+<p><strong>mmap（memory-mapped file，内存映射文件）</strong>：让操作系统把一个磁盘文件"假装"成一段内存地址。你按数组下标访问，操作系统在背后按需从磁盘换页进来。<strong>这是整个数据领域最重要的一个系统技巧</strong>——下一章的 <code>.bin</code> 文件也靠它。</p>
+<hr />
+<h2 id="35-webdataset-mds">3.5 WebDataset 与 MDS：为"顺序流式读"设计的</h2>
+<p>前面几种格式都假设<strong>数据在本地磁盘上</strong>。但真实训练时数据往往在<strong>对象存储</strong>（S3、OSS）上，几百 TB，本地根本放不下。</p>
+<p>这时的访问模式变了：<strong>顺序流式拉取，边拉边训</strong>。</p>
+<div class="codehilite"><pre><span></span><code>┌─ WebDataset ────────────────────────────────────────────────┐
+│  做法：★ 就是普通的 .tar 文件！                              │
+│                                                             │
+│  shard-000123.tar 里面：                                    │
+│      000000.txt   000000.json                               │
+│      000001.txt   000001.json     ← 同一个 basename 的文件  │
+│      000002.txt   000002.json        自动被打包成一条样本   │
+│                                                             │
+│  ✅ tar 是纯顺序格式 → 一个 HTTP GET 流式拉，边拉边解        │
+│  ✅ 不需要任何特殊服务，S3/HTTP 直接读                       │
+│  ✅ 多模态友好（图片、音频直接当文件塞进去）                  │
+│  ❌ ★ 不能随机访问                                          │
+│     → shuffle 靠【两级近似】：shard 级打乱 + 缓冲区内打乱     │
+└─────────────────────────────────────────────────────────────┘
+
+┌─ MDS（Mosaic Data Shard，MosaicML StreamingDataset）────────┐
+│  ✅ 比 WebDataset 多了一个索引 → ★ 支持确定性的随机访问      │
+│  ✅ 内置断点续训：记录&quot;已经消费到第几个样本&quot;                  │
+│  ✅ 自动做本地缓存与预取                                     │
+└─────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>shuffle 的两级近似</strong>是流式格式的关键妥协，值得记住（<a href="14-采样-shuffle-与断点续训.html">14 章</a>会再讲）：<br />
+<code>① shard 级：把 4096 个 shard 的【顺序】随机打乱
+② 样本级：维护一个 10000 条样本的缓冲区，随机从里面抽一条，抽走就补一条
+→ 合起来的效果 ≈ 全局随机，但从头到尾只做【顺序读】</code></p>
+</blockquote>
+<hr />
+<h2 id="36">3.6 四种格式的一张对照表</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>JSONL</strong></th>
+<th><strong>Parquet</strong></th>
+<th><strong>WebDataset</strong></th>
+<th><strong><code>.bin</code>+<code>.idx</code></strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>布局</td>
+<td>行存</td>
+<td><strong>列存</strong></td>
+<td>行存（tar）</td>
+<td>★ 纯二进制数组</td>
+</tr>
+<tr>
+<td>内容</td>
+<td>文本</td>
+<td>文本</td>
+<td>任意文件</td>
+<td>★ <strong>整数 token</strong></td>
+</tr>
+<tr>
+<td>追加写</td>
+<td>✅ 极易</td>
+<td>⚠️ 按块</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>随机访问</td>
+<td>❌</td>
+<td>⚠️ 块级</td>
+<td>❌</td>
+<td>✅ <strong>O(1)</strong></td>
+</tr>
+<tr>
+<td>只读某列</td>
+<td>❌</td>
+<td>✅ <strong>强项</strong></td>
+<td>❌</td>
+<td>不适用</td>
+</tr>
+<tr>
+<td>压缩率</td>
+<td>差</td>
+<td>✅ <strong>最好</strong></td>
+<td>看内容</td>
+<td>⚠️ 通常不压</td>
+</tr>
+<tr>
+<td>人可读</td>
+<td>✅</td>
+<td>❌</td>
+<td>⚠️</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>用在哪一步</td>
+<td>①抽取 ②交接</td>
+<td>③清洗筛选</td>
+<td>④远程流式</td>
+<td>⑤ <strong>训练</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="37">3.7 一段能跑的代码：三种格式互转</h2>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">json</span><span class="o">,</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span><span class="o">,</span><span class="w"> </span><span class="nn">pyarrow.parquet</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pq</span>
+
+<span class="c1"># ---------- 写 JSONL ----------</span>
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;docs.jsonl&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+    <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">docs</span><span class="p">:</span>                       <span class="c1"># docs = [{&quot;id&quot;:..,&quot;text&quot;:..,&quot;lang&quot;:..,&quot;score&quot;:..}]</span>
+        <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">d</span><span class="p">,</span> <span class="n">ensure_ascii</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="c1"># ---------- JSONL → Parquet ----------</span>
+<span class="n">rows</span> <span class="o">=</span> <span class="p">[</span><span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">l</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;docs.jsonl&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)]</span>
+<span class="n">table</span> <span class="o">=</span> <span class="n">pa</span><span class="o">.</span><span class="n">Table</span><span class="o">.</span><span class="n">from_pylist</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span>
+<span class="n">pq</span><span class="o">.</span><span class="n">write_table</span><span class="p">(</span><span class="n">table</span><span class="p">,</span> <span class="s2">&quot;docs.parquet&quot;</span><span class="p">,</span> <span class="n">compression</span><span class="o">=</span><span class="s2">&quot;zstd&quot;</span><span class="p">,</span>
+               <span class="n">row_group_size</span><span class="o">=</span><span class="mi">10000</span><span class="p">)</span>     <span class="c1"># ★ 一个 row group = 谓词下推的最小跳过单位</span>
+
+<span class="c1"># ---------- 在 Parquet 上做&quot;只读两列 + 过滤&quot; ----------</span>
+<span class="c1"># ★ 注意 columns=[...]：text 那一大坨【完全不会被读进来】</span>
+<span class="n">t</span> <span class="o">=</span> <span class="n">pq</span><span class="o">.</span><span class="n">read_table</span><span class="p">(</span><span class="s2">&quot;docs.parquet&quot;</span><span class="p">,</span> <span class="n">columns</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">],</span>
+                  <span class="n">filters</span><span class="o">=</span><span class="p">[(</span><span class="s2">&quot;score&quot;</span><span class="p">,</span> <span class="s2">&quot;&gt;&quot;</span><span class="p">,</span> <span class="mf">3.5</span><span class="p">)])</span>   <span class="c1"># ← 谓词下推到文件层</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">t</span><span class="o">.</span><span class="n">num_rows</span><span class="p">)</span>
+
+<span class="c1"># ---------- 流式读 JSONL（内存恒定，无论文件多大）----------</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">stream</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">f</span><span class="p">:</span>                   <span class="c1"># ★ 一次只有一行在内存里</span>
+            <span class="k">yield</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="38">3.8 挂回真实系统</h2>
+<table>
+<thead>
+<tr>
+<th>系统</th>
+<th>用什么格式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Common Crawl</strong></td>
+<td>WARC / WET</td>
+<td>见 <a href="02-数据源与文本抽取.html">02 章</a></td>
+</tr>
+<tr>
+<td><strong>各家开源语料的发布形式</strong></td>
+<td>✅ <strong>Parquet</strong></td>
+<td>FineWeb、DCLM、Dolma、Essential-Web 在 HuggingFace 上都是 Parquet</td>
+</tr>
+<tr>
+<td><strong>HuggingFace <code>datasets</code></strong></td>
+<td>✅ <strong>Arrow</strong>（mmap 缓存）</td>
+<td>所以 <code>load_dataset</code> 秒开</td>
+</tr>
+<tr>
+<td><strong>Megatron <code>preprocess_data.py</code></strong></td>
+<td>输入 ✅ <strong>JSONL</strong> → 输出 <code>.bin/.idx</code></td>
+<td><a href="04-训练格式-Megatron索引.html">04 章</a></td>
+</tr>
+<tr>
+<td><strong>多模态训练（图文）</strong></td>
+<td>✅ <strong>WebDataset</strong>（tar）</td>
+<td>图片当文件直接塞</td>
+</tr>
+<tr>
+<td><strong>MosaicML / Databricks 训练栈</strong></td>
+<td><strong>MDS</strong></td>
+<td>内置断点续训</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>一个常见的困惑先在这里澄清</strong>：你从 HuggingFace 下载的 FineWeb 是 <strong>Parquet</strong>，但<strong>不能直接拿它训练</strong>——它里面是<strong>文本</strong>，还没 tokenize。中间必须跑一次 <code>preprocess_data.py</code> 转成 <code>.bin/.idx</code>。<strong>很多人第一次做训练卡在这一步。</strong></p>
+</blockquote>
+<hr />
+<h2 id="39">3.9 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 一份数据一生要换三次格式，因为访问模式完全不同：
+   JSONL（追加写、流式过） → Parquet（按列筛、省存储） → .bin/.idx（随机取）
+
+② ★ 行存 vs 列存 是本章唯一的核心概念
+   行存：一行的字段挨着放。要一列就得读全部
+   列存：一列的值挨着放。→ ① 只读需要的列 ② 同类值压缩率暴涨
+                            ③ 每块记 min/max → 谓词下推整块跳过
+
+③ Parquet = 磁盘格式（压缩）；Arrow = 内存格式（不压缩，零拷贝可直接算）
+   HuggingFace datasets 底层是 Arrow + mmap → 所以&quot;秒开&quot;
+
+④ mmap（内存映射文件）：把磁盘文件当内存数组用，操作系统按需换页
+   ★ 这是数据领域最重要的系统技巧，下一章还要靠它
+
+⑤ 数据在远程对象存储时换用流式格式：
+   WebDataset = 就是 tar，纯顺序读，shuffle 靠 shard 级 + 缓冲区两级近似
+   MDS = 多了索引，支持确定性随机访问 + 断点续训
+
+⑥ ⚠️ 从 HuggingFace 下的 Parquet 语料【不能直接训练】，
+   里面是文本，必须先 tokenize 成 .bin/.idx
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><a href="02-数据源与文本抽取.html">← 02 数据源与文本抽取</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="04-训练格式-Megatron索引.html">04 训练格式：Megatron 索引</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

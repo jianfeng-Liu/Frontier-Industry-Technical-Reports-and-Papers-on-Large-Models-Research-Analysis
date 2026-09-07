@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · 鸟瞰：一条数据从网页到 GPU 的完整旅程</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="README.html">目录</a> ｜ 下一章 → <a href="02-数据源与文本抽取.html">02 数据源与文本抽取</a></p>
+</blockquote>
+<h1 id="01-gpu">01 · 鸟瞰：一条数据从网页到 GPU 的完整旅程</h1>
+<blockquote>
+<p><strong>这一章不讲任何细节，只把整条流水线的形状看一遍。</strong> 后面每一章都是在放大其中一个方框。</p>
+</blockquote>
+<hr />
+<h2 id="11">1.1 先说一个数字，建立方位感</h2>
+<p>训练一个前沿大模型，要喂 <strong>15 万亿（15 T）个 token</strong>。</p>
+<p>这是什么概念？</p>
+<div class="codehilite"><pre><span></span><code>一本《三体》全集         ≈  1.5 百万字   ≈ 1.5 M token
+15 T token              ≈  1000 万套《三体》全集
+                        ≈ 一个人不吃不喝不睡、每秒读 10 个字，读 5 万年
+</code></pre></div>
+
+<p>这些字<strong>不是谁写出来的，是从互联网上抓下来的</strong>。而互联网上的文字，绝大部分是垃圾：导航栏、版权声明、"点击这里查看更多"、同一篇新闻被 500 个网站转载、自动生成的商品页面……</p>
+<blockquote>
+<p>★★ <strong>整个数据处理领域，本质上只在回答一个问题：</strong><br />
+<strong>从 100 TB 的原始网页里，怎么挑出 15 TB 值得让模型学的东西？</strong></p>
+</blockquote>
+<p>而且这个挑选过程必须是<strong>自动的</strong>——没有任何团队能雇人读 100 TB。所以领域里的每一篇论文，都是在提出一种"自动判断这段文字值不值得学"的办法。</p>
+<hr />
+<h2 id="12">1.2 全景图：九个环节</h2>
+<div class="codehilite"><pre><span></span><code>                    ┌──────────────────────────────────────┐
+                    │  ①  数据源                            │
+                    │     Common Crawl 每月一次全网快照      │
+                    │     + 代码仓库 + 书 + 论文 + 百科      │
+                    │     体量：~ 100 TB 压缩后的原始网页    │
+                    └──────────────┬───────────────────────┘
+                                   │  【02 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ②  文本抽取                          │
+                    │     从 HTML 里把正文抠出来             │
+                    │     扔掉导航、广告、页脚、脚本          │
+                    │     ★ 这一步的质量，上限了后面一切     │
+                    └──────────────┬───────────────────────┘
+                                   │  【05 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ③  语言识别 + 启发式过滤              │
+                    │     &quot;是不是中/英文&quot; &quot;行数够不够&quot;       │
+                    │     &quot;有没有 20 个连续的省略号&quot;         │
+                    │     ★ 最便宜的一刀，砍掉大半           │
+                    └──────────────┬───────────────────────┘
+                                   │  【06 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ④  去重  ★★★                        │
+                    │     完全一样的 / 差不多一样的 /        │
+                    │     有一大段一样的 / 意思一样的        │
+                    │     ★ 收益最确凿的一步                 │
+                    └──────────────┬───────────────────────┘
+                                   │  【07 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ⑤  质量过滤                          │
+                    │     给每篇文档打一个&quot;值不值得学&quot;的分    │
+                    │     困惑度 → fastText → 教育分         │
+                    └──────────────┬───────────────────────┘
+                                   │  【08 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ⑥  去污染 + 隐私 + 许可               │
+                    │     把评测题目从训练集里删掉           │
+                    │     把手机号身份证号抹掉               │
+                    └──────────────┬───────────────────────┘
+                                   │  【10、12 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ⑦  配比 + 合成                       │
+                    │     网页 70% + 代码 15% + 数学 5% ...  │
+                    │     不够的部分用模型自己造             │
+                    │     产物：~ 15 TB 的干净文本           │
+                    └──────────────┬───────────────────────┘
+                                   │  【09 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ⑧  Tokenize + 落成训练格式           │
+                    │     文本 → 整数 id → .bin / .idx      │
+                    │     ★ 从这一步起，就再也不是&quot;文本&quot;了   │
+                    └──────────────┬───────────────────────┘
+                                   │  【04、13、14 章】
+                    ┌──────────────▼───────────────────────┐
+                    │  ⑨  DataLoader：采样 + 打包 + shuffle │
+                    │     拼成定长 [B, L] 的整数张量         │
+                    │     ★ 每个 step 现算，不落盘           │
+                    └──────────────┬───────────────────────┘
+                                   ▼
+                             ★ GPU 上的 tensor
+                            [B, L] int32/int64
+</code></pre></div>
+
+<hr />
+<h2 id="13-vs">1.3 ★ 一个必须先建立的分界线：离线 vs 在线</h2>
+<p>初学最容易搞混的一件事：<strong>上面九个环节不是同时发生的。</strong> 它们被一条线劈成两半：</p>
+<div class="codehilite"><pre><span></span><code>┌─── 离线（offline）：训练开始【之前】跑，跑一次，产物落盘 ──────┐
+│                                                              │
+│   ① 数据源 → ② 抽取 → ③ 过滤 → ④ 去重 → ⑤ 质量分            │
+│   → ⑥ 去污染 → ⑦ 配比合成 → ⑧ tokenize 落盘                 │
+│                                                              │
+│   耗时：几天到几周，几千台 CPU 机器                            │
+│   产出：一堆 .bin / .idx 文件，几十 TB                        │
+│   ★ 跑完就不动了。同一份数据可以给很多次训练复用               │
+└──────────────────────────────────────────────────────────────┘
+                            │
+                            │  数据交接点：.bin / .idx
+                            ▼
+┌─── 在线（online）：训练【过程中】每个 step 都在跑 ────────────┐
+│                                                              │
+│   ⑨ 按配比采样 → 拼接/打包 → shuffle → 组 batch              │
+│                                                              │
+│   耗时：每个 step 几毫秒，在 CPU 上和 GPU 计算重叠            │
+│   产出：不落盘，直接是内存里的 tensor                          │
+│   ★ 必须严格可复现：崩了重启要能接着喂同样的数据               │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这条线的位置就是 <code>.bin</code> / <code>.idx</code> 文件。</strong> 它是数据团队和训练团队的交接界面。<br />
+你听到有人说"数据准备好了"，通常指的就是"离线那一半跑完了，<code>.bin/.idx</code> 已经在共享存储上了"。</p>
+</blockquote>
+<p><strong>为什么要这么切？</strong> 因为离线那半非常贵（几千台机器跑几周），而训练要跑很多次（调超参、改架构、重启）。<strong>把贵且不变的部分算一次存起来，是最基本的工程决策。</strong></p>
+<hr />
+<h2 id="14">1.4 每一步砍掉多少：一个真实的数量级</h2>
+<p>这是初学者最缺的直觉——<strong>到底砍得有多狠</strong>。</p>
+<p>以 <strong>FineWeb</strong>（HuggingFace 的开源语料，<a href="https://arxiv.org/abs/2406.17557">arXiv:2406.17557</a>，2024-06-25）的公开流程为例，⚠️ <strong>下面的百分比是我按各环节公开描述整理的量级示意，不是论文里的一张官方表格</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Common Crawl 单次快照（压缩 WARC）      ~ 90 TB
+        │
+        │  ② 抽取正文（HTML → text）
+        ▼                                 ~ 剩 15%   ← 网页里 85% 的字节是标签和脚本
+        │
+        │  ③ 语言识别（只留英文）+ 启发式规则
+        ▼                                 ~ 剩 30%
+        │
+        │  ④ 去重（MinHash 近似去重）
+        ▼                                 ~ 剩 10~30%  ★ 这一刀最狠
+        │
+        │  ⑤ 质量过滤
+        ▼                                 ~ 剩 50~70%
+        │
+   最终留下                              总体约 1~5% 的原始字节
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>"丢掉 95% 以上"是这个领域的常态，不是做错了。</strong><br />
+更极端的例子：<strong>FineWeb-Edu</strong>（FineWeb 的教育子集）只保留了 FineWeb 15 T token 里的 <strong>1.3 T</strong>，也就是<strong>再砍掉 91%</strong>——而砍完之后，在 MMLU、ARC 这些知识类评测上<strong>反而大幅变好</strong>。✅（<a href="https://arxiv.org/abs/2406.17557">arXiv:2406.17557</a>）</p>
+<p>★ 顺手把这两个名字解释掉（后面会反复出现）：<br />
+<strong>MMLU</strong> = <strong>M</strong>assive <strong>M</strong>ultitask <strong>L</strong>anguage <strong>U</strong>nderstanding（大规模多任务语言理解），57 个学科的选择题，是"知识量"的标准考卷；<br />
+<strong>ARC</strong> = <strong>A</strong>I2 <strong>R</strong>easoning <strong>C</strong>hallenge（AI2 推理挑战），小学科学题，考的是常识推理。<br />
+⚠️ 注意：<a href="16-五家报告的数据章节.html">16 章</a>里 openPangu 报告用 <strong>ARC</strong> 指的是<strong>另一个意思</strong>（Agent / Reasoning / Code 三类数据），同名不同义，别搞混。</p>
+</blockquote>
+<p>这引出这个领域最反直觉、也最重要的一条经验：</p>
+<blockquote>
+<p>★★★ <strong>数据不是越多越好。在同样的训练预算下，把差数据删掉，比留着它训练更好。</strong><br />
+因为训练预算（喂多少 token）是固定的——<strong>每一个垃圾 token 占的位置，本来可以放一个好 token。</strong></p>
+</blockquote>
+<hr />
+<h2 id="15">1.5 ★ 三条贯穿全书的因果链</h2>
+<p>和隔壁架构教程一样，这个领域也有几条"一通百通"的主线。先放在这，后面每章会回来引用：</p>
+<div class="codehilite"><pre><span></span><code>① 训练预算固定（喂 15 T token 就是 15 T）
+     → 每个位置只能放一个 token
+     → 放垃圾 = 挤掉一个好的
+     → ★ 过滤和去重的收益，本质是【机会成本】，不是&quot;省钱&quot;
+   ⟹ 解释了：为什么砍掉 95% 反而更好、为什么 FineWeb-Edu 只留 1.3 T
+
+② 重复的文本会被模型【重复学习】
+     → 同一句话见 1000 遍 → 模型倾向于原样背下来（记忆而非泛化）
+     → ① 浪费预算 ② 原文泄露风险 ③ 评测集若混进训练集 → 分数虚高
+   ⟹ 解释了：去重（06 章）、去污染（08 章）、以及为什么它俩总被放在一起讲
+
+③ 网页的总量是有限的，而模型胃口在涨
+     → 高质量网页快不够用了
+     → 出路只有三条：a) 重复用（11 章）
+                      b) 造新的（12 章）
+                      c) 把过滤放松、靠配比补救（10 章）
+   ⟹ 解释了：2024 年后这个领域的全部新论文都在这三个方向上
+</code></pre></div>
+
+<hr />
+<h2 id="16">1.6 一条数据的具体样子：一路跟到底</h2>
+<p>抽象讲完了，来看<strong>同一条数据</strong>在九个环节里长什么样。</p>
+<h3 id="1-warc">① 数据源：一条 WARC 记录</h3>
+<p><strong>WARC</strong>（Web ARChive，网页归档格式）是 Common Crawl 存网页的标准格式。它存的是<strong>原始 HTTP 响应</strong>：</p>
+<div class="codehilite"><pre><span></span><code>WARC/1.0
+WARC-Type: response
+WARC-Target-URI: http://example.com/recipe/tomato-egg
+WARC-Date: 2024-03-01T12:00:00Z
+Content-Length: 8231
+
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+
+&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;script src=&quot;ga.js&quot;&gt;&lt;/script&gt;
+&lt;title&gt;番茄炒蛋的做法 - 美食网&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;&lt;div class=&quot;nav&quot;&gt;首页|菜谱|登录&lt;/div&gt;
+&lt;div class=&quot;content&quot;&gt;&lt;h1&gt;番茄炒蛋&lt;/h1&gt;
+&lt;p&gt;番茄炒蛋是一道家常菜。先把鸡蛋打散……&lt;/p&gt;&lt;/div&gt;
+&lt;div class=&quot;footer&quot;&gt;版权所有 © 2024 美食网 | 备案号...&lt;/div&gt;
+&lt;/body&gt;&lt;/html&gt;
+</code></pre></div>
+
+<h3 id="2">② 抽取后：只剩正文</h3>
+<div class="codehilite"><pre><span></span><code>番茄炒蛋
+
+番茄炒蛋是一道家常菜。先把鸡蛋打散……
+</code></pre></div>
+
+<p>★ 注意 <code>首页|菜谱|登录</code>、<code>版权所有 ©...</code>、<code>&lt;script&gt;</code> <strong>全都没了</strong>。这就是抽取器（如 <code>trafilatura</code>）干的活。</p>
+<h3 id="36-json">③~⑥ 过滤、去重、质量分之后：变成一条 JSON</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cc-2024-10-0000123456&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;番茄炒蛋\n\n番茄炒蛋是一道家常菜。先把鸡蛋打散……&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;http://example.com/recipe/tomato-egg&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;language&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;zh&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;language_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.98</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;quality_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.7</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;token_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">312</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;dump&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;CC-MAIN-2024-10&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>★ 这时它还是<strong>人能读的文本</strong>。这一步的格式叫 <strong>JSONL</strong>（03 章）。</p>
+<h3 id="8-tokenize">⑧ Tokenize 之后：变成整数</h3>
+<div class="codehilite"><pre><span></span><code>&quot;番茄炒蛋是一道家常菜&quot; → [45231, 8891, 15, 3204, 992, 6710, 128]
+                          ↑ 每个整数是词表里的一个下标
+</code></pre></div>
+
+<p>★ <strong>从这一步开始，数据就不是文本了，是一串 int32。</strong> 落盘成 <code>.bin</code>（04 章）。</p>
+<h3 id="9-dataloader">⑨ DataLoader 拼出来的最终产物</h3>
+<div class="codehilite"><pre><span></span><code>一条训练样本 = 长度恰好 4096 的整数数组
+
+[45231, 8891, 15, ..., &lt;eod&gt;, 7712, 331, ..., &lt;eod&gt;, 88, 21, ...]
+ └──── 文档 A（312 token）───┘  └── 文档 B（1804 token）──┘  └ 文档 C 的前半截 ┘
+                             ↑                          ↑
+                     文档结束符 &lt;eod&gt;            ★ 一条样本里【混了好几篇文档】
+                                                   这就是 13 章要讲的 packing
+
+一个 batch = [B, 4096] 的 int 张量  →  丢给 GPU
+</code></pre></div>
+
+<blockquote>
+<p>★★ 看到这里你应该注意到一件事：<strong>一条训练样本里通常混着好几篇毫不相干的文档</strong>（一段菜谱 + 一段法律条文 + 半段代码）。这是刻意的设计，理由和随之而来的麻烦见 <a href="13-打包与文档掩码.html">13 章</a>。</p>
+</blockquote>
+<hr />
+<h2 id="17-python-20">1.7 Python 伪代码：把整条流水线写成 20 行</h2>
+<p>真实系统当然不长这样（每一步都是几千台机器的分布式任务），但<strong>逻辑骨架</strong>就是这个：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ============ 离线部分：跑一次，产物落盘 ============</span>
+<span class="n">docs</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">warc_file</span> <span class="ow">in</span> <span class="n">common_crawl_shards</span><span class="p">:</span>          <span class="c1"># ①</span>
+    <span class="k">for</span> <span class="n">record</span> <span class="ow">in</span> <span class="n">read_warc</span><span class="p">(</span><span class="n">warc_file</span><span class="p">):</span>
+        <span class="n">text</span> <span class="o">=</span> <span class="n">extract_main_text</span><span class="p">(</span><span class="n">record</span><span class="o">.</span><span class="n">html</span><span class="p">)</span>  <span class="c1"># ② 抽正文</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">text</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> <span class="n">detect_language</span><span class="p">(</span><span class="n">text</span><span class="p">)</span> <span class="o">!=</span> <span class="s2">&quot;zh&quot;</span><span class="p">:</span>      <span class="c1"># ③ 语言识别</span>
+            <span class="k">continue</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">heuristic_ok</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>             <span class="c1"># ③ 启发式规则</span>
+            <span class="k">continue</span>
+        <span class="n">docs</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="n">text</span><span class="p">,</span> <span class="s2">&quot;url&quot;</span><span class="p">:</span> <span class="n">record</span><span class="o">.</span><span class="n">url</span><span class="p">})</span>
+
+<span class="n">docs</span> <span class="o">=</span> <span class="n">dedup_exact</span><span class="p">(</span><span class="n">docs</span><span class="p">)</span>                       <span class="c1"># ④ 精确去重</span>
+<span class="n">docs</span> <span class="o">=</span> <span class="n">dedup_minhash</span><span class="p">(</span><span class="n">docs</span><span class="p">,</span> <span class="n">threshold</span><span class="o">=</span><span class="mf">0.8</span><span class="p">)</span>      <span class="c1"># ④ 近似去重</span>
+<span class="n">docs</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">docs</span> <span class="k">if</span> <span class="n">quality</span><span class="p">(</span><span class="n">d</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">2.0</span><span class="p">]</span>   <span class="c1"># ⑤ 质量分</span>
+<span class="n">docs</span> <span class="o">=</span> <span class="n">remove_benchmark_overlap</span><span class="p">(</span><span class="n">docs</span><span class="p">)</span>          <span class="c1"># ⑥ 去污染</span>
+
+<span class="n">mixed</span> <span class="o">=</span> <span class="n">blend</span><span class="p">({</span><span class="s2">&quot;web&quot;</span><span class="p">:</span> <span class="n">docs</span><span class="p">,</span> <span class="s2">&quot;code&quot;</span><span class="p">:</span> <span class="n">code_docs</span><span class="p">,</span> <span class="c1"># ⑦ 配比</span>
+               <span class="s2">&quot;math&quot;</span><span class="p">:</span> <span class="n">math_docs</span><span class="p">},</span>
+              <span class="n">weights</span><span class="o">=</span><span class="p">[</span><span class="mf">0.70</span><span class="p">,</span> <span class="mf">0.20</span><span class="p">,</span> <span class="mf">0.10</span><span class="p">])</span>
+
+<span class="k">with</span> <span class="n">IndexedDatasetBuilder</span><span class="p">(</span><span class="s2">&quot;train&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">builder</span><span class="p">:</span> <span class="c1"># ⑧ tokenize + 落盘</span>
+    <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">mixed</span><span class="p">:</span>
+        <span class="n">ids</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">])</span> <span class="o">+</span> <span class="p">[</span><span class="n">EOD</span><span class="p">]</span>
+        <span class="n">builder</span><span class="o">.</span><span class="n">add_document</span><span class="p">(</span><span class="n">ids</span><span class="p">)</span>
+<span class="c1"># → 产出 train.bin + train.idx</span>
+
+<span class="c1"># ============ 在线部分：训练时每个 step 都在跑 ============</span>
+<span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">total_steps</span><span class="p">):</span>                 <span class="c1"># ⑨</span>
+    <span class="n">batch</span> <span class="o">=</span> <span class="n">dataloader</span><span class="o">.</span><span class="n">next</span><span class="p">()</span>   <span class="c1"># 从 .bin 里按索引取 → 拼成 [B, L]</span>
+    <span class="n">loss</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">batch</span><span class="p">)</span>
+    <span class="n">loss</span><span class="o">.</span><span class="n">backward</span><span class="p">()</span>
+</code></pre></div>
+
+<hr />
+<h2 id="18">1.8 挂回真实系统</h2>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>现实中你会听到的名字</th>
+<th>讲在哪章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 数据源</td>
+<td>Common Crawl、GitHub、arXiv、Books3</td>
+<td><a href="02-数据源与文本抽取.html">02</a></td>
+</tr>
+<tr>
+<td>② 抽取</td>
+<td><code>trafilatura</code>、<code>resiliparse</code>、WET 文件</td>
+<td><a href="02-数据源与文本抽取.html">02</a></td>
+</tr>
+<tr>
+<td>③ 过滤</td>
+<td>fastText langid、Gopher rules、C4 rules</td>
+<td><a href="05-语言识别与启发式过滤.html">05</a></td>
+</tr>
+<tr>
+<td>④ 去重</td>
+<td>MinHash-LSH、后缀数组、SemDeDup、Bloom filter</td>
+<td><a href="06-去重.html">06</a></td>
+</tr>
+<tr>
+<td>⑤ 质量分</td>
+<td>CCNet 困惑度、fastText 分类器、FineWeb-Edu 教育分</td>
+<td><a href="07-质量过滤.html">07</a></td>
+</tr>
+<tr>
+<td>⑥ 去污染</td>
+<td>decontamination、n-gram overlap、PII 脱敏</td>
+<td><a href="08-去污染与隐私许可.html">08</a></td>
+</tr>
+<tr>
+<td>⑦ 配比</td>
+<td>DoReMi、RegMix、data mixing law</td>
+<td><a href="10-数据配比.html">10</a></td>
+</tr>
+<tr>
+<td>⑦ 合成</td>
+<td>WRAP、phi/Cosmopedia、Nemotron-CC 改写</td>
+<td><a href="12-合成数据.html">12</a></td>
+</tr>
+<tr>
+<td>⑧ 落盘</td>
+<td>Megatron <code>IndexedDatasetBuilder</code>、<code>preprocess_data.py</code></td>
+<td><a href="04-训练格式-Megatron索引.html">04</a></td>
+</tr>
+<tr>
+<td>⑨ DataLoader</td>
+<td><code>GPTDataset</code>、<code>BlendedDataset</code>、packing、<code>cu_seqlens</code></td>
+<td><a href="13-打包与文档掩码.html">13</a>、<a href="14-采样-shuffle-与断点续训.html">14</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>几个"成品语料"的名字</strong>（你会在技术报告里反复看到它们，<a href="18-延伸阅读.html">18 章</a>有完整清单）：</p>
+<table>
+<thead>
+<tr>
+<th>语料</th>
+<th>规模</th>
+<th>一句话</th>
+<th>论文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C4</strong></td>
+<td>156 B token</td>
+<td>2019 年的起点，规则过滤</td>
+<td><a href="https://arxiv.org/abs/1910.10683">1910.10683</a></td>
+</tr>
+<tr>
+<td><strong>The Pile</strong></td>
+<td>825 GB</td>
+<td>22 个来源人工拼起来的"杂食"</td>
+<td><a href="https://arxiv.org/abs/2101.00027">2101.00027</a></td>
+</tr>
+<tr>
+<td><strong>RefinedWeb</strong></td>
+<td>5 T token</td>
+<td>证明了"纯网页也能打赢精选语料"</td>
+<td><a href="https://arxiv.org/abs/2306.01116">2306.01116</a></td>
+</tr>
+<tr>
+<td><strong>Dolma</strong></td>
+<td>3 T token</td>
+<td>全流程完全开源可复现</td>
+<td><a href="https://arxiv.org/abs/2402.00159">2402.00159</a></td>
+</tr>
+<tr>
+<td><strong>FineWeb / FineWeb-Edu</strong></td>
+<td>15 T / 1.3 T</td>
+<td>现在的开源默认基线</td>
+<td><a href="https://arxiv.org/abs/2406.17557">2406.17557</a></td>
+</tr>
+<tr>
+<td><strong>DCLM-Baseline</strong></td>
+<td>3.8 T token</td>
+<td>把"数据处理"变成了一个可比赛的基准</td>
+<td><a href="https://arxiv.org/abs/2406.11794">2406.11794</a></td>
+</tr>
+<tr>
+<td><strong>Nemotron-CC</strong></td>
+<td>6.3 T token</td>
+<td>主张<strong>放松过滤 + 合成补救</strong></td>
+<td><a href="https://arxiv.org/abs/2412.02595">2412.02595</a></td>
+</tr>
+<tr>
+<td><strong>Essential-Web v1.0</strong></td>
+<td>24 T token</td>
+<td>不过滤，改成<strong>给每篇打 12 类标签</strong></td>
+<td><a href="https://arxiv.org/abs/2506.14111">2506.14111</a></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="19">1.9 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 数据处理的目标：从 ~100 TB 原始网页里挑出 ~15 TB 值得学的
+   ★ 丢掉 95%+ 是常态，不是做错了
+
+② 九个环节被一条线劈成离线 / 在线两半，交接点是 .bin/.idx 文件
+   离线：跑几周，落盘，可复用
+   在线：每 step 几毫秒，不落盘，必须严格可复现
+
+③ 三条因果链
+   训练预算固定 → 垃圾 token 挤掉好 token → 过滤的收益是【机会成本】
+   重复文本 → 重复学习 → 记忆/泄露/评测虚高 → 去重与去污染
+   网页快用完 → 重复用 / 造新的 / 放松过滤靠配比补救
+
+④ 一条数据的四种形态，务必分清：
+   HTML  →  纯文本  →  JSON 记录  →  int32 数组  →  [B, L] 张量
+    ①②        ②③④⑤⑥⑦              ⑧              ⑨
+
+⑤ 一条训练样本里通常混着好几篇毫不相干的文档（packing），这是刻意的
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><a href="README.html">目录</a> ｜ 下一章 → <a href="02-数据源与文本抽取.html">02 数据源与文本抽取</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

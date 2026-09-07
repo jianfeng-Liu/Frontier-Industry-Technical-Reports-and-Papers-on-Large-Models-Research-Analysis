@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13 · 断点续训、容错与确定性</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="12-并行策略组合与MFU.html">← 12 并行策略组合与 MFU</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="14-RL训练框架.html">14 RL 训练框架</a></p>
+</blockquote>
+<h1 id="13">13 · 断点续训、容错与确定性</h1>
+<blockquote>
+<p><strong>前十二章都在讲"怎么跑得快"。这一章讲一个更扎心的问题：跑了三个星期，第 19 天半夜一张卡掉了，怎么办？</strong><br />
+读完你应该能回答：checkpoint 到底要存什么、有多大？为什么存一次要几分钟、怎么降到几秒——<strong>降到几秒之后，又是什么决定了你到底能存多勤</strong>？<strong>什么是慢卡（straggler），为什么它比宕机更可怕</strong>？以及——<strong>为什么"从断点续训"很难做到和没断过一模一样</strong>？</p>
+</blockquote>
+<hr />
+<h2 id="131">13.1 ★ 先建立一个数量级：故障是常态</h2>
+<blockquote>
+<p>✅ MegaScale 论文（<a href="../papers/MegaScale-10000-GPUs-arXiv-2402.15627.pdf">papers/MegaScale-...-2402.15627.pdf</a>）说得非常直白：<br />
+<em>"Training an LLM with one trillion tokens can take </em><em>weeks</em><em>... </em><em>Failures and stragglers are the norm rather than the exception</em><em> for LLM training. At such a scale, the consequences of failures and stragglers are </em><em>devastating</em><em>."</em></p>
+</blockquote>
+<p><strong>这句"norm rather than the exception"不是修辞。他们给了一个具体数字</strong>：</p>
+<blockquote>
+<p>✅ <em>"we show a real production run of MegaScale that trains a proprietary model with hundreds of billions of parameters on multi-trillion tokens for several weeks. Over the weeks, the loss continues to converge, and MegaScale </em><em>repairs and recovers the training process for over 100 times</em><em> in presence of failures."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 一次训练，坏了 100 多次 ★★
+
+    ⚠️ 我们可以粗算一下这意味着什么（⚠️ 我的推算，不是论文数字）：
+      假设跑了 6 周 = 约 1000 小时
+      → 平均每 10 小时就要恢复一次
+
+    ⟹ ★ 所以&quot;容错&quot;不是锦上添花的功能，它决定了这个训练能不能跑完。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 为什么规模一大就必然出事 —— 一个简单的概率账：
+
+      假设单张卡的月故障率是 0.1%（已经算相当可靠了）
+      1 张卡：  一个月不出事的概率 = 99.9%
+      1 万张卡：一个月【全都不出事】的概率 = 0.999^10000 ≈ 0.0045%
+
+    ⟹ ★★ 几乎必然出事。而分布式训练是【一荣俱荣、一损俱损】：
+       ★ 任何一张卡挂了，整个 1 万卡的任务就停了。
+</code></pre></div>
+
+<hr />
+<h2 id="132-checkpoint">13.2 checkpoint 要存什么</h2>
+<p><strong>很多人以为 checkpoint 就是"存模型权重"。⚠️ 那是推理的 checkpoint，训练的要大得多。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ┌─ 训练 checkpoint 的完整清单 ──────────────────────────┐
+    │                                                        │
+    │  ① 模型参数（FP32 主副本）        4 Ψ 字节  ★ 必须     │
+    │  ② 优化器状态 m 和 v（FP32）      8 Ψ 字节  ★★ 必须    │
+    │  ③ 学习率调度器的步数              几十字节             │
+    │  ④ 数据加载器的位置                几 KB   ★ 容易漏     │
+    │  ⑤ 随机数生成器状态                几 KB   ★ 容易漏     │
+    │  ⑥ （若有）梯度累加的中间态                            │
+    └────────────────────────────────────────────────────────┘
+
+    ★★ 大头是 ①+② = 12 Ψ 字节 ★★
+       （回忆 [02 章](02-显存去哪了.md)：显存里那 16 Ψ 中，
+         BF16 的那份 2Ψ 是可以从 FP32 主副本重建的，不用存；
+         梯度 2Ψ 也不用存 —— 存的是&quot;这一步开始前&quot;的状态）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 算个数：
+      70B  模型 → 12 × 70e9  = 840 GB
+      400B 模型 → 12 × 400e9 = 4.8 TB     ★★ 一次 checkpoint 快 5 TB
+
+    ⚠️ 而且这是【每存一次】的量。存 10 次就是 48 TB。
+</code></pre></div>
+
+<h3 id="2">★★ 为什么 ②（优化器状态）绝对不能省</h3>
+<div class="codehilite"><pre><span></span><code>    ★ Adam 的 m 和 v 是【滑动平均】，携带了过去几千步的梯度历史：
+      m ← β₁ m + (1−β₁) g      β₁ = 0.9   → 记忆约 10 步
+      v ← β₂ v + (1−β₂) g²     β₂ = 0.95  → ★ 记忆约 20~2000 步
+
+    如果丢掉 m、v 从零开始：
+      → 第一步 v ≈ 0 → 更新量 m/√v 会异常巨大
+      → ★★ loss 直接飞掉（俗称 &quot;loss spike&quot;）
+
+    ⟹ ★ 只存权重不存优化器状态 = 训练无法真正续上。
+       这是新手最常犯的错误之一。
+</code></pre></div>
+
+<hr />
+<h2 id="133">13.3 ★★ 慢：存一次要多久</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 一个朴素实现的耗时（⚠️ 举例估算）：
+
+      4.8 TB ÷ 分布式文件系统写入 2 GB/s ≈ ★ 2400 秒 = 40 分钟
+
+    而这段时间里，★★ 全部 1024 张卡在【干等】★★
+
+    → 每小时存一次 = 40/60 = ★ 67% 的时间在存盘 —— 完全不可接受
+    → 那就少存一点？每 6 小时存一次
+      → ⚠️ 崩了就要重跑最多 6 小时。而故障平均每 10 小时一次……
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 这就是 checkpoint 的核心矛盾 ★★★
+
+      存得勤  → 浪费在存盘上的时间多
+      存得稀  → 崩溃后重跑的时间多
+
+    ⟹ 出路不是在两者间取平衡，而是 ★【让存盘不再占用训练时间】★
+</code></pre></div>
+
+<h3 id="megascale-checkpoint">✅ MegaScale 的两阶段 checkpoint（这一节最值得学的一招）</h3>
+<blockquote>
+<p>✅ 论文原文：<em>"To achieve fast checkpointing, we introduce an optimized, </em><em>two-stage approach</em><em>. In the </em><em>first stage</em><em>, each GPU worker writes its </em><em>on-chip states to the host memory</em><em>, and then </em><em>continues the training process</em><em>. After the optimization of Pytorch's serialization mechanism and the use of </em><em>pinned memory</em><em>, this process can be reduced to </em><em>several seconds</em><em> thanks to the high PCIe bandwidth, thereby minimally interrupting the ongoing training process. In the </em><em>second stage</em><em>, a </em><em>background process</em><em> takes over, </em><em>asynchronously</em><em> transferring the state from the host memory to a distributed file system (HDFS in our deployment)."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ┌─ 朴素做法 ───────────────────────────────────────────┐
+    │  训练 ████  [───── 存盘 40 分钟，全员干等 ─────]  训练 │
+    └───────────────────────────────────────────────────────┘
+
+    ┌─ 两阶段 ─────────────────────────────────────────────┐
+    │  GPU： 训练 ████ [拷到内存·几秒] ████████ 继续训练 ██  │
+    │  CPU：              ╰→ 后台慢慢写 HDFS ▒▒▒▒▒▒▒▒▒▒▒   │
+    │                        ★ 和训练【并行】                │
+    └───────────────────────────────────────────────────────┘
+
+    ★★ 关键洞察：GPU → CPU 内存走 PCIe（几十 GB/s），
+       比 CPU → 分布式文件系统（几 GB/s）快一个数量级。
+       ★ 那就只让 GPU 等快的那一段，慢的那一段交给后台。
+
+    ⟹ ✅ 阻塞时间从【几十分钟】降到【几秒】
+       ⟹ ★ 于是可以存得非常勤，崩溃损失也就小了
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>pinned memory</strong>（页锁定内存）是这里的关键细节：普通内存可能被操作系统换出到硬盘，GPU 无法直接 DMA 传输，必须先复制一次；<strong>pinned memory 被锁定在物理内存里，GPU 可以直接搬，速度快得多。</strong></p>
+</blockquote>
+<h3 id="_1">⚠️ 追问一句：两个存盘点之间，后台真的写得完吗？</h3>
+<div class="codehilite"><pre><span></span><code>    ★★ 回头看上面那张两阶段的图，问一个关键问题：
+       CPU 那一行的 ▒▒▒▒▒▒ 到底有多长？
+
+    ⟹ 还是【40 分钟】—— 和朴素做法一模一样，一秒没变。
+
+    ★ 两阶段并没有让&quot;写 HDFS&quot;这件事变快，
+      它只是把这件事从 GPU 的关键路径上【挪走】了。
+      慢的那一段还在，只是躲到了幕后。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 于是多出一个必须【主动满足】的约束（两阶段不自带这个保证）：
+
+         存盘间隔 T_间隔  ≥  后台写完的时间 T_写  ×  安全系数(2~3)
+
+    ★ 反过来读更有用：★★ T_写 决定了你最勤能存多勤 ★★
+
+      拿 13.2 那个 400B 的例子：4.8 TB ÷ 2 GB/s → T_写 = 40 分钟
+      → T_间隔 至少要 80~120 分钟 = ⚠️【每 2 小时才敢存一次】
+
+    ★★ 所以上面&quot;于是可以存得非常勤&quot;是【有条件的】：
+       只有当 T_写 本身也被压下去，才真的能存得勤。
+</code></pre></div>
+
+<p><strong>⚠️ 那怎么把 T_写 压下去（以下均为量级估算，非论文披露）</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① 提高聚合写入带宽
+         4.8 TB ÷  2 GB/s = ⚠️ 40 分钟  → 只能 2 小时存一次
+         4.8 TB ÷ 20 GB/s = ★   4 分钟  → 就能十几分钟存一次了
+
+       ⚠️ 这里有个容易估错的坑：不能只按单机网卡算。
+          每台机器写自己那一片（分片并行），单机也许能跑 1~2 GB/s，
+          128 台一起写 = 聚合 100+ GB/s。
+          ★★ 但 HDFS 集群本身通常吃不下这个量，而且它还是多任务共用的。
+          → 真实聚合吞吐往往被封顶在【几 GB/s ~ 几十 GB/s】
+
+    ② 减小 ckpt 体积（就是 13.2 那 12Ψ）
+       → 每张卡只存自己那一片、不向 rank 0 汇聚，见下一节的分布式 checkpoint
+</code></pre></div>
+
+<p><strong>★★ 掩盖不住的时候会发生什么：不是"后台慢慢补上"，而是【背压】打回 GPU</strong></p>
+<div class="codehilite"><pre><span></span><code>    ┌─ T_间隔 30 分钟，但 T_写 40 分钟 ────────────────────────────┐
+    │ GPU：训练 ████ [拷贝·几秒] ████ 到第二个存盘点 ██ ✋干等 10 分钟✋│
+    │ CPU：              ╰→ 写 HDFS ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ 还没写完       │
+    │                                          ↑                    │
+    │                 内存里那份副本还占着，新的拷不进来             │
+    └───────────────────────────────────────────────────────────────┘
+
+    ★★ 卡点恰恰就在那块 pinned memory：
+       它在后台写完之前【不能释放】（后台还在读它往 HDFS 送），
+       第二次存盘想拷进来，发现地方还占着 → GPU 只能干等。
+
+    ⟹ ⚠️ 两阶段的收益归零，甚至更糟：
+       这个停顿藏在&quot;后台&quot;里，监控上不像朴素做法那样一眼可见。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>背压</strong>（backpressure）：下游堵住了，压力顺着管道倒推回上游，逼上游也停下来。这里"下游"是 HDFS 写入，"上游"是 GPU 训练。</p>
+</blockquote>
+<p><strong>✅ 工程上的三道保险</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① ★ 留 2~3 倍安全系数，不要卡着 1 倍算
+       ⚠️ 因为 HDFS 有【尾延迟】（tail latency，少数请求异常慢）：
+          128 台一起写，只要一台碰上慢盘或热点 DataNode，整次都得等它
+       ★★ 而存盘是全局同步的 —— 最慢那台决定所有人
+          （和 13.5 慢卡是同一个逻辑，只是换到了存储侧）
+       → 平均 3 分钟的操作，p99（100 次里最慢那次）到 10 分钟很常见
+
+    ② ★★ 代码里加一道&quot;上一次没写完就跳过&quot;的兜底
+       到存盘点先查后台任务状态：还没完成 → 跳过这次 + 打条日志
+       ⟹ 宁可少存一次，也不要让全场 GPU 停几十分钟
+       🔑 这几行兜底比事后翻日志值钱得多
+
+    ③ ⚠️ 别忘了后台写会【偷训练的资源】
+       后台进程要吃 CPU 核、内存带宽和网卡，
+       而【数据加载】（从存储读训练数据喂 GPU）也在抢同一张网卡
+       → 实际会有 1%~5% 的训练降速
+       ★ 所以生产系统常给后台写【限流】，故意写慢一点保护训练
+         代价：T_写 变长，安全系数要留得更足
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 所以上面那句结论，完整版应该是：
+
+       ✅ 阻塞时间从几十分钟降到几秒
+          —— ★ 前提是存盘间隔留足了后台写完的时间（建议 ≥ 2~3 倍）
+       ⚠️ 否则背压会打回 GPU，收益归零。
+       ★★ T_写 这个上限，决定了你到底能存多勤。
+</code></pre></div>
+
+<hr />
+<h2 id="134">13.4 ⚠️ 一个隐蔽的坑：切分方式变了怎么办</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 你用 TP=8, PP=16 存了 checkpoint。
+      第二天想改成 TP=4, PP=32 继续训 —— 能读吗？
+
+    ⚠️ 朴素实现：不能。因为存盘时每张卡只存了【自己那一份切片】，
+       切法变了，切片就对不上了。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 两种解法：
+
+    ① 转换脚本（Megatron 的做法）
+       tools/checkpoint/convert.py
+       → 离线把 TP=8/PP=16 的 checkpoint 重排成 TP=4/PP=32
+       ⚠️ 需要一台内存够大的机器，大模型上很慢
+
+    ② ★★ 分布式 checkpoint（DCP，现代做法）
+       存的时候就【按逻辑张量】记录，附带&quot;我是它的哪一块&quot;的元信息
+       → ★ 读的时候按新的切法重新组装，【和存盘时的并行度无关】
+       → PyTorch 的 torch.distributed.checkpoint 就是干这个的
+       ✅ VeOmni 直接用它（源码 veomni/checkpoint/）
+       ✅ Megatron 也支持（--ckpt-format torch_dist）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么这件事在今天变得重要</strong>：训练过程中改并行度是常见需求——<strong>扩容了、序列拉长了、某批机器坏了只剩 900 张卡</strong>。★ 如果 checkpoint 和并行度绑死，这些操作全都做不了。</p>
+</blockquote>
+<hr />
+<h2 id="135-straggler">13.5 ★★ 慢卡（straggler）：比宕机更可怕</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 宕机是【好】故障：报错、任务退出、监控告警、换机器重启。
+      ★★ 慢卡是【坏】故障：什么都不报，就是慢一点。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ┌─ 为什么一张慢卡能拖垮一万张 ──────────────────────┐
+    │                                                    │
+    │  每一步结束都有 all-reduce（[03 章](03-通信原语.md)）│
+    │  ★ all-reduce 是【同步】的：所有人到齐才能走         │
+    │                                                    │
+    │  卡 0~9998：算完了，等 ▒▒▒▒▒▒▒▒▒▒▒                 │
+    │  卡 9999  ：算得慢 ████████████████                │
+    │             ↑ ★ 全场的速度 = 最慢那张卡的速度       │
+    │                                                    │
+    │  → 一张卡慢 20%，★ 整个任务就慢 20%                 │
+    │  → 一万张卡的钱，买到八千张卡的产出                  │
+    └────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>慢卡的常见成因</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ GPU 降频（散热不好、电源不足）
+    ⚠️ ECC 内存错误触发的自动重试
+    ⚠️ 网卡协商到了较低速率（本该 400G，实际跑在 100G）
+    ⚠️ 这台机器上还跑着别的进程（资源被抢）
+    ⚠️ ★ 数据倾斜：这个 rank 恰好分到了特别长的样本
+       （这条不是硬件问题，是【负载不均】—— 见 [09 章](09-专家并行EP.md) 的 MoE 版本）
+</code></pre></div>
+
+<h3 id="megascale">✅ MegaScale 怎么抓它</h3>
+<blockquote>
+<p>✅ <em>"To troubleshoot nuanced cases caused by stragglers, we develop a performance analysis tool to record </em><em>fine-grained CUDA events</em><em> and generate </em><em>system-wide heat-map and timeline trace from a distributed view</em><em>, and develop a </em><em>3D parallel training visualization tool</em><em> to show data dependencies between ranks for diagnosis."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 抓慢卡的通用思路（不依赖具体工具）：
+
+    ① 给每个 rank 的每一步打时间戳
+    ② ★ 关键是看【计算时间】而不是【总时间】：
+       总时间大家都一样（因为要同步），
+       ★★ 但&quot;进入 all-reduce 之前&quot;的那段时间会暴露谁在拖后腿
+    ③ 画成热力图，一眼看出哪个 rank / 哪台机器是常客
+    ④ 找到后：驱逐这台机器，换一台
+</code></pre></div>
+
+<blockquote>
+<p>✅ MegaScale 的整套自动化流程：<strong>心跳（heartbeat）</strong>→ 驱动进程发现异常 → <strong>自检诊断</strong>（<em>"we run an </em><em>all-to-all test</em><em> among the GPUs within a single node... each node also conducts an </em><em>all-reduce test</em><em> with neighboring machines under the same ToR switch"</em>）→ <strong>Kubernetes 驱逐坏节点、补上健康节点</strong> → 从最近的 checkpoint 恢复。</p>
+</blockquote>
+<hr />
+<h2 id="136">13.6 ✅ 一个意外的瓶颈：初始化也要优化</h2>
+<p><strong>这是 MegaScale 论文里最出人意料的一段，值得单独讲。</strong></p>
+<blockquote>
+<p>✅ <em>"our empirical measurement indicates that the </em><em>initialization time for Megatron-LM on 2,048 NVIDIA Ampere GPUs is approximately 1047 seconds</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 什么都还没开始算，光是【建立通信组】就花了 17 分钟 ★★
+
+    ⚠️ 平时看不出问题（相比几周的训练不算什么），
+    ★ 但如果你要恢复 100 多次，17 分钟 × 100 = ★ 28 小时纯浪费。
+    ★ 而且它让&quot;改一行代码测一下&quot;变得无法忍受。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 他们的两处修复：<br />
+① <em>"This barrier uses </em><em>TCPStore</em><em>, an inner distributed Key-Value Store implementation in Pytorch which operates in a </em><em>single-threaded, blocking</em><em> read-write manner. We </em><em>replace TCPStore with Redis</em><em>, which is non-blocking and asynchronous. This reduces the initialization time to </em><em>361 seconds</em><em> on 2,048 GPUs."</em><br />
+② <em>"we carefully design the </em><em>order in which communication groups are initialized</em><em> to minimize the need for global barriers. This approach lowers the time complexity of the global barrier from </em><em>O(n²) to O(n)</em><em>. The initialization time is reduced to </em><em>under 5 seconds</em><em> on 2048 GPUs."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 1047 秒 → 361 秒 → ★ 5 秒（约 200 倍）★★
+
+    🔑 这个案例的教训比数字本身更重要：
+       ★ 大规模系统里，&quot;平时无所谓的常数开销&quot;会变成主要矛盾。
+       ★ 而且这两处都不是算法问题 —— 一个是数据结构选错了，
+         一个是同步次数的复杂度是 O(n²)。
+</code></pre></div>
+
+<hr />
+<h2 id="137">13.7 ⚠️ 确定性：为什么"续训"很难和"没断过"一样</h2>
+<p><strong>理想情况</strong>：从第 8 万步的 checkpoint 恢复，后面每一步的 loss 都和没断过时一模一样（bitwise 相同）。<strong>⚠️ 现实中这很难做到。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 五个破坏确定性的来源：
+
+    ① 数据顺序
+       → checkpoint 里没存 dataloader 的位置 → 恢复后喂的数据不一样
+       → ★ 这是最容易犯也最容易修的一条（存下来就行）
+
+    ② 随机数（dropout 掩码、数据增强）
+       → 必须存 RNG 状态。★ 而且是【每个 rank 各自的】
+       → 📌 回忆 [11 章](11-重计算与激活优化.md)：重计算也依赖这个
+
+    ③ ★★ 浮点加法不满足结合律
+       (a + b) + c  ≠  a + (b + c)      ← 在浮点数下真的不相等
+       → all-reduce 的规约顺序若不固定，结果就有微小差异
+       → ★ 而 NCCL 会根据网络拓扑、消息大小【自动选算法】，
+         同样的代码在不同时刻可能走不同的规约树
+       ⟹ ★★ 这是最难消除的一条
+
+    ④ 非确定性 CUDA 算子
+       → 某些 kernel 用了原子加（atomicAdd），线程完成顺序不定
+       → torch.use_deterministic_algorithms(True) 可以强制换掉，
+         ⚠️ 代价是变慢
+
+    ⑤ 并行度变了
+       → TP=8 和 TP=4 的规约顺序不同 → 数值必然有差异
+       → ★ 所以&quot;改并行度续训&quot;和&quot;bitwise 一致&quot;是【天然冲突】的
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 一个重要的观念纠正：
+
+      ⚠️ 微小的数值差异【不等于】训练坏了。
+      训练本身就有噪声，1e-7 的差异会被淹没。
+
+      ★ 追求 bitwise 一致的真正理由不是&quot;精度&quot;，而是：
+        ★★【可复现 = 可调试】★★
+        loss 飞了要复现现场，没有确定性就只能靠猜。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>这和推理侧的"训推一致"是同一类问题的两个战场</strong>：训练侧要的是"这次训练和上次训练一样"，推理侧要的是"部署出来的模型和训练时算得一样"。<strong>两者都卡在同一个根因上：浮点加法不满足结合律 + 算子实现会按 batch/shape 换 kernel。</strong></p>
+</blockquote>
+<hr />
+<h2 id="138">13.8 挂回真实框架</h2>
+<div class="codehilite"><pre><span></span><code><span class="c1"># Megatron</span>
+--save<span class="w"> </span>/path/to/ckpt
+--save-interval<span class="w"> </span><span class="m">500</span><span class="w">                 </span><span class="c1"># ★ 每 500 步存一次</span>
+--load<span class="w"> </span>/path/to/ckpt<span class="w">                </span><span class="c1"># 自动找最新的</span>
+--ckpt-format<span class="w"> </span>torch_dist<span class="w">            </span><span class="c1"># ★★ §13.4 的分布式 checkpoint</span>
+--async-save<span class="w">                        </span><span class="c1"># ★ §13.3 的异步写盘</span>
+--no-load-optim<span class="w"> </span>/<span class="w"> </span>--no-load-rng<span class="w">     </span><span class="c1"># ⚠️ 调试用，正常训练【绝不要加】</span>
+--use-checkpoint-opt_param-scheduler
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    源码位置：
+      Megatron-LM/megatron/training/checkpointing.py
+          ★ save_checkpoint() / load_checkpoint() —— 存什么、怎么存全在这
+      Megatron-LM/megatron/core/dist_checkpointing/
+          ★★ 分布式 checkpoint 的实现（并行度无关的读写）
+      VeOmni/veomni/checkpoint/
+          ★ 直接构建在 PyTorch DCP 之上，可以对照着读，
+            ✅ 它的 README 明确写了用 &quot;Torch Distributed Checkpoint&quot;
+</code></pre></div>
+
+<hr />
+<h2 id="139">13.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① ★ 故障是常态不是意外：✅ MegaScale 一次生产训练恢复了【100 多次】
+   ★ 概率账：单卡月故障率 0.1% × 1 万张 → 一个月全不出事的概率 ≈ 0.0045%
+   ★★ 而分布式训练一损俱损：一张卡挂 = 全场停
+
+② ★ 训练 checkpoint ≠ 模型权重。必须存：
+   FP32 参数(4Ψ) + 优化器 m,v(8Ψ) = ★ 12Ψ 字节
+   + 调度器步数 + ★ dataloader 位置 + ★ RNG 状态
+   ★★ 优化器状态绝不能省：v 从 0 开始会让 m/√v 爆炸 → loss spike
+
+③ ★★★ checkpoint 的核心矛盾：存得勤浪费时间，存得稀重跑得多
+   ✅ 出路是 MegaScale 的两阶段：
+      先 GPU→host 内存（pinned memory，PCIe 快）→【几秒】→ 立刻继续训练
+      再由后台进程异步写 HDFS
+   ⟹ 阻塞时间从几十分钟降到几秒 → 于是可以存得很勤
+   ⚠️ 但有个前提：后台那段【一秒没变快】，只是挪到了幕后
+      ★ 约束：存盘间隔 ≥ T_写 × 2~3（HDFS 有尾延迟，最慢那台决定所有人）
+      ★★ 违反了就是【背压】打回 GPU：pinned memory 没释放，新的拷不进来
+      🔑 兜底：到存盘点先查上一次写完没，没写完就跳过这次
+
+④ ⚠️ 并行度变了 checkpoint 就读不了 —— 解法是【分布式 checkpoint】
+   按逻辑张量+位置元信息存，读时按新切法重组
+   ✅ Megatron --ckpt-format torch_dist；✅ VeOmni 直接用 PyTorch DCP
+
+⑤ ★★ 慢卡比宕机可怕：宕机会报错，慢卡只是慢
+   ★ all-reduce 是同步的 → 全场速度 = 最慢那张卡
+   ★ 抓法：看【进入 all-reduce 之前】的计算时间，而不是总时间
+   ✅ MegaScale：心跳 → 自检（节点内 all-to-all + 邻机 all-reduce）
+      → K8s 驱逐换机 → 从最近 checkpoint 恢复
+
+⑥ ✅ 意外瓶颈：2048 卡上 Megatron-LM 建通信组花了【1047 秒】
+   TCPStore→Redis：361 秒；再优化初始化顺序把全局 barrier 从 O(n²)→O(n)：★ 5 秒
+   🔑 教训：大规模下&quot;平时无所谓的常数开销&quot;会变成主要矛盾
+
+⑦ ⚠️ 确定性的五个破坏源：数据顺序 / RNG / ★★ 浮点加法不满足结合律
+   / 非确定性算子 / 并行度变化
+   ★ 追求 bitwise 一致的理由不是精度，是【可复现 = 可调试】
+</code></pre></div>
+
+<p><strong>到这里，"训练一个基座模型"这件事的系统面已经讲完了。下一章讲一件不太一样的事</strong>：当训练从"喂数据"变成"模型自己生成、再根据结果学"时，<strong>上面这套框架为什么不够用了</strong>。</p>
+<hr />
+<blockquote>
+<p><a href="12-并行策略组合与MFU.html">← 12 并行策略组合与 MFU</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="14-RL训练框架.html">14 RL 训练框架</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

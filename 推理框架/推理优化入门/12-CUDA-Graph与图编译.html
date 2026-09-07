@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 CUDA Graph 与图编译</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="12-cuda-graph">12 CUDA Graph 与图编译</h1>
+<blockquote>
+<p><strong>一句话</strong>：小 batch 解码时，GPU 每个 kernel 只跑几十微秒，而 CPU 派发一个 kernel 也要几微秒——<strong>CPU 追不上 GPU 了</strong>。这一章讲怎么把 CPU 从关键路径上拿掉。</p>
+</blockquote>
+<hr />
+<h2 id="121">12.1 一个反直觉的瓶颈</h2>
+<p>先看 GPU 是怎么被驱动的：</p>
+<div class="codehilite"><pre><span></span><code>    Python 代码 → PyTorch 算子 → CUDA Runtime → 驱动 → ★ 一个 kernel 排进 GPU 队列
+
+    ★ 每个 kernel 的【CPU 端派发开销】：大约 5~20 微秒（μs）
+</code></pre></div>
+
+<p>现在数一数一次解码前向要派发多少 kernel：</p>
+<div class="codehilite"><pre><span></span><code>    一层里有：QKV 投影、RoPE、注意力、输出投影、all-reduce、
+             两个 LayerNorm、MLP 的三个矩阵乘、激活函数、残差相加 ...
+             ★ 保守估计 15~30 个 kernel
+
+    32 层 × 25 ≈ ★★ 800 个 kernel
+
+    CPU 派发总耗时：800 × 10 μs = ★ 8 毫秒
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 关键对比（Llama-3-8B，单张 H100，batch=1 解码）：
+
+       GPU 实际计算时间：  ≈ 5 ms
+       ★ CPU 派发时间：    ≈ 8 ms
+
+    ⟹ ★★★ GPU 有 3 ms 在【干等 CPU 喂饭】。
+       这个现象叫【CPU 瓶颈 / launch overhead bound】。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么这个问题只在推理里严重？</strong><br />
+训练的 batch 大，每个 kernel 要跑几毫秒，派发那 10 μs 完全可以忽略。<br />
+<strong>Decode 的 batch=1，kernel 小到只跑几十微秒——派发开销占比一下子变成主角。</strong><br />
+⟹ ★ 这是 01 章「解码阶段一切都不一样」的第三个后果（前两个是访存受限和 GEMV）。</p>
+</blockquote>
+<hr />
+<h2 id="122-cuda-graph-800-1">12.2 CUDA Graph：把 800 次派发变成 1 次</h2>
+<blockquote>
+<p>📖 <strong>CUDA Graph</strong>——把一连串 kernel 调用<strong>录制</strong>成一张固定的图，之后<strong>一次调用就把整张图交给 GPU</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 录制（capture）阶段（只做一次，在启动时）：
+      跑一遍前向，但不真执行，而是把
+      「先跑 kernel A，再跑 B，B 依赖 A……」这个结构记下来
+
+    ★ 重放（replay）阶段（每一步）：
+      ★★ CPU 只发【一条】指令：「重放这张图」
+      ⟹ 800 次派发 → 1 次
+      ⟹ CPU 开销从 8 ms 降到 ★ 几十微秒
+      ⟹ GPU 不再等 CPU
+</code></pre></div>
+
+<p><strong>⚠️ 但 CUDA Graph 有三个硬性限制</strong>，理解它们才能理解框架为什么要做得那么复杂：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ① 形状必须固定
+       录制时 batch=8，重放时也必须是 batch=8。
+       ⟹ ★ 框架的做法：为一批【预设的 batch 大小】各录一张图
+          （比如 1,2,4,8,16,...,256），
+          实际 batch=5 时，★ 用 batch=8 的图，多出来的位置填【垃圾数据】
+       ⟹ 📖 这叫 padding（补齐）。代价是算了一点无用功，
+          但比 CPU 瓶颈划算得多。
+
+    ⚠️ ② 显存地址必须固定
+       图里记的是【绝对地址】。所以输入输出必须放在
+       ★ 预先分配好的固定缓冲区里，每次把新数据【拷进去】。
+
+    ⚠️ ③ 不能有依赖数据的控制流
+       图是死的。★ 「if 某个条件成立就走另一条路」录不进去。
+</code></pre></div>
+
+<p><strong>⟹ 于是有一条重要推论</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★★ Prefill 阶段【几乎用不了】CUDA Graph。
+       因为 prompt 长度千变万化，形状不固定，为每种长度录图不现实。
+    ★★ 而 Prefill 本来就是算力受限、kernel 很大，
+       派发开销占比小 ⟹ ★ 它也【不需要】CUDA Graph。
+
+    ⟹ ★★★ 完美互补：需要它的（Decode）形状固定，
+             形状不固定的（Prefill）不需要它。
+</code></pre></div>
+
+<hr />
+<h2 id="123-torchcompile">12.3 图编译（torch.compile）：另一件事</h2>
+<p><strong>初学者最容易把这两个混起来，它们解决的是不同的问题</strong>：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────┬────────────────────────┬──────────────────────┐
+│              │  CUDA Graph            │  图编译 torch.compile │
+├──────────────┼────────────────────────┼──────────────────────┤
+│  解决什么     │ ★ CPU 派发开销          │ ★ kernel 本身不够好   │
+│  怎么做      │ 把派发【打包成一次】     │ ★【融合】多个算子     │
+│              │                        │  成一个更大的 kernel  │
+│  kernel 数量 │ ★ 不变（还是 800 个）   │ ★ 变少（融合了）      │
+│  典型收益     │ 小 batch 下 20%~50%    │ 10%~30%              │
+└──────────────┴────────────────────────┴──────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>算子融合（kernel fusion）</strong>——把「LayerNorm → 乘法 → 加法」三个 kernel 合成一个。<br />
+★ 好处不只是少启动两次，更重要的是<strong>中间结果不用写回显存再读出来</strong>——<br />
+回收 01 章：<strong>推理是访存受限的，省一次显存往返比省一次计算值钱得多。</strong></p>
+<p>⚠️ <strong>而「中间结果不写回显存」这件事，同时也改变了数值结果</strong>——省下的那次往返，<br />
+也是省下的一次精度截断。<strong>这是融合的第二面，单独放在 §12.6。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 两者是【叠加】关系，不是二选一：
+       torch.compile 先把 800 个 kernel 融合成 400 个（每个更高效）
+       CUDA Graph 再把这 400 次派发打包成 1 次
+</code></pre></div>
+
+<hr />
+<h2 id="124-vllm">12.4 ★ vLLM 的分段方案：读懂那个枚举</h2>
+<p>vLLM 把两件事的组合做成了一个五值枚举。<strong>读懂它，就读懂了这一章的全部工程权衡</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ 源码原文：config/compilation.py:53</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CUDAGraphMode</span><span class="p">(</span><span class="n">enum</span><span class="o">.</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">NONE</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">PIECEWISE</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">FULL</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="n">FULL_DECODE_ONLY</span> <span class="o">=</span> <span class="p">(</span><span class="n">FULL</span><span class="p">,</span> <span class="n">NONE</span><span class="p">)</span>          <span class="c1"># ★ 注意：值是【元组】</span>
+    <span class="n">FULL_AND_PIECEWISE</span> <span class="o">=</span> <span class="p">(</span><span class="n">FULL</span><span class="p">,</span> <span class="n">PIECEWISE</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>元组是关键</strong>。源码里有两个方法解释了它（同文件 L65-69）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">decode_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>   <span class="k">return</span> <span class="n">CUDAGraphMode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">...</span>  <span class="c1"># ★ 纯解码步用第 0 个</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">mixed_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>    <span class="k">return</span> <span class="n">CUDAGraphMode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="o">...</span>  <span class="c1"># ★ 混合步用第 1 个</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 也就是说：这个配置允许【同一次部署，两种批次用两种模式】。
+       为什么需要这样？回收 03 章——连续批处理下有两种批次：
+         ① 纯 Decode 批（全是 1-token）    ⟹ 形状规整，★ 可以用 FULL 图
+         ② 混合批（含 chunked prefill）    ⟹ 形状不规整，用不了 FULL 图
+</code></pre></div>
+
+<p>逐个解释这五个值：</p>
+<div class="codehilite"><pre><span></span><code>    ★ NONE
+      完全不用 CUDA Graph。★ 调试时用，或者形状实在太乱。
+
+    ★ PIECEWISE（分段）
+      ★★ 这是 vLLM 的招牌做法：
+      把模型切成若干段，★ 把「注意力」这个形状会变的算子【挖掉】，
+      剩下的部分（全是形状固定的矩阵乘和逐元素操作）分段录成小图。
+      ⟹ 注意力用手写 kernel（FlashAttention 等）单独跑，
+         其余部分享受 CUDA Graph
+      ⟹ ★ 兼容性最好：不管 prompt 多长都能用
+
+    ★ FULL（整图）
+      整个前向录成一张图，★ 包括注意力。
+      ⟹ 收益最大（连注意力的派发也省了）
+      ⚠️ 但要求注意力后端支持固定形状 ⟹ 兼容性差
+
+    ★★ FULL_DECODE_ONLY = (FULL, NONE)
+      纯 Decode 批 → FULL（形状规整，用最快的）
+      混合批       → NONE（形状乱，干脆不用）
+      ⟹ ★ 适合【不开 chunked prefill】的部署：
+         反正混合批很少，不值得为它做优化
+
+    ★★★ FULL_AND_PIECEWISE = (FULL, PIECEWISE)
+      纯 Decode 批 → FULL（榨干性能）
+      混合批       → PIECEWISE（退一步，但仍有收益）
+      ⟹ ★ 这是【两全其美】的配置，也是 03 章 chunked prefill
+         场景下的推荐值
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 一句话读懂这个枚举的设计意图：
+       【解码步形状规整，就上最激进的 FULL；
+        混合步形状不规整，就退回 PIECEWISE 保底。
+        一次部署，两套策略。】
+</code></pre></div>
+
+<hr />
+<h2 id="125">12.5 ⚠️ 代价</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ① 启动变慢
+       要为几十个 batch 大小分别录图，★ 启动可能多花 1~5 分钟
+       ⟹ 频繁重启的场景（自动扩缩容）要权衡
+
+    ⚠️ ② 显存额外开销
+       每张图要占一份固定缓冲区，几十张图加起来 ★ 可能吃掉几个 GB
+       ⟹ 回收 02 章：这部分显存是从 KV Cache 里扣的 ⟹ 并发数下降
+       ⟹ ★ 所以 batch 大小列表不能设太密
+
+    ⚠️ ③ 大 batch 时收益消失
+       batch=256 时 kernel 本来就跑得久，★ 派发开销占比可忽略
+       ⟹ CUDA Graph 只在【小 batch 低延迟】场景有明显价值
+       ⟹ ★ 和 08 章的投机解码是同一个规律：
+          ★★ 【填补空闲的优化，在忙碌时都会失效】
+
+    ⚠️ ④ padding 的浪费
+       batch=5 用 batch=8 的图 ⟹ 3 个位置在算垃圾
+       ⟹ ★ 所以 batch 大小列表在小值处要密（1,2,4,8），
+          大值处可以疏（128,256）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>以上四条是 CUDA Graph 的代价。§12.3 那件事（算子融合）另有一笔自己的账，而且是【数值】上的</strong>——<br />
+融合会改变计算结果本身，在 RL 训推一致性场景里这是头号麻烦。<strong>下一节专门讲。</strong></p>
+</blockquote>
+<hr />
+<h2 id="126">12.6 ⚠️ 融合的另一笔账：数值精度</h2>
+<blockquote>
+<p>§12.5 那四条讲的是 CUDA Graph 的代价。<strong>算子融合（§12.3）还有一笔自己的账，也是最容易被漏掉的一笔——<br />
+它会改变计算结果本身。</strong><br />
+纯推理场景里它通常无害甚至有益；<strong>但在 RL 训练 / 训推一致性场景里，它是头号麻烦制造者。</strong></p>
+</blockquote>
+<h3 id="_1">★ 先把问题问对：这其实是两个问题</h3>
+<div class="codehilite"><pre><span></span><code>    ① 精度（accuracy）：离「用 FP32/FP64 一步步算出来的参考值」有多远
+    ② 一致性（consistency）：训练那条路径和推理那条路径，算出来一不一样
+
+    ★★ 融合算子在 ① 上【通常更好】，在 ② 上【是灾难】。
+       混淆这两点，就会得出「融合算子精度低」这种半对半错的结论。
+</code></pre></div>
+
+<h3 id="1261">12.6.1 融合通常更准，机制只有一条</h3>
+<p><strong>不是算法更好，是中间结果没被截断过。</strong></p>
+<div class="codehilite"><pre><span></span><code>    单算子模式（bf16）：
+      x ─[RMSNorm]→ 写回 bf16 ─[MatMul]→ 写回 bf16 ─[SwiGLU]→ 写回 bf16 ─[+残差]→ bf16
+                     ↑截断①            ↑截断②           ↑截断③          ↑截断④
+      ⟹ ★ 4 次舍入
+
+    融合算子：
+      x ─[一个 kernel：中间量留在寄存器/共享内存，FP32 累加，只在最后写回]→ bf16
+      ⟹ ★ 1 次舍入
+</code></pre></div>
+
+<blockquote>
+<p>★★ 注意这和 §12.3 说的是<strong>同一件事的两面</strong>：中间结果不写回显存，<br />
+既省了访存（性能），也省了截断（精度）。<strong>一次融合，两处收益。</strong></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>典型融合</th>
+<th>精度上发生了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FlashAttention</strong></td>
+<td>不物化 <code>S = QK^T</code> 那个 bf16 大矩阵，online softmax 的统计量全程 FP32 ⟹ ★ 通常比朴素分步实现<strong>更准</strong>，省显存只是顺带</td>
+</tr>
+<tr>
+<td><strong>RMSNorm + 残差</strong></td>
+<td>方差归约在 FP32 里做完，残差加法不经历中间截断</td>
+</tr>
+<tr>
+<td><strong>bias + 激活 + dropout</strong></td>
+<td>纯 elementwise 链，融合后少 2~3 次舍入</td>
+</tr>
+<tr>
+<td><strong>fused Adam</strong></td>
+<td>FP32 master weight 全程不落回显存</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1262">12.6.2 ⚠️ 但有四种情形，融合反而更差</h3>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ① 累加顺序变了 —— 浮点加法【不满足结合律】
+       📖 split-K：把矩阵乘的归约维 K 切成几段并行算，最后再合并
+       融合 kernel 为了塞进片上内存会重新分块、改 tile 大小、上 split-K
+       ⟹ 结果和单算子【逐位不同】。★ 方向不定，可能更好也可能更差。
+
+    ⚠️ ② 用了近似数学函数
+       tanh 近似版 GELU、快速 rsqrt（少做一轮牛顿迭代）、多项式 exp
+       ⟹ ★ 这是【真的更差】，而且是实现者主动拿精度换的速度。
+
+    ⚠️ ③ 用原子加（atomicAdd）做归约 ⟹ ★★【非确定性】
+       同一个输入跑两次，结果都不一样——因为加法到达顺序不定。
+       ⟹ ★ 这种 kernel 绝不能进 RL 的训练侧（见下）。
+
+    ⚠️ ④ 融合 kernel 锁死了 dtype
+       接口只接 bf16 ⟹ 你本来想走的更高或更低精度路径被迫改。
+       ★ 这一条方向是【向上】的：它挡住你降精度 ⟹ 看起来&quot;精度更高&quot;，
+         但那是被动的，不是算得更准。
+</code></pre></div>
+
+<h3 id="1263-openpangu-20">12.6.3 ✅ 一手证据：openPangu-2.0 报告里正好有这三面</h3>
+<p>（详见 <a href="../../业界模型技术报告/openPangu-2.0-Pro.html">业界模型技术报告/openPangu-2.0-Pro.md</a> §10.3 / §11.1）</p>
+<p><strong>① 报告自己把「非融合」那条路当精度参考</strong> ✅ 原文，<code>papers/openPangu-2.0-正文提取.txt:573-590</code></p>
+<p>它给 PAS（Parametric Attention Sink，参数化注意力汇聚点）准备了两条路：<strong>融合算子</strong>，以及 <strong>FA Rescale</strong>——两次标准 FlashAttention 调用再按 softmax 统计量重新缩放合并。原文对后者的评价是：</p>
+<blockquote>
+<p><em>"By maintaining the rescaling factors in FP32 precision, the transformation is </em><em>entirely lossless in the FP32 regime</em><em>, subject only to negligible bfloat16 rounding artifacts."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 注意方向：被论证成【数学等价 + 无损】的是【非融合】那条；
+       融合算子的定位是 &quot;more efficient when supported&quot;（支持时更快）。
+    ⟹ 报告给的排序是：融合 = 更快，非融合 = 更通用且可证无损。
+</code></pre></div>
+
+<p><strong>② 融合算子是量化的「精度地板」</strong> ✅ 原文，<code>正文提取.txt:1127</code></p>
+<p>W8A8 量化时有几个模块被迫留在 BF16，报告列的第一条原因就是：</p>
+<blockquote>
+<p><em>"fused operators restricted to BF16 inputs"</em>（融合算子只接受 BF16 输入）</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 这就是上面 ⚠️④ 的真实样本：不是融合算得更准，
+       是它把你锁在 BF16 上，不让你降到 8-bit。
+</code></pre></div>
+
+<p><strong>③ 融合是训推失配里「最深、最微妙」的一类</strong> ✅ 原文，<code>正文提取.txt:890-897</code></p>
+<blockquote>
+<p><em>"kernel fusion implicitly rewrites the underlying computation graph and numerical precision... this </em><em>directly introduces numerical mismatches</em><em>"</em>，并称 kernel 层面的差异 <em>"constitutes the </em><em>deepest and most subtle</em><em> source of inconsistency"</em>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 所以报告的两阶段对齐里：
+       Phase I（训练前向 ↔ 推理 Prefill）⟹ 对齐并行策略就能解决
+       Phase II（Decode 对齐）          ⟹ ★ 明确写了「需要 kernel 级介入」
+                                          就是被这一层卡住的
+</code></pre></div>
+
+<h3 id="1264">12.6.4 ★ 怎么在自己的系统上判断</h3>
+<div class="codehilite"><pre><span></span><code>    ① 先立 golden：同一段计算用 FP32（或 FP64）逐算子实现当参考。
+       ★★ 脱离参考谈「谁精度高」没有意义 —— 融合和单算子【都不是】真值。
+
+    ② 看三个指标，不要只看 max abs error：
+       · 相对误差
+       · ★ logits 的 top-1 翻转率      ← 下游真正会疼的是这个
+       · KL 散度 / PCC（皮尔逊相关系数）
+
+    ③ 测确定性：同一输入连跑两次做 bitwise 比对
+       ⟹ 不一致 = 里面有原子加 ⟹ ★ 这种 kernel 不能进 RL 训练侧
+
+    ④ 拉长序列：累加深度越大，差距越明显
+       ⟹ 8K 上看不出的问题，128K 上会放大
+
+    ⑤ 查文档是否声明 FP32 累加（accumulate in fp32 / compute_type）
+       ⟹ 声明了的基本可放心；没声明的默认怀疑
+</code></pre></div>
+
+<h3 id="_2">★ 本节一句话</h3>
+<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────────┐
+│  ★ 默认预期：融合算子精度【略好】，因为少了几次 bf16 截断         │
+│    ⟹ FlashAttention、norm+残差、fused optimizer 都属于这一类      │
+│                                                                    │
+│  ⚠️ 但只要实现里含【近似函数】或【原子加归约】，方向就反过来     │
+│                                                                    │
+│  ★★ 而在训推一致性 / RL 场景里，这个问题本身就问错了——           │
+│     要问的不是「谁更准」，是「两边能不能用【同一个】kernel」。     │
+│     ⟹ 一个略差但两边一致的 kernel，远好过一边准一边不准。         │
+└────────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="127-sglang">12.7 SGLang 的做法</h2>
+<p>思路一致，但做得更细——因为它要覆盖更多场景：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 除了主模型的图，SGLang 还为【草稿模型】单独做图（回收 08 章）：
+       eagle_draft_cuda_graph_runner.py
+       eagle_draft_extend_cuda_graph_runner.py
+       multi_layer_eagle_draft_extend_cuda_graph_runner.py
+       frozen_kv_mtp_cuda_graph_runner.py
+
+    ★ 为什么草稿模型也要单独做图？
+      因为草稿模型【更小】⟹ 它的 kernel 更小
+      ⟹ ★★ CPU 派发开销占比【更严重】
+      ⟹ 不给草稿模型上 CUDA Graph，投机解码的加速会被派发开销吃掉一大半
+</code></pre></div>
+
+<blockquote>
+<p>★ 这是一个很好的例子，说明这些优化不是彼此独立的：<br />
+<strong>投机解码（08）的实际收益，取决于 CUDA Graph（12）做得好不好。</strong></p>
+</blockquote>
+<hr />
+<h2 id="128">12.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  ① ★★ 小 batch 解码时，CPU 是瓶颈                             │
+│     800 个 kernel × 10 μs 派发 = 8 ms &gt; GPU 计算的 5 ms       │
+│     ⟹ 这是「解码阶段一切都不一样」的第三个后果                 │
+│                                                              │
+│  ② ★ CUDA Graph：录制一次，重放时 800 次派发变 1 次            │
+│     ⚠️ 三个限制：形状固定、地址固定、无数据依赖控制流           │
+│     ⟹ ★★ 正好互补：Decode 需要它且形状固定，                  │
+│           Prefill 形状不定但也不需要它                        │
+│                                                              │
+│  ③ 图编译（torch.compile）是【另一件事】：★ 算子融合           │
+│     省的是显存往返 ⟹ 对访存受限的推理特别值钱                  │
+│     ⟹ 两者【叠加】使用                                        │
+│                                                              │
+│  ④ ★★★ vLLM 的 CUDAGraphMode 五值枚举（config/compilation.py:53）│
+│     元组值 = 【纯解码批】和【混合批】用不同模式                 │
+│     ★ FULL_AND_PIECEWISE 是 chunked prefill 下的推荐配置      │
+│                                                              │
+│  ⑤ ⚠️ 代价：启动慢、占显存（挤 KV Cache）、大 batch 下收益消失│
+│     ★★ 规律同 08 章：【填补空闲的优化，在忙碌时都会失效】    │
+│                                                              │
+│  ⑥ ★★ §12.6 算子融合的另一笔账：【数值精度】                 │
+│     · 融合通常【更准】：中间量不落回 bf16，少几次截断        │
+│     · ⚠️ 但含近似函数 / 原子加归约的融合会更差、且可能不确定  │
+│     · ★★★ RL 场景要问的不是「谁更准」，而是                  │
+│       「训练侧和推理侧能不能用【同一个】kernel」             │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="13-性能指标与压测.html">13 性能指标与压测</a><br />
+十二章讲完了所有优化手段。最后一章讲怎么<strong>测量</strong>——<br />
+以及为什么「吞吐提升 3 倍」这句话，在没有说清前提时几乎没有意义。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

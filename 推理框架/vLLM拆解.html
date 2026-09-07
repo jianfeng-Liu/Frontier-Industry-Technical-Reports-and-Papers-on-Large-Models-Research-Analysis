@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM 源码拆解</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="vllm">vLLM 源码拆解</h1>
+<blockquote>
+<p>版本：commit <code>bd8865a</code>（2026-08-20 拉取），4,280 个 <code>.py</code> 文件 / 1,432,376 行。<br />
+<strong>本文只走主干</strong>：一个请求从进来到吐字，中间经过哪些类、哪些文件、哪几行。<br />
+所有行号都是我在这个 commit 上实际 <code>grep</code>/<code>sed</code> 出来的，可以直接点开对照。</p>
+</blockquote>
+<hr />
+<h2 id="_1">一、先看目录长什么样</h2>
+<div class="codehilite"><pre><span></span><code>    vllm/
+    ├── v1/              ★★ 主战场。V1 是重写过的引擎，现在的默认路径
+    │   ├── engine/      ★ 请求的入口和出口
+    │   ├── core/        ★★ 调度器 + KV Cache 块管理  ← 本文重点
+    │   ├── worker/      ★ 真正跑模型的地方（GPUModelRunner）
+    │   ├── attention/   注意力后端（FlashAttention / FlashInfer / MLA ...）
+    │   ├── spec_decode/ ★ 投机解码
+    │   ├── sample/      采样
+    │   └── kv_offload/  KV 换出
+    ├── distributed/     ★★ 并行状态、KV 传输、EPLB  ← 06/10/11 章的源头
+    ├── model_executor/  ★ 各种并行线性层、量化
+    ├── models/          具体模型定义
+    ├── config/          ★ 配置（CUDAGraphMode 在这里）
+    ├── engine/          V0 遗留（★ 读代码时别走错）
+    └── entrypoints/     OpenAI 兼容的 HTTP 服务
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>第一个坑</strong>：<code>vllm/engine/</code> 是 <strong>V0 的老代码</strong>，<code>vllm/v1/engine/</code> 才是现在用的。<br />
+目录名几乎一样，很容易读错文件。<strong>本文讲的全部是 v1。</strong></p>
+</blockquote>
+<hr />
+<h2 id="_2">二、一个请求的完整旅程</h2>
+<div class="codehilite"><pre><span></span><code>    HTTP 请求
+       │  entrypoints/openai/
+       ▼
+    ┌──────────────────────────────────────────┐
+    │  AsyncLLM        v1/engine/async_llm.py:72│  ★ 异步入口，管流式输出
+    └───────────────────┬──────────────────────┘
+                        │
+    ┌───────────────────▼──────────────────────┐
+    │  EngineCore      v1/engine/core.py:104   │  ★ 引擎主循环
+    │   └─ EngineCoreProc      (L1007)         │  跑在独立进程里
+    │   └─ ★ DPEngineCoreProc  (L1986)         │  ★★ DP 模式的主循环
+    └───────────────────┬──────────────────────┘
+                        │  每一步循环调用
+    ┌───────────────────▼──────────────────────┐
+    │  Scheduler.schedule()                    │  ★★ 决定这一步跑谁
+    │      v1/core/sched/scheduler.py:477      │     （见第三节）
+    └───────────────────┬──────────────────────┘
+                        │  产出 SchedulerOutput
+    ┌───────────────────▼──────────────────────┐
+    │  GPUModelRunner.execute_model()          │  ★ 组织张量、跑前向
+    │      v1/worker/gpu_model_runner.py:4288  │
+    │      （类定义在 L501）                     │
+    └───────────────────┬──────────────────────┘
+                        │  产出 logits → 采样
+    ┌───────────────────▼──────────────────────┐
+    │  Scheduler.update_from_output()          │  ★ 收结果、判结束、释放块
+    │      v1/core/sched/scheduler.py:1737     │
+    └──────────────────────────────────────────┘
+                        │
+                        ▼  回到 EngineCore 下一步循环
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>注意 <code>DPEngineCoreProc</code>（L1986）这个类</strong>。它就是 06 章 §6.3 说的<br />
+「DP 组必须一起 generate，否则死锁」的实现所在——DP 模式下需要一个专门的主循环<br />
+来保证所有 DP rank 步调一致。还有 <code>DPMoEEngineCoreActor</code>（L2519），<br />
+★ 名字里带 MoE，说明 MoE + DP 的组合有专门处理。</p>
+</blockquote>
+<hr />
+<h2 id="schedule">三、★★ 调度器：一次 <code>schedule()</code> 到底做了什么</h2>
+<p>这是 vLLM 最值得读的一个函数。文件：<a href="源码/vLLM/vllm/v1/core/sched/scheduler.py">v1/core/sched/scheduler.py</a>。</p>
+<div class="codehilite"><pre><span></span><code>    class Scheduler              L69
+    def schedule(self)           ★★ L477
+</code></pre></div>
+
+<h3 id="1">第 1 步：开预算</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L497</span>
+<span class="n">token_budget</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_num_scheduled_tokens</span>
+<span class="n">spec</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">vllm_config</span><span class="o">.</span><span class="n">speculative_config</span>
+<span class="n">draft_slots</span> <span class="o">=</span> <span class="n">spec</span><span class="o">.</span><span class="n">max_num_new_slots_for_drafting</span> <span class="k">if</span> <span class="n">spec</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mi">0</span>
+<span class="n">input_budget</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler_config</span><span class="o">.</span><span class="n">max_num_batched_tokens</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 三个预算：
+      token_budget  —— 这一步总共能算多少 token（03 章的 chunked prefill 粒度）
+      input_budget  —— 输入张量的容量上限
+      ★ draft_slots —— 给投机解码的草稿 token 预留的位置（08 章）
+</code></pre></div>
+
+<h3 id="2-running">第 2 步：先排 running 队列（老用户优先，保证吐字不断）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L559-568（min 是跨三行的写法）</span>
+<span class="n">num_new_tokens</span> <span class="o">=</span> <span class="p">(</span><span class="n">request</span><span class="o">.</span><span class="n">num_tokens_with_spec</span>
+                  <span class="o">+</span> <span class="n">request</span><span class="o">.</span><span class="n">num_output_placeholders</span>
+                  <span class="o">-</span> <span class="n">request</span><span class="o">.</span><span class="n">num_computed_tokens</span><span class="p">)</span>
+<span class="k">if</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler_config</span><span class="o">.</span><span class="n">long_prefill_token_threshold</span> <span class="o">&lt;</span> <span class="n">num_new_tokens</span><span class="p">:</span>
+    <span class="n">num_new_tokens</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scheduler_config</span><span class="o">.</span><span class="n">long_prefill_token_threshold</span>   <span class="c1"># ★ 单条封顶</span>
+<span class="n">num_new_tokens</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">num_new_tokens</span><span class="p">,</span> <span class="n">token_budget</span><span class="p">,</span> <span class="n">input_budget</span> <span class="o">-</span> <span class="n">draft_slots</span><span class="p">)</span>  <span class="c1"># ★ 总预算夹紧</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 这四行就是 chunked prefill 的全部核心：
+       ① 算出「这个请求还欠多少 token 没算」
+       ② ★ 单条超长 prompt 先自己封顶（long_prefill_token_threshold）
+          ⟹ 防止一条 32K 的 prompt 独占整步
+       ③ ★ 再被总预算夹一次
+       ④ 减掉 draft_slots ⟹ 给投机解码留位置
+</code></pre></div>
+
+<h3 id="3">第 3 步：装不下就抢占</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L1340</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_preempt_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">timestamp</span><span class="p">,</span> <span class="n">drop_stale_output</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="o">...</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_free_request_blocks</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>      <span class="c1"># ★ 释放全部 KV 块</span>
+    <span class="n">request</span><span class="o">.</span><span class="n">status</span> <span class="o">=</span> <span class="n">RequestStatus</span><span class="o">.</span><span class="n">PREEMPTED</span>
+    <span class="n">request</span><span class="o">.</span><span class="n">num_computed_tokens</span> <span class="o">=</span> <span class="mi">0</span>          <span class="c1"># ★★ 归零 = 走【重算】路线</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 从 running 队列【尾部】选（最晚进来的先踢）⟹ 保住 FCFS 语义
+    ★★ num_computed_tokens = 0 说明 v1 主推【重算】而非【换出到 CPU】
+       原因见 04 章：有前缀缓存兜底，重算时块很可能还在，不真的重算
+</code></pre></div>
+
+<h3 id="4-waiting">第 4 步：再排 waiting 队列（放新人进来）</h3>
+<p>新请求进来要先申请 KV 块，这里会尝试命中前缀缓存（见第四节）。</p>
+<h3 id="5">第 5 步：断言守门</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L1172</span>
+<span class="k">assert</span> <span class="n">total_num_scheduled_tokens</span> <span class="o">&lt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_num_scheduled_tokens</span>
+</code></pre></div>
+
+<blockquote>
+<p>★ 这条断言是「预算制」的最后一道保险。读代码时看到它，就知道<br />
+<strong>上面所有分支的 <code>min()</code> 加起来必须自洽</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="kv-cache">四、★ KV Cache 管理：块池 + 链式哈希</h2>
+<h3 id="_3">块池</h3>
+<p>文件：<a href="源码/vLLM/vllm/v1/core/block_pool.py">v1/core/block_pool.py</a></p>
+<div class="codehilite"><pre><span></span><code>    class BlockHashToBlockMap    L33    ★ 哈希 → 块，前缀缓存的查找表
+    class BlockPool              L143   ★ 所有 KV 块的池子
+    def cache_full_blocks        L225   ★★ 只有【写满】的块才进缓存
+    def cache_partial_block      L445   ★ 半满的块走另一条路
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么要区分满块和半块？</strong><br />
+半满的块内容还会变（下一个 token 就写进来了），<br />
+<strong>它的哈希此刻算出来，下一步就失效了。</strong> 所以只有写满、内容冻结的块才能进缓存表。</p>
+</blockquote>
+<h3 id="_4">链式哈希</h3>
+<p>文件：<a href="源码/vLLM/vllm/v1/core/kv_cache_utils.py">v1/core/kv_cache_utils.py</a></p>
+<div class="codehilite"><pre><span></span><code>    NONE_HASH                       L102   ★ 哈希链的起点
+    DEFAULT_NONE_HASH_SEED          L106   种子字符串 &quot;vllm-none-hash&quot;
+    generate_block_hash_extra_keys  L580   ★ 额外键：多模态输入、LoRA id 等
+    hash_block_tokens               L618   ★★ 块哈希函数本体
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 哈希是【链式】的：
+       block_hash[i] = hash( block_hash[i-1], 这 16 个 token, extra_keys )
+                              ↑ 上一块的哈希
+
+    ⟹ 只有【整条前缀路径完全相同】才会命中，
+       中间任何一个 token 不同，后面全部不命中。★ 这是正确性的保证。
+
+    ⚠️ 也是 13 章那个坑的成因：prompt 开头放时间戳
+       ⟹ 第 1 块哈希就不同 ⟹ ★ 整条链全废。
+</code></pre></div>
+
+<h3 id="_5">上层管理</h3>
+<div class="codehilite"><pre><span></span><code>    v1/core/kv_cache_manager.py            对外接口
+    v1/core/kv_cache_coordinator.py        ★ 协调多种 KV 类型
+    v1/core/single_type_kv_cache_manager.py
+</code></pre></div>
+
+<blockquote>
+<p>★ 为什么需要「多种 KV 类型」？因为现在的模型不再是清一色的注意力了——<br />
+Mamba/线性注意力的状态、滑动窗口注意力的有限窗口、全注意力，<br />
+<strong>三者的缓存生命周期完全不同</strong>，需要分开管理。<br />
+印证：<code>v1/attention/backends/</code> 里有 <code>mamba1_attn.py</code> / <code>mamba2_attn.py</code> /<br />
+<code>linear_attn.py</code> / <code>short_conv_attn.py</code>。</p>
+</blockquote>
+<hr />
+<h2 id="06">五、★★ 并行状态：06 章的源头</h2>
+<p>文件：<a href="源码/vLLM/vllm/distributed/parallel_state.py">distributed/parallel_state.py</a></p>
+<div class="codehilite"><pre><span></span><code>    def initialize_model_parallel    L1751
+</code></pre></div>
+
+<p><strong>核心就是一次 reshape 加若干次 transpose</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L1817 —— 全文最重要的一行注释</span>
+<span class="c1"># the layout order is: ExternalDP x DP x PP x PCP x TP</span>
+
+<span class="c1"># ✅ L1826</span>
+<span class="n">all_ranks</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">world_size</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span>
+    <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">data_parallel_size</span><span class="p">,</span> <span class="n">pipeline_model_parallel_size</span><span class="p">,</span>
+    <span class="n">prefill_context_model_parallel_size</span><span class="p">,</span> <span class="n">tensor_model_parallel_size</span><span class="p">)</span>
+</code></pre></div>
+
+<p>代码注释还给了取组的通用手法（L1824 附近）：</p>
+<blockquote>
+<p><em>"to get group_ranks for each dimension, transpose that dimension to the last dimension, then reshape to 2D, then unbind the last dimension"</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 于是各组的构造就是一行一个：
+      TP   L1843   all_ranks.view(-1, tp).unbind(0)        ← ★ 已在最后，不用转置
+      PCP          transpose(3, 4)
+      PP   L1891   all_ranks.transpose(2, 4)
+      DP   L1908   all_ranks.transpose(1, 4)
+      EP   L1923   all_ranks.transpose(1, 2).reshape(-1, dp*pcp*tp)
+                   ★ EP 组 = 同一个 PP 段内的所有卡
+</code></pre></div>
+
+<p><strong>文档字符串里的例子</strong>（8 卡 TP=2 PP=4）：</p>
+<div class="codehilite"><pre><span></span><code>    TP 组：[g0,g1] [g2,g3] [g4,g5] [g6,g7]     ★ 相邻，走 NVLink
+    PP 组：[g0,g2,g4,g6] [g1,g3,g5,g7]         步长 2
+</code></pre></div>
+
+<blockquote>
+<p>★★ 06 章的全部结论都从这几行推出来。<strong>如果只读一个文件，读这个。</strong></p>
+</blockquote>
+<h3 id="_6">并行线性层</h3>
+<p>文件：<a href="源码/vLLM/vllm/model_executor/layers/linear.py">model_executor/layers/linear.py</a></p>
+<div class="codehilite"><pre><span></span><code>    ColumnParallelLinear         L407    ★ 列切；gather_output 默认 False
+    ├─ MergedColumnParallelLinear L645   多个列切层合并（MLP 的 gate+up）
+    └─ QKVParallelLinear          L971   ★ QKV 三个矩阵合成一个列切层
+    DCPGroupColumnParallelLinear  L604   ★ 给 DCP 用的变体
+    RowParallelLinear            L1510   ★★ 行切；唯一的通信在 L1660
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L1660 —— 推理 TP 的全部通信，就这一句</span>
+<span class="n">output</span> <span class="o">=</span> <span class="n">tensor_model_parallel_all_reduce</span><span class="p">(</span><span class="n">output_parallel</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 请注意两件事：
+    ① 整个文件里【没有任何反向传播的通信】
+       ⟹ 这就是 01 章「推理 TP 每层 2 次 all-reduce，训练 4 次」的源码证据
+    ② ColumnParallelLinear 的 gather_output 默认 False
+       ⟹ ★ 列切的输出【故意不聚合】，直接喂给下一个行切层
+       ⟹ 一个「列切 + 行切」的组合，全程只需要【最后那一次】all-reduce
+</code></pre></div>
+
+<hr />
+<h2 id="_7">六、其余模块的地图</h2>
+<h3 id="v1spec_decode">投机解码 <code>v1/spec_decode/</code></h3>
+<div class="codehilite"><pre><span></span><code>    eagle.py              ★ EAGLE（08 章说的最强方案）
+    medusa.py             Medusa 多头
+    ngram_proposer.py     ★ n-gram 查表，零成本
+    ngram_proposer_gpu.py   GPU 版
+    suffix_decoding.py    ★ 后缀解码
+    draft_model.py        独立小模型
+    dynamic/              ★★ 自适应——按负载动态调整（08 章 §8.6）
+    metrics.py            接受率统计
+</code></pre></div>
+
+<h3 id="kv-distributedkv_transferkv_connectorv1">KV 传输 <code>distributed/kv_transfer/kv_connector/v1/</code></h3>
+<div class="codehilite"><pre><span></span><code>    base.py                  ★ 统一接口
+    nixl/                    ★ NVIDIA 的 RDMA 传输库（主流）
+    mooncake/                ★ 月之暗面的 KV 池
+    lmcache_connector.py     LMCache
+    moriio/  hf3fs/          其他后端
+    offloading/              换出到 CPU/SSD
+    ★ multi_connector.py     ★★ 串联多个后端：先查本地，再查远端
+</code></pre></div>
+
+<h3 id="eplb-distributedeplb">EPLB <code>distributed/eplb/</code></h3>
+<div class="codehilite"><pre><span></span><code>    eplb_state.py            当前专家分布
+    policy/                  重排算法
+    rebalance_execute.py     ★ 执行搬运
+    ★ async_worker.py        ★★ 异步做，不阻塞推理 ← 能上线的关键
+</code></pre></div>
+
+<h3 id="model_executorlayersquantization">量化 <code>model_executor/layers/quantization/</code></h3>
+<div class="codehilite"><pre><span></span><code>    fp8.py / input_quant_fp8.py / fbgemm_fp8.py   ★ FP8 一族（H100 主战场）
+    auto_awq.py / auto_gptq.py                    ★ 权重量化
+    ★ kv_cache.py                                 ★★ KV Cache 量化（09 章）
+    mxfp4.py                                      Blackwell
+    moe_wna16.py / experts_int8.py                MoE 专用
+    torchao.py / modelopt.py                      外部工具链
+</code></pre></div>
+
+<h3 id="cuda-graph-configcompilationpy53">CUDA Graph <code>config/compilation.py:53</code></h3>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CUDAGraphMode</span><span class="p">(</span><span class="n">enum</span><span class="o">.</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">NONE</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="n">PIECEWISE</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">FULL</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="n">FULL_DECODE_ONLY</span> <span class="o">=</span> <span class="p">(</span><span class="n">FULL</span><span class="p">,</span> <span class="n">NONE</span><span class="p">)</span>         <span class="c1"># ★ 元组 = 两种批次两种模式</span>
+    <span class="n">FULL_AND_PIECEWISE</span> <span class="o">=</span> <span class="p">(</span><span class="n">FULL</span><span class="p">,</span> <span class="n">PIECEWISE</span><span class="p">)</span>  <span class="c1"># ★★ chunked prefill 下的推荐值</span>
+</code></pre></div>
+
+<p>详见 <a href="推理优化入门/12-CUDA-Graph与图编译.html">12 章</a> §12.4。</p>
+<hr />
+<h2 id="_8">七、★ 读源码的建议路线</h2>
+<div class="codehilite"><pre><span></span><code>    第 1 天：只读 distributed/parallel_state.py 的 L1751-1960
+            ⟹ 把 06 章的 rank 布局彻底搞清楚。这是骨架。
+
+    第 2 天：读 v1/core/sched/scheduler.py 的 schedule()
+            ⟹ 从 L477 一路读到 L700，看预算怎么被消耗
+            ★ 重点看每一处 min() 和 continue
+
+    第 3 天：读 v1/core/block_pool.py + kv_cache_utils.py
+            ⟹ 搞清楚一个块从申请到被缓存到被淘汰的完整生命
+
+    第 4 天：读 model_executor/layers/linear.py
+            ⟹ 对照 06 章验证「每层只有 1 次 all-reduce」
+
+    第 5 天：v1/worker/gpu_model_runner.py（★ 这个文件很大，4000+ 行）
+            ⟹ 只看 execute_model() (L4288)，看 SchedulerOutput
+               怎么变成张量
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>不要一开始就读 <code>models/</code></strong>。那里是各个模型的具体定义，<br />
+长得都差不多，读了对理解系统没帮助。</p>
+</blockquote>
+<hr />
+<h2 id="sglang">八、和 SGLang 的关键差异（速览）</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>vLLM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>并行网格</td>
+<td>★ 固定五维 reshape：<code>ExtDP×DP×PP×PCP×TP</code></td>
+</tr>
+<tr>
+<td>前缀缓存</td>
+<td>★ 链式哈希 + 哈希表</td>
+</tr>
+<tr>
+<td>调度依据</td>
+<td>显存够不够 + token 预算</td>
+</tr>
+<tr>
+<td>抢占</td>
+<td>★ 重算（<code>num_computed_tokens = 0</code>）</td>
+</tr>
+<tr>
+<td>设计取向</td>
+<td>★ 并行策略是<strong>部署配置</strong>，先定网格，模型往里填</td>
+</tr>
+</tbody>
+</table>
+<p>详细对比见 <a href="推理框架对比.html">推理框架对比.md</a>。</p>
+<hr />
+<blockquote>
+<p>返回 <a href="README.html">推理框架总目录</a> ｜ 下一篇 <a href="SGLang拆解.html">SGLang拆解.md</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

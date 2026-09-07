@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · 拿一份真实技术报告，看一线团队怎么设置 harness</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="10-harness">10 · 拿一份真实技术报告，看一线团队怎么设置 harness</h1>
+<blockquote>
+<p>⭐⭐ 前面九章讲的都是"原理上会出什么问题"。<br />
+这一章拿两份 DeepSeek 技术报告当标本，逐条对照：<br />
+★★★ 一个顶级团队，是【怎么把这些坑一个个填上的】。</p>
+<ul>
+<li>10.1 ~ 10.7 → <strong>DeepSeek-V3 技术报告</strong>（arXiv:2412.19437，53 页）</li>
+<li>10.7b → <strong>DeepSeek-R1 技术报告</strong>（arXiv:2501.12948，86 页）★★ 推理模型的口径有一处根本不同</li>
+</ul>
+<p>★ 选它们的理由很简单：这两份报告的评测设置写得【异常详细】，<br />
+⟹ 详细到可以当作"该披露什么"的模板来用。</p>
+</blockquote>
+<hr />
+<h2 id="101-03">10.1 第一个发现：他们的分类，就是 03 章那三个原语</h2>
+<p>✅ 论文 §4.4.1 原文（★ 这段值得逐字读）：</p>
+<blockquote>
+<p>"we adopt <strong>perplexity-based evaluation</strong> for datasets including HellaSwag, PIQA,<br />
+WinoGrande, RACE-Middle, RACE-High, <strong>MMLU</strong>, MMLU-Redux, MMLU-Pro, MMMLU,<br />
+ARC-Easy, ARC-Challenge, C-Eval, CMMLU, C3, and CCPM, and adopt<br />
+<strong>generation-based evaluation</strong> for TriviaQA, NaturalQuestions, DROP, MATH,<br />
+<strong>GSM8K</strong>, MGSM, HumanEval, MBPP, LiveCodeBench-Base, CRUXEval, BBH, AGIEval,<br />
+CLUEWSC, CMRC, and CMath. In addition, we perform <strong>language-modeling-based<br />
+evaluation</strong> for Pile-test and use <strong>Bits-Per-Byte (BPB)</strong> as the metric to<br />
+<strong>guarantee fair comparison among models using different tokenizers</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 把这段和 03 章那三个抽象方法并排放：
+
+   ┌──────────────────────────┬───────────────────────────────────┐
+   │ DeepSeek 的说法           │ lm-eval-harness 的原语             │
+   ├──────────────────────────┼───────────────────────────────────┤
+   │ perplexity-based         │ ★★ loglikelihood                   │
+   │ generation-based         │ ★★ generate_until                  │
+   │ language-modeling-based  │ ★★ loglikelihood_rolling           │
+   └──────────────────────────┴───────────────────────────────────┘
+
+   ⟹ ★★★ 一字不差地对上了。
+      两个互不相干的团队，各自独立收敛到【同一个三分法】。
+      🔑 说明 03 章讲的不是某个框架的实现细节，
+         而是【这件事本身就只有这三种做法】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 名词：perplexity（困惑度）
+      衡量&quot;模型对一段文本有多意外&quot;的指标。★★ 越低说明模型越觉得这段话自然。
+      ⟹ 它和 loglikelihood（对数似然）是同一个东西的两种写法。
+
+    ★ 名词：BPB = Bits-Per-Byte（每字节比特数）
+      ★★ 平均编码一个【字节】需要多少比特。
+</code></pre></div>
+
+<p>★★★ 那个 BPB 的理由值得单独说：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 问题：不同模型的分词器（tokenizer）不一样。
+       同一句中文，A 模型切成 12 个 token，B 模型切成 20 个。
+       ⟹ 🔑 那&quot;每个 token 的困惑度&quot;就【根本没法比】——
+          分母都不是同一个东西。
+
+    ⟹ ★★★ 解法：换成【每字节】。
+       字节是物理事实，谁的分词器都改变不了它。
+       ✅ 论文原话就是 &quot;to guarantee fair comparison among models
+          using different tokenizers&quot;。
+
+    🔑🔑 这是一个非常漂亮的&quot;口径对齐&quot;操作。
+       ★★ 记住这个思路：★★★ 当两个数不可比时，
+          找一个【双方都无法影响的分母】。
+</code></pre></div>
+
+<hr />
+<h2 id="102">10.2 第二个发现：他们自己承认分数会漂</h2>
+<p>✅ 论文 §4.4.2（★ 逐字）：</p>
+<blockquote>
+<p>"We evaluate all these models with <strong>our internal evaluation framework</strong>, and<br />
+ensure that they share the <strong>same evaluation setting</strong>. Note that <strong>due to the<br />
+changes in our evaluation framework over the past months</strong>, the performance of<br />
+DeepSeek-V2-Base exhibits <strong>a slight difference from our previously reported results</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 读懂这句话：
+
+    ★★★【同一个模型（V2-Base），同一个团队，只是评测框架改了几个月，
+       分数就和自己上次公布的不一样了。】
+
+    ⟹ 模型一个权重都没动。动的全是 harness。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 这一句话，把 01 章的中心论点从&quot;我的说法&quot;变成了【一线团队的书面承认】：
+
+       ⟹ 🔑🔑 分数是【模型 + 评测方法】的联合产物，不是模型的固有属性。
+
+    ★★ 而且请注意他们的处理方式——他们做的是【两件事】：
+       ① 用同一套框架重新跑了所有对比模型（而不是抄别人报的数）
+       ② ★★★ 主动声明&quot;我们自己的历史数字对不上了&quot;
+
+    ⟹ ⚠️ 第 ② 条是绝大多数技术报告【不会做】的。
+       看到有人这么写，可信度应该往上调。
+</code></pre></div>
+
+<hr />
+<h2 id="103">10.3 第三个发现：他们给出了噪声下限</h2>
+<p>✅ 论文 Table 3 表注（★ 逐字）：</p>
+<blockquote>
+<p>"<strong>Scores with a gap not exceeding 0.3 are considered to be at the same level.</strong>"</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 翻译：★★★【差 0.3 分以内，我们认为是平手。】
+
+    ★★ 为什么必须有这么一条？因为评测本身有噪声：
+       采样温度、题目顺序、浮点非确定性、few-shot 抽哪几条示例……
+       ⟹ 同一个模型跑两遍，分数就可能差零点几。
+
+    ⟹ ★★★ 所以&quot;我们比对手高 0.2 分&quot;这种宣传，
+       在 DeepSeek 自己的口径下，★★【等于没差别】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    🔑 给你的行动项：
+       ★★★ 以后看到任何两个模型的分数对比，先问一句：
+          【这个差距，超过噪声了吗？】
+       ⟹ 呼应 09 章 Elo 的置信区间——同一个道理的两种表达。
+</code></pre></div>
+
+<hr />
+<h2 id="104-few-shot">10.4 第四个发现：few-shot 数量是逐题设置的，不是一刀切</h2>
+<p>✅ 论文 Table 3 的 "# Shots" 列（★ 摘录）：</p>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────────┬──────────┬──────────────────────────────┐
+   │ Benchmark        │ # Shots  │ ★ 为什么是这个数（我的解读⚠️）│
+   ├──────────────────┼──────────┼──────────────────────────────┤
+   │ PIQA (EM)        │ 0-shot   │ 常识判断，不需要格式示范      │
+   │ AGIEval (EM)     │ 0-shot   │ 标准化考试，题面自带格式      │
+   │ BBH (EM)         │ 3-shot   │ 推理题，要示范推理写法        │
+   │ DROP (F1)        │ 3-shot   │ 阅读理解                     │
+   │ MMLU (EM)        │ ★ 5-shot │ ★★ 领域惯例，为了可比性      │
+   │ MMLU-Redux       │ 5-shot   │ 同上                         │
+   │ MMLU-Pro         │ 5-shot   │ 同上                         │
+   │ WinoGrande       │ 5-shot   │                              │
+   │ TriviaQA         │ 5-shot   │                              │
+   │ HellaSwag (EM)   │ 10-shot  │                              │
+   │ ARC-Easy         │ ★ 25-shot│ ★★ 这个数字很大，见下        │
+   │ ARC-Challenge    │ ★ 25-shot│                              │
+   └──────────────────┴──────────┴──────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 从 0 到 25，跨度极大。★★ 这印证了 04 章的核心论点：
+       ★★★ few-shot 数量【不是一个可以随便定的超参数】，
+       它是【这个基准的身份证的一部分】。
+
+    ⚠️ ARC 用 25-shot 是沿袭 HuggingFace Open LLM Leaderboard 的历史惯例
+       （我的判断，论文未说明理由）。
+       ⟹ ★★ 但这恰恰说明问题：★★★ 这些数字是【约定俗成】的，
+          不是推导出来的。你必须照抄，否则分数不可比。
+
+    🔑🔑 所以 04 章那句话要再强调一遍：
+       ★★★ 报 MMLU 分数不说 shot 数，等于没报。
+</code></pre></div>
+
+<hr />
+<h2 id="105-chat-base">10.5 第五个发现：chat 模型的评法，和 base 模型完全不是一回事</h2>
+<p>★★★ 这是本章最重要的一节。</p>
+<p>✅ 论文 §5.3.1 "Detailed Evaluation Configurations"（★ 逐字拆解）：</p>
+<h3 id="1">① 提示词直接借用别人的框架</h3>
+<blockquote>
+<p>"For standard benchmarks including MMLU, DROP, GPQA, and SimpleQA, we adopt<br />
+the evaluation prompts from the <strong>simple-evals</strong> framework."<br />
+"We utilize the <strong>Zero-Eval prompt format</strong> for MMLU-Redux in a <strong>zero-shot</strong> setting."<br />
+"For other datasets, we follow their <strong>original evaluation protocols with default<br />
+prompts as provided by the dataset creators</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 注意这里的对比，★★★ 同一份报告里 MMLU 出现了两次，口径不同：
+
+    ┌──────────────┬─────────────────────────┬──────────┐
+    │              │ 怎么评                   │ 分数      │
+    ├──────────────┼─────────────────────────┼──────────┤
+    │ V3-Base      │ perplexity-based, 5-shot│ ✅ 87.1  │
+    │ V3 (chat)    │ simple-evals 提示词      │ ✅ 88.5  │
+    │              │ ★★ 生成式               │          │
+    └──────────────┴─────────────────────────┴──────────┘
+
+    ⟹ ★★★ 这两个 87.1 和 88.5【不能相减说&quot;对齐带来 +1.4&quot;】。
+       ⚠️ 因为连测量方式都换了（判别式 → 生成式）。
+
+    🔑 这正是 01 章那个 12.6 分差示例的真实版本：
+       ★★ 同一个基准名字底下，藏着完全不同的测法。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 名词：simple-evals
+      ★★ OpenAI 开源的一套极简评测提示词集合。
+      ⟹ 🔑 DeepSeek 直接借用它，是为了【和 OpenAI 报的数可比】。
+      ★★★ 这是一个很清醒的工程决策：
+         与其自己定一套更&quot;合理&quot;的口径，不如用对手用的那套。
+</code></pre></div>
+
+<h3 id="2">② 数学题：温度、跑几遍，全部写死</h3>
+<blockquote>
+<p>"For mathematical assessments, <strong>AIME and CNMO 2024 are evaluated with a<br />
+temperature of 0.7, and the results are averaged over 16 runs</strong>, while<br />
+<strong>MATH-500 employs greedy decoding</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────┬───────────────┬────────────────────────────────┐
+   │ AIME / CNMO  │ ★ T=0.7×16 次 │ ★★ 题少（AIME 只有 30 题）    │
+   │              │   取平均       │ ⟹ 单次跑方差极大，必须多跑    │
+   ├──────────────┼───────────────┼────────────────────────────────┤
+   │ MATH-500     │ ★ greedy      │ ★★ 500 题，样本够，直接贪心   │
+   │              │   （T=0）      │ ⟹ 可完全复现                  │
+   └──────────────┴───────────────┴────────────────────────────────┘
+
+    ★ 名词：greedy decoding（贪心解码）
+      每一步都选概率最高的那个 token。★★ 等价于 temperature=0。
+      ⟹ 🔑 同样输入必得同样输出 ⟹【可复现】。
+
+    ⟹ 🔑🔑 这条设置的价值在于它【解释了 why】：
+       ★★★ 题目越少，越必须多跑取平均；题目够多，就该用贪心保复现。
+</code></pre></div>
+
+<p>★★ 表注里还有一句总纲（✅ 逐字）：</p>
+<blockquote>
+<p>"<strong>Benchmarks containing fewer than 1000 samples are tested multiple times<br />
+using varying temperature settings to derive robust final results.</strong>"</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★★【1000 题】是他们划的线。少于这个数就必须多跑。
+    ⚠️ 这条规则我在别的报告里很少见到写得这么明确。
+</code></pre></div>
+
+<h3 id="3">③ 输出长度上限：一个数字定死全场</h3>
+<blockquote>
+<p>"We allow all models to output a <strong>maximum of 8192 tokens</strong> for each benchmark."<br />
+"All models are evaluated in a configuration that <strong>limits the output length to 8K</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 回看 05 章那个&quot;最常见的坑&quot;：
+       ★★★ max_tokens 截断了推理过程，导致答案根本没写出来。
+
+    ⟹ ★★ DeepSeek 的做法是【统一设成 8192，并且写进报告】。
+       好处：所有模型同一条件，公平。
+       ⚠️ 代价：★★★ 对特别爱长篇推理的模型，8K 可能不够，
+          它会被截断，而这【看起来像是它答错了】。
+
+    🔑🔑 所以这个数字必须公布——★★ 它是分数的一部分。
+</code></pre></div>
+
+<h3 id="4-api">④ 闭源模型走 API</h3>
+<blockquote>
+<p>"For closed-source models, evaluations are performed through their <strong>respective APIs</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 直接呼应 03 章那个&quot;闭源 API 陷阱&quot;：
+       走 API 就【拿不到 logprobs】，做不了 perplexity-based 评测。
+
+    ⟹ 🔑 这就是为什么 base 模型表（Table 3）里【只有开源模型】，
+       而 Claude / GPT-4o 只出现在 chat 模型表（Table 6）里。
+       ★★★ 不是他们不想比，是【物理上没法用同一种方法比】。
+</code></pre></div>
+
+<hr />
+<h2 id="106-swe-bench-08">10.6 第六个发现：SWE-bench 那一行，暴露了 08 章的全部要害</h2>
+<p>✅ 论文 §5.3.1（★ 逐字）：</p>
+<blockquote>
+<p>"<strong>SWE-Bench verified is evaluated using the agentless framework</strong> (Xia et al., 2024)."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：Agentless（无智能体框架）
+      ★★ 一套【故意不用 agent 循环】的 SWE-bench 方案：
+         固定三步——定位文件 → 生成补丁 → 挑选补丁，没有多轮自主决策。
+      ⚠️ 以上是我对该方法名的解释；具体实现细节请查该论文原文。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 这一行信息量极大。它等于在说：
+
+    ★★★【DeepSeek-V3 报的 42.0% SWE-bench Verified，
+       是&quot;V3 + Agentless 脚手架&quot;这套系统的分数，
+       不是&quot;V3 这个模型&quot;的分数。】
+
+    ⟹ 换一套更强的 agent 脚手架，同一个 V3 的分数会变。
+       ★★ 这正是 08 章 §8.3 那张&quot;完整含义&quot;表格的现实例证。
+</code></pre></div>
+
+<p>✅ 同表（Table 6）的 SWE Verified (Resolved) 一行：</p>
+<div class="codehilite"><pre><span></span><code>   ┌───────────────┬──────────────┬──────────┬──────────────┐
+   │ DeepSeek-V2.5 │ Qwen2.5 72B  │ GPT-4o   │ Claude-3.5-  │
+   │               │              │  0513    │ Sonnet-1022  │
+   │    22.6       │    23.8      │   38.8   │  ✅ 50.8     │
+   ├───────────────┴──────────────┴──────────┴──────────────┤
+   │            DeepSeek-V3 = ✅ 42.0                        │
+   └────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 关键提醒：★★★ 这张表里【所有模型都跑的是 Agentless】。
+       ⟹ 所以它是一个【口径统一的横向对比】——这很好。
+
+    ⟹ 但 🔑🔑 它【不等于】各家自己产品的表现。
+       ★★ Claude 在这里是 50.8，而 Anthropic 自家用 Claude Code
+          那套脚手架报出来的数是另一回事。
+       ⟹ ★★★ 两个数字都不假，但它们【回答的是不同问题】：
+          ┌────────────────────┬──────────────────────────┐
+          │ 统一脚手架下的 42.0 │ 这个【模型】有多强         │
+          │ 各自产品报的数字     │ 这套【产品】有多好用       │
+          └────────────────────┴──────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="107">10.7 第七个发现：训练侧也在为"能抽取"服务</h2>
+<p>★★ 这是我认为最有意思的一条，它把 05 章和训练连起来了。</p>
+<p>✅ 论文 §5.2.1 "Rule-Based RM"（★ 逐字）：</p>
+<blockquote>
+<p>"For questions that can be validated using specific rules, we adopt a rule-based<br />
+reward system... certain math problems have deterministic results, and we<br />
+<strong>require the model to provide the final answer within a designated format<br />
+(e.g., in a box)</strong>, allowing us to <strong>apply rules to verify the correctness</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ &quot;in a box&quot; 指数学界通用的 LaTeX 写法 \boxed{42}。
+
+    ⟹ 🔑🔑🔑 读懂这层含义：
+
+    ┌──────────────────────────────────────────────────────────┐
+    │  ★ 05 章：评测端写正则去抠答案，经常抠不准。              │
+    │  ★★ DeepSeek 的做法：★★★【在训练阶段就把格式教进去】。  │
+    │     强化学习的奖励规则本身就要求&quot;答案必须写在 \boxed{} 里&quot;│
+    │  ⟹ 于是评测时那条正则【几乎不会失手】。                  │
+    └──────────────────────────────────────────────────────────┘
+
+    ⟹ ★★★ 这是一个双向的因果：
+       评测方法 → 影响训练目标 → 塑造模型行为 → 让评测更准。
+
+    ⚠️ 但也要看到硬币的另一面（我的判断）：
+       ★★ 这意味着模型的输出格式，一定程度上是【被评测方式塑造的】。
+       ⟹ 呼应 09 章冗长偏差那一节的推断：
+          🔑 评测的偏好会顺着训练回流进模型行为。
+</code></pre></div>
+
+<hr />
+<h2 id="107b-r1-greedy">10.7b 第八个发现：R1 报告推翻了"greedy 最可复现"这条常识</h2>
+<p>⭐⭐ 前面 10.1–10.7 全部取自 <strong>DeepSeek-V3 技术报告</strong>（arXiv:2412.19437，53 页）。<br />
+这一节换标本：<strong>DeepSeek-R1 技术报告</strong>（arXiv:2501.12948，86 页，已校验）。</p>
+<p>★★ 为什么要单独看 R1？因为它是<strong>推理模型</strong>（reasoning model，会先输出一长段思考过程再给答案），<br />
+⟹ 🔑 而推理模型的评测口径，和普通 chat 模型<strong>有一处根本性的不同</strong>。</p>
+<h3 id="greedy">✅ 原文：他们明确说「不用 greedy」</h3>
+<blockquote>
+<p>"We set the maximum generation length to <strong>32,768 tokens</strong> for the models.<br />
+We found that using <strong>greedy decoding</strong> to evaluate long-output reasoning models<br />
+results in <strong>higher repetition rates and significant variability across different<br />
+checkpoints</strong>. Therefore, we default to <strong>pass@k</strong> evaluation and report pass@1<br />
+using a <strong>non-zero temperature</strong>. Specifically, we use a sampling temperature of<br />
+<strong>0.6</strong> and a <strong>top-p value of 0.95</strong> to generate k responses (typically between<br />
+4 and 64, depending on the test set size) for each question. Specifically, we use<br />
+<strong>k = 64 for AIME and GPQA, k = 16 for MATH and CodeForces, and k = 8 for LCB</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ★ 名词补全：
+   ★ greedy decoding（贪心解码）= 每一步都取概率最高的那个词。
+     ⟹ 同一个输入永远给同一个输出，所以看起来【最可复现】。
+   ★ temperature（温度）= 采样的随机程度。0 = greedy，越大越随机。
+   ★ top-p（核采样，nucleus sampling）= 只在累计概率达到 p 的那批候选词里采样。
+     ⟹ 0.95 表示：把概率最低的那 5% 尾巴直接砍掉，防止采到离谱的词。
+   ★ pass@k = 对同一道题采样 k 个答案。
+   ★★ 但注意 R1 这里 pass@1 的算法是【k 个答案各自对错，取平均】：
+</code></pre></div>
+
+<p>✅ 论文给出的公式原文：</p>
+<blockquote>
+<p>pass@1 = (1/k) · Σᵢ pᵢ ，where pᵢ denotes the correctness of the i-th response.<br />
+"This method provides more reliable performance estimates."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⚠️★★★ 这里有个极易误读的点，必须讲清楚：
+
+   HumanEval 那篇论文里的 pass@k 是【k 次里只要有一次对就算对】（取最大值语义）。
+   ⟹ k 越大分数越高。
+
+   ★★ R1 这里的 pass@1 完全不是那个意思，它是【k 次的平均正确率】。
+   ⟹ k 越大分数【不会变高，只会变稳】。
+   ⟹ 🔑 名字叫 pass@1，含义是&quot;单次尝试的期望正确率&quot;，
+      ★★★ 采样 64 次只是为了把这个期望估准，不是为了刷高分。
+
+   ⚠️ 如果你看到两张榜单都写 &quot;pass@1&quot;，
+      ★★★ 它们可能一个是 greedy 跑一次，一个是采样 64 次取平均。
+      ⟹ 这两个数【不能直接比】。
+</code></pre></div>
+
+<h3 id="greedy_1">🔑 为什么"最可复现"的 greedy 反而被放弃</h3>
+<div class="codehilite"><pre><span></span><code>   ┌─ 普通 chat 模型（V3 的做法）────────────────────────┐
+   │  ★ 输出几百个 token。                                │
+   │  ⟹ greedy 一次跑完，确定性强，✅ V3 的 MATH-500     │
+   │     就是 greedy。                                    │
+   └──────────────────────────────────────────────────────┘
+   ┌─ 推理模型（R1 的处境）────────────────────────────────┐
+   │  ★★ 输出可以到 32,768 token（论文原文的上限）。       │
+   │  ⚠️ 长序列 + 每步都取最高概率 ⟹ 极易进入【复读循环】： │
+   │     &quot;所以答案是……所以答案是……所以答案是……&quot;           │
+   │  ✅ 论文原话就是 &quot;higher repetition rates&quot;。          │
+   │                                                       │
+   │  ⟹ 🔑🔑 结果是反直觉的：                             │
+   │     ★★★ greedy 在单次层面确定，但在【模型层面不稳定】  │
+   │     —— 论文说它导致 &quot;significant variability across   │
+   │     different checkpoints&quot;，                          │
+   │     ⟹ 训练过程中相邻两个 checkpoint 的分数会剧烈跳动。 │
+   │                                                       │
+   │  ⟹ ★★ 换成 T=0.6 采样 64 次取平均，                   │
+   │     单次不确定了，但【统计量稳定了】。                 │
+   └───────────────────────────────────────────────────────┘
+
+   ⟹ 🔑🔑🔑 这是全章最值得记住的一条方法论：
+   ★★★【可复现】有两种，不要混为一谈：
+      ① 逐次可复现（同输入 → 同输出）—— greedy 提供的是这个
+      ② 统计可复现（同配置 → 同分数）—— 多次采样取平均提供的是这个
+   ⚠️ 对长输出模型，★★★ ② 比 ① 重要得多，因为你要比的是分数，不是某一条输出。
+</code></pre></div>
+
+<h3 id="107b1-r1">10.7b.1 R1 报告里其余的口径披露（全部 ✅）</h3>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────┬──────────────────────────────────────────────┐
+   │ 维度         │ ✅ R1 报告的原文披露                          │
+   ├──────────────┼──────────────────────────────────────────────┤
+   │ 最大输出长度 │ 32,768 tokens（&quot;capped at a maximum of        │
+   │              │ 32,768 tokens for each benchmark&quot;）           │
+   │ 采样参数     │ temperature 0.6, top-p 0.95                   │
+   │ 采样次数 k   │ AIME/GPQA k=64，MATH/Codeforces k=16，        │
+   │              │ LiveCodeBench k=8                             │
+   │ AIME 额外指标│ cons@64（多数投票，consensus/majority vote）  │
+   │ 提示词来源   │ MMLU/DROP/GPQA/SimpleQA → simple-evals 框架   │
+   │              │ MMLU-Redux → Zero-Eval 格式，zero-shot       │
+   │ ★★ 特殊改动  │ MMLU-Pro / C-Eval / CLUE-WSC 原本是 few-shot，│
+   │              │ 他们【改成了 zero-shot】                      │
+   │ LiveCodeBench│ CoT 格式；数据窗口 2024-08 ~ 2025-01          │
+   │ Codeforces   │ 10 场 Div.2 比赛 + 专家编写的测试用例         │
+   │ SWE-Verified │ agentless framework（和 V3 一致）             │
+   │ Aider        │ &quot;diff&quot; 格式                                   │
+   │ 闭源基线     │ o1-1217 因中国大陆无法访问 API，              │
+   │              │ ⚠️【采用官方报告的数字】而非自测              │
+   └──────────────┴──────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 表里有两行特别值得停下来看：
+
+   ① ★★★【他们把 few-shot 改成了 zero-shot】
+      ✅ 原文：
+      &gt; &quot;In terms of MMLU-Pro, C-Eval and CLUE-WSC, since the original prompts
+      &gt; are few-shot, we slightly modify the prompt to the zero-shot setting.
+      &gt; **The CoT in few-shot may hurt the performance of DeepSeek-R1.**&quot;
+
+      ⟹ ★★ 这是 04 章&quot;few-shot 是格式对齐&quot;论点的一次极漂亮的反向验证：
+         ★★★ 对推理模型，示例里的思维链反而【干扰】了它自己的思考方式。
+      ⚠️ 后果：R1 的 MMLU-Pro 84.0 和别家 5-shot 的 MMLU-Pro，
+         ★★★【不在同一个口径下】。这一点榜单上通常看不到。
+
+   ② ⚠️⚠️【o1-1217 的数字是抄来的，不是自测的】
+      ⟹ 呼应 11 章&quot;自测还是抄来的&quot;这个问题。
+      ★★ 论文诚实地写明了原因（无法访问 API），这正是【好披露】的样子。
+      ⟹ 🔑 但读者必须知道：这一列和其他列不是同一次实验的产物。
+</code></pre></div>
+
+<h3 id="107b2-v3-vs-r1">10.7b.2 一个数字对照：同一个基准，V3 报告 vs R1 报告</h3>
+<div class="codehilite"><pre><span></span><code>   ★★ 拿 SWE-bench Verified 这一行来看（两份报告都有 DeepSeek-V3 这一列）：
+
+   ┌──────────────────────┬────────────┬────────────┐
+   │                      │ V3 报告    │ R1 报告    │
+   ├──────────────────────┼────────────┼────────────┤
+   │ DeepSeek-V3          │ 42.0       │ 42.0       │
+   │ Claude-3.5-Sonnet    │ 50.8       │ 50.8       │
+   │ GPT-4o-0513          │ 38.8       │ 38.8       │
+   └──────────────────────┴────────────┴────────────┘
+
+   ⟹ ✅ 一致。★★ 这说明他们在两份报告之间【保持了 harness 不变】。
+   ⟹ 🔑 而这恰恰反衬出 10.2 那句自曝的分量：
+      ★★★ 当他们改了框架时，会明说&quot;和之前报告的数字有出入&quot;；
+      ⚠️ 没改时，数字就一字不差。
+      ⟹ 这就是一个负责任的评测口径应有的样子。
+</code></pre></div>
+
+<h3 id="107b3-r1-06">10.7b.3 R1 还补了一条 06 章的答案：他们怎么做去污染</h3>
+<p>✅ 原文：</p>
+<blockquote>
+<p>"DeepSeek-V3 base has a <strong>knowledge cutoff date of July 2024</strong>, predating<br />
+evaluation benchmarks like CNMO 2024, and we <strong>filtered out any text segments<br />
+(including web pages and GitHub files) that contained matching 10-gram sequences</strong><br />
+from evaluation questions or reference solutions. … in the mathematics domain alone,<br />
+our decontamination process identified and removed approximately <strong>six million</strong><br />
+potential pre-training texts. For post-training, mathematical SFT data and RL training<br />
+prompts were sourced <strong>exclusively from pre-2023 competitions</strong>…"</p>
+</blockquote>
+<p>⚠️ 而且他们主动承认了这套办法的边界：</p>
+<blockquote>
+<p>"However, we acknowledge that the <strong>n-gram based decontamination method cannot<br />
+prevent the paraphrase of testset</strong>. Therefore, it is possible that benchmarks<br />
+released before 2024 may suffer from contamination issues."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 这一段把 06 章的三件事全部坐实了：
+   ① ★★ 时间切分是主要手段（知识截止 2024-07 + 只用 2023 前的竞赛题）
+   ② ★★ n-gram 匹配（这里是 10-gram）是主要的过滤实现
+   ③ ★★★ 但换句话说的题（paraphrase）过不掉 ——
+      ⚠️ 连一线团队都只能承认这一点，而不是宣称&quot;我们完全干净&quot;。
+   ⟹ ★★★ 【会说自己方法边界的报告，比宣称零污染的报告可信得多。】
+</code></pre></div>
+
+<hr />
+<h2 id="108">10.8 把这些汇成一张"该披露什么"的清单</h2>
+<p>★★★ 这是本章最实用的产出。V3 + R1 两份报告基本把这张表填满了。</p>
+<div class="codehilite"><pre><span></span><code>   ┌────┬──────────────────────┬──────────────────────────────────┐
+   │ #  │ 该披露的项            │ ✅ DeepSeek-V3 报告里的原话/做法  │
+   ├────┼──────────────────────┼──────────────────────────────────┤
+   │ 1  │ ★★ 判别式还是生成式  │ perplexity-based / generation-   │
+   │    │                      │ based，逐个数据集列名             │
+   │ 2  │ ★★ few-shot 数量     │ Table 3 专门一列 &quot;# Shots&quot;        │
+   │ 3  │ ★★ 提示词从哪来       │ simple-evals / Zero-Eval /       │
+   │    │                      │ 数据集原始协议                    │
+   │ 4  │ ★★★ 温度和跑几遍     │ AIME T=0.7 ×16 平均；             │
+   │    │                      │ MATH-500 greedy                  │
+   │ 5  │ ★★★ 输出长度上限     │ 全场 8192 token                   │
+   │ 6  │ ★★★ agentic 用什么脚手架│ SWE-bench → Agentless          │
+   │ 7  │ ★★ 噪声下限          │ &quot;gap not exceeding 0.3 …          │
+   │    │                      │ at the same level&quot;               │
+   │ 8  │ ★★★ 对比模型是自己跑的│ &quot;evaluate all these models with  │
+   │    │  还是抄的            │ our internal evaluation framework&quot;│
+   │ 9  │ ★★★ 口径变了要声明   │ &quot;due to the changes in our        │
+   │    │                      │ evaluation framework…&quot;           │
+   │ 10 │ ★ 跨分词器怎么对齐    │ Pile-test 用 BPB                 │
+   │ 11 │ ★ 闭源模型怎么测      │ &quot;through their respective APIs&quot;  │
+   ├────┼──────────────────────┼──────────────────────────────────┤
+   │    │ ★★ 以下四项由 R1 报告补齐（推理模型必须额外披露）        │
+   │ 12 │ ★★★ 采样参数        │ temperature 0.6, top-p 0.95       │
+   │ 13 │ ★★★ pass@1 是怎么算的│ k 次采样【取平均】，不是 k 次     │
+   │    │                      │ 里&quot;有一次对就算对&quot;                │
+   │ 14 │ ★★ 每题采样几次 k    │ AIME/GPQA 64、MATH/CF 16、LCB 8  │
+   │ 15 │ ★★★ 改动了原始协议   │ MMLU-Pro/C-Eval/CLUE-WSC          │
+   │    │  要说明                │ few-shot →【改成 zero-shot】     │
+   │ 16 │ ★★★ 去污染怎么做的   │ 10-gram 过滤 + 只用 2023 前竞赛题 │
+   │    │  以及【它的边界】     │ 且承认 paraphrase 过不掉          │
+   └────┴──────────────────────┴──────────────────────────────────┘
+
+   ⟹ 🔑🔑 拿这张表去审任何一份技术报告或宣传材料。
+      ★★★ 缺得越多，那个分数越不能信。
+</code></pre></div>
+
+<hr />
+<h2 id="109">10.9 那"为什么同一个模型能差十几分"</h2>
+<p>★ 回答开篇承诺的问题。把前面所有发现合起来，差异的来源是可以列举的：</p>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────────────────┬────────────────────────────────┐
+   │ 变量                      │ 量级（⚠️ 我的估计，非论文数据） │
+   ├──────────────────────────┼────────────────────────────────┤
+   │ ★★★ 判别式 vs 生成式      │ 最大的一项，可达十几分          │
+   │ ★★★ 有没有套对话模板       │ 套错可以让分数腰斩              │
+   │ ★★ few-shot 0 vs 5        │ 几分到十几分                    │
+   │ ★★ 提示词模板不同          │ 几分                            │
+   │ ★★ 答案抽取正则不同        │ 几分（05 章：抽不到 = 答错）    │
+   │ ★★ max_tokens 截断        │ 对推理模型可以是几十分          │
+   │ ★ 温度 / 跑几遍            │ 几分（小样本基准上更大）        │
+   │ ★ 框架版本升级             │ ✅ DeepSeek 自承&quot;slight&quot;        │
+   │ ★★★ agentic：脚手架不同    │ 可以是成倍差距（08 章）         │
+   └──────────────────────────┴────────────────────────────────┘
+
+   ⟹ 🔑🔑🔑 这些【全部会叠加】。
+      ★★ 所以&quot;同一个模型在不同 harness 下差十几分&quot;不是异常，是常态。
+      ⟹ 异常的是【两个不同来源的分数恰好一样】。
+</code></pre></div>
+
+<hr />
+<h2 id="1010">10.10 本章总结</h2>
+<div class="codehilite"><pre><span></span><code>    🔑 十条带走（全部来自 DeepSeek V3 / R1 报告原文）：
+
+    ① ★★★ 他们的三分法 = 03 章的三个原语，一字不差
+       ⟹ 说明这不是框架实现，是【问题本身的结构】
+    ② ✅ 他们自承：框架改了几个月，自家旧模型分数就对不上了
+       ⟹ ★★★ 01 章论点的书面证据
+    ③ ✅ 差 0.3 分以内算平手 ⟹ ★★ 任何对比先问&quot;超过噪声了吗&quot;
+    ④ ✅ shot 数逐题设置，0 到 25 不等 ⟹ ★★ 它是基准身份证的一部分
+    ⑤ ✅ base 用 perplexity、chat 用 simple-evals 提示词
+       ⟹ ★★★ 同一份报告里的 87.1 和 88.5 不可相减
+    ⑥ ✅ SWE-bench 用 Agentless ⟹ ★★★ 报的是&quot;模型+脚手架&quot;，08 章实锤
+    ⑦ ✅ 训练时用 \boxed{} 当奖励规则
+       ⟹ ★★ 评测方式会反向塑造模型行为
+
+    ⑧ ✅ R1 明说【不用 greedy】：长输出推理模型 greedy 会复读、
+       且 checkpoint 之间剧烈跳动 ⟹ 改用 T=0.6 / top-p 0.95 采样多次取平均
+       ⟹ ★★★【逐次可复现】和【统计可复现】是两回事，后者更重要
+    ⑨ ✅ R1 把 MMLU-Pro/C-Eval/CLUE-WSC 从 few-shot 改成 zero-shot，
+       理由是&quot;few-shot 里的 CoT 可能损害 R1 的表现&quot;
+       ⟹ ★★★ 04 章&quot;few-shot 是格式对齐&quot;论点的反向验证
+    ⑩ ✅ 去污染：10-gram 过滤 + 知识截止 2024-07 + 只用 2023 前竞赛题，
+       ⚠️ 但主动承认&quot;n-gram 挡不住换句话说的题&quot;
+       ⟹ ★★★ 会说自己方法边界的报告，比宣称零污染的报告可信
+
+    ⟹ 🔑🔑 最后一句：★★★ 这两份报告值得学的不是它们的分数，
+       是它【把口径写清楚】这件事本身。
+       ⚠️ 你自己写评测结论时，请照着 §10.8 那张表填。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>下一章：<a href="11-怎么读懂一张榜单.html">11-怎么读懂一张榜单.md</a> —— ★ 把前十章的所有教训，压成一套【看到分数先问什么】的操作流程。<br />
+返回 <a href="README.html">评测入门总目录</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 · 显存账本：那 1120 GB 到底是怎么来的</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="01-为什么需要分布式训练.html">← 01 为什么需要分布式训练</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="03-通信原语.html">03 通信原语</a></p>
+</blockquote>
+<h1 id="02-1120-gb">02 · 显存账本：那 1120 GB 到底是怎么来的</h1>
+<blockquote>
+<p><strong>这一章是全教程的地基。</strong> 把这张账本记住，后面每一种并行"到底省了什么"就都是一句话的事。<br />
+读完你应该能回答：为什么是 <strong>16 字节/参数</strong>？为什么优化器状态比模型本身还大？激活值为什么是唯一一个"和参数量无关"的项？</p>
+</blockquote>
+<hr />
+<h2 id="21">2.1 显存里只有四样东西</h2>
+<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────┐
+│                  训练时 GPU 显存里的四样东西                     │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  ①  参数     parameters      模型本身的权重                     │
+│  ②  梯度     gradients       每个参数对应一个，反向传播算出来的  │
+│  ③  优化器状态 optimizer states  Adam 给每个参数额外记的账       │
+│  ④  激活值   activations     前向过程中每一层的中间结果          │
+│                                                                │
+│  ★ ①②③ 合称【模型状态 model states】，大小【只和参数量有关】   │
+│  ★ ④   是唯一一个【和 batch、序列长度有关】的项                 │
+│    → 这个区别非常重要，它决定了哪一种并行能省哪一项              │
+└────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ ZeRO 论文（<a href="../papers/ZeRO-Memory-Optimizations-Trillion-Parameter-arXiv-1910.02054.pdf">papers/ZeRO-...-arXiv-1910.02054.pdf</a>）就是这么分的，原文：<br />
+<em>"For large models, the majority of the memory is occupied by model states which include the optimizer states (such as momentum and variances in Adam), gradients, and parameters."</em><br />
+<em>"The remaining memory is consumed by activation, temporary buffers and unusable fragmented memory, which we refer to collectively as residual states."</em></p>
+</blockquote>
+<hr />
+<h2 id="22-12316">2.2 先算 ①②③：那个著名的「16 字节/参数」</h2>
+<h3 id="bf16">为什么不能全用 BF16</h3>
+<p><strong>你可能会想：既然 BF16 是 2 字节，那 70B 参数就是 140 GB，为什么还要 FP32？</strong></p>
+<blockquote>
+<p>📌 <strong>先解释三个格式</strong>（10 章会详细讲，这里只要知道字节数）：<br />
+- <strong>FP32</strong> = <strong>32-bit F</strong>loating <strong>P</strong>oint，单精度浮点，<strong>4 字节</strong>，精度高<br />
+- <strong>FP16</strong> = 半精度浮点，<strong>2 字节</strong><br />
+- <strong>BF16</strong> = <strong>B</strong>rain <strong>F</strong>loating Point 16，另一种半精度，<strong>2 字节</strong>，是现在训练的主流</p>
+</blockquote>
+<p><strong>答案是：参数更新那一步会"更新丢失"。</strong></p>
+<div class="codehilite"><pre><span></span><code>    举例：一个权重值 w = 1.0，学习率很小，这一步的更新量是 0.00001
+
+        用 BF16 存 w：BF16 只有 8 位尾数，在 1.0 附近能分辨的最小间隔约 0.0078
+        1.0 + 0.00001  →  ★ 四舍五入回 1.0，什么都没发生
+
+    ★ 训练几万步，每一步的更新都被吃掉了 → 模型根本不动
+</code></pre></div>
+
+<blockquote>
+<p>✅ 混合精度训练论文（<a href="../papers/Mixed-Precision-Training-arXiv-1710.03740.pdf">papers/Mixed-Precision-Training-arXiv-1710.03740.pdf</a>）就是为了解决这个问题提出的：<br />
+✅ 原文：<em>"we maintain a single-precision copy of weights that accumulates the gradients after each optimizer step"</em><br />
+—— <strong>额外留一份 FP32 的"主权重"（master weights），更新在它上面做。</strong></p>
+</blockquote>
+<h3 id="_1">那张账本</h3>
+<p><strong>于是一个参数需要存这些东西</strong>（BF16 混合精度 + Adam 优化器，这是 2024–2026 年的绝对主流配置）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>存什么</th>
+<th>精度</th>
+<th>字节/参数</th>
+<th>为什么需要</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>参数</strong>（计算用的副本）</td>
+<td>BF16</td>
+<td><strong>2</strong></td>
+<td>前向/反向的矩阵乘用它</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>梯度</strong></td>
+<td>BF16</td>
+<td><strong>2</strong></td>
+<td>反向传播的产物</td>
+</tr>
+<tr>
+<td>③a</td>
+<td><strong>FP32 主权重</strong></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>更新在它上面做，避免更新丢失</td>
+</tr>
+<tr>
+<td>③b</td>
+<td><strong>Adam 一阶动量 m</strong></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>Adam 要记「梯度的滑动平均」</td>
+</tr>
+<tr>
+<td>③c</td>
+<td><strong>Adam 二阶动量 v</strong></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>Adam 要记「梯度平方的滑动平均」</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>★ 16</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★  每个参数 16 字节  ★★★
+
+    这个数字请背下来。它是分布式训练所有讨论的起点。
+
+        70B 模型  →  70×10^9 × 16 = 1120 GB      ← 01 章那个数就是这么来的
+        405B 模型 →  405×10^9 × 16 = 6480 GB     ← 需要 81 张 H100 才装得下模型状态
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>反直觉但关键的一点</strong>：<strong>优化器状态（12 字节）比模型本身（2 字节）大 6 倍。</strong><br />
+你花 80 GB 显存，只有 10 GB 是"模型"，70 GB 是"训练这件事的开销"。<br />
+<strong>★ ZeRO 的全部立意就在这一行：这 12 字节，凭什么每张卡都存一份？</strong></p>
+</blockquote>
+<h3 id="adam">Adam 为什么要记两个动量</h3>
+<blockquote>
+<p>📌 <strong>Adam</strong> = <strong>Ada</strong>ptive <strong>M</strong>oment estimation，自适应矩估计（<a href="../papers/Adam-Optimizer-arXiv-1412.6980.pdf">papers/Adam-Optimizer-arXiv-1412.6980.pdf</a>，Kingma &amp; Ba 2014）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    朴素梯度下降：  w ← w − lr × g          （g 是这一步的梯度）
+                    ❌ 梯度噪声大，会左右横跳
+                    ❌ 不同参数的梯度量级差几个数量级，一个学习率不够用
+
+    Adam：
+        m ← β₁·m + (1−β₁)·g          一阶动量：梯度的滑动平均 → 平滑噪声
+        v ← β₂·v + (1−β₂)·g²         二阶动量：梯度平方的滑动平均 → 度量&quot;这个参数梯度多大&quot;
+        w ← w − lr · m̂ / (√v̂ + ε)    ★ 除以 √v：梯度大的参数步子迈小点，反之亦然
+
+    ★ 所以每个参数要额外记 m 和 v 两个数 —— 这就是那 8 字节的来源。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>AdamW</strong>（<a href="../papers/AdamW-Decoupled-Weight-Decay-arXiv-1711.05101.pdf">papers/AdamW-...-arXiv-1711.05101.pdf</a>）是 Adam 的一个修正版，把权重衰减从梯度里拆出来单独做，<strong>显存开销完全一样</strong>。现在几乎所有大模型用的都是 AdamW。</p>
+<p>📌 ⚠️ <strong>Muon 优化器</strong>（<a href="../papers/Muon-is-Scalable-for-LLM-Training-arXiv-2502.16982.pdf">papers/Muon-...-arXiv-2502.16982.pdf</a>）是近两年的新选择，只需要<strong>一个</strong>动量而不是两个，所以更省显存。论文原文：✅ <em>"Muon achieves ∼2× computational efficiency compared to AdamW with compute optimal training"</em>、✅ <em>"We open-source our distributed Muon implementation that is memory optimal and communication efficient"</em>。⚠️ 但本教程的账本一律按 AdamW 算，因为它仍是绝大多数框架的默认。</p>
+</blockquote>
+<hr />
+<h2 id="23-4">2.3 再算 ④：激活值</h2>
+<p><strong>激活值 = 前向过程中，所有"反向传播还要用到"的中间结果。</strong></p>
+<h3 id="_2">为什么要留着</h3>
+<div class="codehilite"><pre><span></span><code>    前向：  x  →[层1]→  a₁  →[层2]→  a₂  →[层3]→  loss
+
+    反向：  要算「层2 的权重梯度」，链式法则告诉你需要用到【层2 的输入 a₁】
+            → ★ 所以 a₁ 在前向算完后【不能扔】，要留到反向用完为止
+
+    ★ 一个 100 层的网络，就要同时留着 100 层的中间结果。
+</code></pre></div>
+
+<h3 id="_3">它的大小和什么有关</h3>
+<p><strong>★ 这是全章最关键的一个区别</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ①②③ 模型状态：  大小 = 参数量 × 16      ← 和 batch、序列长度【无关】
+    ④   激活值：     大小 ∝ b × L × d × l    ← 和参数量【无关】！
+
+        b = micro-batch size（一次前向喂几条）
+        L = 序列长度
+        d = hidden size
+        l = 层数
+</code></pre></div>
+
+<blockquote>
+<p>✅ Megatron 第三篇论文（<a href="../papers/Megatron-3-Reducing-Activation-Recomputation-arXiv-2205.05198.pdf">papers/Megatron-3-...-arXiv-2205.05198.pdf</a>）用一整节推导了这个公式。它的变量表（Table 1，原文）：<br />
+<code>s = sequence length, b = microbatch size, h = hidden dimension size, a = number of attention heads, L = number of transformer layers, t = tensor parallel size, p = pipeline parallel size, v = vocabulary size</code></p>
+</blockquote>
+<p><strong>不带任何优化时，一层 transformer 的激活值大约是</strong>：</p>
+<p>$$\text{每层激活} \approx s\,b\,h\,\left(34 + 5\frac{a\,s}{h}\right) \text{字节}$$</p>
+<div class="codehilite"><pre><span></span><code>    ★ 注意括号里第二项 5·a·s/h ：它带一个【额外的 s】
+      → 这一项来自注意力矩阵（[b, a, s, s]，那个 s² 的东西）
+      → ★ 序列长度翻倍，这一项翻【四】倍
+
+    举例（⚠️ 我按上式代入的估算）：
+      s=4096, b=1, h=8192, a=64, L=80 层
+
+        单层 ≈ 4096×1×8192 × (34 + 5×64×4096/8192)
+             = 33.6M × (34 + 160) = 33.6M × 194 ≈ 6.5 GB
+        80 层 ≈ 520 GB       ★★ 比 70B 的模型状态（1120 GB）小，但也是同一量级
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>两个直接推论，请记住</strong>：<br />
+<code>① 激活值可以靠【减小 micro-batch】来压 —— 但会拖慢（GPU 吃不饱）
+② 激活值随序列长度【超线性】增长 —— ★ 这就是长上下文训练的全部困难
+   → 08 章的上下文并行 CP 就是专门治这一项的</code></p>
+</blockquote>
+<h3 id="_4">✅ 一张真实的图</h3>
+<p>Megatron 第三篇论文的 Figure 1 画的就是这件事：</p>
+<blockquote>
+<p>✅ 原文：<em>"Figure 1 shows the memory required for four model configurations ranging from 22 billion parameters to 1 trillion parameters... It can be seen that for all these cases, the required memory for the baseline cases is above the 80GB memory provided by an NVIDIA A100 GPU."</em><br />
+✅ 图注：<em>"Parameters, optimizer state, and activations memory. The dashed red line represents the memory capacity of an NVIDIA A100 GPU."</em></p>
+</blockquote>
+<hr />
+<h2 id="24">2.4 一张完整的账本</h2>
+<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────────────────┐
+│              70B 模型，BF16 + AdamW，一张卡上的账（举例）             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ① 参数     BF16    70B × 2  =  140 GB   ┐                         │
+│  ② 梯度     BF16    70B × 2  =  140 GB   ├─ 模型状态 1120 GB        │
+│  ③ 优化器   FP32    70B × 12 =  840 GB   ┘   ★ 和 batch 无关        │
+│                                                                     │
+│  ④ 激活值   BF16    ≈ 520 GB（s=4096,b=1,80层）  ⚠️ 我的估算        │
+│                     ★ 和参数量无关，和 b×L 成正比                    │
+│  ─────────────────────────────────────────────                     │
+│  总计       ≈ 1640 GB                                               │
+│                                                                     │
+│  一张 H100 = 80 GB  →  ★ 差 20 倍                                   │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="25">2.5 ★ 每种并行到底省哪一项（全教程的路线图）</h2>
+<p><strong>把这张表和上面的账本对起来看，整个教程的结构就清楚了：</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>章</th>
+<th>省 ① 参数</th>
+<th>省 ② 梯度</th>
+<th>省 ③ 优化器</th>
+<th>省 ④ 激活</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DP</strong> 数据并行</td>
+<td><a href="04-数据并行DP.html">04</a></td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ 每卡 batch 变小</td>
+<td>梯度 all-reduce</td>
+</tr>
+<tr>
+<td><strong>ZeRO-1</strong></td>
+<td><a href="05-ZeRO与FSDP.html">05</a></td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ ÷N</td>
+<td>❌</td>
+<td>通信量不变</td>
+</tr>
+<tr>
+<td><strong>ZeRO-2</strong></td>
+<td><a href="05-ZeRO与FSDP.html">05</a></td>
+<td>❌</td>
+<td>✅ ÷N</td>
+<td>✅ ÷N</td>
+<td>❌</td>
+<td>通信量不变</td>
+</tr>
+<tr>
+<td><strong>ZeRO-3 / FSDP</strong></td>
+<td><a href="05-ZeRO与FSDP.html">05</a></td>
+<td>✅ ÷N</td>
+<td>✅ ÷N</td>
+<td>✅ ÷N</td>
+<td>❌</td>
+<td>通信量 ×1.5</td>
+</tr>
+<tr>
+<td><strong>TP</strong> 张量并行</td>
+<td><a href="06-张量并行TP.html">06</a></td>
+<td>✅ ÷t</td>
+<td>✅ ÷t</td>
+<td>✅ ÷t</td>
+<td>✅ 部分</td>
+<td>每层两次 all-reduce ★ 很贵</td>
+</tr>
+<tr>
+<td><strong>PP</strong> 流水线并行</td>
+<td><a href="07-流水线并行PP.html">07</a></td>
+<td>✅ ÷p</td>
+<td>✅ ÷p</td>
+<td>✅ ÷p</td>
+<td>⚠️ <strong>stage 0 完全不省</strong>（<a href="07-流水线并行PP.html">§7.8</a>）</td>
+<td>气泡（空转）</td>
+</tr>
+<tr>
+<td><strong>SP</strong> 序列并行</td>
+<td><a href="08-序列并行与上下文并行.html">08</a></td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ 补上 TP 漏掉的</td>
+<td>换成 all-gather+reduce-scatter</td>
+</tr>
+<tr>
+<td><strong>CP</strong> 上下文并行</td>
+<td><a href="08-序列并行与上下文并行.html">08</a></td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ ÷cp</td>
+<td>注意力要跨卡交换 KV</td>
+</tr>
+<tr>
+<td><strong>EP</strong> 专家并行</td>
+<td><a href="09-专家并行EP.html">09</a></td>
+<td>✅ ÷ep</td>
+<td>✅ ÷ep</td>
+<td>✅ ÷ep</td>
+<td>❌</td>
+<td>两次 all-to-all</td>
+</tr>
+<tr>
+<td><strong>混合精度</strong></td>
+<td><a href="10-混合精度与FP8.html">10</a></td>
+<td>✅ 字节数变少</td>
+<td>✅</td>
+<td>⚠️ 主权重仍是 FP32</td>
+<td>✅</td>
+<td>数值稳定性风险</td>
+</tr>
+<tr>
+<td><strong>重计算</strong></td>
+<td><a href="11-重计算与激活优化.html">11</a></td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅✅ 最狠</td>
+<td>多做一次前向（+30% 算力）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>读这张表的正确方式</strong>：<br />
+```<br />
+「装不下模型状态」  →  找 ①②③ 那三列有 ✅ 的：ZeRO / TP / PP / EP<br />
+「装不下激活值」    →  找 ④ 那一列有 ✅ 的：重计算 / SP / CP / 减小 micro-batch</p>
+<p>★ 这两类问题的药方完全不同。诊断错了，加再多卡也没用。</p>
+<p>⚠️★ <strong>最容易诊断错的就是 PP</strong>：它 ①②③ 三列全是 ✅，看着像万能药，<br />
+   但第 ④ 列上【第一个 stage 一点都不省】——在飞 p 份 × 每卡 L/p 层，p 被约掉了。<br />
+   ⟹ 「激活装不下」时加 PP 是无效处方。详见 <a href="07-流水线并行PP.html">§7.8</a>。<br />
+```</p>
+</blockquote>
+<hr />
+<h2 id="26">2.6 一个必须澄清的误解</h2>
+<p><strong>"我加了 8 张卡做数据并行，显存就够了吧？"</strong> —— <strong>不对。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★★ 朴素数据并行【每张卡都存一份完整的模型状态】★★
+
+        8 张卡 × 每张 1120 GB = 8960 GB，一点没省，只是复制了 8 份
+
+    → 它只省了【激活值】（因为每张卡的 batch 变小了）
+    → ★ 这正是 ZeRO 那篇论文的出发点，原文：
+</code></pre></div>
+
+<blockquote>
+<p>✅ <em>"Basic data parallelism (DP) does not reduce memory per device, and runs out of memory for models with more than 1.4B parameters on current generation of GPUs with 32 GB memory."</em><br />
+✅ <em>"DP replicates the entire model states across all data parallel process resulting in redundant memory consumption"</em></p>
+<p>🔑 <strong>「redundant memory consumption」（冗余的显存消耗）这个词就是 ZeRO 名字的来源</strong>：<br />
+<strong>ZeRO = Ze</strong>ro <strong>R</strong>edundancy <strong>O</strong>ptimizer，零冗余优化器。<strong>05 章就讲它怎么把这个冗余削掉。</strong></p>
+</blockquote>
+<hr />
+<h2 id="27">2.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 显存里只有四样东西：参数 / 梯度 / 优化器状态 / 激活值
+   ★ 前三样合称【模型状态】，只和参数量有关
+   ★ 第四样【激活值】只和 batch×序列长度×层数有关，和参数量无关
+     → 这个区别决定了「什么病该吃什么药」
+
+② ★★ 16 字节/参数 ★★   （BF16 混合精度 + AdamW）
+     参数 BF16   2
+     梯度 BF16   2
+     FP32 主权重 4    ← 不留它，小的更新会被四舍五入吃掉
+     Adam m      4
+     Adam v      4
+   → 70B 模型 = 1120 GB 模型状态，光这一项就要 14 张 H100
+   ★ 优化器状态（12B）是模型本身（2B）的 6 倍 —— ZeRO 的全部立意在此
+
+③ 激活值 ≈ s·b·h·(34 + 5·a·s/h) 字节/层  ✅ Megatron-3 论文
+   ★ 括号第二项带额外的 s → 序列长度翻倍，这一项翻【四】倍
+   → 这是长上下文训练困难的全部来源，08 章的 CP 专治此项
+
+④ ★ 朴素数据并行【一点显存都不省】，它复制而不是切分
+   → ZeRO = Zero Redundancy Optimizer，名字就是冲着这个冗余来的
+
+⑤ §2.5 那张表是全教程的路线图，遇到不知道该用哪种并行时回来查
+</code></pre></div>
+
+<p><strong>下一章讲通信原语</strong>——在讲怎么切之前，得先知道"切开之后卡和卡之间到底怎么对话"。</p>
+<hr />
+<blockquote>
+<p><a href="01-为什么需要分布式训练.html">← 01 为什么需要分布式训练</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="03-通信原语.html">03 通信原语</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

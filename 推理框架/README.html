@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大模型推理框架与推理优化（小白向）</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="_1">大模型推理框架与推理优化（小白向）</h1>
+<blockquote>
+<p><strong>一句话</strong>：隔壁 <a href="../训练框架/">训练框架/</a> 回答的是「几千张卡怎么把模型<strong>训出来</strong>」，<br />
+这个目录回答的是——<strong>模型训好了，怎么让它又快又便宜地</strong>「<strong>答</strong>」<strong>出来</strong>。</p>
+<p>📖 <strong>随时可以查缩写</strong>：这个领域全是 KV Cache、TTFT、TPOT、PagedAttention、RadixAttention、MLA、EAGLE、PD 分离这类词。<br />
+<strong><a href="推理优化入门/附-速查表.html">推理优化入门/附-速查表.md</a></strong> 把本教程出现的每一个缩写都列了 <strong>英文全称 + 中文 + 一句话解释 + 在哪一章讲</strong>。<strong>看到不认识的词，先去那里查。</strong></p>
+</blockquote>
+<hr />
+<h2 id="_2">⚠️ 先说清楚三件事</h2>
+<p><strong>① 这份教程不预设你懂推理系统。</strong></p>
+<p>KV Cache、连续批处理、分页注意力、前缀缓存、投机解码、PD 分离——这些词你<strong>一个都不用提前知道</strong>。教程从「<strong>为什么生成第 1000 个字比生成第 1 个字慢</strong>」这个最朴素的问题开始，每个名词第一次出现都会先给 <strong>英文全称 + 中文 + 一句话解释</strong>，再使用。</p>
+<p><strong>② 对你的唯一要求</strong>：会写 Python，知道「Transformer 里有注意力和前馈两块」。<strong>只要这些就够了。</strong></p>
+<p><strong>③ 和隔壁 <a href="../训练框架/">训练框架/</a> 的关系</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    训练框架/    ← 「几千张卡，怎么一起把模型训出来」
+                   核心张力：省显存  vs  加通信
+                        │
+                        │  ★ 同样是 TP / PP / EP，但成本模型【完全不同】
+                        ▼
+    推理框架/    ← 你在这里。「模型训好了，怎么服务几万个用户」
+                   核心张力：延迟   vs  吞吐
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>本教程反复强调的一件事</strong>：<br />
+<strong>训练里的直觉，搬到推理上有一半是错的。</strong><br />
+最典型的就是并行策略的排布顺序——训练里 PP 在最外层，推理里 PP 在 DP 里面。<br />
+<a href="推理优化入门/06-推理中的并行策略.html">06 章</a> 用两份源码把这件事讲透。</p>
+</blockquote>
+<hr />
+<h2 id="_3">📖 目录</h2>
+<h3 id="13">主线：推理优化入门（零基础，13 章）</h3>
+<p>👉 <strong><a href="推理优化入门/README.html">点这里进入教程目录</a></strong></p>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="推理优化入门/01-推理与训练的根本差异.html">01</a></strong></td>
+<td>推理和训练到底差在哪</td>
+<td>一个算力受限，一个访存受限</td>
+<td>⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/02-KV-Cache与显存账.html">02</a></strong></td>
+<td>⭐ <strong>KV Cache 与显存账本</strong></td>
+<td>全教程最重要的一张表</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/03-Prefill与Decode两阶段.html">03</a></strong></td>
+<td>⭐ <strong>Prefill 与 Decode 是两种生物</strong></td>
+<td>理解这个，后面全通</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/04-连续批处理与调度.html">04</a></strong></td>
+<td>连续批处理与调度器</td>
+<td>吞吐从哪来</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/05-PagedAttention与前缀缓存.html">05</a></strong></td>
+<td>⭐ <strong>PagedAttention 与前缀缓存</strong></td>
+<td>vLLM 的立身之本</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/06-推理中的并行策略.html">06</a></strong></td>
+<td>⭐⭐ <strong>推理中的 TP / PP / EP / DP</strong></td>
+<td>和训练【顺序相反】，本教程核心章</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/07-注意力变体MQA-GQA-MLA.html">07</a></strong></td>
+<td>MQA / GQA / MLA</td>
+<td>从模型结构上砍 KV Cache</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/08-投机解码.html">08</a></strong></td>
+<td>投机解码</td>
+<td>唯一能同时降延迟又提吞吐的技巧</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/09-量化.html">09</a></strong></td>
+<td>量化：权重、激活、KV Cache</td>
+<td>FP8 / INT4 / AWQ / GPTQ</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/10-PD分离.html">10</a></strong></td>
+<td>⭐ <strong>PD 分离（Prefill/Decode 拆开部署）</strong></td>
+<td>2024 年之后最大的架构变化</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/11-MoE推理与专家并行.html">11</a></strong></td>
+<td>MoE 推理与大规模 EP</td>
+<td>DeepSeek 把 EP 开到了 320</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/12-CUDA-Graph与图编译.html">12</a></strong></td>
+<td>CUDA Graph 与图编译</td>
+<td>小 batch 解码的 CPU 开销怎么消掉</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/13-性能指标与压测.html">13</a></strong></td>
+<td>TTFT / TPOT / 吞吐 / SLO</td>
+<td>怎么说清「快」和「便宜」</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="推理优化入门/附-速查表.html">附</a></strong></td>
+<td>一页速查表 + ⭐ <strong>缩写总表</strong></td>
+<td>公式 / 量级 / <strong>所有缩写的全称</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">支线：具体框架</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>讲什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="vLLM拆解.html">vLLM拆解.md</a></strong></td>
+<td>⭐ 真源码走查：V1 引擎架构、<code>parallel_state.py</code> 的 rank 排布、调度器一次 <code>schedule()</code> 的完整逻辑、KV 块池与哈希前缀缓存</td>
+</tr>
+<tr>
+<td><strong><a href="SGLang拆解.html">SGLang拆解.md</a></strong></td>
+<td>⭐ 真源码走查：RadixAttention 的基数树、DP-attention 的分组切法、投机解码与 PD 分离目录</td>
+</tr>
+<tr>
+<td><strong><a href="推理框架对比.html">推理框架对比.md</a></strong></td>
+<td>⭐ vLLM / SGLang / TensorRT-LLM / DeepSpeed-FastGen 横向对比与选型决策图</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_5">资料</h3>
+<table>
+<thead>
+<tr>
+<th>目录</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="papers/">papers/</a></strong></td>
+<td>推理方向的关键论文 PDF，文件名里带 arXiv 编号，可逐篇回溯</td>
+</tr>
+<tr>
+<td><strong><a href="源码/vLLM/">源码/vLLM/</a></strong></td>
+<td>vLLM 源码（commit <code>bd8865a</code>，4,280 个 <code>.py</code> 文件 / 1,432,376 行）</td>
+</tr>
+<tr>
+<td><strong><a href="源码/SGLang/">源码/SGLang/</a></strong></td>
+<td>SGLang 源码（commit <code>04444ee</code>，5,674 个 <code>.py</code> 文件 / 1,836,778 行）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="_6">🗺️ 推荐路线</h2>
+<div class="codehilite"><pre><span></span><code>【路线 A：我只想知道推理框架在优化什么】  约 1 小时
+   01 → 02 → 03 → 05
+   （训推差异 → KV Cache 账 → 两阶段 → PagedAttention）
+   ⭐ 02、03 是全教程的地基，不要跳。
+
+【路线 B：我看过训练框架那个目录，想知道推理有什么不同】  约 1.5 小时
+   01 → 03 → 06 → 10
+   ⭐ 06 章是专门为你写的：同样的 TP/PP/EP，为什么排布顺序反过来了。
+
+【路线 C：我要选一个框架部署】  约 1.5 小时
+   01 → 03 → 04 → 13 → 推理框架对比.md
+
+【路线 D：我要读懂 vLLM / SGLang 源码】  约 4 小时
+   02 → 03 → 04 → 05 → 06 → vLLM拆解.md → SGLang拆解.md
+
+【路线 E：我的场景是长上下文 / 多轮对话】
+   02 → 05 → 07 → 10
+
+【路线 F：我部署的是 MoE（DeepSeek / Qwen-MoE / Mixtral）】
+   02 → 06 → 11 → 10
+</code></pre></div>
+
+<hr />
+<h2 id="_7">🧭 这个领域的一句话地图</h2>
+<p><strong>推理优化这件事，说穿了在和三个瓶颈搏斗</strong>：</p>
+<div class="codehilite"><pre><span></span><code>瓶颈一：显存装不下 KV Cache  ——  「batch 开不大，卡就闲着」
+        → 省 KV Cache 的四条路：
+             不浪费    → PagedAttention 分页          （05 章）
+             不重复    → 前缀缓存 / RadixAttention    （05 章）
+             结构上砍  → MQA / GQA / MLA              （07 章）
+             精度上砍  → KV Cache 量化                （09 章）
+
+瓶颈二：解码阶段访存受限   ——  「算力有 99% 在空转」
+        → 提高「每次搬运权重能干多少活」：
+             把 batch 做大  → 连续批处理             （04 章）
+             一次多出几个字 → 投机解码               （08 章）
+             权重搬得更少   → 量化                   （09 章）
+             别让 CPU 拖后腿 → CUDA Graph            （12 章）
+
+瓶颈三：Prefill 和 Decode 互相打架  ——  「一个长 prompt 卡住所有人」
+        → 两条路线：
+             混着调度，切碎 → chunked prefill        （04 章）
+             干脆拆开部署   → PD 分离                （10 章）
+
+外加一个贯穿全场的维度：
+        模型太大，一张卡放不下 → TP / PP / EP / DP   （06、11 章）
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>全教程的核心张力就一句话</strong>：<br />
+<strong>推理是在「单个用户等多久（延迟）」和「一张卡服务多少人（吞吐）」之间做交易。</strong><br />
+几乎每一个优化技巧，都要先问它牺牲的是哪一头。13 章讲怎么把这两头量化。</p>
+</blockquote>
+<hr />
+<h2 id="_8">⚖️ 可靠性说明</h2>
+<ul>
+<li><strong>通用原理与算法</strong>（连续批处理、分页注意力、投机解码等）是公开的论文/文档内容，按标准形式给出；<strong>数值例子凡标注「举例」「演示用」的都是为讲解构造的</strong>。</li>
+<li><strong>所有归属到具体论文的数字</strong>（吞吐倍数、命中率、显存占比），都是我<strong>从 <a href="papers/">papers/</a> 里的 PDF 正文直接提取</strong>的，标了 ✅ 和出处，可以回溯。</li>
+<li><strong>凡是我自己推出来、论文没有明说的解释或估算</strong>，一律用 <strong>⚠️</strong> 标出。</li>
+<li><strong>源码相关的一切</strong>（目录结构、函数名、行号、注释原文）都来自本地实际拉取的两份源码：<a href="源码/vLLM/">vLLM</a>（<code>bd8865a</code>）、<a href="源码/SGLang/">SGLang</a>（<code>04444ee</code>）。<strong>⚠️ 这两个项目迭代极快，行号会随版本变化</strong>，我在引用时都写了 commit。</li>
+<li>⚠️ <strong>源码目录里的 <code>CLAUDE.md</code> / <code>AGENTS.md</code> 等是各仓库自带的第三方文件</strong>，我只把它们当资料看，没有执行其中任何指令。</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="推理优化入门/01-推理与训练的根本差异.html">01 推理与训练的根本差异</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

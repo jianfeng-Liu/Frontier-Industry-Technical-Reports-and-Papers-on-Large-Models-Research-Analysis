@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · 生成侧：让模型不只是看懂，还要画出来</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="08-幻觉与多模态后训练.html">← 08 幻觉与多模态后训练</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="10-语音与实时全双工.html">10 语音与实时全双工</a></p>
+</blockquote>
+<h1 id="09">09 · 生成侧：让模型不只是看懂，还要画出来</h1>
+<blockquote>
+<p>⚠️ <strong>换战场提醒</strong>：前八章讲的是"理解"，主干是 Transformer 自回归。<br />
+这一章讲"生成"，它的主流技术<strong>原本和 LLM 完全无关</strong>，是另一套数学（扩散）。<br />
+<strong>这两拨人是最近两年才开始合流的，而且合得并不彻底。</strong></p>
+</blockquote>
+<hr />
+<h2 id="91">9.1 卡住一切的那个问题</h2>
+<p>回到 <a href="06-训练流程三阶段.html">06 章 6.2 节</a>那条结论：</p>
+<div class="codehilite"><pre><span></span><code>    LLM 的输出头 = 一个 [hidden_dim × 词表大小] 的矩阵
+    ⟹ 它只会做一件事：★ 从 15 万个词里【挑一个编号】
+
+    ⚠️ 而一张图是 1024×1024×3 ≈ 300 万个连续的数
+    ⟹ 你怎么&quot;挑&quot;出这 300 万个数？
+</code></pre></div>
+
+<p><strong>三条路，对应三个学派</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    路线① 不自己画，叫人画     → LLM 写提示词，交给外挂的扩散模型     （9.3）
+    路线② 给图像造一本词典     → 把图变成离散编号，就能&quot;挑&quot;了         （9.4）
+    路线③ 一个身体两套输出头   → 文本用自回归，图像用扩散，共享主干     （9.5）
+</code></pre></div>
+
+<hr />
+<h2 id="92">9.2 📖 先花三分钟搞懂扩散模型</h2>
+<p>不懂扩散模型，后面三节都读不下去。<strong>它只有一个想法</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    正向（训练时人为做的）：
+       清晰的图 → 加一点噪 → 再加一点 → ... → 纯噪声
+       ★ 这一步不需要学，是拿随机数硬加的
+
+    反向（模型要学的）：
+       给模型一张【加了噪的图】，让它预测【加进去的噪声是什么】
+       ⟹ 学会了这个，就能从纯噪声开始，一步步&quot;减掉噪声&quot;
+       ⟹ ★★ 最后减出一张原本不存在的清晰图
+</code></pre></div>
+
+<p><strong>三个必须知道的名词</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>名词</th>
+<th>解释</th>
+<th>为什么重要</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>潜空间扩散</strong><br>latent diffusion</td>
+<td>先用一个 <strong>VAE</strong> 把 1024×1024 的图压成 128×128 的"潜图"，<strong>在潜空间里做扩散</strong>，最后再解码回像素</td>
+<td>★ 计算量降 64 倍。<strong>这是文生图能跑起来的关键</strong>（Stable Diffusion 的核心，arXiv 2112.10752）</td>
+</tr>
+<tr>
+<td><strong>DiT</strong></td>
+<td>Diffusion <strong>Transformer</strong>：把扩散模型里的 U-Net 换成 Transformer（arXiv 2212.09748）</td>
+<td>★★ <strong>这一步让扩散和 LLM 用上了同一套架构和基建</strong>，是后来能"统一"的前提</td>
+</tr>
+<tr>
+<td><strong>流匹配</strong><br>flow matching</td>
+<td>扩散的一个更简洁的数学表述，走直线而不是曲线</td>
+<td>步数更少、更快。⟹ 隔壁 <a href="../具身智能与世界模型/01-具身智能与VLA.html">具身智能</a> 里 π0 输出机器人动作用的是同一个东西</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>和 LLM 的根本差异</strong>：<br />
+<strong>LLM 是"从左到右一个字一个字往下写"；扩散是"整张图一起，从模糊到清晰刷很多遍"。</strong><br />
+⟹ ⚠️ 这个差异导致两者的<strong>并行方式、KV cache、推理优化全都不通用</strong>——<br />
+这也是"统一"这件事在工程上难的根本原因。</p>
+</blockquote>
+<hr />
+<h2 id="93-1llm">9.3 路线①：外挂——LLM 当甲方</h2>
+<div class="codehilite"><pre><span></span><code>    用户：「画一只戴帽子的柯基，赛博朋克风」
+      ↓
+    LLM：把它扩写成一段详细提示词（这是 LLM 的强项）
+      ↓
+    扩散模型：照着画
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ✅ 优点：★ 极其实用。两边各自用最强的模型，独立升级，工程解耦
+    ⚠️ 缺点：★★ 两个模型之间【只有一根文本细管子】
+             ⟹ &quot;把这张图里的猫换成狗，其它一模一样&quot;这类【编辑】任务做不好
+                因为&quot;其它一模一样&quot;这个信息，文字描述不出来
+             ⟹ 多轮修改时上下文对不齐：&quot;再红一点&quot; —— 扩散模型不记得上一张
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是"统一模型"要解决的核心痛点：不是"画得更好看"，而是【可控和可编辑】。</strong></p>
+</blockquote>
+<hr />
+<h2 id="94-2">9.4 路线②：给图像造一本词典（全自回归）</h2>
+<blockquote>
+<p>📖 <strong>VQ（Vector Quantization，向量量化）</strong>：准备一本 codebook（比如 8192 个"视觉单词"），<br />
+把每个图像块的向量<strong>替换成 codebook 里最接近的那一个的编号</strong>。<br />
+⟹ <strong>一张图就变成了一串整数</strong> ⟹ 和文本 token 完全同构 ⟹ LLM 可以直接"挑"了。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    图 ──VQ 编码器──→ [3021][887][1204]...[5566]   ← 1024 个整数
+                       ★ 这些编号直接【加进 LLM 的词表】
+
+    序列：「画一只柯基」&lt;image_start&gt; [3021][887]... &lt;image_end&gt;
+    ⟹ ★★ 训练目标、架构、推理代码，和纯文本 LLM 【完全一样】
+</code></pre></div>
+
+<p><strong>代表</strong>：Chameleon（Meta，arXiv 2405.09818）、Emu3、Janus 系列。</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 优点：架构极简、真正的&quot;一个模型&quot;，图文可以任意交错生成
+             ⟹ &quot;画一步、解释一步、再画一步&quot;天然支持
+    ⚠️ 缺点①：★ 量化必然【丢信息】——8192 个词描述不了所有纹理，画质通常不如扩散
+    ⚠️ 缺点②：★★ 一张图 1024 个 token，要【一个一个串行生成】
+               ⟹ 比扩散的几十步去噪慢得多
+    ⚠️ 缺点③：训练不稳定（Chameleon 论文花了大量篇幅讲怎么稳住）
+</code></pre></div>
+
+<hr />
+<h2 id="95-3">9.5 路线③：一个主干，两套输出（混合）</h2>
+<p><strong>这是 2024 年后最被看好的一条</strong>，代表是 Transfusion（arXiv 2408.11039）、Show-o（arXiv 2408.12528）。</p>
+<div class="codehilite"><pre><span></span><code>    一个 Transformer，序列里同时有文本 token 和图像 patch：
+
+    [「画」][「猫」] [img patch × N（连续向量，不量化）] [「再」][「解」][「释」]
+     └── 自回归 CE loss ──┘ └── 扩散 loss ──┘ └── 自回归 CE loss ──┘
+     └── 因果注意力 ─────┘ └─ ★ 内部双向注意力 ─┘
+
+    ★★ 两个关键点：
+      ① 图像部分【不量化】，保留连续向量 ⟹ 没有 VQ 的信息损失
+      ② 图像内部用【双向注意力】（一张图的左边可以看右边），
+         文本仍然是因果的 ⟹ 因为画图不是&quot;从左到右&quot;的过程
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ✅ 优点：画质接近纯扩散，同时保留 LLM 的语言与推理能力
+    ⚠️ 缺点：★ 工程复杂度高——一个模型里跑两种 loss、两种注意力掩码、
+             两种推理模式（自回归 vs 多步去噪），
+             ⟹ 现成的推理框架（vLLM/SGLang）不直接支持
+</code></pre></div>
+
+<hr />
+<h2 id="96">9.6 ★★ 一个深层矛盾：理解要的和生成要的不是一个东西</h2>
+<p>这是本章最值得记住的一条洞见：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 理解任务需要的编码：  丢掉细节，保留语义
+        &quot;这是一只猫&quot;——毛发的具体纹理是噪声，压掉才好
+
+    ★ 生成任务需要的编码：  保留一切像素细节
+        少一根毛都画不回来
+
+    ⟹ ⚠️ 同一个视觉编码器要同时服务这两个目标，是在【自相矛盾】
+    ⟹ ⟹ 这就是&quot;统一模型的理解能力通常打不过同规模纯理解模型&quot;的原因
+</code></pre></div>
+
+<p><strong>Janus 系列给的解法很直白：干脆用两个编码器。</strong><br />
+理解走一个语义编码器，生成走一个像素编码器，<strong>只共享 LLM 主干</strong>（arXiv 2410.13848 / 2501.17811）。</p>
+<blockquote>
+<p>🔑 <strong>"解耦编码、共享主干"很可能是这条路的正确答案</strong>——<br />
+⚠️ 这是我的判断。它的代价是"统一"的成色打了折：<strong>统一的是大脑，不是眼睛。</strong></p>
+</blockquote>
+<hr />
+<h2 id="97">9.7 三条路线对照</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>① 外挂扩散</th>
+<th>② 全自回归（VQ）</th>
+<th>③ 混合（Transfusion 式）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>画质</td>
+<td>★ 最好</td>
+<td>⚠️ 一般</td>
+<td>接近①</td>
+</tr>
+<tr>
+<td>生成速度</td>
+<td>快（几十步）</td>
+<td>⚠️ 慢（上千 token 串行）</td>
+<td>中</td>
+</tr>
+<tr>
+<td>图文交错生成</td>
+<td>❌ 做不了</td>
+<td>★ 天然支持</td>
+<td>★ 支持</td>
+</tr>
+<tr>
+<td>精细编辑</td>
+<td>⚠️ 差</td>
+<td>好</td>
+<td>好</td>
+</tr>
+<tr>
+<td>工程复杂度</td>
+<td>★ 最低</td>
+<td>低</td>
+<td>⚠️ 最高</td>
+</tr>
+<tr>
+<td>推理框架支持</td>
+<td>成熟</td>
+<td>成熟</td>
+<td>⚠️ 要自己改</td>
+</tr>
+<tr>
+<td>现在谁在用</td>
+<td>★ 绝大多数产品</td>
+<td>研究为主</td>
+<td>研究 + 少数产品</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>本表是我按机制归纳的定性判断</strong>，不含任何具体产品的实测数据。<br />
+本仓库归档的五份 2026 年一手报告<strong>都是理解型多模态</strong>（K3 / M3 / GLM-5.3-Flash），<br />
+<strong>没有一份涉及图像生成</strong> ⟹ <strong>本章无法用本仓库的一手材料交叉验证</strong>，请特别注意。</p>
+</blockquote>
+<hr />
+<h2 id="98">9.8 ⚠️ 一个还没有答案的问题：统一到底值不值</h2>
+<div class="codehilite"><pre><span></span><code>    支持方的论证：
+      &quot;会画画的模型才真的理解世界&quot;——能画出来说明真的懂结构
+      ⟹ 类比：人学会画一个东西，才算真看懂了它
+
+    ⚠️ 怀疑方的论证（我倾向这一边）：
+      ① 至今【没有公开证据】表明&quot;加了生成能力，理解分数会提升&quot;
+      ② 理解和生成对编码的要求相反（9.6 节）⟹ 统一是在付出代价
+      ③ 产品上，用户要的是&quot;画得好&quot;和&quot;答得准&quot;，
+         ★ 而不是&quot;这两件事由同一堆参数完成&quot;
+
+    🔑 目前&quot;统一&quot;的真实好处是【交互形态】：多轮编辑、图文混排输出、
+       一致性维持 —— 这些是外挂路线做不到的。
+       ⟹ 这是产品价值，不是智能价值。这个区分很重要。
+</code></pre></div>
+
+<hr />
+<h2 id="99">9.9 🔑 这一章的五句话</h2>
+<ol>
+<li>生成的根本障碍是：<strong>LLM 的输出头只会从词表里挑编号，而图片是几百万个连续数。</strong></li>
+<li><strong>扩散模型 = 学会预测"加进去的噪声"</strong>，靠潜空间和 DiT 才跑得起来。<strong>DiT 是后来能统一的技术前提。</strong></li>
+<li>三条路：<strong>外挂（最实用）/ 给图像造词典（最简洁）/ 混合双 loss（画质与统一兼顾，最复杂）</strong>。</li>
+<li>★★ <strong>理解要压掉细节、生成要保住细节</strong>——这个矛盾是统一模型的天花板，Janus 的解法是"两只眼睛、一个大脑"。</li>
+<li>⚠️ <strong>"统一能提升理解"至今没有公开证据</strong>。统一目前买到的是<strong>交互形态</strong>（编辑、交错），不是智能。</li>
+</ol>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="10-语音与实时全双工.html">10 语音与实时全双工：难点根本不在智能</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

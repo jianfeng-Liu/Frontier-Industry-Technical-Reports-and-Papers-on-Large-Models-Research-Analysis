@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · 上下文管理：主动扔东西是一项核心技术</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="04">04 · 上下文管理：主动扔东西是一项核心技术</h1>
+<blockquote>
+<p>⭐⭐ 这一章讲脚手架里最"不像功能"的一块。<br />
+结论提前说：★★★ ✅ 把全部历史留给模型，SWE-bench Lite 分数<br />
+从 <strong>18.0 掉到 15.0</strong>。<strong>留着不是免费的。</strong></p>
+</blockquote>
+<hr />
+<h2 id="41">4.1 名词：上下文窗口，以及它为什么必然不够用</h2>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：context window（上下文窗口）
+     ⟹ 模型一次能&quot;看见&quot;的文字总量上限，按 token（词元）计。
+     ★★ 超出这个量，最早的内容就必须被丢掉，否则请求会直接报错。
+
+   ★ 名词：token（词元）
+     ⟹ 模型处理文本的最小单位。⚠️ 粗略换算：
+        英文约 1 个 token ≈ 0.75 个单词；中文约 1 个汉字 ≈ 1~2 个 token。
+</code></pre></div>
+
+<p>★★★ 为什么"窗口再大也不够"？✅ SWE-bench 论文 Table 1 给了原因（★ 逐字数据）：</p>
+<table>
+<thead>
+<tr>
+<th>SWE-bench 一道题里的仓库</th>
+<th>均值</th>
+<th>最大值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>非测试文件数</td>
+<td><strong>3,010 个</strong></td>
+<td>5,890 个</td>
+</tr>
+<tr>
+<td>非测试代码行数</td>
+<td><strong>438K 行</strong></td>
+<td>886K 行</td>
+</tr>
+<tr>
+<td>issue（问题描述）长度</td>
+<td>195.1 词</td>
+<td>4,477 词</td>
+</tr>
+<tr>
+<td>标准答案改了几行</td>
+<td><strong>32.8 行</strong></td>
+<td>5,888 行</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 论文自己下的结论（★ 逐字）：</p>
+<blockquote>
+<p>"codebases consist of many more tokens (438K lines on average) than can typically<br />
+be fit into an LMs context window."</p>
+</blockquote>
+<p>⟹ <strong>代码库的 token 量（平均 438K 行）远超模型上下文窗口通常能装下的量。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 请注意上表最刺眼的对比：
+
+      仓库有 438,000 行  ──▶  但答案平均只改 32.8 行。
+
+      ⟹ ★★ 也就是说，99.99% 的代码是【噪音】。
+      ⟹ 🔑 上下文管理的全部任务就是：
+         【在有限的窗口里，尽量装那 32.8 行附近的东西。】
+</code></pre></div>
+
+<hr />
+<h2 id="42-swe-agent-5">4.2 ✅ SWE-agent 的做法：只保留最近 5 条观察</h2>
+<p>★★★ 论文 §3 "Context management" 一节，把做法写得很死（★ 逐字）：</p>
+<blockquote>
+<p>"To further improve context relevance, observations preceding the last 5 are each<br />
+collapsed into a single line, shown in Figure 31. By removing most content from<br />
+prior observations, we maintain essential information about the plan and action<br />
+history while reducing unnecessary context, which allows for more interaction<br />
+cycles and avoids showing outdated file information."</p>
+</blockquote>
+<p>⟹ <strong>为进一步提升上下文相关性，最近 5 条之前的观察，每条都被折叠成一行。通过移除此前观察的大部分内容，我们保留了关于计划和动作历史的关键信息，同时减少了不必要的上下文，这让交互轮次可以更多，也避免了展示过时的文件信息。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 拆开看，这一句话里藏了三个理由：
+
+   ┌──────────────────────────────────────────────────────────┐
+   │ ① 省地方  ⟹ 腾出的空间可以多转几轮循环                   │
+   │ ② ★★ 保留骨架 ⟹ 折叠成&quot;一行&quot;，不是删掉。               │
+   │    模型仍知道&quot;我第 3 步打开过 X 文件&quot;，只是看不到内容了  │
+   │ ③ ★★★ 避免过时信息 ⟹ 这一条最关键，见下方              │
+   └──────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 第 ③ 条为什么最关键：
+
+      第 3 步：模型 open 了 foo.py，看到第 100 行是 `return None`
+      第 7 步：模型 edit 了 foo.py，把第 100 行改成了 `return x`
+      第 9 步：★★ 如果第 3 步的旧内容还留在上下文里——
+              模型的&quot;记忆&quot;里，同一个文件的同一行有【两个互相矛盾的版本】。
+
+      ⟹ ★★★ 这不是&quot;浪费空间&quot;，这是【喂给它错误信息】。
+</code></pre></div>
+
+<p>✅ <strong>实测代价</strong>（论文 Table 3，SWE-bench Lite + GPT-4 Turbo）：</p>
+<table>
+<thead>
+<tr>
+<th>上下文策略</th>
+<th>分数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★ 只保留最近 5 条观察</td>
+<td><strong>18.0</strong></td>
+</tr>
+<tr>
+<td>★★★ 保留全部历史</td>
+<td><strong>15.0（↓ 3.0）</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 这就是本章的立论：
+      【主动扔掉信息，比留着更好。而且值 3 个点。】
+
+   ⚠️ 对新手最反直觉的一点：
+      你会本能地觉得&quot;多给模型一点信息总没坏处&quot;。
+      ★★ 这个实验说明不是——旧信息会【主动骗它】。
+</code></pre></div>
+
+<p>★★ 顺带，02 章讲过的那条也属于同一类设计：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ &quot;Once received, all past error messages except the first are omitted.&quot;
+   ⟹ 格式报错重试成功后，除第一条外的所有报错都从上下文里删掉。
+   ⟹ ★★ 同一个思路：【已经没用的东西，主动清掉。】
+</code></pre></div>
+
+<hr />
+<h2 id="43">4.3 三种上下文管理策略</h2>
+<p>⚠️ 这个三分法是我对公开实现的归纳，不是某篇论文的分类。但每一格都有 ✅ 实例。</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ 策略① 截断 / 折叠（truncate）───────────────────────┐
+   │  ★ 做法：超过 N 条的旧内容，直接删或压成一行。        │
+   │  ✅ 实例：SWE-agent 的&quot;最近 5 条观察&quot;                 │
+   │  ✅ 实例：Codex 的 tool_output_token_limit            │
+   │          （单条工具输出在历史里能占多少 token 的预算）│
+   │  ⟹ ★★ 优点：便宜、确定。缺点：★★★ 信息真的没了。     │
+   └───────────────────────────────────────────────────────┘
+   ┌─ 策略② 压缩总结（compact）───────────────────────────┐
+   │  ★★ 做法：快满时，【再调一次模型】，让它把前面的      │
+   │     对话总结成一段短文，用总结替换掉原文。            │
+   │  ✅ 实例：Claude Code 的 auto-compact（自动压缩）     │
+   │  ✅ 实例：Codex 的 model_auto_compact_token_limit     │
+   │  ⟹ ★★ 优点：保留语义。                               │
+   │     缺点：★★★【压缩本身就是一次大请求，很贵】        │
+   └───────────────────────────────────────────────────────┘
+   ┌─ 策略③ 隔离（isolate）──────────────────────────────┐
+   │  ★★★ 做法：把会产生大量垃圾输出的活，                │
+   │     丢给一个【独立上下文】的子 agent 去做，           │
+   │     只把它的结论拿回来。                              │
+   │  ✅ 实例：Claude Code 的 subagent（子 agent）         │
+   │  ⟹ ★★★ 优点：主对话完全不脏。                       │
+   │     缺点：子 agent 看不到主对话的上下文。            │
+   └───────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<h2 id="44-2claude-code-auto-compact">4.4 ✅ 策略②实例：Claude Code 的 auto-compact</h2>
+<p>★★ 以下全部来自 Claude Code 官方文档（<code>costs</code> 页），✅ 逐字引用：</p>
+<blockquote>
+<p>"Claude Code automatically optimizes costs through prompt caching, which reduces<br />
+costs for repeated content like system prompts, and auto-compaction, which<br />
+summarizes conversation history when approaching context limits."</p>
+</blockquote>
+<p>⟹ <strong>Claude Code 通过两个机制自动优化成本：提示词缓存（对系统提示词这类重复内容降费），以及自动压缩（在接近上下文上限时总结对话历史）。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 名词：auto-compact（自动压缩）
+     ⟹ 上下文快满时，脚手架自动把前面的对话总结成一段短文，
+        用总结替换原文，腾出空间继续干。
+
+   ★ 名词：prompt caching（提示词缓存）
+     ⟹ 每一轮都要把【整段对话】重新发给模型（模型没有记忆）。
+        缓存的作用是：重复的那部分不必重新计算，按更便宜的价格算。
+     ⚠️ 注意它不省 token，只省钱。
+</code></pre></div>
+
+<p>✅ 文档里还有一句，把"为什么长会话越来越贵"讲得很直白（★ 逐字）：</p>
+<blockquote>
+<p>"Claude Code sends your full conversation with every request, and each time Claude<br />
+uses tools it sends another request carrying that batch of tool results."</p>
+</blockquote>
+<p>⟹ <strong>Claude Code 每次请求都会把你的完整对话发过去；而且 Claude 每用一次工具，就会再发一次请求，把那批工具结果一起带上。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 这句话解释了 agent 为什么这么贵：
+
+      一个任务转 20 轮 = 发出 20 次请求，
+      第 20 次请求里装着前 19 轮的【全部内容】。
+      ⟹ ★★ 成本不是线性的，是【接近平方级】的。
+
+   ⟹ 这也是为什么&quot;折叠旧观察&quot;能省这么多——
+      省的不是一次，是【后面每一次请求都省】。
+</code></pre></div>
+
+<p>✅ 文档给的可操作项（★ 逐字工具名）：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/clear</code></td>
+<td>换不相干的任务时清空重开</td>
+</tr>
+<tr>
+<td><code>/compact</code></td>
+<td>手动触发压缩</td>
+</tr>
+<tr>
+<td><code>/compact &lt;指令&gt;</code></td>
+<td>★★ 压缩时告诉它保留什么。文档例子：<code>/compact Focus on code samples and API usage</code></td>
+</tr>
+<tr>
+<td><code>CLAUDE.md</code> 里写 <code># Compact instructions</code></td>
+<td>★★ 把压缩偏好固化到项目里</td>
+</tr>
+<tr>
+<td><code>/context</code></td>
+<td>看现在是什么占了地方</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="45-3claude-code-agent">4.5 ✅ 策略③实例：Claude Code 的子 agent</h2>
+<p>★★★ 官方文档 <code>sub-agents</code> 页，把上下文隔离说得很明确（✅ 逐字）：</p>
+<blockquote>
+<p>"Each subagent runs in its own context window with a custom system prompt,<br />
+specific tool access, and independent permissions."</p>
+</blockquote>
+<p>⟹ <strong>每个子 agent 在它自己的上下文窗口里运行，有自己的系统提示词、特定的工具权限和独立的许可设置。</strong></p>
+<blockquote>
+<p>"Each subagent starts with a fresh, isolated context window. It doesn't see your<br />
+conversation history, the skills you've already invoked, or the files Claude has<br />
+already read."</p>
+</blockquote>
+<p>⟹ <strong>每个子 agent 从一个全新的、隔离的上下文窗口开始。它看不到你的对话历史、你已经调用过的技能、或 Claude 已经读过的文件。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 典型用法（✅ 文档原话的场景）：
+      &quot;Use one when a side task would flood your main conversation with search
+       results, logs, or file contents you won&#39;t reference again&quot;
+      ⟹【当一个支线任务会用搜索结果、日志、或你不会再看的文件内容
+         淹没你的主对话时，用一个子 agent。】
+
+   ┌────────────────────────────────────────────────────────┐
+   │ 不用子 agent：                                          │
+   │   主对话 ──▶ 跑测试 ──▶ 3000 行日志涌进主上下文 💀      │
+   │                                                        │
+   │ 用子 agent：                                            │
+   │   主对话 ──▶ 派一个子 agent ──▶ 它自己那边收 3000 行    │
+   │           ◀── 只回来一句&quot;有 2 个测试挂了，在 X 和 Y&quot; ✅ │
+   └────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>★★ 但文档也明确写了它的代价（✅ 逐字，文档里是一条 <strong>Warning</strong>）：</p>
+<blockquote>
+<p>"When subagents complete, their results return to your main conversation. Running<br />
+many subagents that each return detailed results can consume significant context."</p>
+</blockquote>
+<p>⟹ <strong>子 agent 完成时，结果会回到你的主对话。如果跑很多子 agent、每个都返回详细结果，一样会吃掉大量上下文。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 🔑 隔离不是免费的：
+      ① 返回值还是会进主上下文
+      ② ★★★ 子 agent 看不到主对话，所以它可能【重复做已经做过的事】
+      ③ ✅ 文档另一处：&quot;a subagent&#39;s context window is sized by its own
+         model&quot; ⟹ 派给小模型，窗口也跟着变小
+</code></pre></div>
+
+<hr />
+<h2 id="46-codex">4.6 ✅ Codex 这一块的配置面</h2>
+<p>★★ Codex 是把上下文管理做成<strong>配置项</strong>暴露出来的，这些名字在官方 <code>config-reference</code> 文档里可查：</p>
+<table>
+<thead>
+<tr>
+<th>配置项（<code>config.toml</code> 里）</th>
+<th>类型 / 取值</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model_context_window</code></td>
+<td>数字</td>
+<td>当前模型可用的上下文 token 数</td>
+</tr>
+<tr>
+<td><code>model_auto_compact_token_limit</code></td>
+<td>数字</td>
+<td>★★★ 到多少 token 触发自动压缩；不设则用每个模型的默认值</td>
+</tr>
+<tr>
+<td><code>model_auto_compact_token_limit_scope</code></td>
+<td><code>total</code> | <code>body_after_prefix</code></td>
+<td>★★ 上面那个阈值是量【整个上下文】(<code>total</code>，默认) 还是只量【固定前缀之后新长出来的部分】</td>
+</tr>
+<tr>
+<td><code>compact_prompt</code></td>
+<td>字符串</td>
+<td>★★ 直接替换掉压缩用的提示词</td>
+</tr>
+<tr>
+<td><code>experimental_compact_prompt_file</code></td>
+<td>路径</td>
+<td>同上，但从文件读（实验特性）</td>
+</tr>
+<tr>
+<td><code>tool_output_token_limit</code></td>
+<td>数字</td>
+<td>★★★ 单条工具输出在历史里能留多少 token</td>
+</tr>
+</tbody>
+</table>
+<p>★★ 另外 Codex 的钩子（hook）事件里，有两个是专门给压缩用的：<code>PreCompact</code>（压缩前）和 <code>PostCompact</code>（压缩后）。</p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 请特别注意 model_auto_compact_token_limit_scope 这一项。
+
+      它区分【总量】和【前缀之后的增量】——
+      ⚠️ 我的解读：因为系统提示词 + 工具定义 + 项目说明这一大坨&quot;前缀&quot;
+      是每轮都一样的，它被提示词缓存住了，便宜。
+      ★★ 真正在长的是后面那截。按哪个口径算阈值，
+      直接决定【多久压缩一次】，也就直接决定成本和信息损失。
+
+   ⟹ ★★★ 这就是本目录 README 说的&quot;闭源产品公开的是【配置面】&quot;：
+      你看不到它压缩算法怎么写的，
+      但你能看到它把哪些旋钮交到了你手上——
+      ★★ 而这些旋钮，每一个都会动分数。
+</code></pre></div>
+
+<hr />
+<h2 id="47">4.7 三家做法对照</h2>
+<div class="codehilite"><pre><span></span><code>   ┌────────────┬──────────────┬───────────────┬──────────────┐
+   │            │ SWE-agent    │ Claude Code   │ Codex        │
+   ├────────────┼──────────────┼───────────────┼──────────────┤
+   │ 截断/折叠  │ ✅ 最近5条    │ ⚠️ 未公开细节 │ ✅ tool_output│
+   │            │   其余折一行 │               │  _token_limit│
+   ├────────────┼──────────────┼───────────────┼──────────────┤
+   │ 压缩总结   │ ❌ 没有       │ ✅ auto-compact│ ✅ model_auto│
+   │            │              │  + /compact   │  _compact_*  │
+   ├────────────┼──────────────┼───────────────┼──────────────┤
+   │ 子agent隔离│ ❌ 没有       │ ✅ subagent    │ ✅ 有 subagents│
+   │            │              │  独立上下文窗口│  文档页      │
+   ├────────────┼──────────────┼───────────────┼──────────────┤
+   │ 可查证程度 │ ✅✅ 论文+源码│ ✅ 行为/⚠️实现 │ ✅ 配置面    │
+   └────────────┴──────────────┴───────────────┴──────────────┘
+
+   ⟹ ★★ 一句话看懂这张表：
+      2024 年只有【截断】；2026 年的产品是【截断 + 压缩 + 隔离】三件套。
+</code></pre></div>
+
+<hr />
+<h2 id="48">4.8 本章总结</h2>
+<div class="codehilite"><pre><span></span><code>    🔑 六条带走：
+
+    ① ★★★ ✅ 仓库均 438K 行，答案均改 32.8 行。
+       ⟹ 上下文管理的任务 = 在有限窗口里装那 32.8 行附近的东西。
+
+    ② ★★★ ✅ SWE-agent：只留最近 5 条观察 = 18.0，
+       留全部历史 = 15.0。⟹ 主动扔，值 3 个点。
+
+    ③ ★★★ 🔑 扔的最大理由不是省地方，是【旧信息会骗它】——
+       文件改过之后，旧版本还留在上下文里就是错误信息。
+
+    ④ ★★ 三种策略：截断（便宜、真丢信息）/ 压缩（保语义、贵）/
+       隔离（主对话干净、但子 agent 是瞎的）。
+
+    ⑤ ★★★ ✅ &quot;每次请求都发完整对话&quot; ⟹ agent 成本接近平方级增长。
+       ⟹ 折叠旧内容省的是【后面每一次请求】。
+
+    ⑥ ★★ ✅ 闭源产品公开的是【旋钮】不是【算法】：
+       Codex 的 model_auto_compact_token_limit_scope 这种配置项，
+       名字和取值可查，实现查不到。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>上一章：<a href="03-工具集与ACI.html">03 工具集与 ACI</a> ｜ 下一章：<a href="05-权限与沙箱.html">05 权限与沙箱</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

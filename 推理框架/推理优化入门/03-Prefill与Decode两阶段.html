@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 Prefill 与 Decode：两个性格相反的阶段</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="03-prefill-decode">03 Prefill 与 Decode：两个性格相反的阶段</h1>
+<blockquote>
+<p><strong>一句话</strong>：一次推理被切成两段——<strong>Prefill（读题）算力受限、并行度高</strong>，<strong>Decode（答题）访存受限、并行度=1</strong>。它们抢同一张卡，是推理系统一切复杂度的来源。</p>
+</blockquote>
+<hr />
+<h2 id="31">3.1 一次请求的完整生命</h2>
+<p>用户输入 <em>"请介绍一下杭州"</em>（假设 6 个 token），模型回答 200 个字：</p>
+<div class="codehilite"><pre><span></span><code>    ┌─────────────── Prefill（预填充）───────────────┐
+    │  把 6 个 token 【一次性】喂进模型              │
+    │  ① 算出全部 6 个位置的 K、V → 写进 KV Cache    │
+    │  ② 只取最后一个位置的输出 → 采样出第 1 个字「杭」│
+    │  ★ 一次前向，处理 6 个 token                   │
+    └───────────────────────────────────────────────┘
+                          ↓
+    ┌─────────────── Decode（解码）─────────────────┐
+    │  第 1 步：喂「杭」→ 读 KV[0:6] → 吐「州」       │
+    │  第 2 步：喂「州」→ 读 KV[0:7] → 吐「是」       │
+    │  第 3 步：喂「是」→ 读 KV[0:8] → 吐「浙」       │
+    │   ...                                          │
+    │  第 199 步：................. → 吐「。」        │
+    │  ★★ 199 次前向，每次只处理 【1 个】 token       │
+    │  ★★ 而且必须【严格串行】——不算出第 n 个字，     │
+    │      就没法作为第 n+1 步的输入                  │
+    └───────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>两个必须刻进脑子的数字</strong>：这一条请求做了 <strong>200 次前向</strong>，其中 <strong>1 次是 Prefill，199 次是 Decode</strong>。<br />
+<strong>Decode 占了 99.5% 的前向次数，却只贡献 200/206 的 token。</strong></p>
+</blockquote>
+<hr />
+<h2 id="32">3.2 两个阶段的性格对照</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────┬────────────────────┬────────────────────┐
+│              │  Prefill           │  Decode            │
+├──────────────┼────────────────────┼────────────────────┤
+│ 一次处理      │  整个 prompt        │  ★ 1 个 token      │
+│ 的 token 数   │  （几百 ~ 几万）    │                    │
+├──────────────┼────────────────────┼────────────────────┤
+│ 算术强度      │  高（&gt;300）         │  ★ ≈1，极低         │
+│ 瓶颈          │  ✅ 算力受限        │  ❌ 访存受限        │
+│ GPU 利用率    │  40%~70%           │  ★ 常常 &lt;5%        │
+├──────────────┼────────────────────┼────────────────────┤
+│ 矩阵形状      │  矩阵 × 矩阵        │  ★ 向量 × 矩阵      │
+│              │  (GEMM)            │  (GEMV，天生低效)   │
+├──────────────┼────────────────────┼────────────────────┤
+│ KV Cache      │  ★ 大量【写入】     │  ★ 少量写、大量【读】│
+├──────────────┼────────────────────┼────────────────────┤
+│ 耗时          │  一次几十~几百 ms   │  一次几~几十 ms     │
+│ 总耗时占比    │  小                │  ★★ 大头            │
+├──────────────┼────────────────────┼────────────────────┤
+│ 决定哪个指标  │  TTFT（首字延迟）   │  TPOT（每字延迟）   │
+├──────────────┼────────────────────┼────────────────────┤
+│ 加卡（TP）    │  ✅ 有效，算力翻倍   │  ⚠️ 收益递减，       │
+│ 的收益        │                    │  通信开销可能占主导 │
+└──────────────┴────────────────────┴────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>GEMM</strong>（<strong>GE</strong>neral <strong>M</strong>atrix <strong>M</strong>ultiply，通用矩阵乘）——矩阵乘矩阵，GPU 最擅长的形状。<br />
+📖 <strong>GEMV</strong>（<strong>GE</strong>neral <strong>M</strong>atrix-<strong>V</strong>ector multiply，矩阵向量乘）——矩阵乘一个向量。<br />
+★ 差别在哪：GEMM 把权重搬进来能复用很多次；GEMV 搬进来只用一次。<strong>Decode 天然是 GEMV</strong>，这就是 01 章那个「算术强度≈1」的具体形态。</p>
+</blockquote>
+<hr />
+<h2 id="33">3.3 ★★ 核心冲突：它们抢同一张卡</h2>
+<p>真实服务里，同一时刻既有新用户在 Prefill，又有老用户在 Decode。GPU 只有一个，怎么排？</p>
+<h3 id="prefill-vllm-v0">做法一：Prefill 优先（vLLM v0 早期的默认）</h3>
+<div class="codehilite"><pre><span></span><code>    时间轴 ──────────────────────────────────────────►
+    [ 用户A的Prefill (300ms) ][ 所有人Decode ][ 用户B的Prefill (300ms) ][ Decode ]
+                                    ↑
+                    ★★ 所有正在打字的用户，在这 300ms 里【一个字都不吐】
+                       用户感受：说到一半突然卡住
+</code></pre></div>
+
+<blockquote>
+<p>这个现象有个名字：<strong>generation stall（生成停顿）</strong>。<br />
+✅ Sarathi-Serve 论文（arXiv 2403.02310，<code>papers/Sarathi-Serve-Chunked-Prefill-arXiv-2403.02310.pdf</code>）就是冲着它去的。</p>
+</blockquote>
+<h3 id="decode">做法二：Decode 优先</h3>
+<div class="codehilite"><pre><span></span><code>    ⟹ 新用户的 prompt 永远排不上队 → TTFT 无限长 → ★ 饿死（starvation）
+</code></pre></div>
+
+<h3 id="chunked-prefill">做法三：★ 混合批（chunked prefill）——现在的主流答案</h3>
+<p>把长 Prefill <strong>切成小块</strong>，每一步都塞进 Decode 批次里一起跑：</p>
+<div class="codehilite"><pre><span></span><code>    每一步的批次都长这样：
+    ┌────────────────────────────────────────────────┐
+    │  用户A Prefill 的第 3 块  (448 个 token)        │
+    │  用户C Decode            (1 个 token)          │
+    │  用户D Decode            (1 个 token)          │
+    │  ...                                           │
+    │  用户Z Decode            (1 个 token)          │
+    ├────────────────────────────────────────────────┤
+    │  合计 512 个 token  ← ★ 这就是「token 预算」     │
+    └────────────────────────────────────────────────┘
+
+    ★★ 妙在哪：
+       ① Decode 用户【每一步都能吐字】，不再卡住 → TPOT 平稳
+       ② 那 448 个 Prefill token 把算术强度顶上去了
+          → 这一步不再是访存受限，GPU 吃得满 → 吞吐也高
+       ③ 一次同时治好了 TPOT 和吞吐    ★ 这是这个设计的精髓
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>源码可查</strong>：vLLM 调度器的 token 预算就是这个机制。<br />
+<a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L497">scheduler.py:497</a> 开出预算：<br />
+<code>python
+token_budget = self.max_num_scheduled_tokens</code><br />
+<a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L564">scheduler.py:564-566</a> 给单条长 prompt 封顶、再被总预算夹一次：<br />
+<code>python
+if 0 &lt; self.scheduler_config.long_prefill_token_threshold &lt; num_new_tokens:
+    num_new_tokens = self.scheduler_config.long_prefill_token_threshold
+num_new_tokens = min(num_new_tokens, token_budget, input_budget - draft_slots)</code><br />
+★ <code>long_prefill_token_threshold</code> 就是「一条超长 prompt 单步最多切多少」，<code>min(..., token_budget, ...)</code> 就是「不许超总预算」。<strong>教科书式的实现。</strong></p>
+<p>📖 同一个思路在不同框架里叫法不同，看到了知道是一回事：<br />
+vLLM 叫 <strong>chunked prefill</strong>，DeepSpeed 叫 <strong>Dynamic SplitFuse</strong>（论文 arXiv 2401.08671），Sarathi-Serve 叫 <strong>stall-free batching（无停顿批处理）</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="34">3.4 混合批也有代价</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 代价一：Prefill 被切块后，每一块都要【重读】前面已经写好的 KV
+       原本一次读完，现在读 N 次 → 额外的访存
+       ✅ Sarathi-Serve 论文明确讨论了这个开销，并给出了 chunk 大小的取舍
+
+    ⚠️ 代价二：预算怎么定是个玄学
+       预算小 → Decode 用户吐字快（TPOT 好），但 Prefill 拖很久（TTFT 差）
+       预算大 → 反过来
+       ★ 没有普适最优值，取决于你的 SLO 更看重哪一个
+
+    ⚠️ 代价三：两个阶段最优的【并行策略不一样】，混在一起只能用一套
+       Prefill 想要大 TP（算力受限，加卡有效）
+       Decode 想要小 TP + 大 DP（访存受限，加卡收益递减）
+       ★★ 混合批被迫用同一套配置 ⟹ 两边都不是最优
+</code></pre></div>
+
+<p><strong>第三条代价，直接催生了下一个想法</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★★ 既然两个阶段性格相反、最优配置也不同，
+       为什么要把它们放在同一台机器上？
+
+       ⟹ 拆开！Prefill 一个集群、Decode 一个集群，中间传 KV Cache
+       ⟹ 这就是 【PD 分离】，见 [10 章](10-PD分离.md)
+       ✅ 代表工作：DistServe (2401.09670)、Splitwise (2311.18677)、
+          Mooncake (2407.00079)，三篇 PDF 都在 papers/ 里
+</code></pre></div>
+
+<hr />
+<h2 id="35">3.5 顺带解决一个常见误解</h2>
+<blockquote>
+<p>❓ "Prefill 那么快，是不是可以忽略？"</p>
+</blockquote>
+<p>不能。看两个场景：</p>
+<div class="codehilite"><pre><span></span><code>    场景一：对话机器人，prompt 20 字、回答 500 字
+            ⟹ Decode 是绝对大头，Prefill 可忽略
+
+    场景二：★ RAG（检索增强生成）/ 长文档总结
+            prompt 32000 字、回答 200 字
+            ⟹ Prefill 要跑 32000 个 token，可能要【好几秒】
+            ⟹ TTFT 全部由 Prefill 决定，Decode 反而不是瓶颈
+
+    ⟹ ★★ 两个阶段谁是瓶颈，取决于你的【输入输出长度比】。
+       这个比值叫 P:D ratio，是选型时第一个要问的数字（13 章）。
+</code></pre></div>
+
+<p>而<strong>前缀缓存</strong>正是场景二的解药——如果 32000 字里有 30000 字是每次都一样的系统提示词，那 Prefill 可以直接跳过它们（05 章）。</p>
+<hr />
+<h2 id="36">3.6 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  ① 一次请求 = 1 次 Prefill + N 次 Decode                      │
+│     ★ Decode 占 99% 的前向次数                                │
+│                                                              │
+│  ② Prefill：算力受限、GEMM、决定 TTFT、加卡有效               │
+│     Decode：访存受限、GEMV、决定 TPOT、加卡收益递减           │
+│                                                              │
+│  ③ ★★ 两者抢同一张卡：                                        │
+│     Prefill 优先 → 老用户卡住（generation stall）             │
+│     Decode 优先 → 新用户饿死                                  │
+│     ⟹ chunked prefill 混合批：切块塞进 Decode 批，两全        │
+│     ✅ vLLM 用 token_budget 实现（scheduler.py:497/564-568）  │
+│                                                              │
+│  ④ 混合批的残余问题：两阶段最优并行配置不同，只能用一套        │
+│     ⟹ 催生 PD 分离（10 章）                                   │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="04-连续批处理与调度.html">04 连续批处理与调度</a><br />
+这一章讲了「一步之内怎么排」，下一章讲「步与步之间怎么进出人」。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

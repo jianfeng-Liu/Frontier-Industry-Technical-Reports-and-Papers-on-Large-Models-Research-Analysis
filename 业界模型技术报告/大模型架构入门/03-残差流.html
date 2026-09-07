@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · 残差流：全教程最重要的一个直觉</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="02-Embedding与词表.html">← 02 Embedding 与词表</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="04-归一化.html">04 归一化</a></p>
+</blockquote>
+<h1 id="03">03 · 残差流：全教程最重要的一个直觉</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：如果你只读一章，读这章。<br />
+读完你应该能回答：<code>x = x + f(x)</code> 这个"加号"为什么是深度学习最重要的发明？残差流为什么可以当成一条"总线"？DeepSeek-V4 和 openPangu 的 <strong>mHC</strong>、Kimi K3 的 <strong>AttnRes</strong> 到底在改什么？为什么 GLM 和 MiniMax 选择不改？</p>
+</blockquote>
+<hr />
+<h2 id="31">3.1 先看那个式子</h2>
+<p>回忆 <a href="01-鸟瞰全景.html">01 章</a>的主循环：</p>
+<div class="codehilite"><pre><span></span><code>x = x + Attention( Norm(x) )
+x = x + FFN( Norm(x) )
+</code></pre></div>
+
+<p><strong>注意这不是 <code>x = Attention(Norm(x))</code>。</strong> 这个 <code>x +</code> 叫<strong>残差连接</strong>（residual connection / skip connection），2015 年 ResNet 提出。</p>
+<p>它看起来只是一个加号。<strong>但没有它，超过 20 层的网络根本训不起来。</strong></p>
+<hr />
+<h2 id="32-vs">3.2 为什么没有它就训不动：连乘 vs 连加</h2>
+<p>这一节是纯数学，但很短，而且是理解一切的基础。</p>
+<h3 id="_1">没有残差的情况</h3>
+<p>设第 $l$ 层是 $x_{l+1} = F_l(x_l)$，一共 $N$ 层。反向传播时，损失 $\mathcal{L}$ 对第 1 层输入的梯度是<strong>链式法则的连乘</strong>：</p>
+<p>$$\frac{\partial \mathcal{L}}{\partial x_1} = \frac{\partial \mathcal{L}}{\partial x_N}\cdot\frac{\partial F_{N-1}}{\partial x_{N-1}}\cdot\frac{\partial F_{N-2}}{\partial x_{N-2}}\cdots\frac{\partial F_1}{\partial x_1}$$</p>
+<p><strong>$N-1$ 个雅可比矩阵连乘。</strong> 设每个雅可比的"典型放大倍数"是 $\rho$：</p>
+<div class="codehilite"><pre><span></span><code>ρ = 0.9,  N = 50   →   0.9^49 ≈ 0.006      梯度消失，浅层几乎收不到信号
+ρ = 1.1,  N = 50   →   1.1^49 ≈ 106        梯度爆炸，训练发散
+ρ = 1.0            →   刚好，但这是【测度为零】的巧合，不可能自然维持
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是 2015 年之前深度网络的死穴</strong>：不是"深了学不到东西"，是<strong>梯度在传回去的路上就已经数值上死掉或炸掉了</strong>。而 $\rho$ 恰好等于 1 是不可能靠运气维持的——每一层的权重都在变。</p>
+</blockquote>
+<h3 id="_2">有残差的情况</h3>
+<p>$x_{l+1} = x_l + F_l(x_l)$，雅可比变成：</p>
+<p>$$\frac{\partial x_{l+1}}{\partial x_l} = \underbrace{I}_{\text{恒等}} + \frac{\partial F_l}{\partial x_l}$$</p>
+<p>连乘展开：</p>
+<p>$$\frac{\partial x_N}{\partial x_1} = \prod_{l=1}^{N-1}\left(I + \frac{\partial F_l}{\partial x_l}\right) = I + \sum_l \frac{\partial F_l}{\partial x_l} + \sum_{l&lt;m}\frac{\partial F_m}{\partial x_m}\frac{\partial F_l}{\partial x_l} + \cdots$$</p>
+<p><strong>关键就在展开式的第一项 $I$</strong>：</p>
+<div class="codehilite"><pre><span></span><code>❌ 无残差：只有【一条】路径，长度 N，梯度必须走完全程
+✅ 有残差：展开后有 2^(N-1) 条路径，长度从 0 到 N-1 都有
+           其中【长度为 0 的那条恒等路径，梯度原封不动地传到底】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>     无残差                        有残差
+                                 ┌──────────────────────┐ 长度0：梯度直达
+   x1 →F1→ x2 →F2→ x3           x1 ─┬──────┬──────┬──→ x4
+        ↑一条路，49次连乘             ├→F1→─┤      │      短路径
+                                    │      ├→F2→─┤
+                                    └→F1→──┴→F2→─┘      长路径
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一句话</strong>：残差把<strong>连乘</strong>变成了<strong>连加</strong>。$\prod(1+a_i) \approx 1 + \sum a_i$（当 $a_i$ 小时）。<strong>加法不会指数衰减。</strong></p>
+<p>📌 <strong>一个很有用的经验观察</strong>：残差网络在行为上更像"<strong>很多个浅网络的集成</strong>"，而不是"一个很深的网络"。实验上随机删掉训练好的 ResNet 的某一层，性能只掉一点点；而无残差的网络删一层就废了。这也解释了为什么这一代模型敢堆到 93 层（Kimi K3）。</p>
+</blockquote>
+<hr />
+<h2 id="33">3.3 核心比喻：残差流是一条总线</h2>
+<p>现在换一个视角，这个视角比上面的数学更重要。</p>
+<p><strong>不要把模型想成"数据从一层流到下一层"。要把它想成：有一条贯穿全模型的"传送带"，每一层从上面读一点、往上面写一点。</strong></p>
+<div class="codehilite"><pre><span></span><code>        Embedding 把初始内容放上传送带
+              │
+   ═══════════╪══════════════════════════════════════════════ 残差流（宽度 d=5120）
+              │  ↑读            ↓写
+        第1层  ├──[Attn]────────┤       读整条流，写回一个增量
+              │  ↑读            ↓写
+              ├──[FFN]─────────┤
+              │
+   ═══════════╪═══════════════════════════════════════════════
+              │  ↑读            ↓写
+        第2层  ├──[Attn]────────┤
+              │  ↑读            ↓写
+              ├──[FFN]─────────┤
+              ⋮
+   ═══════════╪═══════════════════════════════════════════════
+              ▼
+        LM Head 从传送带上读走最终内容
+</code></pre></div>
+
+<h3 id="_3">"读"和"写"具体是什么</h3>
+<p>这个视角能被落到具体的矩阵上，非常实在：</p>
+<div class="codehilite"><pre><span></span><code>一个 FFN 是   W_down( act( W_gate·x , W_up·x ) )
+
+    W_gate, W_up : [d, d_ff]   ← 从残差流【读】。它的每一行对应流上的一个方向
+    W_down       : [d_ff, d]   ← 往残差流【写】。它的每一列对应流上的一个方向
+
+一个 Attention 是
+
+    W_Q, W_K, W_V : [d, ...]   ← 【读】
+    W_O           : [..., d]   ← 【写】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以残差流的 $d=5120$ 个维度，可以理解成 5120 条"通信频道"</strong>。<br />
+- 某一层把"这个词是主语"写到第 37 号频道上<br />
+- 后面第 40 层的某个注意力头，用它的 $W_Q$ 专门去读第 37 号频道<br />
+- <strong>两层之间不需要相邻，也不需要经过中间层的许可</strong> —— 中间层只是往流上加东西，不会覆盖它</p>
+</blockquote>
+<p><strong>这就是残差流被称为"总线"的原因</strong>：它是一个<strong>共享的、可寻址的、只做加法的通信媒介</strong>。</p>
+<h3 id="_4">一个重要推论：残差流的"带宽"是有限的</h3>
+<p>$d = 5120$ 意味着最多只有 5120 个正交方向。但模型要表示的概念远不止 5120 个。</p>
+<div class="codehilite"><pre><span></span><code>→ 所以模型必须【叠加】：不同的概念占用不完全正交的方向，靠近似正交勉强共存
+→ 高维空间里&quot;近似正交的方向&quot;数量是【指数级】的（Johnson–Lindenstrauss）
+   所以 5120 维能塞下的概念数量远大于 5120
+→ 代价：概念之间有微弱的串扰
+</code></pre></div>
+
+<blockquote>
+<p>📌 这也是为什么 $d$ 不能太小。openPangu 选 5120（<a href="02-Embedding与词表.html">02 章</a>）是在"省参数"和"总线带宽"之间做的权衡。</p>
+</blockquote>
+<hr />
+<h2 id="34">3.4 一个真实的副作用：残差范数会持续增长</h2>
+<p>这是理解 <a href="04-归一化.html">04 归一化</a>和 mHC 的前提。</p>
+<p>因为每层都在<strong>往流上加东西</strong>，而不是替换，所以 $|x_l|$ 会随层数单调增长。</p>
+<p>假设每层写入的增量 $F_l(x_l)$ 与当前的 $x_l$ <strong>大致独立</strong>（实践中近似成立），那么方差相加：</p>
+<p>$$|x_{l+1}|^2 \approx |x_l|^2 + |F_l|^2$$</p>
+<p>如果每层写入的幅度相当（这正是 Pre-Norm 造成的，见 <a href="04-归一化.html">04 章</a>），则</p>
+<p>$$|x_N| \approx \sqrt{N}\cdot|F|$$</p>
+<div class="codehilite"><pre><span></span><code>第 1 层：  ‖x‖ ≈ 1        新写入的增量占比 100%
+第 25 层： ‖x‖ ≈ 5        新写入的增量占比 1/5
+第 50 层： ‖x‖ ≈ 7.1      新写入的增量占比 1/7
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这带来两个真实的问题</strong>：</p>
+<p><strong>① 深层的"话语权"越来越小。</strong> 第 50 层再怎么努力，它写的东西相对于已经积累的 $\sqrt{50}$ 倍背景来说，只是一个小扰动。<strong>深层实际上被"稀释"了。</strong></p>
+<p><strong>② 每层的有效学习率被隐式改变。</strong> 因为 Pre-Norm 会先把 $x$ 归一化再送进子层，所以子层看到的输入始终是单位尺度，但它的输出被加到一个越来越大的 $x$ 上 —— 相当于<strong>深层的等效学习率被自动调小了</strong>。这有稳定的好处，也有"深层学不动"的坏处。</p>
+</blockquote>
+<p><strong>mHC 和 AttnRes 都是在动这个地方。</strong> 现在可以看它们了。</p>
+<hr />
+<h2 id="35-mhcdeepseek-v4-openpangu">3.5 改法一：mHC（DeepSeek-V4 / openPangu）</h2>
+<blockquote>
+<p>mHC = <strong>m</strong>anifold-constrained <strong>H</strong>yper-<strong>C</strong>onnections，源自超连接（Hyper-Connections）这条线。</p>
+</blockquote>
+<h3 id="_5">它在改什么</h3>
+<p>标准残差是<strong>一条</strong>流。mHC 把它变成 <strong>n 条并行的流</strong>（V4 和 openPangu 都用 <strong>n=4</strong>）：</p>
+<div class="codehilite"><pre><span></span><code>标准残差：                        mHC（n=4）：
+
+    ═══════ 一条流 ═══════          ═══════ 流 1 ═══════
+        │  ↑   ↓                    ═══════ 流 2 ═══════
+        └─[F]──┘                    ═══════ 流 3 ═══════
+                                    ═══════ 流 4 ═══════
+                                       ╲  ╲ ↑   ↓ ╱  ╱
+                                        └──[F]────┘
+                                     A: 从4条流【混合出】F的输入
+                                     C: 把F的输出【分发到】4条流
+                                     B: 4条流之间【互相混合】
+</code></pre></div>
+
+<h3 id="_6">公式</h3>
+<p>$$x_{l+1} = B_l\,x_l + C_l\,F_l(A_l\,x_l)$$</p>
+<p>其中 $x_l \in \mathbb{R}^{n\times d}$（n 条流，每条 d 维），而</p>
+<table>
+<thead>
+<tr>
+<th>矩阵</th>
+<th>形状</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$A_l$</td>
+<td>$1\times n$</td>
+<td><strong>读</strong>：把 n 条流加权合成一条，喂给子层</td>
+</tr>
+<tr>
+<td>$C_l$</td>
+<td>$n\times 1$</td>
+<td><strong>写</strong>：把子层的单条输出分发回 n 条流</td>
+</tr>
+<tr>
+<td>$B_l$</td>
+<td>$n\times n$</td>
+<td><strong>流间混合</strong>：n 条流之间怎么交换</td>
+</tr>
+</tbody>
+</table>
+<p><strong>注意 $A, B, C$ 都是可学习的、且是逐层不同的。</strong> 标准残差是它的特例：$n=1, A=B=C=1$。</p>
+<h3 id="manifold-constrained">关键在于"manifold-constrained"这个前缀</h3>
+<p><strong>如果 $B_l$ 自由学习，会立刻退化成一个 $n$ 层深的线性网络，重新引入 §3.2 的连乘爆炸问题</strong>（$B_N B_{N-1}\cdots B_1$ 的谱半径不受控）。</p>
+<p><strong>mHC 的做法：把 $B_l$ 约束在【双随机矩阵】流形上。</strong></p>
+<div class="codehilite"><pre><span></span><code>双随机矩阵（doubly stochastic）：
+    ① 所有元素 ≥ 0
+    ② 每一行和 = 1
+    ③ 每一列和 = 1
+
+例（n=3）：  ┌ 0.5  0.3  0.2 ┐   行和 = 1 ✓
+            │ 0.2  0.5  0.3 │   列和 = 1 ✓
+            └ 0.3  0.2  0.5 ┘
+</code></pre></div>
+
+<p><strong>为什么这个约束是对的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 双随机矩阵的谱半径【恰好等于 1】（Perron–Frobenius）
+   → 连乘 B_N···B_1 永远不会爆炸也不会消失，§3.2 的性质被完整保留
+
+② 它是【广义的置换/混合】：信息在 n 条流之间【重新分配】，总量守恒
+   → 不会凭空放大或丢失
+
+③ 所有 n×n 双随机矩阵构成【Birkhoff 多胞体】，它的顶点恰好是 n! 个置换矩阵
+   → 所以 B 学到的是&quot;n 条流之间的一种软置换&quot;，语义非常清楚
+</code></pre></div>
+
+<h3 id="sinkhornknopp">Sinkhorn–Knopp：怎么把任意矩阵投影到双随机</h3>
+<p>这是个漂亮的算法，而且你懂算法的话一眼就能看懂：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sinkhorn</span><span class="p">(</span><span class="n">M</span><span class="p">,</span> <span class="n">iters</span><span class="o">=</span><span class="mi">20</span><span class="p">):</span>
+    <span class="n">P</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">M</span><span class="p">)</span>                    <span class="c1"># 先取指数，保证非负</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iters</span><span class="p">):</span>
+        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># 归一化每一行 → 行和=1</span>
+        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># 归一化每一列 → 列和=1（行和被破坏一点）</span>
+    <span class="k">return</span> <span class="n">P</span>                          <span class="c1"># 交替投影，指数收敛到双随机</span>
+</code></pre></div>
+
+<p><strong>交替把行和列各归一化一次，反复迭代。</strong> 这是"交替投影法"，可以证明对严格正矩阵<strong>线性收敛</strong>（收敛速率由矩阵的 Hilbert 投影度量决定）。</p>
+<blockquote>
+<p>✅ <strong>DeepSeek-V4 和 openPangu 都是 n=4 条流、Sinkhorn 迭代 20 次。</strong>（两家报告均明确给出）</p>
+<p>⚠️ 两家用同一个技术且参数一致，我倾向认为是同一条公开工作的直接采用，但<strong>两份报告都没有互相引用，这只是我的推测</strong>。</p>
+</blockquote>
+<h3 id="_7">代价</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>代价</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>显存</strong></td>
+<td>残差流从 $[B,L,d]$ 变成 $[B,L,n,d]$，<strong>×4</strong></td>
+<td>结构直接决定</td>
+</tr>
+<tr>
+<td><strong>计算</strong></td>
+<td>每层多 3 个小矩阵 + 20 次 Sinkhorn 迭代</td>
+<td>矩阵本身很小（4×4），但 Sinkhorn 是<strong>串行</strong>的</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4 报告的实测</strong></td>
+<td><strong>训练墙钟 +6.7%</strong></td>
+<td>✅ V4 报告明确给出</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="36-attnreskimi-k3">3.6 改法二：AttnRes（Kimi K3）</h2>
+<blockquote>
+<p><strong>AttnRes = Attention Residuals。</strong> 它和 mHC 不是"改残差的两种做法"，而是在<strong>改两件完全不同的事</strong>：<br />
+<strong>mHC 改的是"残差流有几条"；AttnRes 改的是"这一层到底该读谁写进去的东西"。</strong></p>
+<p>📄 <strong>一手来源</strong>：Kimi K3 技术报告 §2.2（式 8 / 9 / 10）、§5.2 训练 infra、§5.4 推理 infra，均已核对正文。<br />
+独立论文《Attention Residuals》<a href="https://arxiv.org/abs/2603.15031">arXiv:2603.15031</a>（Kimi Team，2026-03-16），比 K3 报告早四个多月。<br />
+⚠️ K3 报告的参考文献 [58] 只写了 "Kimi Team. <em>Attention Residuals</em>. Preprint. 2026."，<strong>并没有给 arXiv 编号</strong>——上面这个编号来自 arXiv 检索。</p>
+</blockquote>
+<h3 id="rnn">一句话框架：标准残差犯的是 RNN 犯过的错</h3>
+<p><strong>报告原文的这句话，是整节最好的解释</strong>：</p>
+<blockquote>
+<p>标准残差把所有历史信息压进深度方向上的<strong>单个状态</strong> $h_l$ —— 这是一个瓶颈，<strong>让人想起 RNN 在时间方向上的问题</strong>。<br />
+（原文：<em>a bottleneck reminiscent of RNNs over time</em>）</p>
+</blockquote>
+<p>RNN 把所有历史 token 压进一个固定状态；标准残差把所有历史层的输出压进一个 $x_l$。<strong>同一个病，只是换了一根轴。</strong></p>
+<p>而 Transformer 当年治 RNN 的药方就是<strong>注意力</strong>——让每个位置用<strong>随数据变化的权重</strong>去选读任意历史位置。</p>
+<div class="codehilite"><pre><span></span><code>      RNN     ──换成注意力──▶  Transformer     在【序列】方向上，2017 年做过一次
+   标准残差    ──换成注意力──▶    AttnRes       在【深度】方向上，2026 年再做一次
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>记住这个类比。下面所有公式都只是它的技术实现。</strong></p>
+</blockquote>
+<h3 id="_8">第一步：可以读的"源"是什么（★ 最容易看错的地方）</h3>
+<blockquote>
+<p>📌 报告用 $h$ 表示残差流，就是本章的 $x$；$f_i(\cdot)$ 是第 $i$ 层的<strong>子层函数</strong>。</p>
+</blockquote>
+<p><strong>第 $l$ 层面前摆着 $l$ 个可选的源</strong>（报告式 8）：</p>
+<p>$$k_i = v_i = \begin{cases} h_{-1}, &amp; i=0 \quad(\text{token embedding})\[3pt] f_i(h_i), &amp; 1\le i\le l-1 \quad(\text{第 }i\text{ 层【自己写出的那一份】}) \end{cases}$$</p>
+<p><strong>三个细节，每一个都必须点出来：</strong></p>
+<div class="codehilite"><pre><span></span><code>(a) k_i = v_i —— 没有 W_K，也没有 W_V
+    层的输出【直接】既当 key 又当 value
+    → &quot;我怎么介绍自己&quot; 和 &quot;我能给你什么&quot; 是同一个东西
+    → 这是它比标准注意力便宜得多的原因之一
+
+(b) ★★ 是 f_i(h_i)【增量】，不是 h_i【累加值】—— 全节最关键的一点
+    拿累加值当源：每个源里都已经包含了它前面所有的源 → 高度冗余，根本挑不出东西
+    拿增量当源  ：l 个源才是 l 份【互相独立的贡献】，才构成一组值得挑的基
+
+    ✅ 这一点在报告里是自洽的：Block 版把块内的源【求和】成 b_n = Σ f_j(h_j)
+       —— 只有当 f_j(h_j) 是增量时，&quot;把它们加起来&quot;才讲得通
+
+(c) i = 0 是 token embedding
+    → &quot;直接回头看原始输入&quot; 永远是一个可选项，不必让信息逐层传话
+</code></pre></div>
+
+<h3 id="query">第二步：query —— 可学习，但<strong>不依赖输入</strong></h3>
+<p>$$q_l = w_l \in \mathbb{R}^{d}$$</p>
+<p>每一层拥有<strong>一个固定向量</strong>，含义是"我这一层想找什么样的东西"。训练时学出来，<strong>推理时冻结，不随 token 变化</strong>。</p>
+<blockquote>
+<p>🔑 <strong>但注意力权重本身仍然随输入变</strong>——因为 <strong>key 是激活值</strong> $f_i(h_i)$，逐 token 不同。<br />
+<strong>这正是它比 DenseFormer 强的地方</strong>：DenseFormer 的深度权重是可学习<strong>标量</strong>，对所有输入都一样（见本节末的谱系）。</p>
+</blockquote>
+<h3 id="rmsnorm">第三步：打分 —— RMSNorm 在这里不是装饰</h3>
+<p>$$\phi(q,k)=\exp!\big(q^{\top}\,\mathrm{RMSNorm}(k)\big),\qquad \alpha_{i\to l}=\frac{\phi(q_l,k_i)}{\sum_{j=0}^{l-1}\phi(q_l,k_j)}$$</p>
+<p><strong>✅ 报告明确写了 RMSNorm 的作用</strong>：防止某一层因为输出<strong>幅度</strong>大就霸占全部权重。</p>
+<div class="codehilite"><pre><span></span><code>没有 RMSNorm： score = w·k ∝ ‖k‖  →  &quot;嗓门大&quot;的层无条件胜出，和内容无关
+加上 RMSNorm： 幅度被剥掉，只剩【方向】 →  变成一次纯粹的【内容匹配】
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>顺带解释一个小疑问</strong>：这里<strong>没有 $1/\sqrt{d}$ 缩放</strong>（对比 <a href="05-注意力机制.html">05 章</a> 的 $QK^\top/\sqrt{d_h}$）。<br />
+因为 RMSNorm 已经把 $k$ 的尺度钉死了，而 $w_l$ 本身可学，<strong>任何常数缩放都能被它自己吸收掉</strong>。</p>
+</blockquote>
+<h3 id="_9">第四步：输出 —— ★ 它<strong>替换</strong>掉累加，不是加在累加之上</h3>
+<p>$$h_l=\sum_{i=0}^{l-1}\alpha_{i\to l}\,v_i$$</p>
+<p><strong>和标准残差并排放，差别只有一处：</strong></p>
+<div class="codehilite"><pre><span></span><code>标准残差:   x_l = Σ_i    1     · f_i(x_i)      权重恒为 1，不可选、不归一
+AttnRes :   x_l = Σ_i α_{i→l}  · f_i(x_i)      权重由 softmax 给出，和为 1
+                       └───────┘
+                        唯一的差别
+</code></pre></div>
+
+<blockquote>
+<p>⭐ <strong>所以标准残差就是 $\alpha\equiv 1$ 的特例。</strong> 两个直接后果：</p>
+<p>```<br />
+✅ 权重和为 1 → §3.4 那个"残差范数按 √N 增长"的问题【自动消失】<br />
+                因为这是加权平均，不是累加<br />
+   ★ 独立论文摘要给出的动机与此完全一致：标准 PreNorm 残差以【固定单位权重】<br />
+     累加每层输出，导致"随深度不受控的隐状态增长，逐步稀释每一层的贡献"</p>
+<p>⚠️ 代价（我的推断，报告没写）：平均是【压不出增长】的。<br />
+   如果第 l 层真想要"把前面全部加起来"，它最多只能拿到均值，幅度被压掉约 1/l<br />
+   —— 要靠可学的 w_l 和后面的 norm 补回来<br />
+```</p>
+</blockquote>
+<p><strong>一次深度注意力长这样</strong>（softmax 是对<strong>层</strong>做的）：</p>
+<div class="codehilite"><pre><span></span><code>   源（每层写出的那一份）           第 l 层用一个 softmax 决定读谁
+
+   f_0 = token embedding ──┐  α=0.05
+   f_1 ────────────────────┤  α=0.02
+   f_2 ────────────────────┤  α=0.40  ← 这一层特别有用，重点读
+    ⋮                      ├──▶ 加权和 ──▶ 送进第 l 层的子层
+   f_{l−1} ────────────────┘  α=0.31
+                               └── Σα = 1，在【层】这个维度上归一
+</code></pre></div>
+
+<h3 id="token">形状：对<strong>每一个 token</strong> 都算一份</h3>
+<div class="codehilite"><pre><span></span><code>f_i(x_i)   [d]      每层写出的那一份                i = 0 … l−1
+w_l        [d]      第 l 层的伪 query
+scores     [l]      w_l · RMSNorm(f_i)
+α          [l]      ★ softmax 在【层】这个维度上做
+x_l        [d]      Σ α_i · f_i
+
+带上 batch 和序列：α 的形状是 [B, L_seq, l]
+                    —— 每个 token 各有一份&quot;我该读哪几层&quot;的分布
+                    ↑ ★ 显存问题就来自这里：
+                      l 份 [B, L_seq, d] 的层输出必须【全部留着】
+</code></pre></div>
+
+<h3 id="_10">代价：<strong>算得起，但存不起</strong></h3>
+<div class="codehilite"><pre><span></span><code>算术开销 O(L²d)   ✅ 报告明说【负担得起】—— 因为深度 L &lt; 100，L² 才 ~10⁴，
+                    和序列方向上动辄 (10⁶)² 完全不是一个量级
+
+内存开销 O(Ld)    ❌ ★ 这才是真正的问题：所有层的输出要同时留在显存里
+                    而且在【流水线并行】下这些输出要跨 stage 传输，
+                    通信开销同样是 O(Ld)
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这是一个很好的例子</strong>：<strong>同一个 $O(n^2)$，在序列轴上是灾难，在深度轴上根本不算事。</strong><br />
+<strong>复杂度符号本身不说明问题，要看 $n$ 到底多大。</strong></p>
+</blockquote>
+<h3 id="block-attnresk3">Block AttnRes：K3 实际用的版本</h3>
+<p><strong>⚠️ 这一段常被讲反</strong>，包括不少二手解读：</p>
+<div class="codehilite"><pre><span></span><code>L 层切成 N 块，每块 S = L/N 层
+
+  块【内】：层输出直接【求和】  b_n = Σ_{j∈B_n} f_j(x_j)     ← 退化成普通残差
+  块【间】：对 N 个块级表示做【全注意力】                       ← ★ AttnRes 在这里生效
+  b_0 := token embedding，永远是一个可选源
+</code></pre></div>
+
+<blockquote>
+<p>❌ <strong>不是</strong>"以 8 层为一块、只在块内做注意力"。<br />
+✅ <strong>是</strong>"块内求和、<strong>块间</strong>做注意力"，而且 K3 的块是 <strong>12 层</strong>、一共 <strong>8 块</strong>。</p>
+</blockquote>
+<p><strong>报告式 10 还有一个细节，决定了"块内的近邻层不会丢"</strong>——块内第 $i$ 层看到的源是：</p>
+<div class="codehilite"><pre><span></span><code>i = 1（块内第一层）:  V = [ b_0, b_1, …, b_{n−1} ]
+i ≥ 2              :  V = [ b_0, b_1, …, b_{n−1}, b_n^{i−1} ]
+                                                  └── 本块内前 i−1 层的【部分和】
+
+→ 每一层看到的是：
+     已完成的各个块 —— 每块【单独占一个条目】，可以精确挑选
+   + 自己块内已经走过的部分 —— 【合并成一个条目】
+→ 近邻信息没丢，只是分辨率变粗了
+</code></pre></div>
+
+<p><strong>✅ K3 的具体数字</strong>：</p>
+<div class="codehilite"><pre><span></span><code>93 层 ÷ 12 = 7 个满块 + 1 个不满的尾块 = 8 块
+再加上 embedding                        = 9 个源
+开销 O(Ld) → O(Nd)，即 93 → 9，约 10×
+报告说 N ≈ 8 就能在各个模型规模上拿回大部分收益
+</code></pre></div>
+
+<blockquote>
+<p>⭐ <strong>一个漂亮的跨章呼应</strong>：块结构让推理时的状态<strong>有界</strong>，于是"块间并行算出的结果"可以和"块内顺序累加的部分和"用 <strong>online softmax</strong> 合并——<br />
+<strong>这和 <a href="05-注意力机制.html">05 章 §5.7</a> 的 FlashAttention 是同一个算法</strong>，只不过一个用在序列轴上，一个用在深度轴上。</p>
+<p>📌 <strong>✅ 两处工程细节，说明上面那个显存问题是怎么被真正解决的</strong>（报告 §5.2 / §5.4）：<br />
+```<br />
+训练：块表示在边界层【只生成一次】，之后所有层共享；整个 AttnRes 计算被<br />
+      checkpointing 包起来 → ★ 每层为反向保存的激活【与标准残差完全相同】<br />
+      流水线并行用 "cache-based pipeline communication"：只增量传输新生成的块，<br />
+      micro-batch 一结束就释放 → 报告称达到显存占用的理论下界</p>
+<p>推理：两阶段调度 —— 批量的块间 pass 每块只读一次缓存的块表示，<br />
+      之后每层用 online-softmax 把块内部分和折进去<br />
+      ⚠️ 报告明说这些 kernel 的成本【很大一部分是访存】，所以<br />
+         prefill 用序列并行让每个 token 的块表示只在一个 rank 上物化，<br />
+         decode 把块间 kernel 放到 side stream 上和主流重叠<br />
+```</p>
+</blockquote>
+<h3 id="_11">谱系：往前三步，往后两步</h3>
+<p><strong>✅ 以下 arXiv 编号、日期、方法描述均已逐条核对。</strong></p>
+<div class="codehilite"><pre><span></span><code>DenseFormer (2402.02622, 2024-02, Pagliardini 等)
+        每层后插入&quot;深度加权平均&quot;，权重是【可学习标量】，与输入无关
+        ↓ 让权重依赖输入
+DeepCrossAttention (2502.06785, 2025-02, Google, Heddes 等)
+        用【可学习且输入相关】的权重动态组合各层输出，并加入深度方向的交叉注意力
+        ↓ 把每个块的输入解耦
+MUDDFormer
+        解耦成 Q / K / V / 残差 四路
+        ↓ 换成一次真正的 softmax 注意力
+★ AttnRes (2603.15031, 2026-03-16, Kimi Team)
+        单个伪 query 的深度 softmax 注意力（K3 用的是它的 Block 版）
+</code></pre></div>
+
+<p><strong>⭐ 它是三家残差改动里唯一一个已经长出独立后续研究线的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Delta Attention Residuals (2605.18855, 2026-05, Luo / Cai / Hu)
+   批评：AttnRes 在【累加隐状态】上做路由，这些状态高度冗余
+        → 深层出现&quot;路由塌陷&quot;，注意力分布趋于均匀（峰值权重仅 ≈ 0.2）
+   做法：改成在【相邻隐状态之差】（增量）上路由 → 分布更锐（峰值 ≈ 0.6）
+   结果：220M–7.6B 上验证困惑度改善 1.7%–8.2%
+
+Multi-Head Attention Residuals (2607.27230, 2026-07, 同一组作者)
+   批评：读深度用的是【整个宽度共享的一个 query】，所有特征子空间被迫
+        用同一个分布去读历史层；子空间之间越&quot;意见不合&quot;代价越大，
+        而这种分歧随宽度增长
+   做法：把路由 query 拆成 H 个子空间头，各自独立 softmax（块对角读取）
+        零新增参数、计算可忽略；H=1 退化回原版 AttnRes，最优在 H ≈ 4~8
+   结果：100M / 350M / 1B 上验证损失 −0.061 / −0.149 / −0.140
+        ⚠️ 但也暴露了成本：即使配上融合 Triton kernel，
+           吞吐也只有 baseline 的 0.55~0.88×（不融合时只有 0.2~0.5×）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意后续工作攻击的，正好是让 AttnRes 便宜的那两处简化</strong>：<br />
+<strong>"每层只有一个 query"</strong> 和 <strong>"源该怎么取"</strong>。<br />
+<strong>这是读技术报告很值得记的一课：一个设计的【简化点】，往往就是它的【下一个改进点】。</strong></p>
+<p>⚠️ <strong>一处我没能核实的矛盾，如实标出</strong>：Delta AttnRes 说 AttnRes 是在"<strong>累加隐状态</strong>"上做路由，<br />
+但 <strong>K3 报告式 8 明确写的是 $f_i(h_i)$（增量）</strong>，而且块内求和 $b_n=\sum_j f_j(h_j)$ 只有在增量语义下才讲得通。<strong>二者对不上。</strong><br />
+可能是两篇论文记号不同，也可能是独立论文原版与 K3 部署版有差异——<strong>仅凭摘要无法判断</strong>。<br />
+本节按 <strong>K3 报告正文</strong>讲，因为那是我核对过全文的一手来源。</p>
+</blockquote>
+<h3 id="_12">⚠️ 关于"代价"的一个说明</h3>
+<p><strong>关于 AttnRes 的墙钟开销，需要说清楚一件事：</strong></p>
+<div class="codehilite"><pre><span></span><code>✅ K3 报告给出的： O(Ld) → O(Nd) 的【渐近】开销降低，
+                  以及 &quot;checkpointing 后每层保存的激活与标准残差完全相同&quot;
+❌ K3 报告【没有】给出： 任何百分比形式的墙钟开销 —— 全文检索无此数字
+⚠️ 独立论文摘要页也没有给百分比，只有定性的 &quot;minimal overhead&quot;
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以正确的说法是</strong>：<strong>AttnRes 的开销，在一手报告层面只有渐近界和工程手段，没有公开的墙钟百分比。</strong><br />
+这和 mHC 形成对比——<strong>DeepSeek-V4 明确给了 +6.7% 这个实测数字</strong>（§3.5）。<br />
+<strong>⚠️ 网上流传的"训练 +4% / 推理 +2%"我无法回溯到一手来源，本教程不再采用。</strong></p>
+</blockquote>
+<hr />
+<h2 id="37">3.7 三家改、两家不改：这个分歧本身很有信息量</h2>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>残差改动</th>
+<th>代价（厂商实测）</th>
+<th>层数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td><strong>mHC</strong>（n=4, Sinkhorn 20）</td>
+<td>训练墙钟 <strong>+6.7%</strong></td>
+<td>61</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>mHC</strong>（n=4, Sinkhorn 20）+ 门控塌陷修复</td>
+<td>报告未给出墙钟数字</td>
+<td>50</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>AttnRes</strong>（93 层 → <strong>8 块 × 12 层</strong>，块间注意力）</td>
+<td>⚠️ 报告只给了 O(Ld)→O(Nd)，<strong>未给墙钟百分比</strong></td>
+<td><strong>93</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td><strong>不改</strong></td>
+<td>0</td>
+<td>78</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>不改</strong></td>
+<td>0</td>
+<td>60</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_13">怎么理解这个分歧</h3>
+<p><strong>⚠️ 以下是我的分析，不是厂商的说法。</strong></p>
+<div class="codehilite"><pre><span></span><code>支持&quot;改&quot;的一方的逻辑：
+    §3.4 的两个问题（深层被稀释、等效学习率失控）是真实的
+    层数越多越严重 → K3 有 93 层，是五家最深的，动机最强
+    残差是【全模型每一层都经过】的位置，改这里的杠杆最大
+
+支持&quot;不改&quot;的一方的逻辑：
+    墙钟开销是【实打实的钱】（V4 实测 +6.7%；K3 未公开数字，
+       但从它要专门写 checkpointing + cache-based 流水线通信 + 两阶段
+       推理 kernel 来看，代价显然不是零）
+    残差改动会让所有并行策略、算子融合、推理框架都要重写
+    GLM-5.2 明确走的是&quot;工程可落地优先&quot;路线（9 个国产芯片平台适配）
+       → 一个需要在 9 个芯片平台上都重新实现的残差结构，收益比很差
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一个更根本的观察</strong>：<strong>残差改造是这一代五家分歧最大的一项。</strong> 注意力大家都在改（只是路线不同）、MoE 大家都在用、Muon 四家都上了——<strong>只有残差这一项，是"改不改"的二分</strong>。这通常意味着<strong>收益还没有大到形成共识</strong>。</p>
+<p>📌 详细的横向论证见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.2。</p>
+</blockquote>
+<hr />
+<h2 id="38-numpy">3.8 numpy 走一遍</h2>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ---------- 标准残差 ----------</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">block_standard</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">attn</span><span class="p">,</span> <span class="n">ffn</span><span class="p">,</span> <span class="n">norm1</span><span class="p">,</span> <span class="n">norm2</span><span class="p">):</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">attn</span><span class="p">(</span><span class="n">norm1</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">ffn</span><span class="p">(</span><span class="n">norm2</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">x</span>
+
+<span class="c1"># ---------- mHC（n 条流）----------</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">block_mhc</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">F</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">C_raw</span><span class="p">,</span> <span class="n">n</span><span class="o">=</span><span class="mi">4</span><span class="p">):</span>
+    <span class="c1"># X: [L, n, d]   A: [n]   B_raw: [n,n]   C: [n]</span>
+    <span class="n">B</span> <span class="o">=</span> <span class="n">sinkhorn</span><span class="p">(</span><span class="n">B_raw</span><span class="p">,</span> <span class="n">iters</span><span class="o">=</span><span class="mi">20</span><span class="p">)</span>          <span class="c1"># 投影到双随机流形</span>
+    <span class="n">h</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;i,lid-&gt;ld&#39;</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">X</span><span class="p">)</span>       <span class="c1"># 读：n 条流 → 1 条</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">F</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>                                <span class="c1"># 子层照常算</span>
+    <span class="n">mixed</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;ij,ljd-&gt;lid&#39;</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">X</span><span class="p">)</span> <span class="c1"># 流间混合</span>
+    <span class="k">return</span> <span class="n">mixed</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;i,ld-&gt;lid&#39;</span><span class="p">,</span> <span class="n">C_raw</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>   <span class="c1"># 写：1 条 → n 条</span>
+
+<span class="c1"># ---------- AttnRes（完整版）----------</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">attn_res</span><span class="p">(</span><span class="n">srcs</span><span class="p">,</span> <span class="n">w_l</span><span class="p">):</span>
+    <span class="c1"># ★ srcs: [l, d] —— 前面每一层【写出的增量】f_i(x_i)，不是累加状态 x_i</span>
+    <span class="c1">#                    srcs[0] 是 token embedding</span>
+    <span class="c1">#   w_l : [d]    —— 第 l 层的可学习伪 query（不依赖输入）</span>
+    <span class="c1">#   ★ key 和 value 是【同一个东西】，没有 W_K / W_V</span>
+    <span class="n">scores</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">w_l</span> <span class="o">@</span> <span class="n">rmsnorm</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">srcs</span><span class="p">])</span>   <span class="c1"># [l]，无 1/√d 缩放</span>
+    <span class="n">alpha</span>  <span class="o">=</span> <span class="n">softmax</span><span class="p">(</span><span class="n">scores</span><span class="p">)</span>                              <span class="c1"># ★ 在【层】维度上 softmax</span>
+    <span class="k">return</span> <span class="n">alpha</span> <span class="o">@</span> <span class="n">srcs</span>                                   <span class="c1"># [d]，★ 这是【替换】掉累加</span>
+
+<span class="c1"># ---------- Block AttnRes（K3 真正用的版本）----------</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">block_attn_res</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="n">partial</span><span class="p">,</span> <span class="n">w_l</span><span class="p">):</span>
+    <span class="c1"># blocks : [n, d] —— 已完成的块表示 b_0…b_{n−1}，块【内】是直接求和</span>
+    <span class="c1"># partial: [d] 或 None —— 本块内前 i−1 层的部分和 b_n^{i−1}（块内第一层为 None）</span>
+    <span class="n">srcs</span> <span class="o">=</span> <span class="n">blocks</span> <span class="k">if</span> <span class="n">partial</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">blocks</span><span class="p">,</span> <span class="n">partial</span><span class="p">])</span>
+    <span class="k">return</span> <span class="n">attn_res</span><span class="p">(</span><span class="n">srcs</span><span class="p">,</span> <span class="n">w_l</span><span class="p">)</span>      <span class="c1"># ★ 注意力只在【块之间】做，源从 93 个降到 9 个</span>
+</code></pre></div>
+
+<hr />
+<h2 id="39">3.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 残差把梯度的【连乘】变成【连加】，这是深层网络能训练的唯一原因
+② 更好的图景：残差流是一条【总线】，每层从上面读、往上面写
+   W_Q/W_K/W_V/W_gate/W_up 是【读】，W_O/W_down 是【写】
+③ 因为只加不覆盖，残差范数按 √N 增长 → 深层被稀释、等效学习率被隐式改变
+④ mHC（V4/openPangu）：改成 n=4 条流，B 约束在双随机流形（谱半径=1）
+   用 Sinkhorn 20 次迭代投影。代价：显存×4，V4 实测训练 +6.7%
+⑤ AttnRes（K3）：在【深度方向】做 softmax 注意力，每层自选该读哪几层
+   ★ 源是每层写出的【增量】f_i(x_i)，不是累加状态；k=v，无 W_K/W_V
+   ★ 权重和为 1 → 它【替换】掉累加，标准残差 = α≡1 的特例，√N 增长消失
+   ★ K3 用 Block 版：93 层切 8 块 × 12 层，【块内求和、块间注意力】
+     （不是&quot;块内做注意力&quot;），加 embedding 共 9 个源，O(Ld)→O(Nd)
+   代价：算术 O(L²d) 报告说负担得起，真正的问题是 O(Ld) 显存与跨 stage 通信
+   ⚠️ K3 报告【没有】给出任何百分比开销数字
+⑥ GLM/M3 完全不改 —— 这是五家分歧最大的一项，说明收益尚未形成共识
+</code></pre></div>
+
+<p><strong>下一章</strong>讲那两个 <code>Norm(...)</code>：它是什么、放哪里、以及 openPangu 为什么必须在 mHC 之上再打一个归一化补丁。</p>
+<hr />
+<blockquote>
+<p><a href="02-Embedding与词表.html">← 02 Embedding 与词表</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="04-归一化.html">04 归一化</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

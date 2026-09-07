@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCompass 与 EvalScope 拆解</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="opencompass-evalscope">OpenCompass 与 EvalScope 拆解</h1>
+<blockquote>
+<p>★ 版本：<code>opencompass</code> 0.5.3、<code>evalscope</code> 1.10.0<br />
+（源码在 <a href="源码/opencompass-0.5.3/">源码/opencompass-0.5.3/</a>、<a href="源码/evalscope-1.10.0/">源码/evalscope-1.10.0/</a>）</p>
+<p>★★ 定位：两个<strong>中国团队做的</strong>评测框架。<br />
+⚠️ 前置阅读：<a href="lm-eval-harness拆解.html">lm-eval-harness拆解.md</a>。<br />
+★★★ 这一篇的价值不在于"多认识两个工具"，<br />
+而在于：<strong>同一个问题，三份不同的答卷，能让你看清设计权衡在哪。</strong></p>
+<p>标记：✅ = 源码可查证 ｜ ⚠️ = 我的推断 ｜ ★ = 重点 ｜ 🔑 = 关键结论</p>
+</blockquote>
+<hr />
+<h2 id="0">0. 先说结论：三个框架各自解决什么问题</h2>
+<div class="codehilite"><pre><span></span><code>   ┌────────────────┬──────────────────────────────────────────────┐
+   │ lm-eval-harness│ ★★ 核心问题：【模型接口太多样】               │
+   │                │ ⟹ 解法：三个原语的窄腰                       │
+   │                │ ⟹ 强项：判别式（loglikelihood）评测的事实标准 │
+   ├────────────────┼──────────────────────────────────────────────┤
+   │ OpenCompass    │ ★★★ 核心问题：【一次要跑几十个模型 × 上百个   │
+   │  （司南）      │    数据集，单机跑不完】                       │
+   │                │ ⟹ 解法：切分 + 调度（Partitioner + Runner）  │
+   │                │ ⟹ 强项：集群规模化、主观评测（LLM 裁判）      │
+   ├────────────────┼──────────────────────────────────────────────┤
+   │ EvalScope      │ ★★★ 核心问题：【评测不只是准确率，            │
+   │  （魔搭）      │    还得知道快不快、贵不贵】                   │
+   │                │ ⟹ 解法：把&quot;能力评测&quot;和&quot;性能压测&quot;放进同一个包  │
+   │                │ ⟹ 强项：Arena 类主观评测 + 推理服务压测       │
+   └────────────────┴──────────────────────────────────────────────┘
+
+   ⟹ 🔑 一句话：
+      ★★★ lm_eval 解决【怎么问】，OpenCompass 解决【怎么排产】，
+           EvalScope 解决【怎么判 + 怎么压测】。
+</code></pre></div>
+
+<hr />
+<h1 id="opencompass">第一部分：OpenCompass</h1>
+<h2 id="1-partitioner-runner-task">1. ★★★ 它的核心抽象：Partitioner → Runner → Task</h2>
+<p>★★ 这是 OpenCompass 和 lm_eval 最根本的架构差异。</p>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 先想清楚它要解决的场景：
+
+   ★ 你有 20 个模型要评，每个模型评 100 个数据集。
+   ⟹ 20 × 100 = 2,000 个「模型-数据集」组合。
+   ⟹ ⚠️ 用 lm_eval 的话，你得写一个 for 循环跑 2,000 次，
+      而且【一次崩了就得从头再来】。
+
+   ★★★ OpenCompass 的答案是：把评测当成【一批可调度的作业】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ┌─────────────────────────────────────────────────────────────┐
+   │  ① Partitioner（切分器）                                    │
+   │     ✅ opencompass/partitioners/                            │
+   │     ★★ 职责：把「模型 × 数据集」的大矩阵，切成一堆小任务    │
+   │     ⟹ 输入：models 配置 + datasets 配置                     │
+   │     ⟹ 输出：一个 task 列表（每个 task 是一个 dict）         │
+   ├─────────────────────────────────────────────────────────────┤
+   │  ② Runner（执行器）                                         │
+   │     ✅ opencompass/runners/                                 │
+   │     ★★ 职责：把这些 task【投递到某种算力上】去跑            │
+   │     ⟹ 本机多进程？Slurm 集群？阿里云 DLC？火山引擎？        │
+   ├─────────────────────────────────────────────────────────────┤
+   │  ③ Task（任务）                                             │
+   │     ✅ opencompass/tasks/                                   │
+   │     ★★ 职责：一个 task 内部【真正干活】                     │
+   │     ⟹ OpenICLInferTask = 推理，OpenICLEvalTask = 打分       │
+   └─────────────────────────────────────────────────────────────┘
+
+   ⟹ 🔑🔑 这三层的关键在于【解耦】：
+      ★★★ 换集群只需要换 Runner，不用动任何评测逻辑。
+</code></pre></div>
+
+<h3 id="runner-opencompassrunners">✅ Runner 的全部实现（<code>opencompass/runners/</code> 目录）</h3>
+<div class="codehilite"><pre><span></span><code>   __init__.py   base.py
+   local.py            ← ★ 本机多进程
+   local_api.py        ← ★ 本机跑 API 模型（不占 GPU）
+   slurm.py            ← ★★ Slurm 集群（学术界/超算中心标配）
+   slurm_sequential.py ← ★ Slurm 串行版
+   dlc.py              ← ★★ 阿里云 DLC（深度学习容器）
+   volc.py             ← ★★ 火山引擎
+   rjob.py             ← ★ 内部调度平台
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ★ 名词：
+   ★ Slurm = 一种集群作业调度系统，超算中心最常用的那个。
+      ⟹ 你提交一个作业，它排队，轮到你了才给你分配 GPU。
+   ★ DLC = Deep Learning Containers，阿里云的容器化训练/推理平台。
+
+   ⟹ 🔑 从这个目录能读出 OpenCompass 的【真实使用场景】：
+      ★★★ 它是给【有集群的团队】设计的，
+      ⚠️ 不是给&quot;我在自己笔记本上跑个分&quot;设计的。
+</code></pre></div>
+
+<p>✅ Runner 基类的职责（<code>runners/base.py:11-12</code> 的 docstring 原文）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">BaseRunner</span><span class="p">:</span>
+    <span class="s2">&quot;&quot;&quot;Base class for all runners. A runner is responsible for launching</span>
+<span class="s2">    multiple tasks.</span>
+</code></pre></div>
+
+<p>✅ 它定义了三个方法（<code>runners/base.py:31 / :43 / :54</code>）：</p>
+<div class="codehilite"><pre><span></span><code>    <span class="k">def</span><span class="w"> </span><span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tasks</span><span class="p">):</span> <span class="o">...</span>      <span class="c1"># L31  ★ 入口</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">launch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tasks</span><span class="p">):</span> <span class="o">...</span>        <span class="c1"># L43  ★★ 子类必须实现：怎么把任务发出去</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">summarize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">status</span><span class="p">):</span> <span class="o">...</span>    <span class="c1"># L54  ★ 汇总每个任务的返回码</span>
+</code></pre></div>
+
+<hr />
+<h2 id="2-partitioner">2. ★★ Partitioner：切分策略本身就是一门学问</h2>
+<p>✅ 目录里有 7 个切分器（<code>opencompass/partitioners/</code>）：</p>
+<div class="codehilite"><pre><span></span><code>   naive.py           ← ★ 最简单：一个「模型-数据集」对 = 一个任务
+   size.py            ← ★★★ 按数据集大小切（最常用）
+   num_worker.py      ← ★★ 按你有几个 worker 反推怎么切
+   sub_naive.py       ← ★ 主观评测版
+   sub_size.py        ← ★ 主观评测 + 按大小
+   sub_num_worker.py  ← ★ 主观评测 + 按 worker 数
+</code></pre></div>
+
+<h3 id="sizepartitionerpartitionerssizepy18-35-docstring">✅ 为什么需要 SizePartitioner（<code>partitioners/size.py:18-35</code> docstring 原文）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">SizePartitioner</span><span class="p">(</span><span class="n">BasePartitioner</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Task partitioner based on the size of the dataset (with some rough</span>
+<span class="sd">    expansion as an estimation of computational cost).</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        max_task_size (int): The maximum size of a task.</span>
+<span class="sd">        gen_task_coef (int): The dataset cost measurement coefficient for</span>
+<span class="sd">            generation tasks.</span>
+<span class="sd">        strategy (str): The partition strategy. Supported strategies are:</span>
+<span class="sd">            &#39;heuristic&#39; and &#39;split&#39;. ...</span>
+<span class="sd">            heuristic: split large datasets into several tasks, merge small</span>
+<span class="sd">                datasets into one task.</span>
+<span class="sd">            split: split large datasets into several tasks only.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+
+<p>✅ 默认值（<code>partitioners/size.py:39-41</code>）：</p>
+<div class="codehilite"><pre><span></span><code>                 <span class="n">max_task_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40000</span><span class="p">,</span>
+                 <span class="n">gen_task_coef</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
+                 <span class="n">strategy</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;heuristic&#39;</span><span class="p">,</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 这两个默认值里藏着一个很重要的工程认知：
+
+   ★★★ `gen_task_coef = 20` 的意思是：
+      【生成式任务的成本，按 20 倍于判别式任务来估算。】
+
+   ⚠️ 为什么？因为：
+      ★ 判别式（算 loglikelihood）：一次前向，输出 0 个 token。
+      ★★ 生成式（generate_until）：要一个 token 一个 token 地往外吐，
+         ⟹ 吐 256 个 token 就是 256 次前向。
+
+   ⟹ ★★ 这正好印证了 [02 章](评测入门/02-三种评测范式.md) 那条定律的
+      成本侧：★★★【生成式比判别式贵一个数量级】，
+      ⚠️ 这里给出了一个具体的工程估值：约 20 倍。
+
+   ⟹ 🔑 `strategy=&#39;heuristic&#39;`（启发式）的两句话也很实在：
+      ★★ 大数据集拆开（否则一个任务跑到天荒地老，崩了全丢）
+      ★★ 小数据集合并（否则调度开销比计算还大）
+      ⟹ ⚠️ 这就是典型的【负载均衡】问题。
+</code></pre></div>
+
+<hr />
+<h2 id="3-task-openicl">3. ★★ Task 内部：OpenICL 才是真正的评测内核</h2>
+<p>✅ <code>opencompass/tasks/openicl_infer.py:21</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@TASKS</span><span class="o">.</span><span class="n">register_module</span><span class="p">()</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">OpenICLInferTask</span><span class="p">(</span><span class="n">BaseTask</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;OpenICL Inference Task.</span>
+
+<span class="sd">    This task is used to run the inference process.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ★ 名词：
+   ★★★ ICL = In-Context Learning（上下文学习）
+      ⟹ 就是 [04 章](评测入门/04-few-shot与提示词.md) 讲的 few-shot：
+         把几个示例塞进提示词里，让模型&quot;照着做&quot;。
+   ★ OpenICL = OpenCompass 里实现 ICL 的那个子库。
+</code></pre></div>
+
+<h3 id="tasksopenicl_inferpy121-134-144">✅ 一次推理由三个组件拼出来（<code>tasks/openicl_infer.py:121 / :134 / :144</code>）</h3>
+<div class="codehilite"><pre><span></span><code>        <span class="n">retriever</span>  <span class="o">=</span> <span class="n">ICL_RETRIEVERS</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="n">retriever_cfg</span><span class="p">)</span>     <span class="c1"># L121</span>
+        <span class="n">inferencer</span> <span class="o">=</span> <span class="n">ICL_INFERENCERS</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="n">inferencer_cfg</span><span class="p">)</span>   <span class="c1"># L134</span>
+        <span class="n">inferencer</span><span class="o">.</span><span class="n">inference</span><span class="p">(</span><span class="n">retriever</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>                 <span class="c1"># L144</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 拆开看这两个词：
+
+   ┌─ Retriever（检索器）──────────────────────────────────────┐
+   │  ★★ 职责：【这道题的 few-shot 示例从哪来？】              │
+   │  ✅ openicl/icl_retriever/ 里有 10 个实现：               │
+   │     icl_zero_retriever.py   ← ★ zero-shot，一个例子都不给 │
+   │     icl_fix_k_retriever.py  ← ★ 固定取前 k 个             │
+   │     icl_random_retriever.py ← ★ 随机取                    │
+   │     icl_topk_retriever.py   ← ★★ 取语义最相近的 k 个      │
+   │     icl_bm25_retriever.py   ← ★★ 用 BM25 关键词检索       │
+   │     icl_votek_retriever.py / icl_dpp_retriever.py / ...   │
+   └───────────────────────────────────────────────────────────┘
+   ┌─ Inferencer（推理器）─────────────────────────────────────┐
+   │  ★★ 职责：【拼好的提示词怎么送给模型、要什么形式的输出】  │
+   │  ✅ openicl/icl_inferencer/ 里有 17 个实现，关键的几个：  │
+   │     icl_ppl_inferencer.py   ← ★★★ 判别式：比困惑度        │
+   │     icl_ll_inferencer.py    ← ★★★ 判别式：比 loglikelihood│
+   │     icl_gen_inferencer.py   ← ★★★ 生成式                  │
+   │     icl_chat_inferencer.py  ← ★★ 走 chat 消息格式         │
+   │     icl_agent_inferencer.py ← ★★ agentic                  │
+   │     icl_sc_inferencer.py    ← ★ self-consistency（自洽投票）│
+   └───────────────────────────────────────────────────────────┘
+
+   ⟹ 🔑🔑🔑 请对照 [03 章](评测入门/03-三个原语.md)：
+
+   ★★★ ppl / ll / gen 这三个 Inferencer，
+        就是 lm_eval 那三个原语（loglikelihood_rolling /
+        loglikelihood / generate_until）的【同一批东西换了个名字】。
+
+   ⟹ ⚠️ 两个独立团队，各自做设计，最后落到了同一个三分法。
+      ★★ 这说明这三分法不是谁的偏好，是【问题本身的形状】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 但有一个【关键区别】值得注意：
+
+   ★★ lm_eval：三个原语在【模型接口层】（LM 基类的三个方法）。
+   ★★ OpenCompass：三分法在【推理策略层】（Inferencer 类）。
+
+   ⚠️ 后果：
+      ★★★ lm_eval 的窄腰更&quot;窄&quot;——加一个新后端只要实现三个方法。
+      ★★★ OpenCompass 的分层更&quot;高&quot;——它的复用点在调度，不在接口。
+      ⟹ 这不是谁好谁坏，是【两边在优化不同的东西】。
+</code></pre></div>
+
+<hr />
+<h2 id="4-opencompass">4. ★★ OpenCompass 的独门强项：主观评测</h2>
+<p>✅ <code>opencompass/datasets/subjective/</code> 目录下有 20+ 个数据集适配：</p>
+<div class="codehilite"><pre><span></span><code>   alignbench.py    alpacaeval.py    arena_hard.py    compass_arena.py
+   creationbench.py flames.py        fofo.py          followbench.py
+   hellobench.py    judgerbench.py   mtbench.py       mtbench101.py
+   wildbench.py     writingbench.py  ...
+</code></pre></div>
+
+<p>✅ 并且有专门的任务类型（<code>opencompass/tasks/subjective_eval.py</code>）和<br />
+专门的切分器（<code>partitioners/sub_naive.py</code>、<code>sub_size.py</code>、<code>sub_num_worker.py</code>）。</p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 为什么主观评测需要【单独一套切分器】？
+
+   ★★★ 因为客观评测是&quot;模型 × 数据集&quot;的二维矩阵，
+        而主观评测（两两对战）是&quot;模型 × 模型 × 数据集&quot;的【三维】。
+   ⚠️ N 个模型两两对战 = N(N-1)/2 对，
+      ⟹ 10 个模型就是 45 对，20 个模型就是 190 对。
+   ⟹ ★★ 组合爆炸的形状不一样，切分逻辑当然也得不一样。
+
+   ⟹ 详见 [09 章 LLM 当裁判](评测入门/09-LLM当裁判.md)。
+</code></pre></div>
+
+<hr />
+<h1 id="evalscope">第二部分：EvalScope</h1>
+<h2 id="5">5. 它多做了一件别人不做的事：压测</h2>
+<p>✅ <code>evalscope/</code> 顶层目录：</p>
+<div class="codehilite"><pre><span></span><code>   benchmarks/   ← ★★ 173 个条目（能力评测）
+   metrics/      ← ★★ 打分逻辑，含 judge/（LLM 裁判）
+   models/       ← ★ 各种后端适配
+   perf/         ← ★★★ 【性能压测】—— 这个别的框架没有
+   backend/      ← ★★ 可以把 OpenCompass 当后端调用
+   collections/  ← ★ 数据集组合
+   report/  summarizer/  filters/  evaluator/  agent/  api/  cli/
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 注意两个目录：
+
+   ★★★ `perf/` —— 它测的不是&quot;答得对不对&quot;，而是：
+      ★ 首 token 延迟（TTFT，Time To First Token）
+      ★ 吞吐（每秒能出多少 token）
+      ★ 并发上去以后会不会崩
+      ⟹ ⚠️ 这本质上是 [推理框架](../推理框架/) 那边的话题，
+         ★★ EvalScope 把它和能力评测放在了【同一个工具】里。
+
+   ★★ `backend/opencompass/` —— EvalScope 可以【把 OpenCompass 当成
+      一个后端来调用】。
+      ⟹ ⚠️ 说明它的定位是&quot;上层统一入口&quot;，而不是&quot;再造一个 lm_eval&quot;。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 为什么把这两件事放一起是有道理的？
+
+   ★★★ 因为选型时你要回答的从来不是一个问题，而是三个：
+      ① 这个模型【够不够聪明】？   ← 能力评测
+      ② 它【够不够快】？           ← 压测
+      ③ 它【够不够便宜】？         ← 压测 + 定价
+   ⟹ ⚠️ 只看第①个就下结论，是 [11 章](评测入门/11-怎么读懂一张榜单.md)
+      里最常见的读榜错误之一。
+</code></pre></div>
+
+<hr />
+<h2 id="6-llm-evalscope">6. ★★★ LLM 裁判：EvalScope 把它做成了一等公民</h2>
+<p>★★ 这一节是本篇最值得细读的部分，因为它把 <a href="评测入门/09-LLM当裁判.html">09 章</a><br />
+讲的抽象概念，全部落成了可读的代码。</p>
+<h3 id="61-evalscopeconstantspy110-114">6.1 ✅ 裁判有四种策略（<code>evalscope/constants.py:110-114</code>）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">JudgeStrategy</span><span class="p">:</span>
+    <span class="n">AUTO</span> <span class="o">=</span> <span class="s1">&#39;auto&#39;</span>
+    <span class="n">RULE</span> <span class="o">=</span> <span class="s1">&#39;rule&#39;</span>
+    <span class="n">LLM</span> <span class="o">=</span> <span class="s1">&#39;llm&#39;</span>
+    <span class="n">LLM_RECALL</span> <span class="o">=</span> <span class="s1">&#39;llm_recall&#39;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⚠️ 逐条解释：
+
+   ★ RULE       = 只用规则/正则打分。★★ 便宜、确定、可复现。
+   ★ LLM        = 只用大模型当裁判。★★ 贵、灵活、有噪声。
+   ★★ AUTO      = 框架自己决定用哪个。
+   ★★★ LLM_RECALL = 【先用规则判，规则判为&quot;错&quot;的再交给 LLM 复核】。
+
+   ⟹ 🔑🔑 LLM_RECALL 这个策略非常聪明，值得单独讲：
+
+   ★★★ 回想 [05 章](评测入门/05-答案抽取与打分.md) 那个核心痛点：
+      【抽取失败 ≠ 答错，但在分数上完全等价且不可见】。
+
+   ⟹ LLM_RECALL 正是冲着这个痛点去的：
+      ★ 规则判对的 → 直接采信（省钱，且规则不会&quot;误判为对&quot;）
+      ★★★ 规则判错的 → ⚠️ 可能是真错，也可能只是【格式没对上】
+         ⟹ 这时候才花钱请 LLM 看一眼。
+
+   ⟹ 🔑 成本收益：★★ 因为大部分题规则都能判对，
+      所以只有少数题会走到 LLM，费用可控；
+      ★★★ 而被&quot;格式冤枉&quot;的那些题，恰好全都在这少数里。
+</code></pre></div>
+
+<h3 id="62-metricsjudgellm_judgepy43">6.2 ✅ 默认裁判模型是写死的（<code>metrics/judge/llm_judge.py:43</code>）</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">DEFAULT_JUDGE_MODEL</span> <span class="o">=</span> <span class="s1">&#39;Qwen/Qwen3-235B-A22B&#39;</span>
+</code></pre></div>
+
+<p>✅ 可以用环境变量覆盖（<code>llm_judge.py:87</code>）：</p>
+<div class="codehilite"><pre><span></span><code>        <span class="bp">self</span><span class="o">.</span><span class="n">model_id</span> <span class="o">=</span> <span class="n">model_id</span> <span class="ow">or</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;MODELSCOPE_JUDGE_LLM&#39;</span><span class="p">,</span> <span class="n">DEFAULT_JUDGE_MODEL</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ ⚠️⚠️ 这里必须提醒一个 [09 章](评测入门/09-LLM当裁判.md) 讲过的坑：
+
+   ★★★ 【自我偏好偏见（self-preference bias）】
+      = 模型当裁判时，倾向于给&quot;和自己风格像&quot;的答案打高分。
+
+   ⟹ 🔑 所以：★★★ 用 Qwen 当裁判去评 Qwen 系列模型，
+      ⚠️ 结论天然带利益冲突。
+   ⟹ ★★ 换裁判模型跑一遍，看结论稳不稳，是必须做的健壮性检查。
+   ⟹ ★ 好消息是这个框架允许你换（就是上面那个环境变量）。
+</code></pre></div>
+
+<h3 id="63-llm_judgepy12-30">6.3 ✅ 裁判的提示词长什么样（<code>llm_judge.py:12-30</code>，原文节选）</h3>
+<div class="codehilite"><pre><span></span><code>Your job is to look at a question, a gold target, and a predicted answer,
+and return a letter &quot;A&quot; or &quot;B&quot; to indicate whether the predicted answer is
+correct or incorrect.
+
+[Question]
+{question}
+
+[Reference Answer]
+{gold}
+
+[Predicted Answer]
+{pred}
+
+Evaluate the model&#39;s answer based on correctness compared to the reference answer.
+Grade the predicted answer of this new question as one of:
+A: CORRECT
+B: INCORRECT
+
+Just return the letters &quot;A&quot; or &quot;B&quot;, with no text around it.
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 这个提示词的三个设计细节，全都是有意为之：
+
+   ★★★ ① 输出被压缩成【单个字母 A/B】。
+      ⟹ ⚠️ 为什么不让它输出 &quot;correct&quot;/&quot;incorrect&quot;？
+      ★★ 因为字母只有 1 个 token，⟹ 便宜、快、且几乎不可能跑偏格式。
+      ⟹ ★ 这和 [05 章](评测入门/05-答案抽取与打分.md) 里
+         &quot;让答案尽可能好抽&quot;是同一个思路。
+
+   ★★★ ② 明确写了 &quot;with no text around it&quot;（前后不要有别的字）。
+      ⟹ ⚠️ 因为聊天模型天然爱解释，不拦着它就会输出
+         &quot;The answer is A because...&quot;，⟹ 抽取就变复杂了。
+
+   ★★ ③ 它是【有参考答案的打分】（给了 gold target），
+      ⟹ 不是&quot;你觉得这答案好不好&quot;的开放式评价。
+      ⟹ ★★★ 这大幅降低了裁判的主观性 ——
+         ⚠️ 但代价是：这种裁判【只能用在有标准答案的题上】。
+</code></pre></div>
+
+<p>✅ 框架还提供了另一种模板 —— 打连续分（<code>llm_judge.py:34-42</code>，节选）：</p>
+<div class="codehilite"><pre><span></span><code>you must rate the response on a scale of 0 (worst) to 1 (best) by strictly
+following this format: &quot;[[rating]]&quot;, for example: &quot;Rating: [[0.5]]&quot;
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 注意 `[[  ]]` 这个双方括号。
+   ⚠️ 它不是装饰，是【为了让正则能唯一定位分数】：
+      ★★★ 答案文本里可能到处都是数字，但 [[0.5]] 这种形状不会误撞。
+   ⟹ ✅ 对应的枚举在 `constants.py:117-119`：
+
+        class JudgeScoreType:
+            NUMERIC = &#39;numeric&#39;   # 连续分
+            PATTERN = &#39;pattern&#39;   # 模式匹配分
+</code></pre></div>
+
+<hr />
+<h2 id="7-arena-hard">7. ★★★ Arena Hard：一份可以逐行读的"两两对战"实现</h2>
+<p>★★ 这是全篇最推荐精读的一段源码，因为它把 <a href="评测入门/09-LLM当裁判.html">09 章</a><br />
+讲的<strong>位置偏见对策</strong>和 <strong>Elo 评分</strong>，用不到 100 行代码全实现了。</p>
+<p>✅ <code>benchmarks/arena_hard/arena_hard_adapter.py:41</code> 的 docstring 原文：</p>
+<div class="codehilite"><pre><span></span><code>- Two-game battle system (A vs B and B vs A)
+</code></pre></div>
+
+<h3 id="71-arena_hard_adapterpy105-111">7.1 ✅ 同一道题判两次，顺序对调（<code>arena_hard_adapter.py:105-111</code>）</h3>
+<div class="codehilite"><pre><span></span><code>        <span class="c1"># reference is baseline answer &#39;A&#39;, filtered_prediction is model answer &#39;B&#39;</span>
+        <span class="n">prompt1</span> <span class="o">=</span> <span class="n">GRADER_TEMPLATE</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">question</span><span class="o">=</span><span class="n">question</span><span class="p">,</span> <span class="n">answer_1</span><span class="o">=</span><span class="n">reference</span><span class="p">,</span> <span class="n">answer_2</span><span class="o">=</span><span class="n">filtered_prediction</span><span class="p">)</span>
+        <span class="c1"># reverse the order</span>
+        <span class="n">prompt2</span> <span class="o">=</span> <span class="n">GRADER_TEMPLATE</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">question</span><span class="o">=</span><span class="n">question</span><span class="p">,</span> <span class="n">answer_1</span><span class="o">=</span><span class="n">filtered_prediction</span><span class="p">,</span> <span class="n">answer_2</span><span class="o">=</span><span class="n">reference</span><span class="p">)</span>
+
+        <span class="c1"># get grading response</span>
+        <span class="n">game1_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt1</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
+        <span class="n">game2_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt2</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
+</code></pre></div>
+
+<p>✅ 然后把两局取平均（<code>arena_hard_adapter.py:144</code>）：</p>
+<div class="codehilite"><pre><span></span><code>        <span class="n">score</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;score&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">score1</span> <span class="o">+</span> <span class="n">score2</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span><span class="p">}</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 这四行代码在对付一个真实存在的毛病：
+
+   ★★★【位置偏见（position bias）】
+      = 大模型当裁判时，会系统性地偏爱【排在前面】的那个答案。
+      ⚠️ 注意&quot;系统性&quot;三个字：它不是随机噪声，
+         ⟹ 你跑一万次也不会自己抵消掉。
+
+   ⟹ ★★ 对策就是上面这个：同一对答案，正着判一次、反着判一次，取平均。
+   ⟹ ⚠️ 代价：★★★【裁判调用次数直接翻倍，成本翻倍】。
+   ⟹ 🔑 这就是评测里典型的&quot;用钱买正确性&quot;。
+</code></pre></div>
+
+<h3 id="72-benchmarksarena_hardutilspy21-49">7.2 ✅ 五档判决怎么变成分数（<code>benchmarks/arena_hard/utils.py:21-49</code>）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_judge_score</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">reverse</span><span class="p">:</span>
+        <span class="n">score_mapping</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;A=B&#39;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span>   <span class="c1"># Tie</span>
+            <span class="s1">&#39;A&gt;B&#39;</span><span class="p">:</span> <span class="mf">0.75</span><span class="p">,</span>  <span class="c1"># A slightly wins</span>
+            <span class="s1">&#39;A&gt;&gt;B&#39;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>  <span class="c1"># A significantly wins</span>
+            <span class="s1">&#39;B&gt;A&#39;</span><span class="p">:</span> <span class="mf">0.25</span><span class="p">,</span>  <span class="c1"># B slightly wins</span>
+            <span class="s1">&#39;B&gt;&gt;A&#39;</span><span class="p">:</span> <span class="mf">0.0</span><span class="p">,</span>  <span class="c1"># B significantly wins</span>
+        <span class="p">}</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">score_mapping</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;A=B&#39;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span> <span class="s1">&#39;A&gt;B&#39;</span><span class="p">:</span> <span class="mf">0.25</span><span class="p">,</span> <span class="s1">&#39;A&gt;&gt;B&#39;</span><span class="p">:</span> <span class="mf">0.0</span><span class="p">,</span>
+            <span class="s1">&#39;B&gt;A&#39;</span><span class="p">:</span> <span class="mf">0.75</span><span class="p">,</span> <span class="s1">&#39;B&gt;&gt;A&#39;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>
+        <span class="p">}</span>
+    <span class="n">base_score</span> <span class="o">=</span> <span class="n">score_mapping</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">base_score</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 三个要点：
+
+   ★★★ ① 判决不是二元的（赢/输），是【五档】：
+      显著更好 / 略好 / 平 / 略差 / 显著差 → 1.0 / 0.75 / 0.5 / 0.25 / 0.0
+      ⟹ ⚠️ 为什么要五档？因为&quot;略好&quot;和&quot;碾压&quot;是两码事，
+         ★★ 硬压成二元会丢掉大量信息。
+
+   ★★★ ② `reverse=True` 那份映射表是【左右镜像】的。
+      ⟹ 因为第二局里 A 和 B 的身份换了，⟹ 分数也必须跟着换。
+      ⚠️ 这行代码写反了的话，两局就不是互相校正而是互相抵消。
+
+   ★★★ ③ `score_mapping.get(result, 0.5)` —— 【看这个默认值】。
+      ⟹ ⚠️ 裁判要是没输出可识别的判决（比如它开始长篇大论了），
+         ★★ 这一局按【平局 0.5】算。
+      ⟹ 🔑 这又是一次&quot;抽取失败被静默吞掉&quot;：
+         和 lm_eval 的 `&quot;[invalid]&quot;`、SWE-bench 的 `APPLY_PATCH_FAIL`
+         是同一类事，只是这里连个标记都没留。
+</code></pre></div>
+
+<p>✅ 抽取判决用的正则（<code>utils.py:13-18</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">post_process_arenahard</span><span class="p">(</span><span class="n">completion</span><span class="p">):</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">findall</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\[\[([AB&lt;&gt;=]+)\]\]&#39;</span><span class="p">,</span> <span class="n">completion</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">result</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">result</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">None</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ ⚠️ 注意 `result[0]` ——【取第一个匹配】。
+   ★★ 如果裁判在解释过程中先写了 [[A&gt;B]] 又改口写 [[B&gt;A]]，
+      ⟹ 采信的是【前面那个】。
+   ⟹ 🔑 对照 [05 章](评测入门/05-答案抽取与打分.md)：
+      ★★★ &quot;取第一个还是取最后一个&quot;是个真实的分数差异来源，
+      ⚠️ 对会写思维链的模型，通常【最后一个】才是它的结论。
+</code></pre></div>
+
+<h3 id="73-elo-arena_hard_adapterpy148-171">7.3 ✅ 最后汇总成 Elo 和胜率（<code>arena_hard_adapter.py:148-171</code>）</h3>
+<div class="codehilite"><pre><span></span><code>    <span class="k">def</span><span class="w"> </span><span class="nf">aggregate_scores</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">sample_scores</span><span class="p">):</span>
+        <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_mle_elo</span><span class="p">,</span> <span class="n">get_battles_from_row</span><span class="p">,</span> \
+                           <span class="n">get_bootstrap_result</span><span class="p">,</span> <span class="n">get_win_rate_column</span>
+
+        <span class="n">battles</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">concat</span><span class="p">([</span><span class="n">get_battles_from_row</span><span class="p">(</span><span class="n">res</span><span class="o">.</span><span class="n">score</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;battle_result&#39;</span><span class="p">])</span>
+                             <span class="k">for</span> <span class="n">res</span> <span class="ow">in</span> <span class="n">sample_scores</span><span class="p">])</span>
+        <span class="n">bootstrap_online_elo</span> <span class="o">=</span> <span class="n">compute_mle_elo</span><span class="p">(</span><span class="n">battles</span><span class="p">)</span>
+        <span class="o">...</span>
+        <span class="n">score</span> <span class="o">=</span> <span class="n">get_win_rate_column</span><span class="p">(</span><span class="n">stats</span><span class="p">,</span> <span class="s1">&#39;score&#39;</span><span class="p">,</span> <span class="s1">&#39;gpt4-0314&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">at</span><span class="p">[</span><span class="s1">&#39;test_model&#39;</span><span class="p">]</span>
+
+        <span class="k">return</span> <span class="p">[</span><span class="n">AggScore</span><span class="p">(</span><span class="n">score</span><span class="o">=</span><span class="n">score</span><span class="p">,</span> <span class="n">metric_name</span><span class="o">=</span><span class="s1">&#39;winrate&#39;</span><span class="p">,</span> <span class="n">num</span><span class="o">=</span><span class="nb">len</span><span class="p">(</span><span class="n">sample_scores</span><span class="p">))]</span>
+</code></pre></div>
+
+<p>✅ 锚点模型写在 <code>arena_hard_adapter.py:124</code>：</p>
+<div class="codehilite"><pre><span></span><code>            <span class="s1">&#39;model_a&#39;</span><span class="p">:</span> <span class="s1">&#39;gpt4-0314&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;model_b&#39;</span><span class="p">:</span> <span class="s1">&#39;test_model&#39;</span><span class="p">,</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ★ 名词一次说清：
+
+   ★★★ Elo（埃洛评分）= 国际象棋用的那套天梯分算法。
+      ⟹ 核心思想：★★ 赢强的对手加分多，赢弱的对手加分少。
+      ⟹ ⚠️ 它只能算出【相对强弱】，算不出绝对水平。
+
+   ★★★ MLE（Maximum Likelihood Estimation，最大似然估计）
+      = 一种统计方法：⟹ 找一组 Elo 分，使得
+        &quot;按这组分打，最可能打出我们实际观察到的那些胜负结果&quot;。
+      ⚠️ 比传统的&quot;一局一局往上加&quot;更稳，因为它一次性看全部对局。
+
+   ★★★ bootstrap（自助法）= 从已有对局里【有放回地随机重抽】很多次，
+      每次都重算一遍 Elo。
+      ⟹ ⚠️ 目的：得到【置信区间】，也就是&quot;这个分上下浮动多少算正常&quot;。
+      ⟹ 🔑🔑 这直接关系到 [11 章](评测入门/11-怎么读懂一张榜单.md)
+         那个核心问题：★★★【榜单上差 1 分，到底算不算差距？】
+         ⟹ 有了 bootstrap 你才知道答案，⚠️ 通常是&quot;不算&quot;。
+
+   ★★★ 锚点模型（anchor）= `gpt4-0314`。
+      ⟹ 所有模型都跟它对战，报的是【对它的胜率】。
+      ⟹ ⚠️⚠️ 这条必须记住：
+         ★★★【锚点一换，所有历史分数全部作废，不能跨版本比较。】
+</code></pre></div>
+
+<hr />
+<h2 id="8">8. ⚠️ 三个框架的边界：它们都不做什么</h2>
+<div class="codehilite"><pre><span></span><code>   ❌ 都不负责【生成】被评的答案（除了 agentic 那条线）
+      ⟹ ★★ 你得先有模型或 API。
+
+   ❌ 都不能替你判断【题目本身合不合理】
+      ⟹ ⚠️ 数据集里的错题、烂题，框架照跑不误。
+
+   ❌ 都不能替你排除【数据污染】
+      ⟹ ★★★ 见 [06 章](评测入门/06-数据污染.md)。
+      ⚠️ lm_eval 有个 filters/decontamination.py，但那只是工具，
+         ⟹ 是否污染仍然要你自己判断。
+
+   ❌ 都不会告诉你【这个分数对你的业务意味着什么】
+      ⟹ 🔑 这是 [12 章](评测入门/12-自己搭一套评测.md) 存在的理由。
+</code></pre></div>
+
+<hr />
+<h2 id="9">9. 一句话总结</h2>
+<div class="codehilite"><pre><span></span><code>   ★★★ 如果你只想跑个标准分：用 lm-eval-harness。
+   ★★★ 如果你有集群、要一次评几十个模型：用 OpenCompass。
+   ★★★ 如果你要做主观对战评测、或者还想顺便压测服务：用 EvalScope。
+
+   ⟹ 🔑🔑 但真正该带走的不是&quot;选哪个&quot;，而是这个观察：
+
+   ★★★ 三个团队独立设计，最后都收敛到了
+      【判别式 / 生成式 / agentic】这同一个三分法。
+   ⚠️ 框架的名字会变，接口会变，
+      ⟹ ★★ 但这三种问模型的方式，是问题本身决定的。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>相关：<a href="lm-eval-harness拆解.html">lm-eval-harness拆解.md</a> ｜ <a href="SWE-bench拆解.html">SWE-bench拆解.md</a> ｜ <a href="评测框架对比.html">评测框架对比.md</a><br />
+返回 <a href="README.html">harness评测框架/</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

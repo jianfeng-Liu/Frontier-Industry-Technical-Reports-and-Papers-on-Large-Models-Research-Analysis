@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 · 重计算与激活优化</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="10-混合精度与FP8.html">← 10 混合精度与 FP8</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="12-并行策略组合与MFU.html">12 并行策略组合与 MFU</a></p>
+</blockquote>
+<h1 id="11">11 · 重计算与激活优化</h1>
+<blockquote>
+<p><strong>这一章讲最反直觉的一招</strong>：明明算过一次了，<strong>故意不存，等要用的时候再算一遍</strong>。<br />
+读完你应该能回答：为什么"扔掉再重算"能省这么多？完全重计算的代价有多大？<strong>选择性重计算凭什么能只花 2.7% 的算力换 70% 的显存</strong>？FlashAttention 为什么算是同一类思想？</p>
+</blockquote>
+<hr />
+<h2 id="111">11.1 为什么反向传播需要存激活</h2>
+<p><strong>先回答一个基础问题：前向算完了，为什么不能把中间结果扔掉？</strong></p>
+<div class="codehilite"><pre><span></span><code>    考虑最简单的一层：  y = w · x
+
+    反向要算两个梯度：
+        dL/dx = dL/dy · w      ← 需要 w（权重，本来就存着）
+        dL/dw = dL/dy · ★ x ★  ← ★★ 需要 x，也就是【这一层的输入】★★
+
+    → 所以每一层的【输入】都必须留到反向的时候
+    → ★ 这就是&quot;激活值&quot;，也是 [02 章](02-显存去哪了.md) 那笔账里最大的一项
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 关键特征：激活显存 ∝ 层数 × batch × 序列长度
+      —— 它和参数量【没有直接关系】，模型再小、序列一长照样爆
+</code></pre></div>
+
+<hr />
+<h2 id="112">11.2 重计算：拿时间换显存</h2>
+<blockquote>
+<p>📌 这个技术有三个名字，指的是同一件事：<strong>gradient checkpointing</strong>（梯度检查点）、<strong>activation recomputation</strong>（激活重计算）、<strong>rematerialization</strong>（重物化）。<strong>Megatron 用第二个。</strong></p>
+</blockquote>
+<h3 id="_1">想法</h3>
+<div class="codehilite"><pre><span></span><code>    ┌─ 不用重计算 ──────────────────────────────────┐
+    │  前向： x₀ → x₁ → x₂ → ... → x₈₀ → loss       │
+    │        ★ 全部 81 个中间结果都存着              │
+    │  反向： 直接拿来用                             │
+    │  显存：★ O(n)     计算：1 遍前向 + 1 遍反向     │
+    └────────────────────────────────────────────────┘
+
+    ┌─ 完全重计算 ──────────────────────────────────┐
+    │  前向： x₀ →(算)→ x₁ →(算)→ ... → loss         │
+    │        ★★ 算完立刻扔，只留每层的【输入】★★     │
+    │  反向： 到第 k 层时，★ 用留着的输入重新前向一遍  │
+    │        这一层，把中间结果算出来，用完再扔       │
+    │  显存：★ 大幅下降   计算：★ 多 1 遍前向        │
+    └────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ 最早的系统性工作是陈天奇等人 2016 年的论文（<a href="../papers/Gradient-Checkpointing-Sublinear-Memory-arXiv-1604.06174.pdf">papers/Gradient-Checkpointing-Sublinear-Memory-arXiv-1604.06174.pdf</a>）：<br />
+<em>"we design an algorithm that costs </em><em>O(√n) memory to train a n layer network, with only the computational cost of an extra forward pass</em><em> per mini-batch."</em><br />
+<em>"In the extreme case, our analysis also shows that the memory consumption can be reduced to </em><em>O(log n) with as little as O(n log n) extra cost</em><em> for forward computation."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ O(√n) 是怎么来的？（这个推导很漂亮，值得看一眼）★★
+
+    把 n 层分成 k 段，每段 n/k 层：
+      ① 只在【段的边界】存激活      → 存了 k 份
+      ② 反向到某一段时，重算这一段  → 段内峰值 n/k 份
+
+    总显存 = k + n/k
+    ★ 对 k 求最小值：k = √n 时最小，总显存 = 2√n
+
+    → n = 100 层：从 100 份降到 20 份，代价是多算一遍前向
+</code></pre></div>
+
+<h3 id="_2">⚠️ 代价有多大</h3>
+<blockquote>
+<p>✅ Megatron-3 论文给出的实测：<em>"recomputation (an extra forward pass) which can introduce </em><em>as much as 30 − 40% computational time overhead</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 为什么是 30~40% 而不是 50%？
+
+      前向 : 反向 ≈ 1 : 2（反向要算两个梯度，见 [01 章](01-为什么需要分布式训练.md) 那个 6ΨD 的推导）
+      原来：1 + 2 = 3 份工作
+      加上重计算：1 + 1 + 2 = 4 份工作
+      → 4/3 = 1.33，★ 多了 33%，正好落在 30~40% 区间 ✅
+</code></pre></div>
+
+<hr />
+<h2 id="113">11.3 ★★ 选择性重计算：这一章的核心</h2>
+<p><strong>Megatron-3 的关键提问：为什么要一刀切地重算【全部】？</strong></p>
+<blockquote>
+<p>✅ 论文原话（本章最重要的引用）：<br />
+<em>"we note that </em><em>not all activations require the same amount of operations to recompute</em><em> so it is beneficial to be smarter in selecting which activations to store and which to recompute. Instead of checkpointing and recomputing full transformer layers, we propose to </em><em>checkpoint and recompute only parts of each transformer layer that take up a considerable amount of memory but are not computationally expensive to recompute</em><em>, or selective activation recomputation."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 判据一句话：★ 挑那些【占显存大、但重算便宜】的部分 ★
+</code></pre></div>
+
+<h3 id="_3">哪一部分符合这个条件</h3>
+<blockquote>
+<p>✅ 论文的分析：<em>"the term </em><em>5as/h</em><em> in Equation 5 is due to the attention operations after the width of the network is increased by the linear layer calculating the Q, K, and V values; i.e., </em><em>QKᵀ matrix multiply, softmax, softmax dropout, and attention over V</em><em>... </em><em>These operations generally have large input sizes and thus large activations, however, the number of floating-point operations (FLOPs) per input element is very low.</em><em> The rest of the transformer layer accounts for the </em><em>34</em><em> term."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 回忆 [02 章 §2.3](02-显存去哪了.md) 那个公式的两项：
+
+        每层激活 = sbh × ( 34  +  5as/h )
+                          └┬┘    └──┬──┘
+                           │        │
+              ★ 34 项：矩阵乘的输入   ★ 5as/h 项：注意力分数矩阵那一块
+                 —— 重算很贵（要重做矩阵乘）  —— 重算很便宜（每个元素只有几次运算）
+                                              但★体积巨大★（∝ s²）
+
+    ★★ 所以：只重算 5as/h 那一项，把 34 那一项好好存着 ★★
+</code></pre></div>
+
+<h3 id="_4">为什么这笔账特别划算</h3>
+<blockquote>
+<p>✅ 论文的具体数字：<br />
+<em>"For GPT-3, </em><em>a = 96, s = 2048, and h = 12288 and as a result 5as/h = 80</em><em>. For MT-NLG, </em><em>a = 128, s = 2048, and h = 20480 so 5as/h = 64</em><em>. Comparing these numbers to </em><em>34</em><em>... we can see these activations account for a large portion of the total activations. Thus, by using selective activation recomputation we can </em><em>save 70% and 65% of the required memory</em><em> for activations for the GPT-3 and MT-NLG models... The recomputation of these activations introduces </em><em>only 2.7% and 1.6% FLOPs overhead</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 验算一下 GPT-3 那一栏（帮你确认理解没跑偏）：
+
+      总系数 = 34 + 80 = 114
+      扔掉的 = 80
+      → 80 / 114 = 70.2%   ✅ 和论文的 &quot;70%&quot; 对上了
+
+    ★★★ 2.7% 的算力，换 70% 的激活显存 ★★★
+        对比完全重计算的 &quot;30~40% 算力换 ~94%&quot;，
+        ★ 这是一个好得多的交易点。
+</code></pre></div>
+
+<hr />
+<h2 id="114-megatron-3-table-2">11.4 ✅ Megatron-3 的完整对照表（论文 Table 2 原样）</h2>
+<p><strong>这张表是本章和 <a href="08-序列并行与上下文并行.html">08 章</a> 的合订本，值得逐行读</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>每层激活显存</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>什么都不用</td>
+<td>$sbh\left(34 + \frac{5as}{h}\right)$</td>
+</tr>
+<tr>
+<td>只有 TP</td>
+<td>$sbh\left(\mathbf{10} + \frac{24}{t} + \frac{5as}{ht}\right)$</td>
+</tr>
+<tr>
+<td>TP + SP</td>
+<td>$sbh\left(\frac{34}{t} + \frac{5as}{ht}\right)$</td>
+</tr>
+<tr>
+<td>TP + 选择性重计算</td>
+<td>$sbh\left(\mathbf{10} + \frac{24}{t}\right)$</td>
+</tr>
+<tr>
+<td><strong>TP + SP + 选择性重计算</strong></td>
+<td>$\boxed{sbh\left(\frac{34}{t}\right)}$</td>
+</tr>
+<tr>
+<td>完全重计算</td>
+<td>$sbh(2)$</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 请特别看第二行那个孤零零的【10】★★★
+
+    它没有除以 t —— ★ 这就是 [08 章 §8.1](08-序列并行与上下文并行.md) 说的
+    &quot;TP 漏掉的那部分激活&quot;，在论文的公式里长这个样子。
+
+    加上 SP 之后（第三行），10 + 24/t 合并成了 34/t
+    → ★ 那个&quot;10&quot;被彻底消灭了。这是 SP 价值的最硬证据。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 三个层次，看清楚各自的位置：
+
+      基线    34 + 5as/h        （GPT-3: 114）
+      +TP+SP  (34 + 5as/h)/t    （t=8: 14.25）
+      +选择性  34/t             （t=8: 4.25）★ 只有基线的 3.7%
+      完全重计算 2               ← ⚠️ 更省，但要付 30~40% 的算力
+</code></pre></div>
+
+<h3 id="_5">✅ 总成绩</h3>
+<blockquote>
+<p>论文摘要：<em>"our method </em><em>reduces activation memory by 5×</em><em>, while </em><em>reducing execution time overhead from activation recomputation by over 90%</em><em>. For example, when training a </em><em>530B parameter GPT-3 style model on 2240 NVIDIA A100 GPUs</em><em>, we achieve a </em><em>Model Flops Utilization of 54.2%, which is 29% faster than the 42.1%</em><em> we achieve using recomputation."</em></p>
+<p>📌 <strong>MFU</strong> = <strong>M</strong>odel <strong>FLOPs </strong>U<strong>tilization，模型算力利用率。</strong>"你实际用掉的算力 ÷ 硬件理论峰值算力"，是衡量训练效率最重要的单一指标。** <a href="12-并行策略组合与MFU.html">12 章</a>会专门讲怎么算它。</p>
+</blockquote>
+<hr />
+<h2 id="115-flashattention">11.5 FlashAttention：其实是同一种思想</h2>
+<p><strong>FlashAttention 通常被当成"注意力加速"来讲，但从本章的视角看，它做的是同一件事：不存中间结果，用重算换 IO。</strong></p>
+<h3 id="_6">病因：注意力矩阵根本不该被写出来</h3>
+<div class="codehilite"><pre><span></span><code>    标准注意力的四步：
+
+      ① S = QKᵀ           → ★ 写一个 [s, s] 的矩阵到显存
+      ② P = softmax(S)    → ★ 再写一个 [s, s]
+      ③ P = dropout(P)    → ★ 又一个 [s, s]
+      ④ O = PV            → 读回来
+
+    s = 8192 时，一个 [s,s] 矩阵 = 6700 万个数 × 每个头 × 每层
+    ★★ 而这些矩阵【只是中间产物】，最终只要 O ★★
+
+    → 时间全花在【搬运】而不是【计算】上
+</code></pre></div>
+
+<blockquote>
+<p>✅ FlashAttention 论文（<a href="../papers/FlashAttention-arXiv-2205.14135.pdf">papers/FlashAttention-arXiv-2205.14135.pdf</a>）的诊断：<br />
+<em>"We argue that a missing principle is making attention algorithms </em><em>IO-aware—accounting for reads and writes between levels of GPU memory</em><em>. We propose FlashAttention, an </em><em>IO-aware exact attention algorithm that uses tiling</em><em> to reduce the number of memory reads/writes between GPU </em><em>high bandwidth memory (HBM)</em><em> and GPU </em><em>on-chip SRAM</em><em>."</em></p>
+<p>📌 <strong>HBM</strong> = <strong>H</strong>igh <strong>B</strong>andwidth <strong>M</strong>emory，高带宽显存，就是我们平时说的"80 GB 显存"。<strong>SRAM</strong> = 芯片上的高速缓存，只有几十 MB，但快 10 倍以上。<strong>★ 这就是 <a href="03-通信原语.html">03 章</a> 那个"带宽层级"的概念，只不过发生在一张卡的内部。</strong></p>
+</blockquote>
+<h3 id="_7">药方</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 把 Q、K、V 切成小块，一块一块地：
+      读进 SRAM → 在 SRAM 里算完这一块的注意力 → 只把结果累加到输出
+
+    ★★ 那个 [s, s] 的大矩阵【从来没有被完整地写进 HBM】★★
+
+    反向怎么办？—— ★ 重算 ★
+      存下来的只有 O 和 softmax 的归一化统计量（很小）
+      反向时用它们【重新算出】需要的那一块
+
+    → ★★★ 这就是本章的思想：不存，要用时再算 ★★★
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>数学上凭什么能分块？</strong> 靠 <strong>online softmax</strong>：softmax 可以边扫描边修正归一化因子，分块累加的结果和一次性算<strong>完全相同</strong>。✅ 论文强调这是 <strong>exact attention</strong>（精确注意力），不是近似。<strong>这也正是 <a href="08-序列并行与上下文并行.html">08 章</a> Ring Attention 能成立的同一个数学基础。</strong></p>
+</blockquote>
+<h3 id="_8">✅ 效果</h3>
+<blockquote>
+<p><em>"FlashAttention trains Transformers faster than existing baselines: </em><em>15% end-to-end wall-clock speedup on BERT-large</em><em> (seq. length 512) compared to the MLPerf 1.1 training speed record, </em><em>3× speedup on GPT-2</em><em> (seq. length 1K), and </em><em>2.4× speedup on long-range arena</em><em>."</em><br />
+<em>"FlashAttention does not read and write the large N×N attention matrix to HBM, resulting in an </em><em>7.6× speedup on the attention computation</em><em>."</em></p>
+</blockquote>
+<p><strong>FlashAttention-2</strong>（<a href="../papers/FlashAttention-2-arXiv-2307.08691.pdf">papers/FlashAttention-2-arXiv-2307.08691.pdf</a>）继续优化了 GPU 内部的任务划分：</p>
+<blockquote>
+<p>✅ <em>"These yield around </em><em>2× speedup compared to FlashAttention</em><em>, reaching </em><em>50-73% of the theoretical maximum FLOPs/s on A100</em><em>... FlashAttention-2 reaches training speed of up to </em><em>225 TFLOPs/s per A100 GPU (72% model FLOPs utilization)</em><em>."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 注意一个隐含的重要后果：
+      FlashAttention 让 5as/h 那一项【不再实际占显存】
+      → 于是 [02 章](02-显存去哪了.md) 那个 s=4096 的例子里的
+        注意力矩阵那一块，在现代框架里其实已经消失了
+      ⚠️ 所以本教程引用的 Megatron-3 公式，是【不带 FlashAttention】
+         的理论账。真实系统里 5as/h 那项要打很大的折扣。
+</code></pre></div>
+
+<hr />
+<h2 id="116-cpu">11.6 第三条路：卸载到 CPU 内存</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 既然 CPU 内存便宜又大（一台机器 1~2 TB），
+      那把暂时不用的东西挪过去，要用时再挪回来？
+
+    ✅ 可行，但回忆 [01 章 §1.6](01-为什么需要分布式训练.md) 的那个数字：
+       PCIe 5.0 ≈ 0.06 TB/s   vs   HBM3 3.35 TB/s
+       ★★ 差 55 倍 ★★
+
+    → ★ 只有当&quot;挪的时间&quot;能被&quot;算的时间&quot;完全盖住时才划算
+    → 所以卸载的对象要选【很久才用一次的东西】：
+        ✅ 优化器状态（一步用一次）        ← ZeRO-Offload
+        ✅ 早期层的激活（前向存、反向才用，中间隔了很久）
+        ❌ 当前层的权重（马上就要用）
+</code></pre></div>
+
+<blockquote>
+<p>📌 Megatron 现在也支持细粒度的激活卸载（源码 README 提到 <em>"Pipeline-aware fine-grained activation offloading"</em> 和 <code>--optimizer-cpu-offload</code>）。<strong>★ 这里"pipeline-aware"三个字是关键：流水线里前面的 stage 存的激活要等很久才反向，正好是卸载的最佳对象。</strong></p>
+</blockquote>
+<hr />
+<h2 id="117">11.7 四条路的对比</h2>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>省什么</th>
+<th>代价</th>
+<th>用不用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>完全重计算</strong></td>
+<td>✅ 激活降到 <code>2sbh</code></td>
+<td>⚠️ <strong>30~40% 算力</strong></td>
+<td>最后的手段</td>
+</tr>
+<tr>
+<td><strong>选择性重计算</strong></td>
+<td>✅ 激活 −70%</td>
+<td>✅ <strong>仅 2.7% 算力</strong></td>
+<td>★ 基本默认开</td>
+</tr>
+<tr>
+<td><strong>FlashAttention</strong></td>
+<td>✅ 消灭 <code>5as/h</code> 项</td>
+<td>✅ <strong>负代价（更快）</strong></td>
+<td>★★ 无脑开</td>
+</tr>
+<tr>
+<td><strong>CPU 卸载</strong></td>
+<td>✅ 什么都能省</td>
+<td>⚠️ 慢 55 倍的搬运</td>
+<td>显存实在不够时</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 开启顺序（工程经验，⚠️ 我的总结不是论文结论）：
+
+      FlashAttention（免费）
+        → 选择性重计算（2.7%）
+          → SP（免费，见 [08 章](08-序列并行与上下文并行.md)）
+            → 部分层完全重计算（按需）
+              → CPU 卸载（万不得已）
+</code></pre></div>
+
+<hr />
+<h2 id="118-megatron">11.8 挂回 Megatron</h2>
+<div class="codehilite"><pre><span></span><code>--recompute-granularity<span class="w"> </span>selective<span class="w">   </span><span class="c1"># ★ §11.3，默认推荐</span>
+--recompute-granularity<span class="w"> </span>full<span class="w">        </span><span class="c1">#   完全重计算</span>
+<span class="w">  </span>--recompute-method<span class="w"> </span>uniform<span class="w">        </span><span class="c1">#   均匀分组（对应 §11.2 的 O(√n) 思路）</span>
+<span class="w">  </span>--recompute-method<span class="w"> </span>block<span class="w">          </span><span class="c1">#   只重算前 N 层</span>
+<span class="w">  </span>--recompute-num-layers<span class="w"> </span>N
+--recompute-modules<span class="w"> </span>mla<span class="w"> </span>moe<span class="w"> </span>mlp<span class="w"> </span>moe_act<span class="w"> </span>norm
+<span class="w">                                    </span><span class="c1"># ✅ v0.13 起的细粒度重计算，</span>
+<span class="w">                                    </span><span class="c1">#   可以精确到&quot;重算哪几种模块&quot;</span>
+--use-flash-attn<span class="w">                    </span><span class="c1"># §11.5</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    源码位置：
+      megatron/core/transformer/transformer_block.py
+          ★ 重计算的分组逻辑在这里（_checkpointed_forward）
+      megatron/core/tensor_parallel/random.py
+          ★★ 一个容易忽略但关键的文件：重计算必须复现【同一个 dropout 掩码】，
+             否则前向和重算结果不一致，梯度就错了。
+             这里管的就是随机数状态的保存与恢复。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>上面那个随机数问题值得多说一句</strong>：重计算的正确性前提是"重算一遍得到和第一次完全相同的结果"。<strong>dropout 是随机的</strong>，所以框架必须在第一次前向时记下随机数种子状态，重算时精确恢复。<strong>这是所有重计算实现里最容易出 bug 的地方。</strong></p>
+</blockquote>
+<hr />
+<h2 id="119">11.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① ★ 反向传播需要每一层的【输入】来算权重梯度 → 这就是激活必须存的原因
+   激活 ∝ 层数 × batch × 序列长度，★ 和参数量无关
+
+② ★ 重计算 = 拿时间换显存：不存，反向时重新前向一遍
+   ✅ 2016 年论文：O(√n) 显存 + 一遍额外前向；极端可到 O(log n)
+   ★ √n 的来历：分 k 段，显存 = k + n/k，k=√n 时最小
+   ⚠️ ✅ 代价实测 30~40%（验算：工作量从 1+2 变成 1+1+2，即 +33%）
+
+③ ★★★ 选择性重计算：只重算【占显存大、重算便宜】的那部分
+   ✅ 判据原文：&quot;take up a considerable amount of memory but are not
+      computationally expensive to recompute&quot;
+   ★ 对象就是公式里的 5as/h 项（QKᵀ、softmax、dropout、attn over V）
+     —— 体积 ∝ s²，但每个元素的运算量极低
+   ✅ GPT-3: 5as/h = 80 vs 34 → 省 70%，只花 2.7% 算力
+      （验算 80/114 = 70.2% ✅）
+
+④ ✅ Megatron-3 Table 2 是全书最值得记的一张表：
+   只 TP：      sbh(★10★ + 24/t + 5as/ht)   ← ★ 那个不除 t 的 10 就是 TP 的漏洞
+   TP+SP：      sbh(34/t + 5as/ht)          ← ★ 10 被消灭了
+   TP+SP+选择性：sbh(34/t)                   ← ★ 只有基线的 3.7%
+   完全重计算：  sbh(2)
+   ✅ 总成绩：激活 ÷5，重计算开销 −90%，530B/2240 卡 MFU 54.2% vs 42.1%（快 29%）
+
+⑤ ★ FlashAttention 是同一思想的另一个战场：
+   把 [s,s] 注意力矩阵从【显存】里彻底消灭，切块在片上 SRAM 里算，反向时重算
+   ✅ 数学基础是 online softmax，是【精确】不是近似
+      —— 和 08 章 Ring Attention 同一个基础
+   ✅ GPT-2 快 3×，注意力本身快 7.6×；FA2 再快 2×，225 TFLOP/s / 72% MFU
+   ⚠️ 副作用：它让 5as/h 那项在真实系统里基本消失了
+
+⑥ CPU 卸载：⚠️ PCIe 比 HBM 慢 55 倍 → 只适合&quot;很久才用一次&quot;的东西
+   ✅ 优化器状态、前面 stage 的激活；❌ 当前层权重
+
+⑦ ⚠️ 重计算的隐藏坑：必须复现同一个 dropout 掩码，
+   → 框架要保存/恢复随机数状态（megatron/core/tensor_parallel/random.py）
+</code></pre></div>
+
+<p><strong>第三部分到此结束。</strong> 五种切法 + 两种"不切也能省"，工具箱已经齐了。<strong>接下来的第四部分讲工程现实</strong>：这些旋钮该怎么组合、怎么判断自己跑得快不快、几千张卡上会坏什么、以及断了怎么接着训。</p>
+<hr />
+<blockquote>
+<p><a href="10-混合精度与FP8.html">← 10 混合精度与 FP8</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="12-并行策略组合与MFU.html">12 并行策略组合与 MFU</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

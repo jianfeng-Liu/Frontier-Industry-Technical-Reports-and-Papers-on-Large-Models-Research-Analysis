@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · 数据污染：评测领域最棘手的问题</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="06">06 · 数据污染：评测领域最棘手的问题</h1>
+<blockquote>
+<p>★★ 这一章没有解法，只有缓解手段。<br />
+<strong>但不理解它，你会把很多虚高的分数当真。</strong></p>
+</blockquote>
+<hr />
+<h2 id="61">6.1 问题本身</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：数据污染（data contamination），也叫【测试集泄漏】
+
+    ┌────────────────────────────────────────────────┐
+    │  ① 评测集是公开的（挂在 GitHub / HuggingFace）  │
+    │  ② 训练大模型要抓【尽可能多的网页】              │
+    │  ③ ⟹ ★★ 评测题和标准答案进了训练数据           │
+    │  ④ ⟹ 模型不是在解题，是在【回忆】               │
+    └────────────────────────────────────────────────┘
+
+    ⟹ 🔑 结果：分数虚高，★★★ 且【无法从分数本身察觉】。
+</code></pre></div>
+
+<blockquote>
+<p>★ 这在机器学习里本来是常识错误——<strong>训练集和测试集必须分开</strong>。<br />
+⚠️ 但大模型的训练数据是"全网抓取"，<strong>你根本不知道里面有什么</strong>。<br />
+<code>⟹ ★★ 传统机器学习：你亲手划分训练/测试集，★ 边界清楚
+    ⟹ ★★ 大模型：训练数据几十 TB，★★★ 边界【不可知】</code></p>
+</blockquote>
+<hr />
+<h2 id="62">6.2 ★★ 污染的四个层级（严重程度递增）</h2>
+<div class="codehilite"><pre><span></span><code>    ① 概念污染
+       模型见过同类知识（★ 见过微积分教材）
+       ⟹ ★★ 这【不算污染】，这就是我们要它学的东西
+
+    ② 题目污染
+       ⟹ 模型见过题面，但没见过答案
+       ⟹ ★ 影响有限
+
+    ③ ★★ 题目 + 答案污染
+       ⟹ 模型见过完整的题和答案
+       ⟹ ★★★ 严重。模型可以直接背出来
+
+    ④ ★★★ 训练时被当成训练目标反复学过
+       ⟹ 不只是&quot;见过&quot;，是&quot;练过很多遍&quot;
+       ⟹ ⚠️ 分数可以刷到接近满分，而实际能力毫无变化
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意 ① 和 ③ 的区别，这是本章最需要想清楚的地方</strong>：<br />
+```<br />
+    ★ 我们【希望】模型见过微积分知识（那是能力）<br />
+    ★★ 我们【不希望】模型见过这道具体的题（那是作弊）</p>
+<div class="codehilite"><pre><span></span><code>⟹ ⚠️ 但这两者在训练数据里【长得一模一样】，都是文本。
+⟹ 🔑🔑 这就是为什么这个问题【没有干净解法】。
+</code></pre></div>
+
+<p>```</p>
+</blockquote>
+<hr />
+<h2 id="63">6.3 ★ 怎么检测</h2>
+<p><strong>没有可靠方法，只有几类信号（⚠️ 都只能提示嫌疑，不能证明）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① ★ 字符串匹配 / n-gram 重叠
+       ⟹ 在训练数据里搜评测题的原文
+       ⟹ ✅ 直接、可靠
+       ⟹ ⚠️ 但前提是【你能拿到训练数据】——闭源模型完全没戏
+
+    ② ★★ 看模型对题目的&quot;熟悉度&quot;异常
+       ⟹ 让模型【续写题目本身】，看它能不能背出后半句
+       ⟹ ★ 背得出 ⟹ 高度可疑
+       ⟹ ⚠️ 背不出 ⟹ 也不能证明没污染
+
+    ③ ★★ 选项顺序扰动
+       ⟹ 把 ABCD 打乱重排，看分数掉多少
+       ⟹ ★★★ 真会做的模型：分数基本不变
+             背答案的模型：★ 分数显著下降
+       ⟹ 🔑 这一招简单又有效，值得记住
+
+    ④ ★ 新旧对比
+       ⟹ 拿【训练截止日之后】才发布的新题去测
+       ⟹ 新题分数远低于老题 ⟹ ★★ 强烈提示污染
+</code></pre></div>
+
+<blockquote>
+<p>★★ 框架里有对应的模块：<br />
+<code>✅ lm_eval/decontamination/     ← 顶层去污染模块
+    ✅ lm_eval/filters/decontamination.py ← 过滤器形式的实现</code><br />
+⚠️ 但要清楚：<strong>它做的是 ① 那种字符串匹配</strong>，<br />
+只有当你<strong>手里有训练数据</strong>时才用得上。★ 对评估别人家的模型，帮不上忙。</p>
+</blockquote>
+<hr />
+<h2 id="64">6.4 ★★ 缓解手段（都有代价）</h2>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>做法</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>私有测试集</strong></td>
+<td>★ 只公布分数，不公布题目</td>
+<td>⚠️ 无法独立复现，要信任测试方</td>
+</tr>
+<tr>
+<td><strong>动态生成</strong></td>
+<td>★ 每次考的题现场生成</td>
+<td>⚠️ 题目质量难保证；难度不稳定</td>
+</tr>
+<tr>
+<td><strong>时间切分</strong></td>
+<td>★★ 只用模型训练截止日之后的新题</td>
+<td>⚠️ 题量少；每隔几个月就要重做</td>
+</tr>
+<tr>
+<td><strong>扰动重排</strong></td>
+<td>打乱选项、改写题面</td>
+<td>⚠️ 改写可能改变难度</td>
+</tr>
+<tr>
+<td><strong>人工新题</strong></td>
+<td>请专家现出题</td>
+<td>⚠️★ 极贵，量小</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>★★ 目前最被认可的是【时间切分】那一条</strong>，因为它逻辑上最硬：<br />
+```<br />
+    ★★★ 如果这道题在模型训练完之后才诞生，<br />
+         那它【物理上不可能】出现在训练数据里。</p>
+<div class="codehilite"><pre><span></span><code>⟹ ★ 这就是 LiveCodeBench 这类&quot;滚动更新&quot;评测集的设计思路：
+   持续收录新出现的编程题，★★ 并【按日期切片】报告分数。
+⟹ ⚠️ 代价是评测集要一直维护，且旧模型和新模型的可比区间会不断变化。
+</code></pre></div>
+
+<p>```</p>
+</blockquote>
+<hr />
+<h2 id="65">6.5 ★★★ 一个必须理解的结构性问题</h2>
+<p><strong>污染不只是"有人作弊"，它还有一个更麻烦的成因。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★★ 即使【所有人都诚实】，污染也会自然发生：
+
+    ① 评测集公开
+    ② 大家讨论它、写博客分析它、在论文里引用它的例题
+    ③ ⟹ ★ 这些讨论文章本身进了下一代模型的训练数据
+    ④ ⟹ ★★★ 于是模型间接学到了题和答案
+
+    ⟹ 🔑 这叫【间接污染】，★★ 没有任何人做错事，但污染确实发生了。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️★★ 更棘手的还有【榜单驱动的过拟合】：
+
+      ① 某个榜单成为行业标准
+      ② ⟹ 大家开始针对它调优（选数据、调格式、试提示词）
+      ③ ⟹ ★★ 分数上涨，但涨的是【对这个榜单的适应】
+      ④ ⟹ ★★★ 真实能力没有同步上涨
+
+    ⟹ 🔑🔑 这不需要任何人接触测试集，★ 光靠反复试就能发生。
+    ⟹ ⚠️ 这也是为什么【一个评测集用久了就会失效】。
+</code></pre></div>
+
+<blockquote>
+<p>★★ 这条规律有个名字，<strong>古德哈特定律</strong>（Goodhart's Law）：</p>
+<blockquote>
+<p><strong>"当一个指标成为目标时，它就不再是一个好指标。"</strong></p>
+</blockquote>
+<p>🔑 ⟹ <strong>所以评测集需要【不断更新换代】。</strong><br />
+这不是因为旧的设计得不好，★★ 而是因为<strong>它被用过了</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="65b">6.5b ⭐⭐ ✅ 一份论文把污染【当场抓了个正着】</h2>
+<p>★★ 前面 6.1–6.5 讲的是"污染在原理上会怎样"。<br />
+这一节换成实证：<strong>LiveCodeBench 论文</strong>（arXiv:2403.07974，46 页，已校验）<br />
+用一个极干净的实验设计，把污染【画成了一条曲线】。</p>
+<h3 id="_1">它的设计：给每道题打上"发布日期"</h3>
+<p>✅ 论文原文（摘要）：</p>
+<blockquote>
+<p>"we propose <strong>LiveCodeBench</strong>, a comprehensive and <strong>contamination-free</strong> evaluation<br />
+of LLMs for code, which collects <strong>new problems over time</strong> from contests across three<br />
+competition platforms, namely <strong>LeetCode, AtCoder, and CodeForces</strong>. …<br />
+Currently, LiveCodeBench hosts over <strong>five hundred coding problems</strong> that were published<br />
+between <strong>May 2023 and May 2024</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ★ 名词补全：
+   ★ LeetCode / AtCoder / CodeForces = 三个在线编程竞赛平台，每周出新题。
+   ★★ 关键设计：★★★【每道题都带一个 release date（发布日期）标签】。
+   ⟹ 🔑 于是可以按时间窗口切片评测：
+      &quot;只用 2023 年 9 月之后发布的题&quot; 就是一次干净实验。
+</code></pre></div>
+
+<p>✅ 原文说明这个做法为什么必要（引言）：</p>
+<blockquote>
+<p>"While previous works have attempted decontamination using both exact and fuzzy matches,<br />
+it can be a non-trivial task and <strong>can be evaded using simple strategies like rephrasing</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 这正是 6.3 那一节的核心难点，也是 10.7b.3 里 DeepSeek 自己承认的
+      &quot;n-gram 挡不住换句话说的题&quot;。
+   ⟹ 🔑 LiveCodeBench 的答案是：★★★ 不去检测污染，而是【让污染在物理上不可能发生】
+      —— 用模型训练截止日之后才出现的题。
+</code></pre></div>
+
+<h3 id="_2">✅ 抓到的结果：分数在截止日那天"掉下悬崖"</h3>
+<p>✅ 论文原文（Figure 1 说明 + 正文）：</p>
+<blockquote>
+<p>"Notice that <strong>DeepSeek-Instruct and GPT-4-O perform considerably worse on problems<br />
+released since September and November 2023 (their release and cutoff dates respectively!)</strong><br />
+– indicating potential contamination for the earlier problems."</p>
+<p>"We observe a <strong>stark drop</strong> in the performance of DeepSeek, GPT-4-O, and Codestral on<br />
+LeetCode problems released <strong>after Aug 2023, Oct 2023, and Jan 2024</strong> (Figure 1)."</p>
+</blockquote>
+<p>✅ 最刺眼的一个数字（正文 §5.1）：</p>
+<blockquote>
+<p>"we find that even the <strong>DS-Base-33B</strong> model also suffers from contamination dropping from<br />
+<strong>Pass@1 ~60 in May problems to Pass@1 ~0 in September LeetCode problems</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️⚠️ ★★★ 请把这个数字读三遍：
+
+   ┌───────────────────────────────────────────────────────────┐
+   │  同一个模型、同一个平台（LeetCode）、同一种题型、          │
+   │  同一套评测代码，唯一的差别是【题目的发布月份】：          │
+   │                                                            │
+   │      5 月发布的题  →  Pass@1 ≈ 60                          │
+   │      9 月发布的题  →  Pass@1 ≈ 0                           │
+   └───────────────────────────────────────────────────────────┘
+
+   ⟹ 🔑🔑🔑 这不是&quot;能力下降&quot;，能力不会在一个月内从 60 掉到 0。
+      ★★★ 这是【记忆的边界被看见了】。
+      ⚠️ 5 月那 60 分里，有相当大一部分不是&quot;会做&quot;，是&quot;见过&quot;。
+</code></pre></div>
+
+<p>✅ 另一条同样干净的对照（Codestral）：</p>
+<blockquote>
+<p>"Codestral achieves <strong>Pass@1 36.5</strong> on problems released between May'23 and Jan'24 and<br />
+<strong>Pass@1 28.3</strong> on problems since Feb'24."</p>
+</blockquote>
+<p>✅ 而且论文给出了一个非常重要的<strong>阴性对照</strong>（negative control）：</p>
+<blockquote>
+<p>"Irrespective of the release or cutoff dates, we <strong>do not find any drastic performance<br />
+variations across the months</strong> [for GPT-4-Turbo, Gemini-Pro, Mistral-L, Claude-3s],<br />
+particularly compared to the DeepSeek models."</p>
+<p>"we find that this drop in performance <strong>primarily occurs for the LeetCode problems only</strong><br />
+and that the model performance is <strong>relatively smooth across the months for problems from<br />
+other platforms</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 阴性对照是这个实验最值得学的地方，★★★ 它排除了两个替代解释：
+
+   ① &quot;会不会是 9 月的题本身更难？&quot;
+      ⟹ ⚠️ 如果是题变难，★★ 所有模型都该一起掉。但别的模型没掉。
+
+   ② &quot;会不会是这个模型整体就不行？&quot;
+      ⟹ ⚠️ 如果是模型不行，★★ 它在 AtCoder 上也该掉。但它只在 LeetCode 上掉。
+
+   ⟹ ★★★ 只有【这个模型 + 这个平台 + 这个时间点】三者同时成立才掉，
+      🔑 这个交叉模式，指向的唯一合理解释就是：★★★ LeetCode 老题进了训练集。
+</code></pre></div>
+
+<h3 id="_3">✅ 顺带抓到的第二件事：过拟合到基准上</h3>
+<p>★★ 论文还做了一个 6.5 节"Goodhart 定律"的直接证据。</p>
+<p>✅ 原文：</p>
+<blockquote>
+<p>"<strong>DS-Ins-1.3B</strong> which achieves <strong>59.8% Pass@1 on HumanEval+</strong> but only <strong>26.3% on LCB-Easy</strong>."</p>
+<p>"<strong>DS-Ins-33B</strong> is merely <strong>4.3 point behind GPT-4-Turbo on HumanEval+</strong> but <strong>16.2 points<br />
+(69%)</strong> [behind] on LCB code generation scenario."</p>
+<p>"the green-shaded cluster contains <strong>base models or closed-access models</strong>, while the<br />
+<strong>red-shaded cluster primarily comprises fine-tuned variants of open-access models</strong>.<br />
+The well-separated clusters suggest that many models that perform well on HumanEval<br />
+might be <strong>overfitting on the benchmark</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 这张散点图（论文 Figure 5）说的是：
+
+   ★ 横轴 = HumanEval+ 分数，纵轴 = LiveCodeBench-Easy 分数。
+   ★★ 如果两个基准测的是同一种能力，所有点该落在对角线附近。
+   ⚠️ 实际却分成两团：
+      ● 绿色团（落在对角线上）= base 模型 + 闭源模型
+      ● 红色团（HumanEval+ 高但 LCB 低）= 开源模型的微调版本
+
+   ⟹ 🔑🔑 ★★★ 这就是 Goodhart 定律的可视化：
+      ⚠️ 【一个指标一旦成为优化目标，它就不再是一个好指标。】
+      ★★ 微调时刻意往 HumanEval 这类基准上使劲，
+      ⟹ 分数上去了，但【上去的那部分没有迁移到别的题上】。
+
+   ⟹ ★★ 而 base 模型和闭源模型落在对角线上，
+      ⚠️ 一个可能的解释是它们没有针对 HumanEval 做专门优化。
+      （✅ 这是论文的观察；⚠️ 具体原因论文没有断言，我也不断言。）
+</code></pre></div>
+
+<h3 id="_4">🔑 这一节给你的三条可操作结论</h3>
+<div class="codehilite"><pre><span></span><code>   ① ★★★ 看到一个&quot;新模型在老基准上刷出高分&quot;，
+      ⟹ ⚠️ 先问：这个基准发布于该模型的训练截止日之前吗？
+      ⟹ 是的话，这个分数【无法区分&quot;会做&quot;和&quot;见过&quot;】。
+
+   ② ★★★ 判断污染最有力的证据不是绝对分数，是【时间切片曲线】。
+      ⟹ 🔑 单点分数永远说不清；分数在截止日附近的断崖说得清。
+
+   ③ ★★ 一个模型在两个&quot;测同种能力&quot;的基准上分数背离，
+      ⟹ ⚠️ 大概率其中一个被过拟合了。
+      ⟹ 🔑 所以 11 章会说：★★★ 永远不要只看一个基准。
+</code></pre></div>
+
+<hr />
+<h2 id="66">6.6 ★ 实践建议</h2>
+<div class="codehilite"><pre><span></span><code>    ★★ 你自己评模型时，怎么降低被污染误导的风险：
+
+    ① 永远【多个评测集一起看】
+       ⟹ ★ 单个评测集虚高的可能性远大于全部一起虚高
+
+    ② ★★ 关注【新旧题目的分数差】
+       ⟹ 老题 85 分、新题 55 分 ⟹ ★★★ 高度可疑
+
+    ③ ★ 一定要用【你自己的真实任务】测一遍
+       ⟹ 🔑 这是唯一不可能被污染的评测集
+       ⟹ ★★ 哪怕只有 50 条人工标注的样本，也比榜单可信
+
+    ④ ★ 用扰动测试做交叉验证（§6.3 的第 ③ 招）
+       ⟹ 打乱选项顺序，看分数稳不稳
+
+    ⚠️ 别做的事：
+       ✗ 看到某模型某榜单第一就下结论
+       ✗ 比较【不同时期】发布的模型在【老评测集】上的分数
+         （⟹ ★ 新模型的训练数据更可能包含它）
+</code></pre></div>
+
+<blockquote>
+<p>🔑🔑 <strong>★★★ 本章最实用的一句话</strong>：<br />
+<strong>你自己业务上的 50 条真实样本，比任何公开榜单都值钱。</strong><br />
+⟹ 因为它<strong>一定没被污染</strong>，而且<strong>测的正好是你在意的东西</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="67">6.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>    ★★ 七句话：
+
+    ① 污染 = 评测题进了训练数据 ⟹ ★ 分数虚高且看不出来
+    ② ⚠️ 分不清&quot;该学的知识&quot;和&quot;不该见的题目&quot;，★★★ 所以没有干净解法
+    ③ ★ 检测靠信号不靠证明：字符串匹配 / 背诵测试 / ★★ 选项扰动 / 新旧对比
+    ④ ★★ 最硬的缓解手段是【时间切分】：训练之后诞生的题，物理上不可能污染
+    ⑤ 🔑 古德哈特定律：★★★ 评测集【被用过就会失效】，必须持续换代
+
+    ⑥ ✅ 实证（LiveCodeBench 论文，§6.5b）：同一模型在 LeetCode 上，
+       5 月的题 Pass@1 ≈ 60，9 月的题 Pass@1 ≈ 0 ——
+       ★★★ 断崖恰好落在它的训练截止日上。
+    ⑦ ✅ 同篇论文的过拟合证据：DS-Ins-1.3B 在 HumanEval+ 拿 59.8，
+       在 LiveCodeBench-Easy 只有 26.3 ⟹ ★★★ 古德哈特定律的可视化。
+
+    ⟹ 🔑🔑 给你的行动项：★★★ 攒一套自己业务的小评测集。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p>下一章：<a href="07-agentic编码评测与SWE-bench.html">07-agentic编码评测与SWE-bench.md</a> —— ⭐ 进入第三种范式，看 Claude Code 这类工具是怎么被评的。<br />
+返回 <a href="README.html">评测入门总目录</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

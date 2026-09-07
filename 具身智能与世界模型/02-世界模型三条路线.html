@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 世界模型的三条路线：画像素、不画像素、可交互</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="02">02 世界模型的三条路线：画像素、不画像素、可交互</h1>
+<blockquote>
+<p>上一章结尾说：VLA 撞了四堵墙，其中三堵世界模型都能给出对策。<br />
+这一章讲世界模型本身——<strong>它有三种做法，彼此的分歧比你想的深。</strong></p>
+</blockquote>
+<hr />
+<h2 id="21">2.1 先把定义收紧</h2>
+<p>第 00 章给的定义是：</p>
+<div class="codehilite"><pre><span></span><code>    世界模型（ 当前状态 , 我要做的动作 ）  ⟹  预测：下一刻的状态
+</code></pre></div>
+
+<p>★ 这里有<strong>两个词</strong>决定了它和普通视频生成模型的区别：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 「我要做的动作」 ⟹ 【动作条件的 action-conditioned】
+       同样的画面，我向左走 和 我向右走，它得给出【不同】的未来。
+       ⚠️ 只会根据文字提示生成一段好看视频的模型，不算世界模型 ——
+          因为你没法在中途「操作」它。
+
+    ★ 「下一刻的状态」 ⟹ 它必须能【一步步往下滚】
+       预测出的下一刻，要能作为输入再喂回去，预测下下刻。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个仍在争论的问题</strong>：视频生成模型（Sora 那种）到底算不算世界模型？<br />
+🔎 支持方说：模型规模一大，3D 一致性、物体恒存性、真实物理就<strong>自己涌现</strong>出来了。<br />
+🔎 反对方说：画面对 ≠ 物理对，生成视频里的物理常常是「看起来像」而已。<br />
+★ 这个分歧直接导致了下面的路线① vs 路线②。</p>
+</blockquote>
+<hr />
+<h2 id="22">2.2 ★★ 三条路线的总览</h2>
+<div class="codehilite"><pre><span></span><code>   ┌──────────────────────────────────────────────────────────────┐
+   │ ① 像素派：把未来【画出来】                                    │
+   │    代表：Genie 3、NVIDIA Cosmos、Sora、GAIA-2                │
+   │    ✅ 直观、能当仿真器和数据工厂、人能直接看懂对不对          │
+   │    ⚠️ 贵；且大量算力花在了「毛衣的纹理」这种和决策无关的细节上│
+   ├──────────────────────────────────────────────────────────────┤
+   │ ② 潜空间派：只预测【抽象表示】，坚决不画像素                  │
+   │    代表：Dreamer 系列、Meta V-JEPA 2                          │
+   │    ✅ 便宜、快、适合拿来做规划和强化学习                       │
+   │    ⚠️ 人看不见它在想什么，难调试；效果难以直观验证            │
+   ├──────────────────────────────────────────────────────────────┤
+   │ ③ 交互式世界派：像素派 + 【实时可玩】                          │
+   │    代表：Genie 3、Decart Oasis、World Labs                    │
+   │    ✅ 你能拿着手柄真的走进去 ⟹ 天然就是训练智能体的环境        │
+   │    ⚠️ 实时性要求极高，长时间一致性是最大难点                   │
+   └──────────────────────────────────────────────────────────────┘
+
+   ⚠️ 注意 ①③ 有重叠：③ 是 ① 里对「实时 + 可操控」有额外要求的一支。
+</code></pre></div>
+
+<hr />
+<h2 id="23-1">2.3 路线① 像素派：把未来画出来</h2>
+<h3 id="agenie-3google-deepmind">代表作 A：Genie 3（Google DeepMind）</h3>
+<div class="codehilite"><pre><span></span><code>    ✅ 2025-08 发布。从一句文字描述，生成一个【你能走进去的】3D 环境
+    ✅ 720p / 24 帧每秒，可以连续交互【好几分钟】而保持画面一致
+       （对比：上一代 Genie 2 只能撑 10~20 秒 ⟹ 这是量级跨越）
+    ★★ 它【不依赖任何硬编码的物理引擎】—— 物理规律是从视频里学出来的
+    ★  每一帧都是【自回归】生成的：根据「世界描述 + 智能体刚才的动作」画下一帧
+       ⟹ DeepMind 把它的空间一致性称为一种【涌现能力】
+</code></pre></div>
+
+<blockquote>
+<p>🔎 <strong>2026 年的落地信号</strong>：2026 年 2 月 Waymo 采用 Genie 3，做了一个专用于自动驾驶仿真的 Waymo World Model。<br />
+⚠️ 该条来自二手报道，未回溯 Waymo/DeepMind 官方公告。</p>
+</blockquote>
+<h3 id="bnvidia-cosmos">代表作 B：NVIDIA Cosmos</h3>
+<p>NVIDIA 把它定位成「<strong>物理 AI 的世界基础模型</strong>」，最早在 2025 年初发布，是三个部件的组合：</p>
+<div class="codehilite"><pre><span></span><code>    Cosmos Predict   把文字/图片/视频提示，续写成未来的连续帧
+    Cosmos Transfer  ★ 改天气、改光照、改背景 —— 同一段轨迹变出无数种外观
+                     ⟹ 专门用来对付 sim2real 差距
+    Cosmos Reason    视觉语言推理，用来【审查】生成出来的数据合不合理
+</code></pre></div>
+
+<blockquote>
+<p>🔎 <strong>Cosmos 3（2026-06-01 发布）</strong>：混合 Transformer 架构，把<strong>视觉推理 + 世界生成 + 动作预测合进一个系统</strong>，宣称是第一个原生处理文本/图像/视频/环境声/动作的全开放全模态模型。<br />
+⚠️ 上述为二手报道转述，参数量、架构细节未回溯官方模型卡。</p>
+</blockquote>
+<hr />
+<h2 id="24-2">2.4 ★★ 路线② 潜空间派：坚决不画像素</h2>
+<p><strong>这一派的核心论点，是一句很有说服力的反问</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 「你要预测一个人下一秒会不会摔倒，
+         需要先把他毛衣上每一根线的走向都画出来吗？」
+
+    ★★ 不需要。那些像素细节：
+       ① 占了模型绝大部分的算力
+       ② 而且【本质上不可预测】—— 树叶下一秒往哪边飘，谁也算不准
+       ③ 模型为了硬预测这些不可预测的东西，会被逼着学一堆没用的东西
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>JEPA = Joint-Embedding Predictive Architecture，联合嵌入预测架构。</strong><br />
+Yann LeCun 主推的路线。做法是：<strong>把画面先压成一个抽象向量（潜表示），然后只预测「这个向量在动作之后会变成什么」，全程不还原成图像。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    像素派：  画面ₜ  ──模型──▶  完整画面ₜ₊₁ （几十万个像素值）
+    潜空间派：画面ₜ ─编码─▶ 向量ₜ ──模型──▶ 向量ₜ₊₁ （几百个数）
+                                              ↑ ★ 到此为止，不解码回图像
+</code></pre></div>
+
+<h3 id="av-jepa-2meta">代表作 A：V-JEPA 2（Meta）</h3>
+<div class="codehilite"><pre><span></span><code>    ✅ 先用【超过 100 万小时】的互联网视频做自监督预训练
+    ✅ 然后只用【62 小时】没有标注的机器人视频，给它加上「动作条件」
+    ★★ 结果：在不同实验室的真实机械臂上，零样本抓取放置成功率约 80%
+       —— 【没有针对任务做任何训练】
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这个数字对比才是重点</strong>：100 万小时 vs 62 小时。<br />
+⟹ <strong>绝大部分关于「世界怎么运转」的知识，是从无标注视频里白嫖来的</strong>；<br />
+机器人数据只用来告诉它「我的动作对应哪种变化」。<br />
+⚠️ 这正好对着第 01 章那堵「数据墙」开了一个口子。</p>
+</blockquote>
+<h3 id="bdreamer-deepmind">代表作 B：Dreamer 系列（DeepMind）</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 这是「在梦里做强化学习」这个说法的源头：
+       智能体不在真环境里练，而是在自己学出来的潜空间世界模型里练。
+
+    ✅ Dreamer 4：在 Minecraft 里学会了【挖钻石】——
+       这是一个需要 2 万步以上连续正确决策的任务，
+       ★★ 而且是【纯离线】学的：训练全程【没有和游戏环境交互过一次】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么这条结果对机器人意义重大</strong>：如果一个模型能<strong>只看视频</strong>就学会世界的运转规律、并推断出该怎么行动，那么「仓库导航」「叠衣服」理论上适用同一套范式——<strong>而这意味着不必先摔坏一屋子机器人</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="25">2.5 ★ 两派的正面分歧：到底该不该画像素</h2>
+<p>这是全篇最值得记住的一处技术对照。<strong>两边都有很硬的道理</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>潜空间派</strong>（LeCun / Dreamer / JEPA）</th>
+<th><strong>像素派</strong>（Genie / Cosmos / WMPO）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>核心主张</td>
+<td>像素细节是<strong>浪费</strong>，还<strong>不可预测</strong></td>
+<td>像素是<strong>唯一能被验证</strong>的东西</td>
+</tr>
+<tr>
+<td>算力</td>
+<td>✅ 省得多</td>
+<td>⚠️ 贵</td>
+</tr>
+<tr>
+<td>可调试性</td>
+<td>⚠️ 看不见它在想什么</td>
+<td>✅ 生成的视频人眼直接能判断对不对</td>
+</tr>
+<tr>
+<td>★ 和 VLA 接口</td>
+<td>⚠️ <strong>表示不匹配</strong>：VLA 主干是在<strong>像素图像</strong>上预训练的，潜空间对不上</td>
+<td>✅ <strong>天然对齐</strong>：想象出来的画面，VLA 直接就能看</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>最后一行是 2026 年一个关键的实践理由</strong>。✅ WMPO 论文（arXiv 2511.09515）明确选择了<strong>像素空间</strong>，理由正是：<br />
+<em>「许多既有的基于模型的强化学习用潜空间世界模型，这与在富像素图像上预训练的强大 VLA 基础模型之间存在表示失配。」</em></p>
+<p>⟹ ⚠️ 换句话说：<strong>潜空间在理论上更优雅，但像素空间更容易接上现成的 VLA。</strong> 这是一次典型的「理论优雅」输给「工程可对接」——⚠️ 这句评价是我的判断，不是论文原话。</p>
+</blockquote>
+<hr />
+<h2 id="26-3">2.6 路线③ 交互式世界：把世界模型变成一个可以住进去的地方</h2>
+<p>这一支的野心最大：<strong>不只是预测，而是造一个能让智能体长期生活、练习的环境。</strong></p>
+<blockquote>
+<p>★★ <strong>代表性成果：SIMA 2 × Genie 3（DeepMind，2025-11）</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    SIMA 2 = 一个通用的虚拟世界智能体（内核是 Gemini）
+    Genie 3 = 一个能凭空生成 3D 世界的世界模型
+
+    ★ 组合起来：
+      ① Genie 3 生成一批【从没存在过】的世界
+      ② SIMA 2 被扔进去，尝试完成任务
+      ③ 用一个 Gemini 做的【奖励模型】给它的表现打分
+      ④ 拿打分结果训练自己 ⟹ 回到 ①
+
+    🔎 论文结果：几乎所有训练任务提升 25 分以上，
+       而且提升能【迁移到完全不同的测试环境】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 Demis Hassabis 管这个循环叫「<strong>无限训练循环</strong>」（Infinite Training Loop）：<br />
+<strong>AI 生成世界 → AI 在里面练 → 练出更强的 AI → 再生成更难的世界。</strong></p>
+<p>⚠️ <strong>但要泼一盆冷水</strong>（✅ DeepMind 自己也承认）：目前动作空间<strong>很有限</strong>；而且有研究者直接质疑——<strong>游戏画面是给人看的、本来就好懂，真实世界的摄像头画面难得多，能迁移多少是未知数。</strong></p>
+</blockquote>
+<hr />
+<h2 id="27">2.7 ⚠️ 世界模型自己的三个硬伤</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 硬伤一：画面对，不代表物理对
+       生成的视频看起来很真，但可能出现「物理上假的」现象
+       （水穿过杯壁、物体凭空消失）。⟹ 而机器人恰恰要靠物理关系做决策。
+
+    ⚠️ 硬伤二：只会响应【见过的动作】
+       世界模型也是从数据里学的，你给它一个训练数据里从没出现过的动作，
+       它给出的未来往往是瞎编的。
+       ★★ 而强化学习恰恰要靠【尝试没做过的动作】才能改进 —— 这是个死结。
+
+    ⚠️ 硬伤三：怎么评价一个世界模型好不好，本身就没有共识
+       视频质量指标（FID、FVD 那些）衡量的是【好不好看】，
+       不是【物理对不对】、更不是【拿去训练策略有没有用】。
+</code></pre></div>
+
+<hr />
+<h2 id="_1">🔑 本章一句话</h2>
+<blockquote>
+<p>世界模型有三条路：<strong>画像素</strong>（直观、能当仿真器、但贵）、<strong>不画像素只预测抽象表示</strong>（省、优雅、但难调试且接不上 VLA）、<strong>造一个能住进去的交互世界</strong>（野心最大、也最不成熟）。<br />
+⚠️ <strong>三条路都还没解决同一个根本问题：「预测得好看」和「预测得物理正确」是两回事。</strong></p>
+</blockquote>
+<hr />
+<p><strong>上一章</strong> ← <a href="01-具身智能与VLA.html">01 具身智能与 VLA</a> ｜ <strong>下一章</strong> → <a href="03-两者如何结合.html">03 两者怎么结合</a></p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

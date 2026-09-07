@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · 鸟瞰：一个 token 的完整旅程</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="README.html">← 目录</a> ｜ 下一章 → <a href="02-Embedding与词表.html">02 Embedding 与词表</a></p>
+</blockquote>
+<h1 id="01-token">01 · 鸟瞰：一个 token 的完整旅程</h1>
+<blockquote>
+<p><strong>这一章的目标</strong>：给你一张<strong>完全不需要理解细节</strong>就能看懂的全景图，后面每一章都是在放大其中一格。<br />
+读完你应该能回答：模型里到底有哪些东西？"505B 参数"这个数字是怎么来的？为什么所有架构创新都只发生在三个位置？</p>
+</blockquote>
+<hr />
+<h2 id="11">1.1 全景图</h2>
+<div class="codehilite"><pre><span></span><code>        输入文本 &quot;今天天气&quot;
+             │
+             │  ① Tokenizer：切成 token，查表变成整数 ID
+             ▼
+        [1234, 567, 890]                      形状 [L] = [3]
+             │
+             │  ② Embedding：每个 ID 查一个 d 维向量
+             ▼
+        ┌──────────────────┐                  形状 [L, d] = [3, 5120]
+        │  x  (残差流起点)  │
+        └──────────────────┘
+             │
+    ╔════════╪══════════════════════════════════════╗
+    ║        ▼        重复 N 层（N = 50~93）          ║
+    ║   ┌─────────────────────────────────────────┐ ║
+    ║   │  x = x + Attention( Norm(x) )           │ ║  ← ③ 让 token 之间交换信息
+    ║   │  x = x + FFN_or_MoE( Norm(x) )          │ ║  ← ④ 让每个 token 自己加工信息
+    ║   └─────────────────────────────────────────┘ ║
+    ╚════════╪══════════════════════════════════════╝
+             │
+             │  ⑤ 最后一次 Norm
+             ▼
+        ┌──────────────────┐
+        │   LM Head (W_out) │                  [L, d] × [d, V] → [L, V]
+        └──────────────────┘
+             │
+             ▼
+        每个位置上，对 V 个候选词的打分（logits）
+             │
+             │  ⑥ softmax → 概率 → 采样
+             ▼
+        下一个 token：&quot;真&quot;
+</code></pre></div>
+
+<p><strong>这张图就是全部。</strong> 一个 500B 参数的前沿模型，结构上和一个 100M 的玩具模型<strong>没有任何区别</strong>——只是 <code>N</code> 更大、<code>d</code> 更宽、FFN 换成了 MoE。</p>
+<hr />
+<h2 id="12">1.2 只有两种积木</h2>
+<p>整个 Transformer 只有两种"积木"在交替堆叠：</p>
+<table>
+<thead>
+<tr>
+<th>积木</th>
+<th>方向</th>
+<th>干什么</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Attention</strong></td>
+<td><strong>横向</strong></td>
+<td>让不同位置的 token 互相看</td>
+<td>"第 100 个词该参考前面哪些词？"</td>
+</tr>
+<tr>
+<td><strong>FFN / MoE</strong></td>
+<td><strong>纵向</strong></td>
+<td>每个 token 独立地加工自己的向量</td>
+<td>"把这个词的表示变得更有用"</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>        位置 →   t1    t2    t3    t4    t5
+                 │     │     │     │     │
+ Attention:      ●━━━━━●━━━━━●━━━━━●━━━━━●     横向连线：token 之间交换信息
+                 │     │     │     │     │
+ FFN:            ▓     ▓     ▓     ▓     ▓     竖直独立：每个 token 各算各的
+                 │     │     │     │     │     （同一份参数，但互不影响）
+ Attention:      ●━━━━━●━━━━━●━━━━━●━━━━━●
+                 │     │     │     │     │
+ FFN:            ▓     ▓     ▓     ▓     ▓
+                 ⋮     ⋮     ⋮     ⋮     ⋮
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>记住这个二分法。五家所有的架构改动，最后都能归到三个位置之一</strong>：</p>
+<p><code>① 改 Attention        —— 怎么横向交换       → 第 05 / 07 / 08 章
+② 改 FFN / MoE        —— 怎么纵向加工       → 第 09 / 10 章
+③ 改这两块之间的连接   —— 残差流本身         → 第 03 / 04 章</code></p>
+</blockquote>
+<h3 id="_1">为什么恰好是这两种</h3>
+<p>这不是随便设计的。<strong>任何一个序列模型都必须回答两个问题</strong>：</p>
+<div class="codehilite"><pre><span></span><code>问题 1：不同位置的信息怎么混合？    ← 必须有，否则模型看不见上下文
+问题 2：单个位置的信息怎么变换？    ← 必须有，否则模型没有非线性表达力
+</code></pre></div>
+
+<p>历史上的答案：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>怎么混合位置（问题 1）</th>
+<th>怎么变换单点（问题 2）</th>
+<th>问题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RNN / LSTM</strong></td>
+<td>沿时间递归，一步传一步</td>
+<td>门控 + tanh</td>
+<td><strong>串行</strong>，没法并行训练；长程信息经过 L 步衰减</td>
+</tr>
+<tr>
+<td><strong>CNN</strong></td>
+<td>卷积核，只看邻域</td>
+<td>逐点非线性</td>
+<td><strong>感受野有限</strong>，看远处要堆很多层</td>
+</tr>
+<tr>
+<td><strong>Transformer</strong></td>
+<td><strong>注意力：任意两个位置直接连通</strong></td>
+<td>FFN</td>
+<td>$O(L^2)$，长序列贵</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Transformer 赢在"任意两点一步可达"</strong>：第 100 万个 token 和第 1 个 token 之间的路径长度是 <strong>1</strong>，不是 100 万（RNN）也不是 100 万/卷积核大小（CNN）。梯度不需要走长路，信息不会被逐步稀释。</p>
+<p><strong>代价就是 $O(L^2)$。这一代五份技术报告，一半篇幅都在还这笔债。</strong>（见 <a href="06-KV-cache.html">06 KV cache</a>、<a href="08-高效注意力.html">08 高效注意力</a>）</p>
+</blockquote>
+<hr />
+<h2 id="13-n-n">1.3 一个常见的误解：N 层不是循环 N 次</h2>
+<div class="codehilite"><pre><span></span><code>❌ 错误理解：一层参数，反复用 N 次（像 RNN 那样）
+✅ 正确：第 1 层和第 50 层各有【完全独立的一整套参数】
+</code></pre></div>
+
+<p>所谓"505B 参数"，就是这 50 层的权重全部加起来（再加上 embedding）。</p>
+<p><strong>不同层学到的东西差别很大</strong>（这是可解释性研究的共识）：</p>
+<div class="codehilite"><pre><span></span><code>浅层（1~10）    →  语法、词性、局部搭配、&quot;这个 token 是不是标点&quot;
+中层（10~40）   →  语义、指代消解、事实关联、任务识别
+深层（40~50）   →  输出规划、&quot;下一个词具体是什么&quot;
+最后 1~2 层     →  几乎只在做&quot;把内部表示翻译成词表分布&quot;
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>这个分层现象直接支撑了两处真实的架构设计</strong>：<br />
+- <strong>DeepSeek-V4 把浅层的 MoE 改成哈希路由</strong>——浅层做的事简单且通用，不太需要"聪明的路由"（见 <a href="10-MoE.html">10 MoE</a>）<br />
+- <strong>openPangu 的 mHC 门控塌陷恰好发生在早期层</strong>，需要专门的块级后归一化来救（见 <a href="04-归一化.html">04 归一化</a>）</p>
+</blockquote>
+<hr />
+<h2 id="14">1.4 参数量是怎么算出来的</h2>
+<p>这一节能帮你把"505B"这种数字从抽象变具体。<strong>以一个稠密（非 MoE）模型为例</strong>，设 $d$ = hidden dim、$d_{ff}$ = FFN 中间维、$N$ = 层数、$V$ = 词表：</p>
+<div class="codehilite"><pre><span></span><code>┌─────────────────┬────────────────────────┬─────────────────────────────┐
+│ 组件             │ 参数量                  │ 代入 d=5120, d_ff=13824,     │
+│                 │                        │ N=50, V=153600               │
+├─────────────────┼────────────────────────┼─────────────────────────────┤
+│ Embedding        │ V × d                  │ 0.79 B                      │
+│ LM Head          │ V × d（常与上面共享）    │ 0.79 B（或 0）               │
+├─────────────────┼────────────────────────┼─────────────────────────────┤
+│ 每层 Attention   │ 4 d²  (W_Q,W_K,W_V,W_O)│ 105 M                       │
+│ 每层 FFN(SwiGLU) │ 3 d·d_ff               │ 212 M                       │
+│ 每层 Norm        │ 2 d（可忽略）            │ 10 K                        │
+│ ── 每层小计 ──    │ 4d² + 3d·d_ff          │ 317 M                       │
+├─────────────────┼────────────────────────┼─────────────────────────────┤
+│ N 层合计         │ N(4d² + 3d·d_ff)       │ 15.9 B                      │
+│ 总计             │                        │ ≈ 17.5 B                    │
+└─────────────────┴────────────────────────┴─────────────────────────────┘
+</code></pre></div>
+
+<p><strong>两个可以直接记住的经验比例</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① FFN 占约 2/3 的参数，Attention 占约 1/3
+   （因为 d_ff ≈ 2.7d，所以 3·d·d_ff ≈ 8d²  vs  Attention 的 4d²）
+
+② 参数量随 d 是【平方】增长的，随 N 是【线性】增长的
+   → 想加参数，加宽比加深&quot;效率&quot;高，但加宽会让每层的计算和通信都变重
+</code></pre></div>
+
+<p><strong>MoE 模型怎么算</strong>（这就是"505B / 18B"两个数字的由来）：</p>
+<div class="codehilite"><pre><span></span><code>总参数   = Embedding + N × (Attention + 【全部 384 个专家】)
+激活参数 = Embedding + N × (Attention + 【被选中的 8 个专家】)
+
+openPangu-2.0-Pro:  505B 总参数  /  18B 激活参数     稀疏度 = 384/8 = 48×
+                    ↑ 决定显存        ↑ 决定推理速度和成本
+</code></pre></div>
+
+<blockquote>
+<p>详细的 MoE 参数账见 <a href="10-MoE.html">10 MoE</a>。</p>
+</blockquote>
+<hr />
+<h2 id="15">1.5 计算量：训练和推理是两笔完全不同的账</h2>
+<p>这一节先埋个伏笔，<a href="06-KV-cache.html">06 KV cache</a> 会展开。</p>
+<p><strong>一次前向的 FLOPs</strong>（每 token 每层）：</p>
+<p>$$\underbrace{8d^2}<em ff="ff">{\text{Attention 的四个投影}} + \underbrace{6d\,d</em>}<em _text_注意力矩阵="\text{注意力矩阵">{\text{FFN}} + \underbrace{4Ld}</em>$$}</p>
+<p>前两项和序列长度<strong>无关</strong>，第三项<strong>随 L 线性增长</strong>（对整条序列就是 $L^2$）。</p>
+<div class="codehilite"><pre><span></span><code>L = 4K 时：    4Ld = 4×4096×5120 ≈ 8.4e7      vs   8d²+6d·d_ff ≈ 6.4e8
+              → 注意力矩阵只占 ~12%，可以忽略
+
+L = 1M 时：    4Ld = 4×1048576×5120 ≈ 2.1e10  vs   6.4e8
+              → 注意力矩阵占 97%，【完全主导】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是"长上下文"的全部困难所在</strong>：<br />
+<strong>短序列时注意力不是瓶颈，长序列时它是唯一的瓶颈。</strong> 而且它是平方增长的——长度从 128K 到 1M 是 8 倍，这一项涨 <strong>64 倍</strong>。</p>
+</blockquote>
+<p><strong>推理还要再分两个阶段</strong>（<a href="06-KV-cache.html">06 章</a>详解）：</p>
+<div class="codehilite"><pre><span></span><code>Prefill（处理你输入的提示词）：一次并行处理 L 个 token   →  算力受限（compute-bound）
+Decode （一个一个吐字）      ：一次处理 1 个 token       →  访存受限（memory-bound）
+                                                           ↑ 这个非常反直觉，是第 06 章的核心
+</code></pre></div>
+
+<hr />
+<h2 id="16">1.6 五家的宏观配置对照</h2>
+<p>现在你可以看懂这张表了。<strong>每一列对应本教程的一章</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>DeepSeek-V4-Pro</th>
+<th>Kimi K3</th>
+<th>GLM-5.2</th>
+<th>MiniMax M3</th>
+<th>openPangu-2.0-Pro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>总参数 / 激活</strong></td>
+<td>1.6T / 49B</td>
+<td>2.78T / 104B</td>
+<td>—</td>
+<td>230B / 10B</td>
+<td><strong>505B / 18B</strong></td>
+</tr>
+<tr>
+<td><strong>层数 N</strong></td>
+<td>61</td>
+<td><strong>93</strong></td>
+<td>78</td>
+<td>60</td>
+<td><strong>50（最浅）</strong></td>
+</tr>
+<tr>
+<td><strong>Hidden dim d</strong></td>
+<td>7168</td>
+<td>7168</td>
+<td>—</td>
+<td>6144</td>
+<td><strong>5120（最窄）</strong></td>
+</tr>
+<tr>
+<td><strong>上下文</strong></td>
+<td><strong>1M</strong></td>
+<td><strong>1M</strong></td>
+<td><strong>1M</strong></td>
+<td>200K+</td>
+<td>512K</td>
+</tr>
+<tr>
+<td><strong>注意力</strong>（<a href="07-MHA到MLA.html">07</a>/<a href="08-高效注意力.html">08</a>）</td>
+<td>CSA + HCA</td>
+<td>KDA + MLA 3:1</td>
+<td>MLA-256 + DSA</td>
+<td>GQA + MSA</td>
+<td>MLA + DSA-SWA 1:2</td>
+</tr>
+<tr>
+<td><strong>位置编码</strong>（<a href="11-位置编码RoPE.html">11</a>）</td>
+<td>Partial RoPE</td>
+<td><strong>NoPE</strong></td>
+<td>Partial RoPE</td>
+<td>Partial RoPE</td>
+<td>Partial RoPE，base 阶梯</td>
+</tr>
+<tr>
+<td><strong>残差</strong>（<a href="03-残差流.html">03</a>）</td>
+<td><strong>mHC</strong></td>
+<td><strong>AttnRes</strong></td>
+<td>不改</td>
+<td>不改</td>
+<td><strong>mHC</strong></td>
+</tr>
+<tr>
+<td><strong>MoE</strong>（<a href="10-MoE.html">10</a>）</td>
+<td>384 选 6</td>
+<td>896 选 16</td>
+<td>256 选 8</td>
+<td>128 选 4</td>
+<td>384 选 8</td>
+</tr>
+<tr>
+<td><strong>激活函数</strong>（<a href="09-FFN与激活函数.html">09</a>）</td>
+<td>SwiGLU + clamp</td>
+<td><strong>SiTU-GLU</strong></td>
+<td>SwiGLU</td>
+<td>SwiGLU + clamp 7.0</td>
+<td>❓ 报告未提</td>
+</tr>
+<tr>
+<td><strong>优化器</strong>（<a href="13-优化器与Muon.html">13</a>）</td>
+<td>Muon</td>
+<td><strong>Per-Head Muon</strong></td>
+<td><strong>Muon Split</strong></td>
+<td>—</td>
+<td>Muon（4 组 head）</td>
+</tr>
+<tr>
+<td><strong>量化</strong>（<a href="14-量化.html">14</a>）</td>
+<td>FP4 QAT</td>
+<td>MXFP4 QAT</td>
+<td>INT4 QAT</td>
+<td>MXFP8</td>
+<td><strong>W8A8（疑似 PTQ）</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>注意 openPangu 那一列的四个"最"</strong>：<strong>最浅（50 层）+ 最窄（d=5120）+ 多专家 + 小专家</strong>。四个方向同时压，把激活参数做到了五家最低的 18B。这是一个非常明确的"推理成本优先"的取向。见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.3。</p>
+</blockquote>
+<hr />
+<h2 id="17">1.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>① 模型 = Embedding → [Attention + FFN] × N → LM Head
+② 只有两种积木：Attention 横向混合，FFN 纵向变换
+③ N 层是 N 套独立参数，不是循环
+④ 参数量：FFN 占 2/3，Attention 占 1/3；随 d 平方、随 N 线性
+⑤ 短序列时注意力不是瓶颈，长序列时它是唯一瓶颈（L² 项）
+⑥ 所有架构创新只发生在三个位置：改 Attention / 改 FFN / 改残差
+</code></pre></div>
+
+<p><strong>下一章</strong>开始从最底下的那块积木讲起：怎么把"今天"变成一个向量。</p>
+<hr />
+<blockquote>
+<p><a href="README.html">← 目录</a> ｜ 下一章 → <a href="02-Embedding与词表.html">02 Embedding 与词表</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

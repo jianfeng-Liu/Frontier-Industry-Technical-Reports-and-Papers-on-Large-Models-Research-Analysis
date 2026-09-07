@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 · 语音与实时全双工：难点根本不在智能</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="09-生成侧-图像与统一模型.html">← 09 生成侧</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="11-多模态评测.html">11 多模态评测</a></p>
+</blockquote>
+<h1 id="10">10 · 语音与实时全双工：难点根本不在智能</h1>
+<blockquote>
+<p>这一章讲第三个战场。<strong>它的技术含量常被低估</strong>：<br />
+一个能考满分的模型，做成语音助手照样难用——因为<strong>这里的敌人是毫秒，不是智商</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="101">10.1 老办法：三段式级联</h2>
+<div class="codehilite"><pre><span></span><code>    你说话 ──→ [ASR 语音识别] ──→ 文字 ──→ [LLM] ──→ 文字 ──→ [TTS 语音合成] ──→ 声音
+              📖 Automatic          📖 Text-to-Speech
+              Speech Recognition
+</code></pre></div>
+
+<p><strong>✅ 优点</strong>：三段各自独立、可替换、可调试，<strong>至今仍是绝大多数产品的做法</strong>。</p>
+<p><strong>⚠️ 但有两个致命伤：</strong></p>
+<h3 id="1">伤口① 延迟账</h3>
+<div class="codehilite"><pre><span></span><code>    ① 判断&quot;你说完了&quot;（VAD 静音检测）     500 ~ 800 ms   ← ★ 最大的一块，且无法压缩
+    ② ASR 出最终文本                      100 ~ 300 ms
+    ③ LLM 首 token（TTFT）                300 ~ 800 ms
+    ④ TTS 出第一段音频                    100 ~ 300 ms
+    ─────────────────────────────────────────────────
+      合计首声延迟                        ★ 1.0 ~ 2.2 秒
+
+    ⚠️ 参照：人和人对话的轮次间隔约 200 毫秒
+    ⟹ 1.5 秒的停顿，在人类感受里就是【这人反应好慢 / 是不是没听见】
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>注意第①项</strong>：它是<strong>架构性</strong>的——<strong>因为你必须先确定他说完了，才能开始想</strong>。<br />
+⟹ 这一条单独就决定了级联方案<strong>永远做不到自然对话的节奏</strong>。</p>
+</blockquote>
+<h3 id="2-asr">伤口② 信息在 ASR 那一步被丢光了</h3>
+<div class="codehilite"><pre><span></span><code>    语音里有：文字内容 + 语气 + 情绪 + 音量 + 重音 + 谁在说 + 背景声 + 停顿
+    ASR 输出：★ 只有文字
+
+    ⟹ 「你行啊。」这句话，是夸奖还是嘲讽？ ⚠️ 转成文字后，模型永远无法知道
+    ⟹ 反过来，TTS 那一端也只拿到文字 ⟹ 它不知道这句话该用什么情绪念
+</code></pre></div>
+
+<hr />
+<h2 id="102">10.2 ★ 新办法：端到端语音</h2>
+<p><strong>思路和视觉完全同构</strong>（这就是为什么它属于多模态）：</p>
+<div class="codehilite"><pre><span></span><code>    输入侧：声音 → [音频编码器] → 音频 token → 和文本 token 拼进同一条序列
+                   📖 通常是 Whisper（arXiv 2212.04356）那一类的编码器
+                   ⟹ ★ 和 02 章的视觉塔是同一个位置、同一个角色
+
+    输出侧：★ 这里是新问题 —— 怎么让 LLM &quot;吐&quot;出声音？
+            ⟹ 和 09 章图像生成【一模一样的困境】，也用了同一个解法：
+              给声音造一本词典（音频 codec）
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>音频 codec / 声学 token</strong>：用 <strong>RVQ（残差矢量量化）</strong> 把每 80 毫秒的声音<br />
+编码成几个整数（比如 8 层码本、每层一个编号）。<br />
+⟹ <strong>声音就变成了一串"词"</strong> ⟹ LLM 可以像写字一样"写"出声音。<br />
+⟹ ⚠️ 注意它是<strong>多层</strong>的：第一层管内容，后面几层管音色和细节 ——<br />
+所以输出时要<strong>同时预测好几个流</strong>，这是语音生成比文本生成复杂的地方。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ✅ 收益①：★★ 延迟直接砍到 300 毫秒以内 —— 因为不需要等 ASR、TTS 两次转换
+    ✅ 收益②：情绪、语气、说话人信息【全程保留】，模型能听出嘲讽、能带情绪回答
+    ⚠️ 代价①：音频 token 很占位置（每秒几十到上百个 token）
+    ⚠️ 代价②：★ 语音数据远比图文数据稀缺，尤其是【带情绪、多轮、真实对话】的
+    ⚠️ 代价③：文本能力会掉——和 06 章&quot;加视觉会让文本变笨&quot;是同一个病
+</code></pre></div>
+
+<hr />
+<h2 id="103">10.3 ★★ 真正的分水岭：全双工</h2>
+<blockquote>
+<p>📖 <strong>半双工</strong>：像对讲机，一次只能一个人说（你说完 → 它说 → 你说）。<br />
+📖 <strong>全双工（full-duplex）</strong>：像真人对话，<strong>双方随时可以同时说、可以打断、可以"嗯嗯"附和</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 半双工模型在架构上是&quot;回合制&quot;的：
+       听（收集 token）→ 想 → 说（生成 token）→ 停 → 再听
+       ★ 在它&quot;说&quot;的时候，它【根本没在听】
+       ⟹ 你想打断它？它听不见。只能靠外面的程序检测到你出声、然后掐掉它
+
+    ★ 全双工的做法（Moshi，arXiv 2410.00037 是最出名的公开工作）：
+       模型【每 80 毫秒一拍】，每一拍同时做两件事：
+         · 读入这一拍你说的声音
+         · 输出这一拍它要说的声音（可以是&quot;静音&quot;）
+       ⟹ ★★ 于是&quot;听&quot;和&quot;说&quot;变成【两条永远并行的流】
+       ⟹ 打断不再需要外部逻辑 —— 它听见你出声，自己就会停
+       ⟹ 它甚至可以在你说话时插一句&quot;嗯&quot;（📖 backchannel，附和音）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这是一个架构级的差别，不是调参能达到的。</strong><br />
+⟹ <strong>判断一个语音产品是不是真全双工，只要试一件事：在它说话时插一句"等一下"。</strong><br />
+半双工的会说完那一句才反应，或者被硬生生掐断（听起来像卡带）。</p>
+</blockquote>
+<hr />
+<h2 id="104">10.4 流式：所有东西都要"边来边算"</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 视觉可以等图片完整了再编码；语音不行 —— 你不能等他说完
+    ⟹ 音频编码器必须【流式】：来一小段算一小段
+    ⟹ 注意力要限制成【只看过去 + 一小段未来】（chunk-wise / 因果注意力）
+    ⟹ ⚠️ 代价：模型损失了&quot;回头听&quot;的能力，识别准确率比离线模式低一截
+</code></pre></div>
+
+<p><strong>推理侧的连锁反应</strong>（可对照 <a href="../推理框架/推理优化入门/">../推理框架/推理优化入门/</a>）：</p>
+<div class="codehilite"><pre><span></span><code>    · 语音的 KV cache 是【持续增长】的 —— 一通 10 分钟的电话，
+      按每秒 50 个音频 token 算 ⟹ ⚠️ 3 万个 token 的 KV，全程占着显存
+    · 必须严格控制【每一拍的计算量】：80 毫秒一拍，你就只有 80 毫秒
+      ⟹ ★ 这是【硬实时】约束，和聊天场景&quot;平均延迟低就行&quot;完全不同
+    · ⟹ 和隔壁 ../具身智能与世界模型/ 里机器人控制的实时性约束是同一类问题
+</code></pre></div>
+
+<hr />
+<h2 id="105">10.5 ⚠️ 这个方向的三个真实困难</h2>
+<div class="codehilite"><pre><span></span><code> ① 数据       ★ 最大的坎。真实的、多轮的、带打断和情绪的对话录音，
+              既稀缺又有隐私和版权问题
+              ⟹ 合成数据在这里很难造：★ 合成对话没有真实的【打断和重叠】
+
+ ② 评测       ⚠️ 几乎无解。&quot;这个语音助手好不好用&quot;该怎么打分？
+              延迟能测，打断响应能测，但【对话的自然度】只能靠人听
+              ⟹ 见 11 章：这是多模态评测困境里最严重的一格
+
+ ③ 智能倒退   ★ 端到端语音模型的【推理能力普遍弱于同源文本模型】
+              ⚠️ 原因我认为有两条：语音数据量小得多；
+                 以及&quot;实时&quot;这个约束不允许它做长思维链——
+                 ★★ 你不能让用户等它想 30 秒
+              ⟹ 🔑 这是【延迟和智能的直接对立】，目前无解，
+                 只能靠&quot;简单问题端到端答、复杂问题转给文本模型&quot;这类工程折中
+</code></pre></div>
+
+<hr />
+<h2 id="106-omni">10.6 "omni / 全模态"这个词该怎么理解</h2>
+<div class="codehilite"><pre><span></span><code>    宣传里的 omni：文/图/音/视频，全都能进、全都能出
+    ⚠️ 实际拆开看，通常是：
+       · 文、图、音【进】     ← 这个一般是真的
+       · 文【出】             ← 一定是真的
+       · 音【出】             ← 可能是端到端，也可能是外挂 TTS ★ 差别巨大
+       · 图【出】             ← 大概率是外挂扩散（09 章路线①）
+
+    🔑 三个问题看穿一个&quot;全模态&quot;模型：
+       ① 语音输出是端到端的，还是接了 TTS？
+       ② 是不是全双工？（在它说话时打断试试）
+       ③ 图像输出是同一个模型出的，还是调了另一个模型？
+</code></pre></div>
+
+<hr />
+<h2 id="107">10.7 🔑 这一章的五句话</h2>
+<ol>
+<li><strong>级联（ASR→LLM→TTS）的两个致命伤：1.5 秒起步的延迟，和 ASR 那一步把语气情绪全丢光。</strong></li>
+<li><strong>端到端语音 = 音频编码器（对应视觉塔）+ 音频 codec 输出（对应图像词典）</strong>——结构和前面九章完全同构。</li>
+<li>★★ <strong>全双工是架构级差别</strong>：听和说是两条并行的流。<strong>试着打断它，就知道是不是真的。</strong></li>
+<li>⚠️ <strong>实时约束和智能直接对立</strong>：不能让用户等你想 30 秒 ⟹ 端到端语音模型的推理能力普遍弱一截。</li>
+<li>⚠️ <strong>"全模态"是营销词</strong>，拆开问四个模态各自"进还是出、端到端还是外挂"，宣传就现形了。</li>
+</ol>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="11-多模态评测.html">11 多模态评测：这个领域最缺的是尺子</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

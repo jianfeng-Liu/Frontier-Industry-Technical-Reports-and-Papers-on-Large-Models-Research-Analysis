@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 · ⭐ On-Policy 蒸馏（OPD）：五家共同的收口</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="07-AgenticRL-环境成为瓶颈.html">← 07 Agentic RL</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-后训练的数据学.html">09 后训练的数据学</a></p>
+</blockquote>
+<h1 id="08-on-policy-opd">08 · ⭐ On-Policy 蒸馏（OPD）：五家共同的收口</h1>
+<blockquote>
+<p><strong>OPD</strong> = <strong>On-Policy Distillation</strong>（在策略蒸馏）</p>
+<p><strong>2026 年后训练最清晰的一次收敛</strong>：五家一手技术报告，在流水线的最后一步用了<strong>几乎同一个数学式子</strong>。<br />
+读完你应该能回答：on-policy 蒸馏和普通蒸馏差在哪、为什么它同时解决了"合并专家"和"找回被遗忘的能力"两个看起来无关的问题。</p>
+</blockquote>
+<hr />
+<h2 id="81-on-policy">8.1 先讲清楚"蒸馏"和"on-policy 蒸馏"的区别</h2>
+<h3 id="off-policy">传统蒸馏（off-policy）</h3>
+<div class="codehilite"><pre><span></span><code>① 让老师做 10 万道题，把老师的答案存下来
+② 学生对着这些答案做 SFT
+
+★ 本质：这就是 SFT，只是标准答案是老师写的而不是人写的。
+
+⚠️ 它的病和 SFT 一模一样（见 02.5）：
+   学生只见过【老师的完美前缀】，
+   一旦自己写歪了，就进入了训练时从没见过的状态 —— exposure bias。
+</code></pre></div>
+
+<h3 id="on-policy">On-policy 蒸馏</h3>
+<div class="codehilite"><pre><span></span><code>① 让【学生自己】做题（学生 rollout）
+② 在学生写出的【每一个 token 上】，问老师：
+   &quot;这个位置，你会给每个词多少概率？&quot;
+③ 让学生的分布向老师的分布靠拢
+
+★★★ 关键差别：
+   老师不是在【给出答案】，老师是在【对学生自己走的路做点评】。
+
+   类比：
+   off-policy = 看名师的标准解题录像
+   on-policy  = 自己做题，老师在旁边逐步说&quot;这步偏了，我会这么走&quot;
+
+   ⟹ 第二种明显更有效，因为点评发生在【学生真的会犯错的那些位置上】。
+</code></pre></div>
+
+<p><strong>成本对比</strong>：</p>
+<div class="codehilite"><pre><span></span><code>off-policy：老师跑一次（离线），学生训。便宜。
+on-policy ：★ 学生要 rollout（贵）+ 老师要对学生的每条轨迹做前向（贵）
+            如果有 N 个老师，就是 N 次前向
+
+⟹ 这就是 DeepSeek-V4 报告那句&quot;OPD 成本高，但效果最好&quot;的来源。
+</code></pre></div>
+
+<hr />
+<h2 id="82-rl-rl">8.2 ★★ 它和 RL 的关系：其实是"有密集奖励的 RL"</h2>
+<p><strong>这是理解 2026 年这批报告的关键一跃。</strong></p>
+<div class="codehilite"><pre><span></span><code>普通 RL：一整条轨迹跑完，才拿到【一个】0/1 的分数
+         ⟹ 信号极其稀疏
+
+OPD ：学生写的【每一个 token】都能立刻拿到一个分数
+      （= 老师和学生在这个位置的概率差）
+      ⟹ 信号密集到不能再密集
+
+★★ 所以 OPD 可以看成：&quot;把老师当成一个免费的、逐 token 的稠密奖励模型&quot;。
+</code></pre></div>
+
+<p><strong>这个视角一旦建立，2026 年那几份报告的公式就不神秘了：</strong></p>
+<div class="codehilite"><pre><span></span><code>它们都在做同一件事 —— 把&quot;老师和学生的 log 概率之差&quot;
+                       塞进已有的 RL 框架里当作 advantage 或 reward：
+
+        Â  =  sg[ log( π_teacher / π_student ) ]
+                ↑
+          stop-gradient（这一项只当数值用，不回传梯度）
+
+翻译成人话：
+   老师觉得这个词比学生觉得的【更可能】 → 正的优势 → 提高它
+   老师觉得这个词比学生觉得的【更不可能】 → 负的优势 → 压低它
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>为什么各家宁可写成 RL 的 advantage，而不写成一个 KL loss（数学上近似等价）？</strong><br />
+✅ Kimi-K3 报告给了很实际的理由：<strong>这样一来，为长周期任务做的 RL 基建（partial rollout 等）原封不动就能复用。</strong><br />
+★ 这是一个典型的"<strong>为了复用系统而选择数学形式</strong>"的决策，很值得记住。</p>
+</blockquote>
+<p>⚠️ <strong>另一个副产品</strong>（✅ GLM-5 报告发现，K3 报告没提）：既然优势直接来自与老师的差距，就<strong>不需要靠组内比较来算基线了</strong>，GRPO 的 group size 可以设成 1 —— 吞吐直接拉满。</p>
+<hr />
+<h2 id="83">8.3 五家的对照：同一个式子，五种用法</h2>
+<p>⚠️ 下表来自各家一手报告，详见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>老师是谁</th>
+<th>目标形式</th>
+<th>★ 要解决什么问题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>各领域专家（SFT+GRPO）</td>
+<td><strong>全词表逆 KL loss</strong></td>
+<td>多个领域专家<strong>无法合并</strong></td>
+</tr>
+<tr>
+<td><strong>Kimi-K3</strong></td>
+<td><strong>9 个</strong>（3 领域 × 3 档 effort）</td>
+<td><strong>per-token log 比当 RL reward</strong></td>
+<td>多领域 × 多档位专家<strong>无法合并</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td><strong>前面各阶段的最终 ckpt</strong></td>
+<td>log 比当 GRPO <strong>advantage</strong></td>
+<td>★ <strong>多阶段 RL 会累积性损害先前能力</strong></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0</strong></td>
+<td><strong>4 个领域专家</strong></td>
+<td>log 比当 GRPO <strong>advantage</strong></td>
+<td>多个领域专家<strong>无法合并</strong></td>
+</tr>
+<tr>
+<td><strong>Nemotron 3 Ultra</strong></td>
+<td>一个<strong>不断演进的教师面板</strong></td>
+<td>MOPD（多教师）</td>
+<td>广泛能力获取 <strong>+</strong> 定向专精</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表最值得注意的一格是 GLM-5：
+   它的老师不是&quot;领域专家&quot;，而是【自己前面几个阶段的 checkpoint】。
+
+   SFT ckpt   →┐
+   Reasoning ckpt →├─→ 都当老师 ─→ 蒸给最终的学生
+   Agentic ckpt  →┘
+
+   ⟹ 它不是在&quot;合并专家&quot;，是在【把被后续训练冲掉的自己找回来】。
+
+★ 同一个工具，两种完全不同的用途。
+  能看出这个区别，说明你真的读懂了这批报告。
+</code></pre></div>
+
+<p><strong>Nemotron 3 Ultra 的完整链路</strong>（✅ <a href="https://arxiv.org/abs/2606.15007">arXiv:2606.15007</a>，NVIDIA，2026-06）把这套东西做成了迭代：</p>
+<div class="codehilite"><pre><span></span><code>Base → SFT → RLVR → MOPD warmup → MOPD（× N 轮）→ MTP boosting
+                                     ↑
+              教师面板会【随轮次演进】：STEM / 对话 / 指令遵循 /
+              终端工具 / SWE / 搜索 / 办公 / 智能体安全 / 编码 ...
+</code></pre></div>
+
+<hr />
+<h2 id="84-vs">8.4 为什么它比参数平均好：函数空间 vs 参数空间</h2>
+<div class="codehilite"><pre><span></span><code>参数空间合并（Model Soup / Task Arithmetic / TIES / DARE）：
+   W_合 = Σ w_i · W_i
+
+   ⚠️ 它隐含一个很强的假设：
+      &quot;几个专家的参数是可以线性插值的&quot;
+      —— 但专家们各自走远之后，参数空间早就不对齐了，
+         同一个神经元在两个专家里可能编码完全不同的东西。
+
+✅ KAT-Coder-V2.5 报告（arXiv:2607.05471）的原话大意：
+   参数平均 / Task Arithmetic / 顺序多域 SFT 都会出现跷跷板效应，
+   因为【参数空间的合并破坏了专家特有的结构】，
+   而离线监督又引入了训推不匹配。
+   ⟹ 所以 MOPD 改在【函数空间】做融合。
+
+★★ &quot;函数空间&quot;是什么意思：
+   我不管你参数长什么样，我只要求
+   【给同样的输入，学生的输出分布 ≈ 老师的输出分布】。
+   —— 这个要求是良定义的，而&quot;参数平均&quot;不是。
+</code></pre></div>
+
+<hr />
+<h2 id="85-2026">8.5 一个 2026 年的新进展：学生能超过老师</h2>
+<p>✅ <strong>Learning beyond Teacher: Generalized On-Policy Distillation with Reward Extrapolation（ExOPD）</strong><br />
+（<a href="https://arxiv.org/abs/2602.12125">arXiv:2602.12125</a>，Wenkai Yang 等，2026-02）</p>
+<div class="codehilite"><pre><span></span><code>常识：蒸馏的天花板是老师。学生最多追平老师。
+
+ExOPD 报告：在把多个领域专家合并回原始 base 时，
+   它是【唯一】能让统一学生【一致地超过所有领域老师】的方法。
+
+⚠️ 学术工作，单一课题组结果，尚未见工业报告采用。
+⚠️ 但方向值得注意：论文把&quot;多教师合并&quot;称为一种
+   【有效的新多任务后训练范式】—— 这和五家报告的实际动作是一致的。
+</code></pre></div>
+
+<hr />
+<h2 id="86-opd">8.6 失败模式：OPD 不是万能的</h2>
+<p>⚠️ 下面这些来自 OPD 综述（<a href="https://arxiv.org/abs/2604.00626">arXiv:2604.00626</a>，Mingyang Song 等，2026-04）和社区整理：</p>
+<div class="codehilite"><pre><span></span><code>① 多样性坍缩
+   学生一味模仿老师的分布，输出多样性下降
+   ⟹ 后续如果还要做 RL，探索空间已经被压扁了（和 02.5 病三同源）
+
+② tokenizer 不匹配
+   ★ 老师和学生分词器不同时，&quot;逐 token 对齐&quot;根本无从谈起
+   ⟹ 这是跨家族蒸馏（用别家模型当老师）最硬的一道墙
+
+③ 思维模式不兼容
+   老师习惯长思维链、学生是 non-thinking 模式 → 蒸不动
+
+④ 老师没有&quot;新东西&quot;可给
+   如果老师的能力学生已经有了，OPD 只是在浪费算力
+   ✅ 成功条件之一是【老师具备学生没有的能力】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 补一条工程注意：OPD 需要老师的【完整输出分布】（logits）。
+  用开源模型当老师可以（拿得到 logits），
+  用闭源 API 当老师【做不了标准 OPD】—— 只能退回 off-policy 蒸馏。
+</code></pre></div>
+
+<hr />
+<h2 id="87">8.7 这一章的三句话总结</h2>
+<div class="codehilite"><pre><span></span><code>① on-policy 蒸馏 = 学生自己走路，老师在每一步旁边点评。
+   它把老师变成了一个逐 token 的稠密奖励模型 ——
+   所以它其实是 RL，不是 SFT。
+
+② 2026 年五家用同一个式子做了两件不同的事：
+   【合并多个专家】（DeepSeek / K3 / Pangu / Nemotron）
+   【找回被后续阶段遗忘的能力】（GLM-5）
+
+③ 它比参数平均好，是因为它在【函数空间】而不是【参数空间】合并；
+   它的硬门槛是老师要能给出 logits，且 tokenizer 要一致。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="09-后训练的数据学.html">09 后训练的数据与配比</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

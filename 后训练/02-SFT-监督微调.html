@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 · SFT：监督微调</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="01-鸟瞰全景.html">← 01 鸟瞰全景</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="03-分训与合训.html">03 分训与合训</a></p>
+</blockquote>
+<h1 id="02-sft">02 · SFT：监督微调</h1>
+<blockquote>
+<p><strong>SFT</strong> = <strong>Supervised Fine-Tuning</strong>（有监督微调）。<br />
+<strong>一句话</strong>：拿「问题 → 标准回答」的配对数据继续训模型，让它学会以"助手"的身份说话。</p>
+<p>读完这一章你应该能回答：SFT 和预训练在机制上到底差在哪？为什么 2023 年说"1000 条就够"、2026 年却有人用 700 万条？以及——<strong>为什么现在越来越多人说"SFT 分数高不是好事"</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="21">2.1 机制：底层什么都没变，只变了一件事</h2>
+<p><strong>这是全章最重要的一句话：SFT 还是"预测下一个 token"，唯一的区别是 loss 加在哪。</strong></p>
+<div class="codehilite"><pre><span></span><code>预训练：一整篇文本，【每个 token 都算 loss】
+
+   北 京 是 中 国 的 首 都 ， 位 于 华 北 平 原 ...
+   ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑
+   全部都要预测，全部都算 loss
+
+
+SFT：一段对话，【只在 assistant 说的话上算 loss】
+
+   &lt;|system|&gt; 你是一个助手 &lt;|user|&gt; 北京在哪？ &lt;|assistant|&gt; 北京位于华北平原北部。&lt;|end|&gt;
+   └────────────── 不算 loss ──────────────┘ └──────── 算 loss ────────┘
+                （但它们仍然作为&quot;上文&quot;被模型看到）
+</code></pre></div>
+
+<h3 id="user-loss">为什么 user 那段不能算 loss</h3>
+<div class="codehilite"><pre><span></span><code>如果 user 段也算 loss，模型就在学习【怎么提问】。
+
+后果很具体：你问它&quot;北京在哪&quot;，它有一定概率回你
+   &quot;北京在哪？上海在哪？&quot;
+—— 因为它学过&quot;用户会连着问&quot;。
+
+★★ 这个 bug 不会报错，只会让模型行为变得莫名其妙。
+   loss mask 写错是 SFT 阶段最常见、也最难 debug 的错误。
+</code></pre></div>
+
+<blockquote>
+<p>📎 <strong>数据长什么样、chat template 怎么写、工具调用怎么编码</strong>——这些细节在<br />
+<a href="../数据格式和数据处理/15-后训练数据格式.html">../数据格式和数据处理/15-后训练数据格式.md</a>，本章不重复。</p>
+</blockquote>
+<hr />
+<h2 id="22-sft">2.2 SFT 到底在改变模型的什么</h2>
+<p><strong>一个很有用的直觉（⚠️ 这是简化的说法，但方向是对的）：</strong></p>
+<div class="codehilite"><pre><span></span><code>预训练  ——  往模型里【装知识】
+SFT     ——  给模型【换一个出场姿势】
+
+★ SFT 几乎不给模型增加新知识。
+  它做的是：把模型内部本来就有的能力，用&quot;助手对话&quot;这个接口暴露出来。
+</code></pre></div>
+
+<p><strong>证据</strong>：LIMA 这篇论文（✅ <a href="https://arxiv.org/abs/2305.11206">arXiv:2305.11206</a>，Chunting Zhou 等，2023-05）用 <strong>1000 条</strong>精心挑选的样本做 SFT，就得到了接近当时用几万条数据训出来的模型的对话质量。论文由此提出 <strong>"表层对齐假说"（Superficial Alignment Hypothesis）</strong>：</p>
+<blockquote>
+<p><strong>模型的知识和能力几乎全部在预训练阶段获得，对齐只是教它"用哪种子分布来和用户交互"。</strong></p>
+</blockquote>
+<p>★★ 这个假说在 2023 年是革命性的，它把整个行业从"SFT 数据越多越好"的路上拽了回来。<strong>但它只对"对话格式"成立，对"推理能力"不成立</strong>——这一点要到 2025 年 R1 出来之后才被彻底看清，见 <a href="11-演进主线-三代范式.html">11 章</a>。</p>
+<hr />
+<h2 id="23-1000-700">2.3 数据量：从 1000 条到 700 万条，两个流派</h2>
+<p><strong>看起来矛盾，其实是在解两个不同的问题：</strong></p>
+<div class="codehilite"><pre><span></span><code>【流派一：少而精】  LIMA 路线
+   1000 ~ 几万条，人工精修
+   目标：教会【格式、语气、拒答边界】
+   ★ 这些东西确实不需要很多数据
+
+【流派二：多而广】  2026 年工业界主流
+   100 万 ~ 700 万条，绝大部分是【模型合成 + 拒绝采样筛出来的】
+   目标：覆盖【所有能力域】—— 数学、代码、SWE、CUDA、金融推理、
+        长上下文、安全、搜索、终端操作、SQL ...
+   ★ 域一多，条数自然就上去了
+</code></pre></div>
+
+<p><strong>一个 2026 年的实际数字</strong>（✅ Nemotron 3 Super 报告，<a href="https://arxiv.org/abs/2604.12374">arXiv:2604.12374</a>，NVIDIA，2026-04）：</p>
+<div class="codehilite"><pre><span></span><code>SFT 阶段：700 万样本，覆盖 15+ 个数据域
+   竞赛数学 / 代码 / 软件工程 / 智能体编程 / CUDA / 金融推理 /
+   长上下文 / 安全 / 搜索 / 终端使用 / SQL / ...
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>别把这两个流派当成"谁对谁错"。</strong> 正确的读法是：<br />
+<strong>教格式用几千条就够（LIMA 是对的），教能力覆盖要几百万条（工业界是对的），而"教能力"这件事 2026 年主要不靠 SFT 了，靠 RL。</strong></p>
+</blockquote>
+<hr />
+<h2 id="24">2.4 几个必须调对的旋钮</h2>
+<div class="codehilite"><pre><span></span><code>① epoch（把数据完整过几遍）
+   通用对话      2~3 遍就开始过拟合（回答变模板化、句式雷同）
+   数学 / 代码   3~4 遍还在涨
+   安全数据      1 遍足够，多了模型会【过度拒答】
+   ⚠️ 一个 2026 年的经验值：把所有 SFT 样本打包成长序列单阶段训练时，
+      约 1.5 个 epoch 达到最优（✅ Nemotron-Cascade 2，arXiv:2603.19220）
+
+② 学习率
+   典型比预训练末期的学习率高一点，但比预训练峰值低 1~2 个数量级
+   ⚠️ 太高 → 灾难性遗忘，通用能力崩塌；太低 → 学不进格式
+
+③ packing（把多条短样本拼成一条长序列）
+   ★★ 必须开【文档级注意力掩码】，否则样本 A 会&quot;看到&quot;样本 B
+      → 详见 ../数据格式和数据处理/13-打包与文档掩码.md
+
+④ 长上下文分阶段
+   常见做法：先在 32K 长度训一轮，再在 256K 长度训第二轮
+   （✅ Qwen3-VL 的公开做法；⚠️ 具体长度各家不同）
+</code></pre></div>
+
+<hr />
+<h2 id="25-sft">2.5 ★★ SFT 的三个"已知病"</h2>
+<p><strong>这一节是本章最有价值的部分。2025～2026 年的研究，系统性地指出了 SFT 这个范式本身的缺陷。</strong></p>
+<h3 id="_1">病一：它倾向于"背"，而不是"会"</h3>
+<p>✅ <strong>SFT Memorizes, RL Generalizes</strong>（<a href="https://arxiv.org/abs/2501.17161">arXiv:2501.17161</a>，Tianzhe Chu 等，2025-01）</p>
+<div class="codehilite"><pre><span></span><code>实验设计：造一个规则可变的纸牌算术游戏 + 一个视觉导航环境，
+         训练时用规则 A，测试时换成规则 B（分布外，OOD）
+
+结果：
+   SFT   → 分布外性能【下降 8% ~ 80%】
+   RL    → 分布外性能【提升 3% ~ 61%】
+
+★★ 而且：即使 SFT 用的是【带错误的次优轨迹】，这个模式依然成立
+   ⟹ 说明&quot;背&quot;这件事来自【训练目标的结构】，不是数据质量问题
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>但论文自己也强调了另一半</strong>：SFT 仍然是必需的——它稳定了模型的输出格式，<strong>没有这一步，后面的 RL 根本训不起来</strong>。<br />
+★ 这句话是理解 2026 年 SFT 定位的关键：<strong>SFT 从"主角"变成了"给 RL 铺跑道的人"。</strong></p>
+</blockquote>
+<h3 id="_2">病二：它的损失函数里藏着一个畸形的隐式奖励</h3>
+<p>✅ <strong>On the Generalization of SFT: A Reinforcement Learning Perspective with Reward Rectification</strong><br />
+（<a href="https://arxiv.org/abs/2508.05629">arXiv:2508.05629</a>，Yongliang Wu 等，2025-08）</p>
+<p><strong>这篇论文做了一件很漂亮的事：证明 SFT 其实是 RL 的一个特例。</strong></p>
+<div class="codehilite"><pre><span></span><code>把 SFT 的梯度公式和策略梯度（policy gradient）公式并排放，会发现：
+
+   SFT 的梯度  ≡  策略梯度，其中隐含的奖励 ∝ 1 / π_θ
+                                              ↑
+                                     模型当前对这个词的概率
+
+翻译成人话：
+   ★ 模型【越是想不到】的那个词，SFT 给它的&quot;奖励&quot;就【越大】
+   ⟹ 一个模型觉得极不可能的 token，会得到一个爆炸性的梯度
+   ⟹ 训练不稳、容易过拟合到个别怪样本
+</code></pre></div>
+
+<p><strong>修法（DFT，Dynamic Fine-Tuning）：一行代码。</strong></p>
+<div class="codehilite"><pre><span></span><code>把每个 token 的 loss 乘上它自己的概率 π_θ，
+把那个 1/π_θ 抵消掉，让所有 token 的权重变均匀。
+
+✅ 论文报告：在 Qwen-2.5-Math 系列上，DFT 相比标准 SFT 收益成倍提升；
+   标准 SFT 在 OlympiadBench / AIME 2024 / AMC 2023 上经常【掉分】，
+   DFT 则稳定提升。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 这是单一课题组在数学任务上的结果，尚未看到五家工业报告采用。<strong>当成"重要的理论视角"，不要当成"必须换的配方"。</strong></p>
+</blockquote>
+<h3 id="sft-rl">病三：SFT 分数高，不等于是好的 RL 起点</h3>
+<p>✅ <strong>Quagmires in SFT-RL Post-Training</strong>（<a href="https://arxiv.org/abs/2510.01624">arXiv:2510.01624</a>，Feiyang Kang 等，2025-10）</p>
+<div class="codehilite"><pre><span></span><code>常规做法：SFT 训完，挑【评测分最高】的那个 ckpt 去做 RL
+
+论文发现这个做法是错的：
+
+   配方 A：少量样本 + 多 epoch + 大学习率
+      → SFT 后 MATH-500 【+8.75%】     看起来赢麻了
+      → 但接着做 RL，最终反而 【-1.43%】
+
+   配方 B：更多样、不重复的数据
+      → SFT 后分数【低 5 个点】        看起来很差
+      → 接着做 RL，最终 【+5.94%】     赢了
+
+★★★ 原因：多 epoch + 大学习率会把模型【压得很尖】——
+    输出多样性坍塌，RL 阶段没东西可探索，等于把路先堵死了。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>实操结论（很硬的一条）</strong>：<br />
+<strong>挑 SFT ckpt 的标准，不该是"SFT 后的评测分"，而该是"它做完 RL 能到多少"。</strong><br />
+<strong>实践中的代理指标是输出多样性 / 熵——宁可要一个分数低一点、但还"活着"的模型。</strong></p>
+</blockquote>
+<hr />
+<h2 id="26-sft">2.6 SFT 还有存在的必要吗？</h2>
+<p><strong>2026 年有一派观点认为：SFT 不该是一个独立阶段。</strong></p>
+<p>⚠️ 代表工作 <strong>CHORD</strong>（Qwen 团队）：把 SFT 重新定义为<strong>在 on-policy RL 过程中的一个动态加权辅助损失项</strong>，理由是——长时间在有限的专家数据上训练会过拟合，压低输出多样性，<strong>严重限制后续 RL 的探索能力</strong>。</p>
+<p>⚠️ 另一条证据来自多模态：有研究报告在 7 个多模态基准上，8B 模型 <strong>SFT 之后反而掉了 5.2 个点</strong>（63.3% → 58.1%），做完 RL 才刚回到基线（63.3%）——<strong>意味着 RL 可能是在"还债"而不是"增益"</strong>。</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 我的判断：SFT 短期内不会消失，因为它解决的&quot;格式与可控性&quot;问题
+   目前没有更便宜的替代品。但它的三个变化已经很清楚：
+
+   ① 篇幅在缩短 —— 从&quot;后训练的主体&quot;变成&quot;冷启动&quot;
+   ② 目标在改变 —— 从&quot;拿高分&quot;变成&quot;给 RL 留足探索空间&quot;
+   ③ 边界在模糊 —— 越来越多方案把它和 RL 揉进同一个 loss 里
+</code></pre></div>
+
+<hr />
+<h2 id="27">2.7 这一章的三句话总结</h2>
+<div class="codehilite"><pre><span></span><code>① SFT 机制上只做了一件事：把 loss 限制在 assistant 段。
+   写错 loss mask 不会报错，只会让模型变怪。
+
+② SFT 教得会【格式】，教不会【能力】。
+   前者几千条就够，后者要靠 RL。
+
+③ 2026 年挑 SFT ckpt 的正确标准是&quot;它做完 RL 能到多少&quot;，
+   而不是&quot;它现在考几分&quot;。多样性比分数重要。
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="03-分训与合训.html">03 分训与合训：领域专家怎么造、怎么合</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

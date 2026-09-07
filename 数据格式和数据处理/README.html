@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大模型数据处理与数据格式入门（小白向）</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="_1">大模型数据处理与数据格式入门（小白向）</h1>
+<blockquote>
+<p>📖 <strong>随时可以查缩写</strong>：这个领域全是 WARC、MinHash、LSH、DCLM、THD、cu_seqlens 这类缩写。<strong><a href="附-速查表.html">附录速查表的 §H 缩写总表</a></strong> 把本教程出现的每一个缩写都列了<strong>英文全称 + 中文 + 一句话解释 + 在哪一章讲</strong>。<strong>看到不认识的词，先去那里查一下。</strong></p>
+<p><strong>从零看懂：15 万亿个 token 是怎么从互联网上被"洗"出来、"配"起来、"打包"进 GPU 的</strong></p>
+</blockquote>
+<hr />
+<h2 id="_2">⚠️ 先说清楚三件事</h2>
+<p><strong>① 这份教程不预设你懂任何数据处理知识。</strong></p>
+<p>Common Crawl、WARC、去重、MinHash、困惑度过滤、数据配比、tokenizer、packing、<code>.bin/.idx</code>——这些词你<strong>一个都不用提前知道</strong>。教程从"网上抓下来的一个网页到底长什么样"开始讲起，每个名词第一次出现时都会先解释再使用。</p>
+<p><strong>② 对你的唯一要求</strong>：会写代码，看得懂循环、数组、字典、哈希表、以及"读一个文件、按行处理"这件事。<strong>只要这些就够了。</strong> 涉及数学的地方（scaling law 那两章）会先用类比讲一遍，公式看不懂可以跳过。</p>
+<p><strong>③ 怎么读</strong>：</p>
+<div class="codehilite"><pre><span></span><code>第一遍  →  只看每章的【类比】【ASCII 图】【加粗句】，公式和代码全部跳过
+           目标：把整条流水线的形状看清楚
+
+第二遍  →  回头看伪代码，照 17 章那条最小流水线自己搭一遍
+           目标：搞清每个环节到底在动什么
+
+第三遍  →  读每章末尾的「挂回真实系统」，然后去看 papers/ 里的原始论文
+</code></pre></div>
+
+<p><strong>第一遍看不懂公式是完全正常的，不影响你读懂后面的章节。</strong> 每章的结构都是固定的：</p>
+<div class="codehilite"><pre><span></span><code>直觉类比  →  ASCII 图  →  具体的数据长什么样  →  Python 伪代码  →  挂回真实系统
+</code></pre></div>
+
+<hr />
+<h2 id="_3">🧭 这个领域的一句话地图</h2>
+<p>在开始之前，先建立一个总的方位感。<strong>大模型的"数据"这件事，其实是三个完全独立的问题</strong>，初学时最容易把它们搅在一起：</p>
+<div class="codehilite"><pre><span></span><code>问题一：内容问题  ——  「喂什么」
+        从 100 TB 的网页垃圾里，挑出 15 TB 值得学的东西
+        → 抽取、过滤、去重、质量分、配比、合成
+        → 第二、三部分（05 ~ 12 章）
+
+问题二：格式问题  ——  「怎么存」
+        挑出来的文本，用什么文件格式落盘，才能让几千张卡同时读得动
+        → JSONL / Parquet / .bin+.idx / WebDataset
+        → 第一部分（03、04 章）
+
+问题三：喂法问题  ——  「怎么送进去」
+        一堆长短不一的文档，怎么拼成定长的 [B, L] 张量，还不能互相串味
+        → tokenize、packing、文档掩码、shuffle、断点续训
+        → 第四部分（13 ~ 15 章）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>而 <a href="19-研究热点与未来方向.html">19 章</a>会告诉你：这张地图正在被改写。</strong>当『一条数据』从【一篇文档】变成【一次交互轨迹 + 一个可运行的环境】时，上面三个问题的答案都要重写。</p>
+<p>★ <strong>这三个问题的负责人在真实团队里往往都不是同一批人</strong>，论文里也常常只讲其中一个。你读一篇数据论文时，第一件事就是判断它在解决哪一个——这能省掉大量困惑。</p>
+</blockquote>
+<hr />
+<h2 id="_4">📖 目录</h2>
+<h3 id="_5">第一部分：数据长什么样</h3>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="01-鸟瞰全景.html">01</a></strong></td>
+<td>鸟瞰：一条数据从网页到 GPU 的旅程</td>
+<td>九个环节，先把整条流水线看一遍</td>
+<td>⭐</td>
+</tr>
+<tr>
+<td><strong><a href="02-数据源与文本抽取.html">02</a></strong></td>
+<td>数据源与文本抽取</td>
+<td>Common Crawl 抓下来的东西到底长什么样</td>
+<td>⭐</td>
+</tr>
+<tr>
+<td><strong><a href="03-存储格式.html">03</a></strong></td>
+<td>存储格式：JSONL / Parquet / Arrow</td>
+<td><strong>行存 vs 列存</strong>，为什么清洗阶段要换格式</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="04-训练格式-Megatron索引.html">04</a></strong></td>
+<td>⭐ <strong>训练格式：<code>.bin</code> + <code>.idx</code> 与三个索引</strong></td>
+<td>训练时真正被读的那个文件，长什么样</td>
+<td>⭐⭐⭐</td>
+</tr>
+</tbody>
+</table>
+<h3 id="100-tb-15-tb">第二部分：把 100 TB 洗成 15 TB</h3>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="05-语言识别与启发式过滤.html">05</a></strong></td>
+<td>语言识别与启发式过滤</td>
+<td>最便宜的一刀，砍掉 90% 的明显垃圾</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="06-去重.html">06</a></strong></td>
+<td>⭐ <strong>去重：四个粒度</strong></td>
+<td>全教程最重要的一章，也是收益最确凿的一步</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="07-质量过滤.html">07</a></strong></td>
+<td>质量过滤：从困惑度到分类器</td>
+<td>"什么叫好数据"这个问题的三代答案</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="08-去污染与隐私许可.html">08</a></strong></td>
+<td>去污染、隐私与许可</td>
+<td>评测分虚高的头号元凶</td>
+<td>⭐⭐</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">第三部分：配比、喂量与造数据</h3>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="09-Tokenizer与词表.html">09</a></strong></td>
+<td>Tokenizer 与词表</td>
+<td>文本变成整数的那一步，坑比想象中多</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="10-数据配比.html">10</a></strong></td>
+<td>数据配比：代码占几成？</td>
+<td>DoReMi / RegMix / 混合定律</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="11-喂多少-ScalingLaw.html">11</a></strong></td>
+<td>⭐ <strong>喂多少：Chinchilla 与数据受限</strong></td>
+<td><strong>重复 4 遍几乎不亏</strong>这条铁律的由来</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="12-合成数据.html">12</a></strong></td>
+<td>合成数据：改写 vs 生成</td>
+<td>网页快用完了，接下来怎么办</td>
+<td>⭐⭐</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_7">第四部分：喂进模型的最后一公里</h3>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="13-打包与文档掩码.html">13</a></strong></td>
+<td>⭐ <strong>打包（packing）与文档掩码</strong></td>
+<td>两篇不相干的文档拼在一起，会互相串味吗</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="14-采样-shuffle-与断点续训.html">14</a></strong></td>
+<td>采样、shuffle、课程与断点续训</td>
+<td>训到 8 万步崩了，怎么保证接着喂同样的数据</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td><strong><a href="15-后训练数据格式.html">15</a></strong></td>
+<td>后训练的数据格式</td>
+<td>chat template / SFT / 工具调用 / 偏好数据</td>
+<td>⭐⭐</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_8">第五部分：收口</h3>
+<table>
+<thead>
+<tr>
+<th>章</th>
+<th>标题</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><a href="16-五家报告的数据章节.html">16</a></strong></td>
+<td><strong>五家技术报告的数据部分讲了什么</strong></td>
+<td>把隔壁目录那五份报告的数据章节挂回来</td>
+</tr>
+<tr>
+<td><strong><a href="17-最小流水线走查.html">17</a></strong></td>
+<td>一条端到端的最小流水线走查</td>
+<td>从 WARC 到 <code>.bin/.idx</code>，每步的代码骨架 + ★ 每步该看什么</td>
+</tr>
+<tr>
+<td><strong><a href="18-延伸阅读.html">18</a></strong></td>
+<td>接下来读什么</td>
+<td>22 篇论文的阅读顺序与时间线</td>
+</tr>
+<tr>
+<td><strong><a href="19-研究热点与未来方向.html">19</a></strong></td>
+<td>⭐ <strong>当前研究热点与未来方向</strong></td>
+<td>十个热点、<strong>一个源头</strong>；⚠️ 全教程可靠性最低、也最会过期的一章</td>
+</tr>
+<tr>
+<td><strong><a href="附-速查表.html">附</a></strong></td>
+<td>一页速查表 + ⭐ <strong>缩写总表</strong></td>
+<td>流程图 / 数量级 / <strong>所有缩写的全称与解释</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="_9">🗺️ 推荐路线</h2>
+<div class="codehilite"><pre><span></span><code>【路线 A：我只想知道这些数据论文在说什么】  约 1 小时
+   01 → 06 → 07 → 11 → 16
+   （鸟瞰 → 去重 → 质量过滤 → 喂多少 → 五家怎么做）
+   ⭐ 06 和 11 是这条路线的重点。这两章讲的是全领域结论最硬的两件事。
+
+【路线 B：我要动手做数据流水线】  约 4~6 小时
+   01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 17
+   （按顺序，先跳过配比和 scaling law 这两章偏研究的）
+   ⭐ 17 章那条流水线建议照着自己搭一遍。
+
+【路线 C：我要看懂训练框架里的数据模块】  约 3 小时
+   01 → 03 → 04 → 09 → 13 → 14
+   （存储格式 → Megatron 索引 → tokenizer → packing → 采样与续训）
+   ⭐ 这条路线是给&quot;要读 Megatron-LM / NeMo 数据代码&quot;的人准备的。
+
+【路线 D：全读】
+   01 → ... → 18 → 19，然后去读 papers/ 里的原始论文
+
+【路线 E：我只想知道『这个领域现在在吵什么』】  约 30 分钟   ★ 新增
+   19（可以单独读，不需要前 18 章）
+   ⭐ 19 章讲的是【还没有答案】的部分：数据墙还剩多少、合成数据会不会
+      把模型训崩、以及为什么『一条数据是什么』这个定义正在被改写。
+   ⚠️ 但它是全教程【最会过期】的一章，写于 2026-08。
+</code></pre></div>
+
+<hr />
+<h2 id="_10">🔗 和隔壁目录的关系</h2>
+<div class="codehilite"><pre><span></span><code>数据格式和数据处理/       ← 你在这里。「喂什么、怎么存、怎么送进去」
+      │
+      │  和它并列的另一半 ↓
+      ▼
+../业界模型技术报告/大模型架构入门/   ← 「模型内部长什么样」
+      │
+      ▼
+../业界模型技术报告/模型技术对比.md   ← 五家的横向对比
+</code></pre></div>
+
+<p><strong>两个目录是互补的，没有先后依赖</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>这个目录讲</th>
+<th>那个目录讲</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据怎么变成 <code>[B, L]</code> 的 token id 张量</td>
+<td>这个张量进了模型之后发生什么</td>
+</tr>
+<tr>
+<td>tokenizer 怎么切词、词表多大</td>
+<td>embedding 怎么把 token id 查成向量</td>
+</tr>
+<tr>
+<td>packing 怎么把多篇文档拼进一条序列</td>
+<td>注意力掩码怎么算</td>
+</tr>
+<tr>
+<td>训练喂多少 token（Chinchilla）</td>
+<td>模型有多少参数、怎么算 FLOPs</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📘 如果你在本教程里遇到 <strong>MoE、注意力、KV cache</strong> 这类<strong>模型侧</strong>的词不认识，去查 <a href="../业界模型技术报告/大模型架构入门/附-速查表.html">../业界模型技术报告/大模型架构入门/附-速查表.md</a>。反过来，那份教程里遇到数据侧的词，回这里的 <a href="附-速查表.html">附-速查表.md</a> 查。</p>
+</blockquote>
+<hr />
+<h2 id="_11">📐 全教程通用的记号约定</h2>
+<div class="codehilite"><pre><span></span><code>文档  document   一篇独立的文本（一个网页、一本书的一章、一个代码文件）
+                 ★ 数据领域最基本的单位。全教程说&quot;一条数据&quot;都是指一篇文档
+token            文本被切分后的最小单位，一个整数 id。中文约 1 字 ≈ 0.6~1 token
+                                                   英文约 1 词 ≈ 1.3 token
+语料 corpus      一堆文档的集合（FineWeb、The Pile 都是语料）
+分片 shard       语料被切成的一个个文件块，典型 100 MB ~ 2 GB 一片
+
+L   = 序列长度（一条训练样本有多少 token），如 4096、8192
+B   = batch size
+V   = 词表大小（vocabulary size，五家都是 15 万左右）
+N_d = 训练集总 token 数        ← Chinchilla 里的 D
+N_p = 模型参数量               ← Chinchilla 里的 N
+
+单位换算： 1 T token = 10¹² 个 token
+          15 T token 的原始文本 ≈ 60 TB 左右的 UTF-8 纯文本 ⚠️ 粗估
+</code></pre></div>
+
+<hr />
+<h2 id="_12">⚖️ 可靠性说明</h2>
+<ul>
+<li><strong>通用流程与算法原理</strong>（MinHash、BPE、bin packing 等）是教科书内容，按标准形式给出，数值例子是为讲解构造的。</li>
+<li><strong>所有归属到具体数据集、具体论文的数字与消融结论</strong>，都标注了出处（arXiv 编号 + 章节），可以在 <a href="papers/">papers/</a> 下的 PDF 里回溯。本教程 <strong><a href="papers/">papers/</a> 里的 22 篇论文，arXiv 编号已逐篇通过 arXiv API 核对过「编号 ↔ 标题 ↔ 第一作者 ↔ 首次提交日期」</strong>，不是从二手解读里抄的。</li>
+<li><strong>凡是我自己推出来、论文没有明说的解释或估算</strong>，一律用 <strong>⚠️</strong> 明确标出。</li>
+<li><strong>回溯不到一手来源的数字，一律用 ❌ 标出或直接不写</strong>，不留在正文里。</li>
+<li>⭐ <strong><a href="19-研究热点与未来方向.html">19 章</a>是例外，可靠性最低</strong>：它讲的是没定论的方向，所以那一章用了更严的三级标记（✅ 已发表结论 / ⚠️ 我的判断 / 🔮 开放问题），并且<strong>它引用的论文大多没有归档在 <a href="papers/">papers/</a> 里</strong>（已在正文逐条注明），只有 arXiv 编号经 API 核对过。</li>
+<li>有疑问以 <a href="papers/">papers/</a> 下的 PDF 原文为准。</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="01-鸟瞰全景.html">01 鸟瞰：一条数据从网页到 GPU 的旅程</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

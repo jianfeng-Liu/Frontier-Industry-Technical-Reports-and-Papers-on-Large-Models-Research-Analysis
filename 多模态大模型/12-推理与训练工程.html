@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12 · 推理与训练工程：多模态是怎么把系统搞乱的</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="11-多模态评测.html">← 11 多模态评测</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="13-业界横向对照.html">13 业界横向对照</a></p>
+</blockquote>
+<h1 id="12">12 · 推理与训练工程：多模态是怎么把系统搞乱的</h1>
+<blockquote>
+<p>📖 <strong>前置</strong>：<a href="../推理框架/推理优化入门/">../推理框架/推理优化入门/</a> 和<br />
+<a href="../训练框架/分布式训练入门/">../训练框架/分布式训练入门/</a>。<br />
+<strong>本章只讲"加了视觉之后，那些干净的假设是怎么被打破的"。</strong></p>
+</blockquote>
+<hr />
+<h2 id="121">12.1 ★★ 推理：从两段变三段</h2>
+<p>纯文本推理只有两个阶段（见 <a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">../推理框架/推理优化入门/03-Prefill与Decode两阶段.md</a>）：</p>
+<div class="codehilite"><pre><span></span><code>    Prefill（吃进 prompt，算力密集）  →  Decode（一个一个吐字，访存密集）
+</code></pre></div>
+
+<p><strong>多模态凭空多出一段，而且它的性格和前两段都不一样</strong>：</p>
+<div class="codehilite"><pre><span></span><code> ┌────────────┬──────────────┬──────────────┬─────────────────┐
+ │            │   Encode     │   Prefill    │    Decode       │
+ │            │  （视觉编码） │              │                 │
+ ├────────────┼──────────────┼──────────────┼─────────────────┤
+ │ 瓶颈       │ ★ 纯算力     │ 算力，且产 KV │ ★ 访存带宽      │
+ │ 要不要 KV  │ 不要         │ 要写          │ 要读            │
+ │ batch 特性 │ 图多才划算   │ 长序列        │ 大 batch 才划算 │
+ │ 时长       │ 每图 ~25 ms  │ 长            │ 每 token 几十 ms │
+ └────────────┴──────────────┴──────────────┴─────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>一手证据（GLM-5.3 的 EPD 分离）</strong>：<br />
+<em>"视觉编码是纯计算密集的（过 24 层 ViT），prefill 是计算密集但要 KV，decode 是访存密集。<br />
+</em><em>三者的硬件需求完全不同。挤在一起的话，一张图片的编码会把 decode 的卡堵住。</em><em><br />
+拆开后每一段可以独立扩缩容。"</em><br />
+出处：<a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a> §7.2</p>
+<p><code>GLM-5.3-Flash 的 EPD：Encode 池 → Prefill 池 → Decode 池
+                            ↑
+                       多模态编码（图/视频过视觉塔）单独成池</code></p>
+<p>🔑 <strong>这是纯文本世界 PD 分离（Prefill/Decode）的直接延伸</strong>：<br />
+见 <a href="../推理框架/推理优化入门/10-PD分离.html">../推理框架/推理优化入门/10-PD分离.md</a>。<br />
+⟹ <strong>规律：只要一类负载的瓶颈资源和别人不同，它迟早会被拆成独立的池。</strong></p>
+</blockquote>
+<hr />
+<h2 id="122-kv">12.2 算一笔显存账：一张图的 KV 有多大</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 我的估算（假设：60 层、GQA 4 个 KV 头、head_dim 128、bf16）：
+
+      每 token 每层 KV = 2(K和V) × 4 × 128 × 2 字节 = 2048 字节
+      每 token 全模型  = 2048 × 60 层 ≈ 120 KB
+
+      一张图 1521 个视觉 token ⟹ ★ 约 178 MB 的 KV cache
+      ⟹ 一个 80GB 的卡，光是【450 张图】的 KV 就满了
+      ⟹ 而这还没算模型权重
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这就是为什么多模态服务的并发数远低于纯文本服务。</strong><br />
+⟹ 也是为什么 <a href="../业界模型技术报告/大模型架构入门/07-MHA到MLA.html">MLA 这类压缩 KV 的注意力</a><br />
+在多模态场景下<strong>收益比纯文本更大</strong>——⚠️ 这一条是我的推断，报告里没有直接对比。</p>
+</blockquote>
+<hr />
+<h2 id="123">12.3 ★ 一个立刻能用的优化：缓存视觉编码结果</h2>
+<div class="codehilite"><pre><span></span><code>    典型场景：用户上传一张图，然后连问五个问题
+    ⚠️ 天真实现：每一轮都把图重新过一遍视觉塔 ⟹ 每轮白烧 25 毫秒 + 算力
+
+    ★ 正确做法：用图片的哈希做 key，把【连接器输出的那 1521 个向量】缓存起来
+      ⟹ 第 2~5 轮直接命中，Encode 阶段耗时归零
+
+    ⟹ ★★ 更进一步：如果 prompt 的前缀（含图）完全一样，
+       连 KV cache 都可以复用 —— 这就是普通的前缀缓存
+       见 ../推理框架/推理优化入门/05-PagedAttention与前缀缓存.md
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>陷阱</strong>：前缀缓存的 key 通常是<strong>文本 token 序列的哈希</strong>。<br />
+图像走的是"占位符 token + 外部向量"这条路，<strong>如果实现时没有把图片内容一起算进 key，<br />
+就会出现"换了图但命中了旧缓存"的严重 bug</strong>。<br />
+⟹ 这类 bug 的表现是"模型回答的是上一张图的内容"——<strong>看起来像幻觉，其实是缓存错了</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="124-batching">12.4 变长：多模态把 batching 搞乱了</h2>
+<div class="codehilite"><pre><span></span><code>    纯文本的连续批处理（continuous batching）假设：
+      每个请求每一步生成 1 个 token ⟹ 步长整齐 ⟹ 可以随时插拔请求
+      见 ../推理框架/推理优化入门/04-连续批处理与调度.md
+
+    ⚠️ 多模态打破了它：
+      · 请求 A：纯文本，prompt 50 token
+      · 请求 B：带 1 张图，prompt 1571 token
+      · 请求 C：带 1 段视频，prompt 76800 token   ← ★ 这一个能把整批卡住
+      ⟹ 调度器要处理【三个数量级】的 prompt 长度差异
+      ⟹ 一个视频请求进来，其它请求的 TTFT（首字延迟）全被拖垮
+</code></pre></div>
+
+<p><strong>常见对策</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① ★ EPD 分离（12.1）—— 从架构上隔离
+    ② 分块 prefill（chunked prefill）：把超长 prompt 切成小块，
+       和别人的 decode 交错着算 ⟹ 不让一个巨型请求独占
+    ③ 按&quot;带不带图 / 带不带视频&quot;分队列，甚至分集群
+</code></pre></div>
+
+<hr />
+<h2 id="125">12.5 训练侧的三个麻烦</h2>
+<h3 id="1">麻烦① 变长样本 → 负载不均</h3>
+<div class="codehilite"><pre><span></span><code>    一个 batch 里：样本 1 有 0 张图、样本 2 有 3 张图、样本 3 有 1 段视频
+    ⟹ 各个 DP rank 的实际计算量差好几倍
+    ⟹ ★ 快的 rank 干等慢的 rank（木桶效应）⟹ MFU 掉
+
+    对策：按【总 token 数】而不是【样本数】来组 batch（token-based batching）
+         + patch packing（把多张图打包进一条序列，用掩码隔开）
+    ⟹ 和纯文本的样本打包是同一套技术：
+       ../数据格式和数据处理/13-打包与文档掩码.md
+</code></pre></div>
+
+<h3 id="2">麻烦② 视觉塔不好切</h3>
+<div class="codehilite"><pre><span></span><code>    LLM：2.78T 参数，必须切（TP + PP + EP）
+    视觉塔：0.4B 参数 ⟹ ★ 太小了，切了通信开销比计算还大
+    ⟹ 常见做法：视觉塔【每个 rank 各存一份（DP 复制）】，只切 LLM
+    ⟹ ⚠️ 但这样一来，流水线并行（PP）的第一段就多背了一个 ViT
+       ⟹ ★ PP 的各段负载又不均了，需要手工调整层的划分
+    ⟹ 并行策略基础见 ../训练框架/分布式训练入门/12-并行策略组合与MFU.md
+</code></pre></div>
+
+<h3 id="3">麻烦③ 两个部件的"训练性格"不一样</h3>
+<div class="codehilite"><pre><span></span><code>    ✅ K3 的实证：SigLIP 初始化的视觉塔【梯度范数持续更高且频繁 spike】
+    ⟹ 混合精度、梯度裁剪的阈值，对视觉塔和 LLM【应该不一样】
+    ⟹ ⚠️ 但多数框架是全局设一个阈值 ⟹ 要么裁得太狠、要么防不住 spike
+    ⟹ K3 的应对是【从零训 + 移除视觉塔所有 bias 项】（见 02、06 章）
+</code></pre></div>
+
+<hr />
+<h2 id="126">12.6 🔑 这一章的四句话</h2>
+<ol>
+<li>✅ <strong>多模态推理从两段变三段：Encode / Prefill / Decode，性格完全不同 ⟹ 必然被拆成独立的池</strong>（GLM-5.3 的 EPD）。</li>
+<li>⚠️ <strong>一张图约 178 MB 的 KV cache</strong>（我的估算）⟹ 多模态服务的并发天然远低于纯文本。</li>
+<li>★ <strong>最容易拿到的优化是缓存视觉编码结果</strong>；但要小心"缓存 key 没算图片内容"这个会伪装成幻觉的 bug。</li>
+<li><strong>训练侧的核心矛盾是"变长"和"两个部件性格不同"</strong>：token-based batching + packing 解决前者，分别调优解决后者。</li>
+</ol>
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="13-业界横向对照.html">13 业界横向对照：五家 2026 年报告里的多模态</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

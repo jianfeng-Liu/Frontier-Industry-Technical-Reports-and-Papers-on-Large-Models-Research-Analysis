@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 KV Cache 与显存账本</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="02-kv-cache">02 KV Cache 与显存账本</h1>
+<blockquote>
+<p><strong>一句话</strong>：推理时显存被三样东西吃掉——权重（固定）、KV Cache（随用户数暴涨）、激活值（很小）。<strong>能同时服务多少用户，几乎完全由 KV Cache 决定。</strong></p>
+</blockquote>
+<hr />
+<h2 id="21-kv-cache">2.1 为什么需要 KV Cache</h2>
+<p>先回忆注意力（Attention）在算什么。对第 t 个 token：</p>
+<div class="codehilite"><pre><span></span><code>    Q_t（Query，查询）要和【前面所有 token】的 K（Key，键）做点积，
+    再用得到的权重去加权【前面所有 token】的 V（Value，值）。
+
+    Attention(Q_t) = softmax( Q_t · [K_1 ... K_t]ᵀ / √d ) · [V_1 ... V_t]
+                                     ↑ 需要历史          ↑ 需要历史
+</code></pre></div>
+
+<p>现在看解码过程。生成第 100 个字时，需要 K_1..K_99；生成第 101 个字时，需要 K_1..K_100。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 天真做法：每生成一个字，把前面 100 个 token 重新跑一遍前向
+       ⟹ 生成 N 个字的总代价 ≈ O(N²)，1000 字要跑 50 万个 token 的量
+
+    ★ KV Cache：K_1..K_99 上一步已经算过了，【存下来别扔】
+       ⟹ 每步只算新 token 的 K_t、V_t，追加到缓存末尾
+       ⟹ 生成 N 个字的总代价 ≈ O(N)
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>KV Cache 不是「优化」，是推理的默认前提。</strong> 没有它，长文本生成慢到不可用。<br />
+代价是：<strong>它要占显存，而且占得非常多。</strong></p>
+</blockquote>
+<hr />
+<h2 id="22-kv-cache">2.2 KV Cache 到底占多少——把公式推一遍</h2>
+<p>一个 token、一层，要存 K 和 V 两个向量：</p>
+<div class="codehilite"><pre><span></span><code>    单个 token、单层的 KV 字节数
+        = 2（K 和 V 两份）
+        × num_kv_heads（KV 头数）
+        × head_dim（每个头的维度）
+        × dtype_bytes（BF16 = 2 字节）
+
+    整个模型：再乘以 num_layers（层数）
+
+    一整条序列：再乘以 seq_len（这条序列有多少 token）
+
+    整个服务：再乘以 batch_size（同时有多少条序列）
+</code></pre></div>
+
+<p>合成一条：</p>
+<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────┐
+│  KV Cache 总字节                                                │
+│    = 2 × L × H_kv × D_head × dtype × seq_len × batch           │
+│      ↑    ↑    ↑        ↑        ↑        ↑         ↑          │
+│      K,V  层数 KV头数  头维度   精度   序列长度   并发数         │
+└────────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>代真实数字：Llama-3-8B</strong>（⚠️ 参数取自公开的模型配置，非论文披露表格）</p>
+<div class="codehilite"><pre><span></span><code>    L = 32 层，H_kv = 8（用了 GQA，见 07 章），D_head = 128，BF16 = 2 字节
+
+    单 token 单层：2 × 8 × 128 × 2 = 4096 字节 = 4 KB
+    单 token 全模型：4 KB × 32 = 128 KB
+
+    ★ 记住这个数：Llama-3-8B 每个 token 要 128 KB 的 KV Cache
+
+    一条 8K 长度的对话：128 KB × 8192 = 1 GB
+    一条 128K 长度的对话：128 KB × 131072 = 16 GB   ← ★ 一个用户吃掉一半 H100
+</code></pre></div>
+
+<p><strong>再看没用 GQA 的老模型有多可怕</strong>——如果 H_kv = 32（每个注意力头都有自己的 KV）：</p>
+<div class="codehilite"><pre><span></span><code>    单 token 全模型：128 KB × 4 = 512 KB
+    一条 8K 对话：4 GB
+    ★★ 一张 80GB 的 H100，去掉 16GB 权重，剩 64GB
+       ⟹ 只能装 16 个用户。这就是 GQA 存在的理由（07 章）。
+</code></pre></div>
+
+<hr />
+<h2 id="23-h100">2.3 一张 H100 的完整显存账</h2>
+<p>拿 <strong>Llama-3-8B，单张 H100 80GB，BF16</strong> 算一遍：</p>
+<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────┐
+│  项目                    大小        说明                │
+├─────────────────────────────────────────────────────────┤
+│  ① 模型权重             16 GB       8B × 2 字节，固定    │
+│  ② CUDA / NCCL 上下文  ~1-2 GB      驱动和通信库开销     │
+│  ③ 激活值（临时）       ~1-2 GB      前向中间结果，用完就放│
+│  ④ 框架预留             ~2 GB       调度器、采样器等      │
+├─────────────────────────────────────────────────────────┤
+│  ⟹ 剩给 KV Cache：    ≈ 58-60 GB                        │
+│                                                         │
+│  ★ 58 GB ÷ 128 KB/token ≈ 475,000 个 token             │
+│                                                         │
+│     如果平均每条对话 4K token → 能装 ~116 条并发         │
+│     如果平均每条对话 32K token → 只能装 ~14 条并发       │
+└─────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这就是全书的中心矛盾</strong>：<br />
+01 章说「要把 batch 做大才吃得满算力（需要 &gt;300）」。<br />
+这一章说「batch 做大就爆显存」。<br />
+<strong>05 / 07 / 09 三章，全部是在同一件事上想办法——让同样的显存装下更多 token。</strong></p>
+</blockquote>
+<hr />
+<h2 id="24-vllm">2.4 vLLM 是怎么算这笔账的</h2>
+<p>vLLM 启动时不是「猜」剩多少显存，而是<strong>真跑一遍</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① 加载权重，记下占了多少
+    ② 用最大 batch 跑一次假的前向（profile run），记下激活值峰值
+    ③ 剩下的显存 × gpu_memory_utilization（默认 0.9）
+       ⟹ 全部划给 KV Cache，切成固定大小的【块】
+</code></pre></div>
+
+<blockquote>
+<p>✅ 这个流程在 vLLM 源码里叫 <code>determine_available_memory</code> / <code>initialize_kv_cache</code>，<br />
+块的管理在 <a href="../源码/vLLM/vllm/v1/core/block_pool.py">block_pool.py</a>，<br />
+<code>class BlockPool</code> 在 <strong>L143</strong>。</p>
+</blockquote>
+<p><strong>关键设计</strong>：KV Cache 的总量在启动时就<strong>定死</strong>了，运行期不再变。所以调度器随时知道「还剩几块」，装不下就排队或抢占（04 章）。</p>
+<hr />
+<h2 id="25">2.5 三个能改变这笔账的旋钮</h2>
+<table>
+<thead>
+<tr>
+<th>旋钮</th>
+<th>做法</th>
+<th>效果</th>
+<th>讲在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>减少 H_kv</strong></td>
+<td>MQA / GQA / MLA</td>
+<td>KV 直接缩 4~8 倍，<strong>最有效</strong></td>
+<td><a href="07-注意力变体MQA-GQA-MLA.html">07 章</a></td>
+</tr>
+<tr>
+<td><strong>降低 dtype</strong></td>
+<td>KV Cache 用 FP8 存</td>
+<td>再缩 <strong>2 倍</strong>，几乎无损</td>
+<td><a href="09-量化.html">09 章</a></td>
+</tr>
+<tr>
+<td><strong>别浪费已分配的</strong></td>
+<td>PagedAttention + 前缀复用</td>
+<td>把利用率从 ~30% 提到 &gt;90%</td>
+<td><a href="05-PagedAttention与前缀缓存.html">05 章</a></td>
+</tr>
+</tbody>
+</table>
+<p>还有一个「作弊」旋钮——<strong>根本不存全部</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ StreamingLLM：只保留【最开头几个 token】+【最近的窗口】
+      ✅ 论文 arXiv 2309.17453（papers/StreamingLLM-Attention-Sinks-arXiv-2309.17453.pdf）
+      发现最开头的 token 是「注意力池（attention sink）」，扔了就崩，
+      中间的反而可以扔。
+      ⟹ 代价是真的丢信息，属于「近似方法」，和前三个不同性质。
+</code></pre></div>
+
+<hr />
+<h2 id="26-kv-cache">2.6 一个容易被忽略的点：KV Cache 也要被「搬」</h2>
+<p>01 章说解码是<strong>访存受限</strong>，当时只算了权重。实际上每生成一个 token，要搬两样东西：</p>
+<div class="codehilite"><pre><span></span><code>    ① 全部权重：              16 GB      ← 和 batch 无关
+    ② batch 内所有序列的 KV：  ？          ← ★ 和 batch 成【正比】
+
+    batch = 1，序列 4K：   KV 只有 0.5 GB，权重是大头
+    batch = 128，序列 4K： KV 有 64 GB，★★ KV 反而成了大头
+</code></pre></div>
+
+<blockquote>
+<p>⚠️（我的推断，非论文披露）<strong>这解释了一个实践现象</strong>：<br />
+batch 从 1 加到 32，吞吐几乎线性涨（权重摊薄了）；<br />
+从 32 加到 256，涨幅明显放缓（KV 的搬运量在线性增长，摊不薄）。<br />
+<strong>所以 batch 不是越大越好，存在一个甜点区。</strong></p>
+</blockquote>
+<hr />
+<h2 id="27">2.7 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  ① KV Cache = 2 × 层数 × KV头数 × 头维度 × 精度 × 长度 × 并发  │
+│     ★ Llama-3-8B：每个 token 128 KB                           │
+│                                                              │
+│  ② 一张 H100 装 8B 模型 → ~58 GB 归 KV Cache → ~47 万 token   │
+│     ★ 并发数 = 47万 ÷ 平均对话长度                            │
+│                                                              │
+│  ③ ★★ 中心矛盾：batch 要大才吃满算力，但 batch 大就爆显存       │
+│     05 / 07 / 09 三章都在解这一个矛盾                          │
+│                                                              │
+│  ④ batch 大到一定程度后，搬 KV 的开销会超过搬权重              │
+│     ⟹ 存在吞吐甜点，不是越大越好                              │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<hr />
+<blockquote>
+<p><strong>下一步</strong> → <a href="03-Prefill与Decode两阶段.html">03 Prefill 与 Decode 两阶段</a><br />
+KV Cache 的账算完了，接下来看这些 KV 是在哪两个阶段产生和消费的——这两个阶段性格完全相反。</p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

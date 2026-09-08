@@ -51,7 +51,7 @@ def bpe_train(corpus_tokens, vocab_size):
         best = pairs.most_common(1)[0][0]        # 出现最多的相邻对
         merges.append(best)                       # 记下这条合并规则
         vocab.add(best[0] + best[1])
-        corpus_tokens = [merge(w, best) for w in corpus_tokens]
+        corpus_tokens = [merge(w, best) for w in corpus_tokens]   # merge 函数需要额外实现 
     return vocab, merges                          # merges 是有序的，推理时按序重放
 ```
 

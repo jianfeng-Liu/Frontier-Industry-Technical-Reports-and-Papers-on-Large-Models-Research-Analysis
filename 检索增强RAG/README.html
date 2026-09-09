@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>检索增强生成 RAG</title>
+<style>
+
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* star markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+
+
+    .codehilite { background: #282C34; color: #ABB2BF }
+    .codehilite .c { color: #7F848E }
+    .codehilite .err { color: #ABB2BF }
+    .codehilite .esc { color: #ABB2BF }
+    .codehilite .k { color: #C678DD }
+    .codehilite .l { color: #ABB2BF }
+    .codehilite .n { color: #E06C75 }
+    .codehilite .o { color: #56B6C2 }
+    .codehilite .x { color: #ABB2BF }
+    .codehilite .p { color: #ABB2BF }
+    .codehilite .ch { color: #7F848E }
+    .codehilite .cm { color: #7F848E }
+    .codehilite .cp { color: #7F848E }
+    .codehilite .cpf { color: #7F848E }
+    .codehilite .c1 { color: #7F848E }
+    .codehilite .cs { color: #7F848E }
+    .codehilite .gd { color: #E06C75 }
+    .codehilite .ge { color: #ABB2BF; font-style: italic }
+    .codehilite .ges { color: #ABB2BF }
+    .codehilite .gr { color: #E06C75 }
+    .codehilite .gh { color: #ABB2BF; font-weight: bold }
+    .codehilite .gi { color: #98C379 }
+    .codehilite .go { color: #E06C75 }
+    .codehilite .gp { color: #ABB2BF }
+    .codehilite .gs { color: #ABB2BF; font-weight: bold }
+    .codehilite .gu { color: #ABB2BF; font-weight: bold }
+    .codehilite .gt { color: #E06C75 }
+    .codehilite .kc { color: #E5C07B }
+    .codehilite .kd { color: #C678DD }
+    .codehilite .kn { color: #C678DD }
+    .codehilite .kp { color: #C678DD }
+    .codehilite .kr { color: #C678DD }
+    .codehilite .kt { color: #E5C07B }
+    .codehilite .ld { color: #ABB2BF }
+    .codehilite .m { color: #D19A66 }
+    .codehilite .s { color: #98C379 }
+    .codehilite .na { color: #E06C75 }
+    .codehilite .nb { color: #E5C07B }
+    .codehilite .nc { color: #E5C07B }
+    .codehilite .no { color: #E06C75 }
+    .codehilite .nd { color: #61AFEF }
+    .codehilite .ni { color: #E06C75 }
+    .codehilite .ne { color: #E06C75 }
+    .codehilite .nf { color: #61AFEF; font-weight: bold }
+    .codehilite .nl { color: #E06C75 }
+    .codehilite .nn { color: #E06C75 }
+    .codehilite .nx { color: #E06C75 }
+    .codehilite .py { color: #E06C75 }
+    .codehilite .nt { color: #E06C75 }
+    .codehilite .nv { color: #E06C75 }
+    .codehilite .ow { color: #56B6C2 }
+    .codehilite .pm { color: #ABB2BF }
+    .codehilite .w { color: #ABB2BF }
+    .codehilite .mb { color: #D19A66 }
+    .codehilite .mf { color: #D19A66 }
+    .codehilite .mh { color: #D19A66 }
+    .codehilite .mi { color: #D19A66 }
+    .codehilite .mo { color: #D19A66 }
+    .codehilite .sa { color: #98C379 }
+    .codehilite .sb { color: #98C379 }
+    .codehilite .sc { color: #98C379 }
+    .codehilite .dl { color: #98C379 }
+    .codehilite .sd { color: #98C379 }
+    .codehilite .s2 { color: #98C379 }
+    .codehilite .se { color: #98C379 }
+    .codehilite .sh { color: #98C379 }
+    .codehilite .si { color: #98C379 }
+    .codehilite .sx { color: #98C379 }
+    .codehilite .sr { color: #98C379 }
+    .codehilite .s1 { color: #98C379 }
+    .codehilite .ss { color: #98C379 }
+    .codehilite .bp { color: #E5C07B }
+    .codehilite .fm { color: #56B6C2; font-weight: bold }
+    .codehilite .vc { color: #E06C75 }
+    .codehilite .vg { color: #E06C75 }
+    .codehilite .vi { color: #E06C75 }
+    .codehilite .vm { color: #E06C75 }
+    .codehilite .il { color: #D19A66 }
+
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="rag">检索增强生成 RAG</h1>
+<blockquote>
+<p><strong>一句话</strong>：让模型答题前，先去资料库里查几页相关材料，连同问题一起塞进去，再让它作答。</p>
+</blockquote>
+<hr />
+<h2 id="_1">⚠️ 先说清楚三件事</h2>
+<p><strong>① 这是一份单章笔记，不是完整专题。</strong><br />
+RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a href="../推理框架/">推理框架/</a>、<a href="../harness评测框架/">harness评测框架/</a>、<a href="../多模态大模型/">多模态大模型/</a> 三个目录都拿它当例子或参照物。这份笔记把散落的引用收拢到一处，并补上原理。<strong>第 4 节是交叉引用汇总，想看细节请点回原章节。</strong></p>
+<p><strong>② 记号约定：</strong></p>
+<div class="codehilite"><pre><span></span><code>   ✅  = 能追到一手出处（论文表号 / 本仓库已核对过的章节）
+   ⚠️  = 我的判断、推断或估算，引用前请自行核实
+   无记号 = 教科书级通用机制，不涉及具体数字
+</code></pre></div>
+
+<p><strong>③ 时效：写于 2026 年 9 月。</strong> 第 1–3 节讲原理，过期慢；第 5 节讲 agentic RAG 的走向，过期最快。</p>
+<hr />
+<h2 id="_2">一句话地图</h2>
+<div class="codehilite"><pre><span></span><code>         你的问题
+            │
+   ┌────────▼─────────┐    ① 检索 Retrieval
+   │  资料库（你的文档） │ ──▶ 捞出最相关的几段
+   └──────────────────┘
+            │
+            ▼            ② 增强 Augmented
+   [ 捞到的段落 + 原问题 ] ──▶ 拼成一个很长的 prompt
+            │
+            ▼            ③ 生成 Generation
+        大模型作答
+</code></pre></div>
+
+<p><strong>RAG = Retrieval-Augmented Generation（检索增强生成）</strong>，名字就是这三步。</p>
+<hr />
+<h2 id="1">1. 为什么需要它</h2>
+<p>大模型有两个天生的毛病：</p>
+<ol>
+<li><strong>不知道你的私有数据</strong> —— 你公司的内部文档、你的代码库，它训练时没见过。</li>
+<li><strong>知识有截止日期</strong> —— 训练完之后发生的事，它一概不知。</li>
+</ol>
+<p><strong>类比：闭卷考试 vs 开卷考试。</strong> 模型原本闭卷答题，全靠脑子里记住的；RAG 就是允许它开卷 —— 但注意，<strong>是你替它翻好书、把那几页撕下来递过去</strong>，它自己不会翻书。（"自己会翻书"是第 5 节的 agentic RAG。）</p>
+<p>想让模型用上你的数据，一共三条路：</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>做法</th>
+<th>代价</th>
+<th>什么时候用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>重新训练 / 微调</strong></td>
+<td>拿你的数据继续训模型</td>
+<td>几十上百张卡、几天；每加一份文档就要再来一次</td>
+<td>要改变模型的<strong>能力或风格</strong></td>
+</tr>
+<tr>
+<td><strong>长上下文全塞</strong></td>
+<td>把整个文档库塞进 prompt</td>
+<td>贵且慢，且有上限；见 <a href="../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架/02-KV-Cache与显存账</a></td>
+<td>资料本来就不多</td>
+</tr>
+<tr>
+<td><strong>★ RAG</strong></td>
+<td>只塞检索到的那几段</td>
+<td>不动模型，加一份文档只要重新索引</td>
+<td><strong>要让模型知道新的/私有的事实</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 我的判断：这三条路不是竞争关系，实践中经常叠着用 —— 先微调出领域风格，再靠 RAG 供事实。</p>
+<hr />
+<h2 id="2">2. 三步怎么转</h2>
+<div class="codehilite"><pre><span></span><code>   你的问题：「我们公司的报销上限是多少？」
+        │
+        ├─① 检索（Retrieval）
+        │    拿问题去资料库里搜  →  捞出最相关的 3 段文字
+        │    （比如《员工手册》第 7 章的三个段落）
+        │
+        ├─② 增强（Augmented）
+        │    把捞到的段落 + 原问题，拼成一个【很长的 prompt】
+        │    ┌────────────────────────────────────┐
+        │    │ 参考资料：                          │
+        │    │  「差旅住宿每晚上限 800 元…」        │
+        │    │  「餐饮每日上限 150 元…」            │
+        │    │ 请根据以上资料回答：报销上限是多少？  │
+        │    └────────────────────────────────────┘
+        │
+        └─③ 生成（Generation）
+             模型读完这一大坨，吐出答案
+</code></pre></div>
+
+<p><strong>★ 注意②的形状</strong>：输入变得很长（几千个 token），输出还是很短（几百个字）。<strong>这个不对称是第 4.1 节的全部由来。</strong></p>
+<hr />
+<h2 id="3-1">3. 第①步展开：到底怎么"搜"</h2>
+<h3 id="31-chunking">3.1 先切块（chunking）</h3>
+<p>资料库不能整本书当一个单位 —— 太长了塞不进去，也不精确。要先切成<strong>块</strong>（chunk），一般几百个 token 一块。</p>
+<div class="codehilite"><pre><span></span><code>   《员工手册》80 页
+        │  切块
+        ▼
+   [块1: 入职流程…] [块2: 考勤…] … [块N: 报销标准…]
+        ⟹ 检索的单位是【块】，不是【文件】
+</code></pre></div>
+
+<p>⚠️ 切块的边界怎么定（按段落 / 按标题 / 定长 + 重叠）是工程上最容易翻车的地方之一：切碎了丢上下文，切大了不精确。</p>
+<h3 id="32">3.2 两种搜法</h3>
+<table>
+<thead>
+<tr>
+<th>搜法</th>
+<th>原理</th>
+<th>强在哪</th>
+<th>弱在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>关键词检索</strong>（如 BM25）</td>
+<td>对字面。问题里有"报销"，就找含"报销"的块</td>
+<td>精确、快、可解释</td>
+<td>换个说法就搜不到（"费用报账"）</td>
+</tr>
+<tr>
+<td><strong>向量检索</strong>（embedding）</td>
+<td>把每块文字变成一串数字，<strong>意思相近的数字也相近</strong>，找离问题最近的块</td>
+<td>能跨说法，抓语义</td>
+<td>可能召回"看着像但没关系"的块</td>
+</tr>
+<tr>
+<td><strong>混合检索</strong></td>
+<td>两个都跑，合并结果</td>
+<td>实践中的默认选择</td>
+<td>要调融合权重</td>
+</tr>
+</tbody>
+</table>
+<p><strong>embedding（嵌入向量）</strong> = 把一段文字压成一串固定长度的数字（比如 1024 个），这串数字代表它的"意思坐标"。把文字变数字这套机制，和 <a href="../数据格式和数据处理/09-Tokenizer与词表.html">数据格式和数据处理/09-Tokenizer与词表</a> 是同源的。</p>
+<h3 id="33-rerank">3.3 再重排（rerank）</h3>
+<p>检索快但粗。常见做法是<strong>两段式</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   第一段：检索  →  快速捞出 50 个候选块（要的是【别漏】）
+        │
+   第二段：rerank →  用一个更贵、更准的小模型逐个打分，
+                    只留最好的 3~5 块（要的是【别错】）
+        │
+        ▼
+     塞进 prompt
+</code></pre></div>
+
+<p>✅ rerank 是长上下文评测里的标准子任务 —— MiniMax M3 论文 Table 3 的 HELMET-128K 就有 <code>Rerank/RAG</code> 这一项（详见 <a href="../业界模型技术报告/MiniMax-M3.html">业界模型技术报告/MiniMax-M3.md</a>）。</p>
+<hr />
+<h2 id="4-rag">4. RAG 在本仓库的三个角色</h2>
+<p><strong>别串了 —— 同一个词，在三个目录里扮演三种完全不同的东西。</strong></p>
+<h3 id="41">4.1 在 <a href="../推理框架/">推理框架/</a>：它是"长输入短输出"的典型负载</h3>
+<p><a href="../推理框架/推理优化入门/10-PD分离.html">推理优化入门/10-PD分离</a> 整章拿 RAG 当例子：</p>
+<div class="codehilite"><pre><span></span><code>   输入：一份文档 + 问题 = 4096 个 token   ⟸ Prefill 要干的活
+   输出：200 个字                          ⟸ Decode 要干的活
+</code></pre></div>
+
+<p>⚠️ 该章按 roofline 粗算（Llama-3-8B、单张 H100，<strong>量级估计不是实测</strong>）：</p>
+<ul>
+<li>Prefill 那 4096 个 token ≈ <strong>165 ms</strong> —— 算力受限</li>
+<li>Decode 那 200 个字 ≈ <strong>1.4 秒</strong>（每个 token 约 7 ms）—— 访存受限</li>
+</ul>
+<p><strong>🔑 两件事的瓶颈完全不同，硬塞在一张卡上会互相拖累 —— 这就是 PD 分离（Prefill/Decode 分离）要解决的问题。</strong></p>
+<p>顺带，<a href="../推理框架/推理优化入门/08-投机解码.html">08-投机解码</a> 里说 RAG 是 <strong>n-gram 投机解码的神器</strong>：因为 RAG 的答案经常<strong>大段照抄</strong>参考资料，而原文就摆在 prompt 里，直接查表就能猜中下一个词，零成本加速。</p>
+<h3 id="42-harness">4.2 在 <a href="../harness评测框架/">harness评测框架/</a>：它是"弱脚手架"的反面教材</h3>
+<p>✅ SWE-agent 论文 Table 1，SWE-bench Lite，<strong>同一个 GPT-4 Turbo，一个字没换</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>脚手架</th>
+<th>% Resolved</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RAG（一轮盲写）</strong></td>
+<td><strong>2.67</strong></td>
+</tr>
+<tr>
+<td>Shell-only agent（能跑 shell，但界面是原生 Linux）</td>
+<td>11.00</td>
+</tr>
+<tr>
+<td>SWE-agent（专门设计的界面）</td>
+<td><strong>18.00</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 差出来的 15 个点，全是【脚手架】贡献的。
+</code></pre></div>
+
+<p><strong>为什么 RAG 只有 2.67？</strong> 因为它的流程是：关键词搜出几个文件 → 塞进 prompt → 模型一次性吐补丁 → 用正则抠出来 → 完。</p>
+<p><strong>★★ 一轮。没有工具。没有反馈。不跑测试。不知道自己改对没有。</strong></p>
+<p>详见 <a href="../harness评测框架/agent脚手架/01-两个harness不是一个东西.html">agent脚手架/01-两个harness不是一个东西</a>。</p>
+<h3 id="43">4.3 在 <a href="../多模态大模型/">多模态大模型/</a>：它是一条被看好的路线的参照物</h3>
+<p>超长视频不可能整段塞进模型，得先检索出相关的几个片段 —— <strong>这个思路和文本 RAG 是一个形状</strong>。<a href="../多模态大模型/05-位置编码与视频.html">05-位置编码与视频</a> 和 <a href="../多模态大模型/14-演进主线与开放问题.html">14-演进主线与开放问题</a> 都提到"检索路线和文本 RAG 同构"，并（⚠️ 作者判断）倾向认为检索路线会赢。</p>
+<hr />
+<h2 id="5-rag-agent">5. 天花板：RAG 不是 agent</h2>
+<div class="codehilite"><pre><span></span><code>   ★★ RAG      ：查资料 → 写答案。【一轮，不看结果】
+   ★★ agent    ：想 → 动手 → 看报错 → 再想 → 再动手。【多轮，看结果】
+</code></pre></div>
+
+<p>这是 4.2 节那 6.7 倍差距的根源。<strong>RAG 把资料递过去就撒手了，模型写错了也没有第二次机会。</strong></p>
+<p><strong>agentic RAG</strong>（⚠️ 这个方向变化很快）是把检索本身变成 agent 的一个<strong>工具</strong>：模型自己决定搜什么、要不要再搜一次、搜到的够不够。这时"翻书"的动作从<strong>你替它做</strong>变成<strong>它自己做</strong>，就跨到了 <a href="../harness评测框架/agent脚手架/README.html">agent脚手架/</a> 那一层。</p>
+<p><strong>一句话记住它的适用边界：</strong></p>
+<blockquote>
+<p><strong>RAG 擅长"答案就在某份文档里、找到就能抄"的活；不擅长"要试几次才知道对不对"的活。</strong><br />
+前者是问答、客服、文档总结；后者是改代码、跑实验 —— 那些得上 agent。</p>
+</blockquote>
+<hr />
+<h2 id="_3">附：缩写速查</h2>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>中文</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RAG</strong></td>
+<td>Retrieval-Augmented Generation</td>
+<td>检索增强生成</td>
+<td>先查资料再作答</td>
+</tr>
+<tr>
+<td><strong>chunk</strong></td>
+<td>—</td>
+<td>块</td>
+<td>资料切分后的最小检索单位</td>
+</tr>
+<tr>
+<td><strong>embedding</strong></td>
+<td>—</td>
+<td>嵌入向量</td>
+<td>把一段文字压成一串代表"意思"的数字</td>
+</tr>
+<tr>
+<td><strong>BM25</strong></td>
+<td>Best Matching 25</td>
+<td>—</td>
+<td>经典关键词检索打分算法</td>
+</tr>
+<tr>
+<td><strong>rerank</strong></td>
+<td>—</td>
+<td>重排</td>
+<td>用更准的模型对候选块二次打分</td>
+</tr>
+<tr>
+<td><strong>Prefill</strong></td>
+<td>—</td>
+<td>预填充</td>
+<td>读完输入 prompt 的阶段（算力受限）</td>
+</tr>
+<tr>
+<td><strong>Decode</strong></td>
+<td>—</td>
+<td>解码</td>
+<td>一个字一个字往外吐的阶段（访存受限）</td>
+</tr>
+<tr>
+<td><strong>PD 分离</strong></td>
+<td>Prefill-Decode Disaggregation</td>
+<td>—</td>
+<td>把两阶段拆到不同卡上跑</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<blockquote>
+<p>上一级：<a href="../README.html">仓库总目录</a><br />
+深入：<a href="../推理框架/推理优化入门/10-PD分离.html">推理框架/10-PD分离</a>｜<a href="../harness评测框架/agent脚手架/README.html">harness评测框架/agent脚手架</a>｜<a href="../多模态大模型/">多模态大模型/</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

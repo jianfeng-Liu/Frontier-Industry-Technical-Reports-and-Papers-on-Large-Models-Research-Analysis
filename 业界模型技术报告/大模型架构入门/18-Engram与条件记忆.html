@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>18 · Engram 与条件记忆：MoE 之外的第二根稀疏轴</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="17-延伸阅读.html">← 17 接下来读什么</a> ｜ <a href="README.html">目录</a> ｜ 附录 → <a href="附-速查表.html">速查表</a></p>
+</blockquote>
+<h1 id="18-engram-moe">18 · Engram 与条件记忆：MoE 之外的第二根稀疏轴</h1>
+<blockquote>
+<p><strong>这是一章加餐</strong>（2026-09 增补）。内容上它是 <a href="10-MoE.html">10 章 MoE</a> 的姊妹章——MoE 是<strong>条件计算</strong>（conditional computation），Engram 是<strong>条件记忆</strong>（conditional memory），两者是同一个问题的两种解法。读完 10 章可以直接跳到这里。</p>
+<p><strong>这一章的目标</strong>：讲清 DeepSeek-V4.1-Flash 里那个 <strong>196B 参数、却几乎不产生任何 FLOPs</strong> 的模块到底在干什么。<br />
+读完你应该能回答：一张查找表怎么可能有用？为什么必须哈希、为什么必须门控？它换来了什么、又付出了什么代价？"等效于加深模型"这个说法有多硬？</p>
+<p><strong>术语先摆这里</strong>（本教程惯例，缩写第一次出现必须给全称）：<br />
+<strong>Engram</strong> —— 论文自造的模块名，词源是神经科学的"记忆痕迹"，没有缩写展开。<br />
+<strong>n-gram</strong> —— 连续 n 个 token 组成的片段，如 3-gram = 相邻三个 token。<br />
+<strong>FLOPs</strong> —— Floating Point Operations，浮点运算次数，衡量"算了多少"。<br />
+<strong>HBM</strong> —— High Bandwidth Memory，显卡上的高带宽显存。<br />
+<strong>DRAM</strong> —— Dynamic Random Access Memory，主板上的普通内存（比 HBM 大得多、慢得多）。<br />
+<strong>PCIe</strong> —— Peripheral Component Interconnect express，显卡和主板之间的那条总线。</p>
+</blockquote>
+<hr />
+<h2 id="180">18.0 ⚠️ 先纠正一个最容易犯的错误</h2>
+<p>很多介绍（包括我最初的讲法）会说 Engram"几乎免费"。<strong>这句话是错的，或者至少是误导的。</strong></p>
+<p>"免费"描述的是<strong>代价小</strong>，不是<strong>有收益</strong>。Engram 在推理吞吐这一格上是<strong>负的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  Engram 这笔交易，必须拆成【四个独立的格子】来看：             │
+│                                                               │
+│      参数量    ↑  +196B      （V4.1 的实测配置）              │
+│      FLOPs     ≈  不涨        ★ 这才是它真正的卖点            │
+│      推理吞吐  ↓  −1.9% ~ −2.8%   ← 它是【减速】的           │
+│      模型能力  ↑  多项基准 +2 ~ +5 分                         │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>对比一下另外两条"让模型更强"的路：</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>参数量</th>
+<th>FLOPs</th>
+<th>推理吞吐</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>加层数 / 加宽（Dense）</td>
+<td>↑</td>
+<td><strong>↑↑</strong></td>
+<td><strong>↓↓</strong></td>
+<td>每 token 都要多算一遍</td>
+</tr>
+<tr>
+<td>加 MoE 专家（<a href="10-MoE.html">10 章</a>）</td>
+<td>↑↑</td>
+<td>≈ 不涨</td>
+<td>↓</td>
+<td>all-to-all 通信变贵</td>
+</tr>
+<tr>
+<td><strong>Engram</strong></td>
+<td>↑</td>
+<td><strong>≈ 不涨</strong></td>
+<td>↓ 一点点</td>
+<td>只多一次查表 + 一次 PCIe 搬运</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>Engram 是三条路里唯一一条"FLOPs 完全不涨"的</strong>。它的 −2.8% 不是算力开销，是<strong>数据搬运</strong>开销（把查到的向量从主机内存搬到显卡）。</p>
+<p>⚠️ <strong>所以：Engram 属于"能力"侧，不属于"提速"侧。</strong> V4.1-Flash 真正提速的组件是另外一批（CED、CSA2、分层稀疏索引器、FP4 主 KV cache、Single-Pass mHC、DSpark），Engram 反而是从那笔提速预算里<strong>扣掉 2.8%</strong> 的那一项。见 <a href="../DeepSeek-V4.1-Flash.html">../DeepSeek-V4.1-Flash.md</a> 第九节。</p>
+</blockquote>
+<hr />
+<h2 id="181">18.1 出发点：模型认一个人名，要烧掉六层</h2>
+<p>论文 §6.1 引了 Ghandeharioun et al. (2024) 的一个可解释性实验。用 LogitLens / PatchScope 这类工具，把模型每一层的中间状态<strong>翻译回人话</strong>，看它在读到"Diana, Princess of Wales"这串 token 时，脑子里想的是什么：✅</p>
+<div class="codehilite"><pre><span></span><code>    层 1-2   →  &quot;Wales：英国的一个组成国&quot;
+    层 3     →  &quot;Wales：欧洲的一个国家&quot;
+    层 4     →  &quot;Princess of Wales：女性君主的头衔&quot;（还没定位到人）
+    层 5     →  &quot;Princess of Wales：威尔士亲王的妻子&quot;（还是没定位到人）
+    层 6     →  ★ &quot;Diana, Princess of Wales (1961-1997)，查尔斯的第一任妻子……&quot;
+</code></pre></div>
+
+<p><strong>读一遍这张表，你会有一个很直接的感受：</strong></p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  模型花了【六层的注意力 + FFN】，                              │
+│  做的事情本质上是一次【查字典】。                              │
+│                                                               │
+│  &quot;Diana / Princess / of / Wales&quot; 这四个 token 连在一起        │
+│   → 指向一个固定的实体                                        │
+│                                                               │
+│  这是一条【静态的、和上下文无关的】事实。                       │
+│  它不需要&quot;推理&quot;，它只需要&quot;记住&quot;。                              │
+│                                                               │
+│  ★ 但今天的 Transformer 【没有查表这个原语】。                 │
+│    它只有 Attention 和 FFN，只能用【计算】去模拟【记忆】。      │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>Engram 的全部想法就一句话：</p>
+<blockquote>
+<p>🔑 <strong>给 Transformer 补上一个"查表"原语，把那些本来靠算力硬凑出来的静态模式，改成直接查出来。</strong></p>
+</blockquote>
+<p>省下来的层数和算力，让模型拿去做真正需要推理的事。</p>
+<hr />
+<h2 id="182">18.2 结构：五步</h2>
+<p>先看整体，再逐步拆。</p>
+<div class="codehilite"><pre><span></span><code>  输入 token 序列  x_1 ... x_t
+        │
+        ① tokenizer 压缩       Apple / ␣apple / APPLE  →  归成同一个 id
+        │
+        ② 取后缀 n-gram        以当前 token 结尾的 2/3/4 元组
+        │                       (&quot;princess&quot;,&quot;of&quot;,&quot;wales&quot;)
+        ③ 多头哈希 → 查表      每个元组算出 8 个不同的行号，查 8 张表
+        │                       得到一个拼起来的向量 e_t
+        │
+        ④ 上下文门控           拿主干当前的隐状态 h_t 去&quot;审一遍&quot; e_t
+        │                       算出一个 0~1 的标量 α_t
+        │
+        ⑤ 加回残差流           H ← H + α_t · (e_t 投影后的值)
+        ▼
+   继续走后面的层
+</code></pre></div>
+
+<p>第 ①②③ 步<strong>只依赖输入 token 本身</strong>，和模型算到哪一步无关——这一点后面 §18.8 会变成一个巨大的系统优势，先记住。<br />
+第 ④ 步是唯一依赖上下文的地方，也是这个模块和"普通 n-gram 查表"的本质区别。</p>
+<hr />
+<h2 id="183-1tokenizer">18.3 第①步：tokenizer 压缩</h2>
+<p>一个直接的麻烦：同一个词在 tokenizer 里有很多长相。</p>
+<div class="codehilite"><pre><span></span><code>    &quot;Apple&quot;      → id 12345
+    &quot; apple&quot;     → id 67890      （前面带空格）
+    &quot;APPLE&quot;      → id 24680
+    &quot;Apple&quot;（句首）→ 又一个 id
+</code></pre></div>
+
+<p>对"查表"来说这是纯浪费——它们指向同一个语义，却占了四个不同的地址，把表撑大了四倍，还把统计量摊薄了。</p>
+<p>Engram 的做法：定义一个<strong>满射</strong>（surjective，多对一）映射 <code>P: V → V'</code>，做 NFKC 规范化（Unicode 的一种标准化形式，把全角/半角、组合字符等归一）+ 转小写，把它们合并成同一个 id。✅</p>
+<div class="codehilite"><pre><span></span><code>    P(&quot;Apple&quot;) = P(&quot; apple&quot;) = P(&quot;APPLE&quot;) = P(&quot; Apple&quot;) = &quot;apple&quot;
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文实测：对一个 <strong>128k 词表</strong>，有效词表大小<strong>减少 23%</strong>。</p>
+<p>⚠️ 注意这是<strong>只用于查表寻址</strong>的压缩。模型正常的输入 embedding 和输出 LM head 还是用原始 tokenizer，没被改。丢掉大小写信息在"查静态模式"这件事上不要紧，在"预测下一个 token"上会要命。</p>
+</blockquote>
+<p>消融实验里，去掉这一步（<code>w/o token compress</code>）是<strong>损失最大的三个改动之一</strong>。✅</p>
+<hr />
+<h2 id="184-2-n-gram">18.4 第②步：后缀 n-gram</h2>
+<p>在位置 <code>t</code>，取<strong>以 t 结尾</strong>的 n 元组：</p>
+<div class="codehilite"><pre><span></span><code>    g_{t,n} = ( x&#39;_{t-n+1}, ..., x&#39;_{t-1}, x&#39;_t )        （x&#39; 是压缩后的 id）
+</code></pre></div>
+
+<p>对 n = 2, 3, ..., N 各取一个。V4.1 用的是 <strong>n ∈ {2, 3, 4}</strong>。✅</p>
+<div class="codehilite"><pre><span></span><code>    句子：  ... the  media  impact  of  Diana ,  Princess  of  Wales
+                                                              ↑ t
+
+    2-gram：           (&quot;of&quot;, &quot;wales&quot;)
+    3-gram：  (&quot;princess&quot;, &quot;of&quot;, &quot;wales&quot;)
+    4-gram：  (&quot;,&quot;, &quot;princess&quot;, &quot;of&quot;, &quot;wales&quot;)
+</code></pre></div>
+
+<p><strong>为什么是"后缀"而不是"窗口"？</strong><br />
+因为语言模型是因果的（causal，只能看左边）。后缀 n-gram 保证不偷看未来的 token，可以直接用在自回归生成里。</p>
+<blockquote>
+<p>⚠️ 也正因为是后缀，Engram 天然擅长的是<strong>"这个短语在这里结束了"</strong>这种模式。§18.11 的门控可视化会看到，它确实是在短语的<strong>最后一个 token</strong> 上开火。</p>
+</blockquote>
+<hr />
+<h2 id="185-3">18.5 第③步：多头哈希——表放不下怎么办</h2>
+<p>一个 3-gram 的可能组合数是 <code>V'³</code>。就算压缩后 V' ≈ 98k，也是 <code>9.4 × 10^14</code> 种。<strong>不可能给每种组合都开一行。</strong></p>
+<p>标准解法：<strong>哈希</strong>。把任意长度的元组，压成一个固定范围内的行号。</p>
+<div class="codehilite"><pre><span></span><code>    z_{t,n,k} = φ_{n,k}( g_{t,n} )        φ 是轻量的乘法-异或哈希
+    e_{t,n,k} = E_{n,k}[ z_{t,n,k} ]      去第 k 张表的第 z 行取一个向量
+</code></pre></div>
+
+<p>然后把所有阶数 n、所有头 k 的结果<strong>拼接</strong>（‖ 表示 concat）：</p>
+<div class="codehilite"><pre><span></span><code>             N     K
+    e_t  =   ‖     ‖   e_{t,n,k}
+            n=2   k=1
+</code></pre></div>
+
+<p><strong>为什么要"多头"？</strong> 因为哈希一定会撞（collision）——两个不相干的短语算出同一个行号，查出同一个向量。</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  单头：撞了就是撞了，&quot;红烧肉&quot; 和 &quot;薛定谔&quot; 拿到同一个向量。      │
+│                                                               │
+│  8 头（8 个不同的哈希函数 + 8 张不同的表）：                   │
+│      要 8 个哈希【同时】把这两个短语撞到一起，概率 ≈ 0         │
+│      → 拼起来的 e_t 仍然能把它们区分开                        │
+│                                                               │
+│  ★ 这就是 Bloom filter / count-min sketch 的老套路：          │
+│    用【多个独立哈希】把碰撞概率压到可以忽略。                   │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ V4.1 的配置：<strong>8 个哈希头</strong>，每张表约 <strong>1600 万行</strong>，而且<strong>各张表的行数取互不相同的质数</strong>。</p>
+<p>⚠️ 取质数是哈希表的标准工程手段：表长互质能让不同表的碰撞模式尽量不相关，避免"在 A 表撞了的，在 B 表也倾向于撞"。</p>
+</blockquote>
+<p><strong>numpy 伪代码</strong>（整个检索过程）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">engram_lookup</span><span class="p">(</span><span class="n">ids</span><span class="p">,</span> <span class="n">t</span><span class="p">,</span> <span class="n">tables</span><span class="p">,</span> <span class="n">orders</span><span class="o">=</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">K</span><span class="o">=</span><span class="mi">8</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;tables[n][k] 是第 n 阶、第 k 头的嵌入表，形状 [M_{n,k}, d_sub]&quot;&quot;&quot;</span>
+    <span class="n">ids</span> <span class="o">=</span> <span class="n">normalize</span><span class="p">(</span><span class="n">ids</span><span class="p">)</span>                       <span class="c1"># ① tokenizer 压缩</span>
+    <span class="n">parts</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="n">orders</span><span class="p">:</span>
+        <span class="n">gram</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">ids</span><span class="p">[</span><span class="n">t</span> <span class="o">-</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">1</span> <span class="p">:</span> <span class="n">t</span> <span class="o">+</span> <span class="mi">1</span><span class="p">])</span>   <span class="c1"># ② 后缀 n-gram</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">K</span><span class="p">):</span>
+            <span class="n">M</span> <span class="o">=</span> <span class="n">tables</span><span class="p">[</span><span class="n">n</span><span class="p">][</span><span class="n">k</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>          <span class="c1"># 表长，取质数</span>
+            <span class="n">z</span> <span class="o">=</span> <span class="n">mul_xor_hash</span><span class="p">(</span><span class="n">gram</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">k</span><span class="p">))</span> <span class="o">%</span> <span class="n">M</span>   <span class="c1"># ③ 第 k 个哈希</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">tables</span><span class="p">[</span><span class="n">n</span><span class="p">][</span><span class="n">k</span><span class="p">][</span><span class="n">z</span><span class="p">])</span>      <span class="c1">#    查一行</span>
+    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span>               <span class="c1"># e_t</span>
+</code></pre></div>
+
+<p>注意这段代码里<strong>一次矩阵乘法都没有</strong>。全是取地址 + 读内存。这就是"FLOPs ≈ 0"的来源。</p>
+<hr />
+<h2 id="186-4-key">18.6 第④步：门控——只有一个 key 的注意力</h2>
+<p>到这里为止，Engram 还只是个查字典的。<strong>但直接把 <code>e_t</code> 加进残差流是危险的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  e_t 有三个毛病：                                              │
+│                                                               │
+│  ① 它是【上下文无关】的先验。                                  │
+│     &quot;苹果&quot; 查出来的向量分不清水果和公司。                       │
+│                                                               │
+│  ② 它可能是【哈希撞出来】的垃圾。                              │
+│                                                               │
+│  ③ 大多数位置根本【没有】静态模式可查。                        │
+│     &quot;的&quot;、&quot;了&quot;、随机组合的三元组 —— 查出来是噪声。             │
+│                                                               │
+│  ★ 所以必须有个开关：让主干说了算。                            │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>做法（论文 Eq. 3–4）✅：</p>
+<div class="codehilite"><pre><span></span><code>    k_t = W_K · e_t                                  ← 把查出来的东西变成一个&quot;key&quot;
+    v_t = W_V · e_t                                  ← 和一个&quot;value&quot;
+
+              ⎛  RMSNorm(h_t)ᵀ · RMSNorm(k_t)  ⎞
+    α_t = σ ⎜ ────────────────────────────── ⎟      σ 是 sigmoid
+              ⎝              √d                ⎠
+
+    ṽ_t = α_t · v_t
+</code></pre></div>
+
+<p><strong>这个式子你其实已经见过了。</strong> 把它和 <a href="05-注意力机制.html">05 章</a> 的注意力对照：</p>
+<div class="codehilite"><pre><span></span><code>    标准注意力：  softmax( q·Kᵀ / √d ) · V        K 有 L 行（L 个 token）
+    Engram 门控： sigmoid( h·kᵀ / √d ) · v        K 只有【1 行】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>当 key 只有一个的时候，softmax 退化成 sigmoid。</strong><br />
+softmax 在多个候选之间分配权重（一行加起来 = 1）；只有一个候选时"分配"没有意义，剩下的唯一问题是"要不要"，那就是一个 0~1 的开关。</p>
+<p>所以 Engram 的门控<strong>不是新机制</strong>，它就是一次"只有一个候选的注意力"。查询是主干的 <code>h_t</code>（有上下文），被查的是 <code>k_t</code>（没上下文）。<strong>如果查出来的东西和当前上下文对不上，α_t → 0，这次查表就当没发生过。</strong></p>
+</blockquote>
+<p>这解决了上面三个毛病：语义对不上→关掉；哈希撞出垃圾→对不上→关掉；没有模式可查→查出来的东西和 h_t 无关→关掉。</p>
+<p>消融里去掉门控（<code>w/o gating</code>）同样是<strong>三个最大退化之一</strong>。✅</p>
+<hr />
+<h2 id="187-5">18.7 第⑤步：加回残差流</h2>
+<div class="codehilite"><pre><span></span><code>    H ← H + Attn(H) + MoE(H) + α_t · ( W_V · e_t )
+                                └─────────────────┘
+                                    Engram 的贡献
+</code></pre></div>
+
+<p>就是 <a href="03-残差流.html">03 章</a> 讲的那条总线，多接了一路旁支。<strong>不改变任何形状，不影响任何其他模块</strong>——这也是它能被塞进一个已有架构的原因。</p>
+<p><strong>多分支（multi-branch）</strong>：V4.1 用的 mHC（Manifold-Constrained Hyper-Connections，见 <a href="03-残差流.html">03 章</a>）把残差流拆成 M = 4 条并行的流。Engram 的做法是：✅</p>
+<div class="codehilite"><pre><span></span><code>    嵌入表          →  所有分支【共享】     （最贵的部分只存一份）
+    W_V（值投影）   →  所有分支【共享】
+    W_K（键投影）   →  每个分支【各有一个】 → 每个分支算自己的 α_t
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 这个设计有个很实际的动机：一个共享的 <code>W_V</code> 加 M 个 <code>W_K</code> 可以<strong>融合成一次 FP8 稠密矩阵乘法</strong>，对 GPU 友好。同时又保留了"不同分支对同一条记忆有不同取舍"的自由度。</p>
+<p>消融里 <code>w/o multi branch</code> 也是三个最大退化之一。✅</p>
+</blockquote>
+<hr />
+<h2 id="188-196b">18.8 系统：为什么 196B 参数能放在主机内存里</h2>
+<p>这是 Engram 和 MoE 最大的结构性差别，值得单独一节。</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  MoE 路由：   要先算出 h_t，才知道走哪几个专家                 │
+│               → 【运行时才知道地址】                          │
+│               → 必须提前把所有专家都摆在 HBM 里等着            │
+│                                                               │
+│  Engram 检索：地址只由【输入 token 序列】决定                  │
+│               → token 一定，地址就定了                        │
+│               → ★ 可以在这一层执行【之前】就把地址算出来       │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>论文管这个叫 <strong>deterministic addressing</strong>（确定性寻址）。它直接换来两件事：✅</p>
+<p><strong>训练时</strong>：表按 GPU 切片（模型并行），前向用 All-to-All 收集需要的行，反向用 All-to-All 发回梯度。总容量随卡数<strong>线性增长</strong>。</p>
+<p><strong>推理时</strong>：整张表放在<strong>主机 DRAM</strong>（比 HBM 便宜、大几十倍），需要的行<strong>异步预取</strong>。因为地址提前知道，可以在前面几层还在算的时候，就把 PCIe 搬运做完：</p>
+<div class="codehilite"><pre><span></span><code>    时间 →
+    GPU：  [ 第 0 层计算 ][ 第 1 层计算 ][ 第 2 层（Engram）]
+    PCIe：      [ 预取 e_t ........ ]  ✔ 到齐
+                └─── 被第 0~1 层的计算【挡住了】，看不见 ───┘
+</code></pre></div>
+
+<p>这就是为什么 Engram 模块<strong>必须放在靠前但不是第一层</strong>——放太靠前，前面没有足够的计算量来挡住搬运延迟；放太靠后，见下一节，效果会掉。</p>
+<blockquote>
+<p>✅ 论文还指出：n-gram 的频率服从 <strong>Zipf 分布</strong>（Zipfian distribution，少数模式占绝大多数访问）。所以可以做<strong>多级缓存</strong>：热的行缓存在 HBM，温的在 DRAM，冷的长尾放 NVMe SSD。</p>
+<p>⚠️ 但 §6.4 的实测<strong>没有</strong>用这个优化——它把<strong>所有</strong>检索都强制走 PCIe，属于最保守的下界。所以下一节那个 −2.8%，是<strong>悲观值</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="189">18.9 放在哪一层：一个真实的取舍</h2>
+<p>论文 §6.2 做了一个很干净的实验：固定 1.6B 的 Engram 预算，把它整块塞进第 1~12 层里的某一层，扫一遍。✅</p>
+<div class="codehilite"><pre><span></span><code>    3B MoE 基线                    Val Loss = 1.808
+    ────────────────────────────────────────────────
+    单块塞在第 2 层  ★ 最优         Val Loss = 1.770
+    单块塞在第 1 层                 略差
+    往深了塞（3,4,...,12）          持续变差
+    ────────────────────────────────────────────────
+    拆成两小块，放第 2 层 + 第 6 层  Val Loss = 1.768   ← 最终采用
+</code></pre></div>
+
+<p><strong>为什么早比晚好，但第 1 层又不如第 2 层？</strong> 两股力量在打架：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
+│  往【早】放的理由：                                            │
+│    静态模式的重建本来就发生在底层（§18.1 那张表：层 1-6）。     │
+│    要替它省事，就得赶在它开始费劲之前。                        │
+│                                                               │
+│  往【晚】放的理由：                                            │
+│    门控要用 h_t 当查询。第 1 层的 h_t 还没经过任何注意力，      │
+│    几乎不含上下文 → α_t 判断不准。                            │
+│                                                               │
+│  ★ 第 2 层是平衡点：已经过了一轮注意力（h_t 有上下文了），      │
+│    但还没轮到主干去硬凑那些静态模式。                          │
+│                                                               │
+│  ★ 拆成两块更好：第一块吃&quot;早&quot;的红利，第二块吃&quot;上下文准&quot;的红利。 │
+└──────────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<blockquote>
+<p>✅ 论文实测配置：Engram-27B 放在第 <strong>2</strong> 层和第 <strong>15</strong> 层。<br />
+✅ V4.1-Flash 放在第 <strong>1</strong> 层和第 <strong>14</strong> 层。<br />
+⚠️ V4.1 比论文更靠前一层，报告没解释原因。可能和它的主干层数、mHC 结构不同有关，也可能只是重新调过。</p>
+</blockquote>
+<p>另外还有一层系统上的理由：拆成两块，正好对应 §18.8 的多级缓存——两块的预取窗口可以分别安排。</p>
+<hr />
+<h2 id="1810-moe-engram">18.10 稀疏度分配：MoE 和 Engram 怎么分预算</h2>
+<p>这是论文最有价值的一节（§3），也是它敢叫"a new axis of sparsity"（一根新的稀疏轴）的底气。</p>
+<p>先定义三个量：✅</p>
+<div class="codehilite"><pre><span></span><code>    P_tot     总参数量（不含词表 embedding 和 LM head）
+    P_act     每个 token 实际激活的参数量  →  决定 FLOPs
+    P_sparse  = P_tot − P_act
+              ★ &quot;不花算力的参数预算&quot;：没被选中的专家 + 没被查到的嵌入行
+</code></pre></div>
+
+<p>然后问：<strong>这笔 P_sparse，该分给 MoE 还是分给 Engram？</strong></p>
+<div class="codehilite"><pre><span></span><code>    分配比 ρ ∈ [0,1]：
+        P_MoE     = ρ · P_sparse
+        P_Engram  = (1 − ρ) · P_sparse
+
+        ρ = 1     →  纯 MoE（今天所有模型的做法）
+        ρ = 0     →  纯 Engram
+</code></pre></div>
+
+<p>固定 <code>P_tot</code> 和 <code>P_act</code>（所以<strong>参数量相同、FLOPs 也相同</strong>），只调 ρ，扫一遍：</p>
+<div class="codehilite"><pre><span></span><code>   Val Loss
+      │
+  1.725│●  ρ=100%（纯 MoE，1.7248）
+      │ ╲
+      │  ╲
+      │   ╲___
+  1.711│       ●___●  ★ ρ ≈ 75~80% 最优（1.7109）
+      │      ╱
+      │  ___╱
+      │ ╱                        ← ρ 再小，推理能力开始崩
+      └──┬────┬────┬────┬────┬──→  ρ
+        40%  60%  80%  100%
+</code></pre></div>
+
+<p>三个结论，每一条都值得单独记住：✅</p>
+<div class="codehilite"><pre><span></span><code>① 纯 MoE 【不是最优的】。
+   把 20~25% 的稀疏预算挪给 Engram，loss 更低（Δ = 0.0139）。
+
+② 挪得很狠也不塌。
+   ρ 降到 40%（专家从 106 个砍到 46 个），性能仍然【追平】纯 MoE。
+
+③ 最优点很稳。
+   2e20 和 6e20 两个算力量级下，最优 ρ 都在 75~80%。
+</code></pre></div>
+
+<p><strong>这条 U 形曲线的两端在说什么：</strong></p>
+<div class="codehilite"><pre><span></span><code>   ρ → 100%（纯 MoE）：  没有专门的记忆，只能用深度和算力去【重建】静态模式  → 浪费
+   ρ → 0%（纯 Engram）： 没有条件计算，需要动态推理的任务垮掉  → 记忆替代不了计算
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>记忆和计算是互补的两根轴，不是互相替代。</strong> 这是全篇论文的核心主张，U 形曲线是它的直接证据。</p>
+</blockquote>
+<p>另一个方向的实验（§3.2，"无限内存"）：固定主干，只把嵌入槽位从 2.58×10⁵ 扫到 1.0×10⁷（加了约 13B 参数），loss 在 log 坐标下<strong>是一条直线</strong>——严格的幂律。✅ 也就是说 Engram 提供了一个<strong>可预测的、不花算力的</strong>扩展旋钮。</p>
+<hr />
+<h2 id="1811">18.11 它到底带来了什么：数字</h2>
+<p>论文 §4 的主实验很规矩：<strong>同参数量 + 同激活参数量 + 同数据 + 同训练步数</strong>，只把 72 个专家砍到 55 个，省下的参数换成 5.7B 的 Engram（ρ = 74.3%）。✅</p>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>MoE-27B</th>
+<th>Engram-27B</th>
+<th>Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pile (loss ↓)</td>
+<td>1.960</td>
+<td>1.950</td>
+<td>−0.010</td>
+</tr>
+<tr>
+<td>MMLU</td>
+<td>57.4</td>
+<td>60.4</td>
+<td><strong>+3.0</strong></td>
+</tr>
+<tr>
+<td>CMMLU</td>
+<td>57.9</td>
+<td>61.9</td>
+<td><strong>+4.0</strong></td>
+</tr>
+<tr>
+<td><strong>BBH</strong></td>
+<td>50.9</td>
+<td>55.9</td>
+<td><strong>★ +5.0</strong></td>
+</tr>
+<tr>
+<td><strong>ARC-Challenge</strong></td>
+<td>70.1</td>
+<td>73.8</td>
+<td><strong>★ +3.7</strong></td>
+</tr>
+<tr>
+<td>DROP</td>
+<td>55.7</td>
+<td>59.0</td>
+<td>+3.3</td>
+</tr>
+<tr>
+<td>HumanEval</td>
+<td>37.8</td>
+<td>40.8</td>
+<td>+3.0</td>
+</tr>
+<tr>
+<td>GSM8K</td>
+<td>58.4</td>
+<td>60.6</td>
+<td>+2.2</td>
+</tr>
+<tr>
+<td>MATH</td>
+<td>28.3</td>
+<td>30.7</td>
+<td>+2.4</td>
+</tr>
+<tr>
+<td>TriviaQA (EM)</td>
+<td>48.8</td>
+<td>50.7</td>
+<td>+1.9</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⭐ <strong>最反直觉的一点</strong>：涨得最多的<strong>不是知识题</strong>，是<strong>推理题</strong>（BBH +5.0、ARC-Challenge +3.7），连代码和数学也涨了。</p>
+<p>一张查找表，为什么能提升推理？论文的解释就是 §18.1 那件事——<strong>把底层用来拼凑静态模式的算力省下来了，主干可以拿去做别的</strong>。TriviaQA（纯记忆题）只涨 1.9，反倒是涨得最少的之一。</p>
+</blockquote>
+<p><strong>长上下文（§5，RULER 32k）</strong> 更夸张：✅</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>MoE-27B (50k 步)</th>
+<th>Engram-27B (46k 步，<strong>同 loss</strong>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Multi-Query NIAH</td>
+<td>84.2</td>
+<td><strong>97.0</strong></td>
+</tr>
+<tr>
+<td>多跳变量追踪 VT</td>
+<td>77.0</td>
+<td><strong>87.2</strong></td>
+</tr>
+<tr>
+<td>高频词抽取 FWE</td>
+<td>73.0</td>
+<td><strong>98.6</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ 这里的对照做得很讲究：Engram-27B 取的是<strong>预训练 loss 和满训 MoE 相同</strong>的那个中间检查点（46k 步 vs 50k 步），所以差异只能归因于架构，不能归因于"底座更强"。</p>
+<p>论文的解释：Engram 把<strong>局部依赖</strong>的建模卸载掉了，注意力的容量就腾出来给<strong>全局上下文</strong>了。</p>
+</blockquote>
+<hr />
+<h2 id="1812">18.12 它到底付出了什么：也要摆数字</h2>
+<h3 id="1-64table-4">① 吞吐是负的（§6.4，Table 4）✅</h3>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>吞吐 (tok/s)</th>
+<th>变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4B-Dense 基线</td>
+<td>9,031.62</td>
+<td>—</td>
+</tr>
+<tr>
+<td>+ 100B Engram（卸载到主机内存）</td>
+<td>8,858.28</td>
+<td><strong>−1.9%</strong></td>
+</tr>
+<tr>
+<td>8B-Dense 基线</td>
+<td>6,315.52</td>
+<td>—</td>
+</tr>
+<tr>
+<td>+ 100B Engram（卸载到主机内存）</td>
+<td>6,140.02</td>
+<td><strong>−2.8%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>测试条件：NVIDIA H800，512 条序列，长度 Uniform(100, 1024)，100B 的 Engram 层塞在第 2 个 Transformer block，推理框架是 nano-vLLM。</p>
+<blockquote>
+<p>⚠️ <strong>这 2.8% 是 PCIe 搬运，不是计算。</strong> 而且如 §18.8 所说，这个实验强制所有检索都走 PCIe，没用 Zipf 缓存，是<strong>保守下界</strong>——真实系统里应该更小。</p>
+<p>⚠️ 但"更小"不等于"零"，更不等于"提速"。<strong>任何把 Engram 归到"推理加速技术"那一栏的说法都是错的。</strong></p>
+</blockquote>
+<h3 id="2-63">② 它承担了知识，也就成了单点（§6.3）✅</h3>
+<p>论文做了个压力测试：推理时<strong>把 Engram 的输出整个掐掉</strong>，主干不变，看还剩多少：</p>
+<div class="codehilite"><pre><span></span><code>    事实知识类：
+        TriviaQA        只剩 29%   ← 塌了
+        PopQA           只剩 44%
+        TriviaQA-ZH     只剩 44%
+
+    阅读理解类：
+        C3              还有 93%   ← 几乎没事
+        RACE-Middle     还有 89%
+        DROP            还有 81%
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>一个非常干净的功能分工</strong>：Engram 是<strong>参数化知识的主仓库</strong>，注意力主干负责<strong>上下文里的东西</strong>。掐掉记忆，模型立刻"失忆"，但"看着材料回答问题"的能力还在。</p>
+<p>⚠️ 这个实验有训练-推理不一致的问题（模型训的时候有 Engram，测的时候没有），论文自己也承认，所以只挑了信噪比最高的两端来分析。别把中间那些 60~80% 的数字当精确结论。</p>
+</blockquote>
+<h3 id="3">③ "等效于加深模型"——这个说法有多硬</h3>
+<p>论文 §6.1 用两个可解释性工具论证 Engram "effectively increases the model's depth"：✅</p>
+<ul>
+<li><strong>LogitLens</strong>：把每层的中间状态用最终的 LM head 投影出来，算它和最终输出分布的 KL 散度。Engram 版本在<strong>早期层</strong>的 KL 明显更低 → 更早"想清楚"。</li>
+<li><strong>CKA</strong>（Centered Kernel Alignment，中心化核对齐，一种比较两组表示相似度的指标）：Engram-27B 的第 5 层，表示上最接近 MoE 基线的<strong>第 12 层</strong>。热力图的高相似对角线整体<strong>向上偏移</strong>。</li>
+</ul>
+<blockquote>
+<p>⚠️ <strong>这是我要给这一节打的最大一个问号。</strong><br />
+LogitLens 和 CKA 都是<strong>观察性</strong>证据，说明"表示看起来像更深的层"。它<strong>不等于</strong>一个受控实验——论文<strong>没有</strong>做"Engram 版本砍掉 k 层、分数仍然打平"这种直接验证。</p>
+<p>所以"等效加深"目前应该读作：<strong>一个有可解释性证据支持的、合理的解释</strong>，而不是一个已经量化的结论。真要说"能省几层"，现在没有数字。</p>
+</blockquote>
+<hr />
+<h2 id="1813">18.13 挂回五家：它现在在哪</h2>
+<table>
+<thead>
+<tr>
+<th>家</th>
+<th>用了吗</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>✗</td>
+<td>Engram 是独立论文（arXiv:2601.07372），<strong>没有进 V4</strong>。见 <a href="../DeepSeek-V4.html">../DeepSeek-V4.md</a> §2.9</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4.1-Flash</strong></td>
+<td>⭐ ✅ <strong>用了</strong></td>
+<td>196B 参数，第 1 和第 14 层，n ∈ {2,3,4}，8 头，每阶总维度 2048，每表约 1600 万行（质数），嵌入表和 K/V 投影全 FP8</td>
+</tr>
+<tr>
+<td>Kimi K3</td>
+<td>✗</td>
+<td>报告里没有对应模块</td>
+</tr>
+<tr>
+<td>GLM-5.x</td>
+<td>✗</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>MiniMax-M3</td>
+<td>✗</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>openPangu</td>
+<td>✗</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<p><strong>V4.1 相比原论文的两处改动</strong> ✅：<br />
+1. <strong>去掉了短因果卷积</strong>——论文消融里这一项本来就"影响很小"（<code>w/o short conv</code> 几乎不掉），去掉合理。<br />
+2. <strong>优化器从 Adam 换成动量 + Sinkhorn 平衡</strong>（γ=0.18 / K=11 / τ=1e-3）。见 <a href="13-优化器与Muon.html">13 章</a>。</p>
+<p><strong>参数量能对上吗？</strong> 自己算一遍：</p>
+<div class="codehilite"><pre><span></span><code>    2 个模块 × 8 个哈希头 × 3 个阶数(n=2,3,4)  =  48 张表
+    每张表 ≈ 1600 万行
+    每行维度 = 2048 / 8 = 256
+
+    48 × 16e6 × 256  =  1.966e11  ≈  196B    ✔ 和报告一致
+</code></pre></div>
+
+<blockquote>
+<p>✅ 这个数和 DeepSeek-V4.1-Flash 报告给出的 196B 对得上。<br />
+⚠️ 其中"每行维度 = 每阶总维度 / 头数"是我的推断（拼接式多头的标准做法），报告没有逐字写明。</p>
+</blockquote>
+<hr />
+<h2 id="1814-moe">18.14 和 MoE 的对照（一张表收口）</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>MoE</strong>（<a href="10-MoE.html">10 章</a>）</th>
+<th><strong>Engram</strong>（本章）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>中文叫法</td>
+<td>条件<strong>计算</strong></td>
+<td>条件<strong>记忆</strong></td>
+</tr>
+<tr>
+<td>稀疏的是什么</td>
+<td>哪几个专家被算</td>
+<td>哪几行嵌入被查</td>
+</tr>
+<tr>
+<td>地址什么时候知道</td>
+<td>运行时（要先算 h_t）</td>
+<td>⭐ <strong>输入一给定就知道</strong></td>
+</tr>
+<tr>
+<td>能不能卸载到主机内存</td>
+<td>很难</td>
+<td>⭐ <strong>可以</strong>（靠确定性寻址预取）</td>
+</tr>
+<tr>
+<td>每 token 的 FLOPs</td>
+<td>有（k 个专家的前向）</td>
+<td>≈ 0（只有取址 + 一次小投影）</td>
+</tr>
+<tr>
+<td>主要成本</td>
+<td>all-to-all 通信</td>
+<td>PCIe 搬运</td>
+</tr>
+<tr>
+<td>负载均衡问题</td>
+<td>★ 严重，要专门治</td>
+<td>哈希天然均匀，靠多头压碰撞</td>
+</tr>
+<tr>
+<td>擅长</td>
+<td>动态、依赖上下文的推理</td>
+<td>静态、和上下文无关的模式</td>
+</tr>
+<tr>
+<td>单独用行不行</td>
+<td>行（今天都这么干）</td>
+<td>不行（ρ→0 时推理垮掉）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>最优解是混合</strong>：把 20~25% 的稀疏预算给记忆，剩下给计算。</p>
+</blockquote>
+<hr />
+<h2 id="1815">18.15 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>    ① Engram 给 Transformer 补了一个它一直没有的原语：【查表】。
+      模型认出 &quot;Diana, Princess of Wales&quot; 本来要烧六层，
+      现在可以查出来。                              → §18.1
+
+    ② 五步：tokenizer 压缩 → 后缀 n-gram → 多头哈希查表
+            → 上下文门控 → 加回残差流。
+      前三步不依赖上下文，第四步才依赖。            → §18.2
+
+    ③ ★ 门控就是【只有一个 key 的注意力】。
+      softmax 在唯一候选上退化成 sigmoid。
+      查出来的东西和上下文对不上，α_t → 0，当没查过。→ §18.6
+
+    ④ ★★ 地址只由输入 token 决定（确定性寻址）。
+      这一条换来了：表可以放主机内存 + 异步预取藏在
+      前面几层的计算里。这是 MoE 做不到的。          → §18.8
+
+    ⑤ 放在第 2 层最好，拆成两块（第 2 + 第 6）更好。
+      早放能替主干省事，但太早门控又判断不准。       → §18.9
+
+    ⑥ ★★ U 形分配律：纯 MoE 不是最优。
+      把 20~25% 的稀疏预算挪给记忆，loss 最低；
+      挪走 60%（ρ=40%，专家 106→46）都还能追平。
+      记忆和计算互补，不互相替代。                    → §18.10
+
+    ⑦ 同参数量同 FLOPs 下，涨得最多的是【推理题】
+      （BBH +5.0、ARC-C +3.7），不是知识题。
+      长上下文 Multi-Query NIAH 84.2 → 97.0。       → §18.11
+
+    ⑧ ⚠️ 代价：推理吞吐【掉】1.9% ~ 2.8%（PCIe 搬运）。
+      Engram 是【能力】技术，不是【提速】技术。
+      任何把它归到加速那一栏的说法都是错的。         → §18.0 / §18.12
+
+    ⑨ ⚠️ &quot;等效于加深模型&quot; 目前只有 LogitLens + CKA 这类
+      观察性证据，没有&quot;砍掉 k 层仍打平&quot;的受控实验。
+      当解释读，别当结论引用。                       → §18.12
+
+    ⑩ 五家里目前只有 DeepSeek-V4.1-Flash 用了（196B，
+      第 1 和第 14 层）。V4 没用。                   → §18.13
+</code></pre></div>
+
+<p><strong>回到 <a href="15-五家总装图.html">15 章的总装图</a></strong>：Engram 是那张图上<strong>第 ⑭ 个可改的位置</strong>——一条从残差流旁边接出去、通向一张巨大查找表的支路。它是这一代架构里，除了注意力和 FFN 之外，<strong>第三种能吃掉参数预算的结构</strong>。</p>
+<hr />
+<blockquote>
+<p><a href="17-延伸阅读.html">← 17 接下来读什么</a> ｜ <a href="README.html">目录</a> ｜ 附录 → <a href="附-速查表.html">速查表</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

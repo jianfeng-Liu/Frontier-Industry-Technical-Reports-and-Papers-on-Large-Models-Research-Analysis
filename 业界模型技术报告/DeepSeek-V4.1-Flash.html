@@ -616,9 +616,57 @@ Bounded ： 只跑         n_win =      128 个 token     ← 40 倍差距
 <blockquote>
 <p>⚠️ 我在报告出来前只凭 config.json 估算 Engram 约 197B 参数，报告给的是 <strong>196B</strong> —— 估得很准，但现在该用官方数字。</p>
 </blockquote>
-<h3 id="_14">为什么它不拖慢推理（很巧妙）✅</h3>
-<p><strong>n-gram 的地址只取决于输入 token 序列本身</strong> —— 不依赖任何中间计算结果。所以<strong>在模型开始算之前就能知道要查哪些格子</strong>，可以用后台 RDMA 从宿主内存预取，第一个模块的预取<strong>与第一个 Transformer 块的计算重叠</strong>，等于完全免费。</p>
-<p>报告称之为 <strong>deterministic addressing（确定性寻址）</strong> ✅。</p>
+<h3 id="_14">⭐ 它到底换了什么：一笔要拆成四格看的交易</h3>
+<p>这一节我最初写成了「为什么它不拖慢推理」，<strong>那个标题是错的</strong>。Engram 是<strong>拖慢</strong>推理的，只是拖得很少。把它的账拆开：</p>
+<div class="codehilite"><pre><span></span><code>    参数量    ↑  +196B
+    FLOPs     ≈  不涨          ★ 这才是它真正的卖点
+    推理吞吐  ↓  −1.9% ~ −2.8%   ← 它是【减速】的
+    模型能力  ↑
+</code></pre></div>
+
+<p>Engram 论文 §6.4 Table 4 的实测（NVIDIA H800，512 条序列，长度 Uniform(100,1024)，100B 的 Engram 层塞在第 2 个 Transformer 块，推理框架 nano-vLLM）✅：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>吞吐 (tok/s)</th>
+<th>变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4B-Dense 基线</td>
+<td>9,031.62</td>
+<td>—</td>
+</tr>
+<tr>
+<td>+ 100B Engram（卸载到主机内存）</td>
+<td>8,858.28</td>
+<td><strong>−1.9%</strong></td>
+</tr>
+<tr>
+<td>8B-Dense 基线</td>
+<td>6,315.52</td>
+<td>—</td>
+</tr>
+<tr>
+<td>+ 100B Engram（卸载到主机内存）</td>
+<td>6,140.02</td>
+<td><strong>−2.8%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>必须和 V4.1 真正的提速组件分开算。</strong> 这一版报告里让模型变快的是 CED、CSA2、分层稀疏索引器、FP4 主 KV cache、Single-Pass mHC、DSpark。<strong>Engram 不在其中</strong>——它是从那笔提速预算里<strong>扣掉 2.8%</strong> 的那一项，买回来的是能力。</p>
+<p>⚠️ 反过来说，它也是三条「让模型更强」的路里<strong>唯一一条 FLOPs 完全不涨</strong>的：加层数/加宽是 FLOPs ↑↑、吞吐 ↓↓；加 MoE 专家是 FLOPs ≈ 不涨、但 all-to-all 通信变贵；Engram 只多一次查表 + 一次 PCIe 搬运。</p>
+</blockquote>
+<h3 id="2">为什么代价能压到 2% 量级 ✅</h3>
+<p><strong>n-gram 的地址只取决于输入 token 序列本身</strong> —— 不依赖任何中间计算结果。所以<strong>在模型开始算之前就能知道要查哪些格子</strong>，可以从宿主内存<strong>异步预取</strong>，第一个模块的预取<strong>被前面 Transformer 块的计算挡住</strong>，大部分搬运延迟看不见。</p>
+<p>报告称之为 <strong>deterministic addressing（确定性寻址）</strong> ✅。这是 Engram 相对 MoE 的结构性优势：MoE 要先算出隐状态才知道走哪个专家，地址是运行时才知道的，没法预取，所以专家必须常驻显存。</p>
+<blockquote>
+<p>⚠️ 论文那个 −2.8% 还是<strong>保守下界</strong>：该实验强制<strong>所有</strong>检索都走 PCIe，没有用 §2.5 设计的 Zipf 局部性缓存（热的 n-gram 留在 HBM）。真实系统里应该更小——<strong>但更小不等于零，更不等于提速</strong>。</p>
+<p>📖 这个模块的完整原理（tokenizer 压缩 / 后缀 n-gram / 多头哈希 / 门控为什么是「只有一个 key 的注意力」/ MoE 与 Engram 的 U 形预算分配律）见 <a href="大模型架构入门/18-Engram与条件记忆.html">大模型架构入门/18-Engram与条件记忆.md</a>。</p>
+</blockquote>
 <h3 id="_15">相比原版的两处改动 ✅</h3>
 <ol>
 <li><strong>去掉短因果卷积</strong> —— 收益不值得推理栈的复杂度。</li>

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 · FlashAttention 全系：序列长度从 4K 到 128K 的关键</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="04-flashattention-4k-128k">04 · FlashAttention 全系：序列长度从 4K 到 128K 的关键</h1>
+<blockquote>
+<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM 分块）</a><br />
+<strong>目标</strong>：彻底搞懂 FlashAttention 三代的算法原理和工程实现，以及为什么它让长序列训练变得可行。</p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>在线 Softmax</strong>（Online Softmax）—— 边扫描输入边维护最大值和归一化分母，不需要提前看到全部数据就能计算 Softmax，是 FlashAttention 的数学基础。<br />
+<strong>KV 分块</strong>（KV Tiling）—— 把 K、V 矩阵切成小块逐块放进 SRAM，避免把 N×N 的注意力矩阵写入 HBM。<br />
+<strong>Softmax 重缩放</strong>（Softmax Rescaling）—— 每次处理新的 KV 块时，用更新后的统计量修正之前的输出累加值，保证最终结果等价于一次性计算全量 Softmax。<br />
+<strong>Warpgroup MMA</strong>（Warp 组矩阵乘累加）—— H100 Hopper 架构引入的 4 个 Warp 协作做一次 MMA 的机制，Tensor Core 吞吐翻倍。<br />
+<strong>GQA</strong>（Grouped Query Attention，分组查询注意力）—— 多个 Query head 共享一组 K/V head，减少 KV Cache 大小，FA2 原生支持。<br />
+<strong>重计算</strong>（Recomputation）—— 反向传播时不保存注意力矩阵，而是重新计算，用计算换显存，使训练显存从 O(N²) 降至 O(N)。</p>
+<hr />
+<h2 id="41-attention">4.1 朴素 Attention 的内存问题</h2>
+<p>标准 Scaled Dot-Product Attention 的计算公式：</p>
+<div class="codehilite"><pre><span></span><code>O = softmax(Q K^T / √d) · V
+
+Q: (B, H, N, d)   ← N 是序列长度，d 是 head dimension
+K: (B, H, N, d)
+V: (B, H, N, d)
+O: (B, H, N, d)   ← 输出
+</code></pre></div>
+
+<p>朴素实现的内存开销：</p>
+<div class="codehilite"><pre><span></span><code>中间矩阵 S = Q K^T / √d：形状 (B, H, N, N)
+  N=8192, H=32, B=1, FP16：
+  8192 × 8192 × 32 × 2 Bytes = 4 GB
+
+  N=32768（32K 上下文）：
+  32768² × 32 × 2 ≈ 64 GB   ← 超过 H100 的 80 GB 显存！
+</code></pre></div>
+
+<p>这是长序列训练/推理的根本障碍。</p>
+<hr />
+<h2 id="42-softmax">4.2 在线 Softmax：分块的数学基础</h2>
+<p>标准 Softmax 需要两轮扫描：第一轮求最大值 m，第二轮求 <code>exp(x - m)</code> 的和 ℓ，然后才能算每个元素的值。这迫使朴素实现把整个 N×N 矩阵写进 HBM。</p>
+<p><strong>在线 Softmax</strong> 用一轮扫描同时维护 m 和 ℓ：</p>
+<div class="codehilite"><pre><span></span><code>初始状态：m = -∞, ℓ = 0, O = 0
+
+处理第 j 个块 S_j（大小 Bq × Bkv）：
+  1. 计算这个块里的局部最大值：m_j = max(S_j)
+  2. 更新全局最大值：m_new = max(m, m_j)
+  3. 更新归一化分母：
+     ℓ_new = ℓ × exp(m - m_new) + sum(exp(S_j - m_new))
+              ↑                    ↑
+         旧统计量的修正项      新块的贡献
+  4. 更新输出累加值：
+     O_new = O × (ℓ × exp(m - m_new) / ℓ_new) + exp(S_j - m_new) × V_j / ℓ_new
+              ↑ 对之前累加的结果做重缩放            ↑ 加入新块的贡献
+
+  m ← m_new, ℓ ← ℓ_new, O ← O_new
+
+最终 O 就是正确的 softmax(QK^T)V
+</code></pre></div>
+
+<p><strong>关键洞察</strong>：每次引入新块时，用 <code>exp(m_old - m_new)</code> 因子修正之前的 O，这等价于对之前的 Softmax 结果做了"重新归一化"。数学上可以证明最终结果与一次性计算整个序列的 Softmax 完全等价。</p>
+<hr />
+<h2 id="43-flashattention-1fa12022">4.3 FlashAttention-1（FA1，2022）</h2>
+<p><strong>论文</strong>：Dao et al., "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"</p>
+<h3 id="_1">算法框架</h3>
+<div class="codehilite"><pre><span></span><code>FlashAttention Forward Pass：
+
+输入：Q, K, V ∈ (N, d)（省略 batch 和 head 维）
+输出：O ∈ (N, d)
+
+按行分块 Q：每块大小 Br = min(ceil(M/4d), d)   （M = SRAM 大小）
+按列分块 K, V：每块大小 Bc = min(ceil(M/4d), d)
+
+for i = 1 to ceil(N/Br):         # 外循环：Q 的块
+    加载 Q_i ∈ (Br, d) 到 SRAM
+    初始化 O_i = 0, ℓ_i = 0, m_i = -∞
+
+    for j = 1 to ceil(N/Bc):     # 内循环：KV 的块
+        加载 K_j, V_j ∈ (Bc, d) 到 SRAM
+        S_ij = Q_i K_j^T / √d     # (Br, Bc)，留在 SRAM
+
+        # 在线 Softmax 更新（如上节所述）
+        m_ij = rowmax(S_ij)
+        P_ij = exp(S_ij - m_ij)
+        ℓ_ij = rowsum(P_ij)
+
+        m_i_new = max(m_i, m_ij)
+        ℓ_i_new = exp(m_i - m_i_new) × ℓ_i + exp(m_ij - m_i_new) × ℓ_ij
+        O_i ← (exp(m_i - m_i_new) × ℓ_i × O_i + exp(m_ij - m_i_new) × P_ij V_j) / ℓ_i_new
+
+        更新 m_i ← m_i_new, ℓ_i ← ℓ_i_new
+
+    写回 O_i 到 HBM（每个 Q 块只写一次）
+</code></pre></div>
+
+<h3 id="fa1-io">FA1 的 IO 复杂度</h3>
+<div class="codehilite"><pre><span></span><code>朴素 Attention：
+  读 Q, K, V：3 × N × d × 2 Bytes
+  写读 S (N×N)：2 × N² × 2 Bytes   ← 主要开销
+  总计 ≈ O(N²d)
+
+FlashAttention-1：
+  每次内循环读 K_j, V_j，外循环 ceil(N/Br) 次，共读 O(N²d/M) 次 K,V
+  但 SRAM 足够大时，实际 HBM 访问 ≈ O(Nd²/M) × ... 
+  简化：HBM IO 从 O(N²) 降到 O(N²d/√M)
+
+  N=8192, d=128, M=50MB（SRAM）：HBM IO 减少约 9×
+</code></pre></div>
+
+<h3 id="fa1">FA1 的实现特点</h3>
+<ul>
+<li>用 CUDA 手写，利用共享内存精细控制数据布局</li>
+<li>前向传播：不保存 Softmax 中间结果（N×N 的注意力矩阵）</li>
+<li>反向传播：需要重新计算注意力矩阵（Recomputation），显存换算力</li>
+<li>支持 causal mask（自回归掩码）</li>
+</ul>
+<hr />
+<h2 id="44-flashattention-2fa22023">4.4 FlashAttention-2（FA2，2023）</h2>
+<p><strong>论文</strong>：Dao, "FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning"</p>
+<p>FA1 已经解决了内存问题，但 GPU 利用率还不够高。FA2 针对以下三个点做了优化：</p>
+<h3 id="_2">优化一：减少非矩阵乘运算量</h3>
+<p>FA1 中在线 Softmax 的更新公式包含多个逐元素操作（exp、除法、缩放），这些都是 CUDA Core 操作，Tensor Core 发挥不了作用。</p>
+<p>FA2 重新推导了更新公式，把中间步骤的浮点运算量减少了约 2 倍。具体地，把对 O 的反复缩放合并到最后统一做一次除法，减少了每个 inner loop 里的操作数。</p>
+<h3 id="_3">优化二：改变并行化策略</h3>
+<p>FA1：外循环（Q 块）并行，内循环（KV 块）串行。<br />
+问题：对于短序列，Q 块数量少，无法占满所有 SM。</p>
+<p>FA2：在 head 维度 + Q 块 + KV 块 三个维度上都并行。不同 Warp 处理不同的 KV 块，用 reduction 汇总。</p>
+<div class="codehilite"><pre><span></span><code>FA1 并行：每个 Block 独立处理一个 (batch, head, Q_tile) 三元组
+FA2 并行：在此基础上，Block 内部的 Warp 进一步分工处理不同 KV 块
+</code></pre></div>
+
+<p>结果：GPU 利用率提升，序列越短收益越明显。</p>
+<h3 id="gqa-mqa">优化三：原生支持 GQA / MQA</h3>
+<p><strong>GQA</strong>（Grouped Query Attention，分组查询注意力）：多个 Q head 共享一组 K/V head。<br />
+<strong>MQA</strong>（Multi-Query Attention）：所有 Q head 共享同一个 K/V head。</p>
+<p>FA2 在内核里直接处理了 head 数不匹配的情况，不需要在调用前做显式的 K/V 广播（broadcast），节省了显存和带宽。</p>
+<h3 id="fa2-h100bf16">FA2 实测效果（H100，BF16）</h3>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>FA2</th>
+<th>朴素 Attention</th>
+<th>提升</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N=2048, H=32, d=128</td>
+<td>180 TFLOPS</td>
+<td>45 TFLOPS</td>
+<td>4×</td>
+</tr>
+<tr>
+<td>N=8192, H=32, d=128</td>
+<td>330 TFLOPS</td>
+<td>18 TFLOPS</td>
+<td>18×</td>
+</tr>
+<tr>
+<td>N=32768, H=32, d=128</td>
+<td>380 TFLOPS</td>
+<td>OOM</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ FA2 是目前最广泛使用的版本，PyTorch 2.0+ 的 <code>F.scaled_dot_product_attention</code> 在检测到支持时会自动调用 FA2 的 CUDA 实现。</p>
+</blockquote>
+<hr />
+<h2 id="45-flashattention-3fa32024">4.5 FlashAttention-3（FA3，2024）</h2>
+<p><strong>论文</strong>：Shah et al., "FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision"</p>
+<p>FA2 在 A100 上表现优秀，但在 H100 的 Hopper 架构上还没充分利用新硬件特性。FA3 专门针对 H100 重写。</p>
+<h3 id="h100">H100 的两个新硬件特性</h3>
+<p><strong>1. Warpgroup MMA（wgmma）指令</strong></p>
+<p>H100 引入了 Warpgroup 级别的矩阵乘累加指令：4 个 Warp（128 个线程）协作完成一次大型 MMA。相比 FA2 使用的单 Warp MMA，Warpgroup MMA 的吞吐是其 2 倍以上。</p>
+<p>FA3 把所有矩阵乘换成了 <code>wgmma</code> 指令，这是性能提升的最大来源。</p>
+<p><strong>2. TMA（Tensor Memory Accelerator）</strong></p>
+<p>H100 新增了硬件单元 TMA，专门负责 HBM → SRAM 的数据搬运，完全不占用计算流水线（比 FA2 里的 <code>cp.async</code> 更彻底）。</p>
+<p>FA3 用 TMA 做所有数据加载，让加载和矩阵乘真正<strong>流水线化</strong>：</p>
+<div class="codehilite"><pre><span></span><code>时间 →
+  加载 K_j+1, V_j+1:  [────TMA异步────]
+  计算 S_j, P_j V_j:          [────wgmma────]
+  两者完全重叠，互不干扰
+</code></pre></div>
+
+<h3 id="fa3-fa2-warp">FA3 解决了 FA2 的"单 Warp 低效"问题</h3>
+<p>FA2 用单 Warp MMA，但 Softmax 的非矩阵乘操作（exp、max、sum）在 CUDA Core 上运行，而且和矩阵乘是串行的：</p>
+<div class="codehilite"><pre><span></span><code>FA2：[矩阵乘 QK^T][等待][Softmax 操作][等待][矩阵乘 PV][等待]...
+FA3：[wgmma QK^T ─────][Softmax ──────][wgmma PV ──────]...
+                              ↑
+               wgmma 和 Softmax 流水线重叠（不同硬件单元）
+</code></pre></div>
+
+<h3 id="fa3-h100-sxm5fp16">FA3 实测效果（H100 SXM5，FP16）</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>FA3</th>
+<th>FA2</th>
+<th>提升</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前向，N=8192</td>
+<td>740 TFLOPS</td>
+<td>540 TFLOPS</td>
+<td>1.37×</td>
+</tr>
+<tr>
+<td>前向，N=32768</td>
+<td>810 TFLOPS</td>
+<td>600 TFLOPS</td>
+<td>1.35×</td>
+</tr>
+<tr>
+<td>理论峰值利用率</td>
+<td>75%</td>
+<td>55%</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>FA3 还新增了 FP8 支持（H100 原生 FP8 Tensor Core），在 FP8 精度下前向可达 1200+ TFLOPS，是 FA2 FP16 的 2 倍以上。</p>
+<hr />
+<h2 id="46">4.6 反向传播：重计算换显存</h2>
+<p>FlashAttention 在反向传播中采用了一个重要的权衡：<strong>不保存注意力矩阵，反向时重计算它</strong>。</p>
+<h3 id="fa">标准反向传播（不用 FA）</h3>
+<div class="codehilite"><pre><span></span><code>前向保存：Q, K, V, S = QK^T, P = softmax(S), O
+反向需要：dP = dO V^T    → 需要 V
+          dS = P ⊙ (dP - sum(P ⊙ dP, dim=-1))  → 需要 P（N×N！）
+          dQ = dS K
+          dK = dS^T Q
+          dV = P^T dO
+</code></pre></div>
+
+<p>保存 P（N×N 矩阵）的显存：N=8192 时 4 GB，是训练时显存的主要占用之一。</p>
+<h3 id="flashattention">FlashAttention 的重计算策略</h3>
+<div class="codehilite"><pre><span></span><code>前向只保存：Q, K, V, O, ℓ（归一化分母，大小 N），m（最大值，大小 N）
+反向时：从 Q, K, V 重新计算 S 和 P（分块，不写 HBM）
+</code></pre></div>
+
+<p>代价：反向传播的 FLOPs 增加约 30%（因为重新做了一次 QK^T）。<br />
+收益：显存从 O(N²) 降至 O(N)，对序列长度和 batch size 有根本性突破。</p>
+<p>这个权衡在大多数训练场景是绝对合算的：GPU 的 FLOP 相对便宜，而 HBM 显存是硬约束。</p>
+<hr />
+<h2 id="47-paged">4.7 变长序列与 Paged 注意力</h2>
+<h3 id="varlen">varlen（可变长度批处理）</h3>
+<p>训练/推理时一批序列长度不同，朴素做法是 padding 到最长长度，但短序列的计算就浪费了。</p>
+<p>FA2/FA3 支持 <code>varlen</code> 模式：把一批不同长度的序列<strong>拼接</strong>成一条长序列，用额外的 <code>cu_seqlens</code>（累计序列长度数组）记录边界：</p>
+<div class="codehilite"><pre><span></span><code>例子：seq_1 (len=3), seq_2 (len=5), seq_3 (len=2)
+拼接后：[tok₀tok₁tok₂ | tok₀tok₁tok₂tok₃tok₄ | tok₀tok₁]
+cu_seqlens = [0, 3, 8, 10]
+
+每个序列内部正常做 causal attention，序列之间天然不能互相关注
+（causal mask + 边界检查保证了这一点）
+</code></pre></div>
+
+<h3 id="paged-kv-cache-09">Paged KV Cache（推理场景，见第 09 章）</h3>
+<p>推理时 KV Cache 不连续（PagedAttention），FA 的 kernel 需要支持"逻辑块 → 物理块"的查表式内存访问，即所谓 Paged FlashAttention。vLLM 实现了这一变体。</p>
+<hr />
+<h2 id="48">4.8 实用选型</h2>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>推荐</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PyTorch 训练，PyTorch &gt;= 2.0</td>
+<td><code>F.scaled_dot_product_attention</code></td>
+<td>自动调用 FA2，开箱即用</td>
+</tr>
+<tr>
+<td>需要 GQA</td>
+<td>FA2（<code>flash-attn</code> 库）</td>
+<td>原生支持</td>
+</tr>
+<tr>
+<td>H100，追求最高性能</td>
+<td>FA3（<code>flash-attn &gt;= 2.6</code> 或 <code>hopper_flash</code>）</td>
+<td>需要 CUDA 12.x</td>
+</tr>
+<tr>
+<td>FP8 精度</td>
+<td>FA3</td>
+<td>原生 FP8 kernel</td>
+</tr>
+<tr>
+<td>超长序列（&gt;100K）</td>
+<td>Ring Attention + FA2/FA3</td>
+<td>跨 GPU 分片</td>
+</tr>
+<tr>
+<td>推理服务（vLLM/SGLang）</td>
+<td>Paged FA2/FA3</td>
+<td>框架内置</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="49">4.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>三代 FlashAttention 的核心演进：
+
+FA1（2022）：
+  核心思路：KV 分块 + 在线 Softmax → 不写 N×N 矩阵
+  收益：显存 O(N²) → O(N)，速度 2–4×
+  代价：CUDA 实现复杂，反向需重计算
+
+FA2（2023）：
+  核心改进：减少非矩阵乘操作，改进并行策略，GQA 原生支持
+  收益：在 FA1 基础上再提升 2×
+
+FA3（2024）：
+  核心改进：用 H100 的 Warpgroup MMA 和 TMA，流水线重叠
+  收益：H100 利用率 55% → 75%，FP8 支持
+
+数学本质：在线 Softmax 的两个递推式
+  m_new = max(m_old, m_new_block)
+  ℓ_new = ℓ_old × exp(m_old - m_new) + sum(exp(S_new - m_new))
+
+反向传播的核心取舍：
+  不保存 P（节省 O(N²) 显存）
+  反向时重计算 P（多花 ~30% FLOPs）
+
+推理时的变体：Paged FA，支持非连续 KV Cache（PagedAttention）
+
+下一章：光优化单个 kernel 还不够，算子之间的数据搬运也是大头——算子融合。
+</code></pre></div>
+
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://arxiv.org/abs/2205.14135">FlashAttention-1 论文</a>（Dao et al., 2022）<br />
+- <a href="https://arxiv.org/abs/2307.08691">FlashAttention-2 论文</a>（Dao, 2023）<br />
+- <a href="https://arxiv.org/abs/2407.08608">FlashAttention-3 论文</a>（Shah et al., 2024）<br />
+- <a href="https://github.com/Dao-AILab/flash-attention">flash-attn GitHub</a>（含安装、API 文档）<br />
+- <a href="https://gordicaleksa.medium.com/eli5-flash-attention-5c44017022ad">Making FlashAttention Go Brrrr</a>（通俗图解）</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

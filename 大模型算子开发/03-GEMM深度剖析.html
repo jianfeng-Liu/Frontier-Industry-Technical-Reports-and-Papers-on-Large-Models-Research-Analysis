@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · GEMM 深度剖析：大模型 90% 算力的来源</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="03-gemm-90">03 · GEMM 深度剖析：大模型 90% 算力的来源</h1>
+<blockquote>
+<p><strong>前置</strong>：<a href="01-GPU硬件基础.html">01 章（GPU 硬件基础）</a>、<a href="02-屋顶线与性能剖析.html">02 章（屋顶线与性能剖析）</a><br />
+<strong>目标</strong>：彻底搞清楚矩阵乘法在 GPU 上如何从朴素实现一步步优化到接近硬件峰值，以及 cuBLAS / CUTLASS 的架构思路。</p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>GEMM</strong>（General Matrix Multiply）—— <code>C = α·A·B + β·C</code>，深度学习里最核心的算子。<br />
+<strong>分块</strong>（Tiling）—— 把大矩阵切成小块装进 SRAM，提高数据复用率的核心手段。<br />
+<strong>三级分块</strong>（3-Level Tiling）—— Thread Block Tile → Warp Tile → Thread Tile，对应 GPU 的三级内存层次。<br />
+<strong>双缓冲</strong>（Double Buffering）—— 让数据加载和计算流水线重叠，消除内存等待。<br />
+<strong>Epilogue</strong>（收尾计算）—— GEMM 计算完成后的融合操作，如加 bias、激活函数、量化等。<br />
+<strong>cuBLAS</strong> —— NVIDIA 官方 BLAS 库，最优化但不可定制。<br />
+<strong>CUTLASS</strong> —— NVIDIA 开源的 GEMM 模板库，可定制 Epilogue，是 TensorRT 和 FlashAttention 的底层。<br />
+<strong>Stream-K</strong> —— 解决 GEMM 在 GPU SM 之间负载不均衡问题的分解方式（CUTLASS 3.x 引入）。</p>
+<hr />
+<h2 id="31-gemm">3.1 为什么 GEMM 是大模型的核心</h2>
+<p>大模型的一次前向传播（以 Transformer 为例）：</p>
+<div class="codehilite"><pre><span></span><code>输入 x (B×S×H)
+  ↓  线性变换 W_Q, W_K, W_V  ← 3 次 GEMM (B·S × H) × (H × H)
+  ↓  QKᵀ                     ← 1 次 GEMM (B·H × S) × (S × H) [Attention]
+  ↓  ·V                      ← 1 次 GEMM
+  ↓  W_O 投影                 ← 1 次 GEMM
+  ↓  FFN 第一层 W_1           ← 1 次 GEMM，输出维度扩 4×
+  ↓  FFN 第二层 W_2           ← 1 次 GEMM，输出维度缩回
+  ↓  LM head                 ← 1 次 GEMM (B·S × H) × (H × V)  [词表通常最大]
+</code></pre></div>
+
+<p>一个 32 层的 Transformer，每层 8 次 GEMM = 256 次 GEMM。<strong>约 90% 的 FLOP 都是矩阵乘法</strong>。</p>
+<hr />
+<h2 id="32">3.2 朴素实现：为什么慢</h2>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 最朴素的 CUDA 实现：每个线程负责 C 的一个元素</span>
+<span class="n">__global__</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="n">naive_gemm</span><span class="p">(</span><span class="kt">float</span><span class="w"> </span><span class="o">*</span><span class="n">A</span><span class="p">,</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="o">*</span><span class="n">B</span><span class="p">,</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="o">*</span><span class="n">C</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">M</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">K</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">N</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">row</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">blockIdx</span><span class="p">.</span><span class="n">y</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">blockDim</span><span class="p">.</span><span class="n">y</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">threadIdx</span><span class="p">.</span><span class="n">y</span><span class="p">;</span><span class="w">  </span><span class="c1">// C 的行</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">col</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">blockDim</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span><span class="w">  </span><span class="c1">// C 的列</span>
+
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">row</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">M</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">col</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">N</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kt">float</span><span class="w"> </span><span class="n">sum</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0f</span><span class="p">;</span>
+<span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">k</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">K</span><span class="p">;</span><span class="w"> </span><span class="n">k</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="n">sum</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">A</span><span class="p">[</span><span class="n">row</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">K</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">k</span><span class="p">]</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">B</span><span class="p">[</span><span class="n">k</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">N</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">col</span><span class="p">];</span><span class="w">  </span><span class="c1">// ← 每次都从 HBM 读</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">        </span><span class="n">C</span><span class="p">[</span><span class="n">row</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">N</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">col</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sum</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>性能分析</strong>：</p>
+<p>每个线程计算一个 C 的元素，需要读 A 的一行（K 个元素）和 B 的一列（K 个元素）。</p>
+<div class="codehilite"><pre><span></span><code>对于 M=N=K=4096，FP32：
+  总 FLOPs = 2 × 4096³ ≈ 137 G FLOP
+
+  每个线程读 A：4096 × 4 = 16 KB
+  每个线程读 B：4096 × 4 = 16 KB
+  总共有 4096×4096 = 16M 个线程
+
+  A 的每一行被读 N=4096 次
+  B 的每一列被读 M=4096 次
+  总内存读写 ≈ 2 × 4096² × 4096 × 4 Bytes ≈ 512 GB
+
+  算术强度 = 137 G / 512 G ≈ 0.27 FLOP/Byte   ← 极低！
+</code></pre></div>
+
+<p>朴素实现的算术强度只有 0.27，而 H100 需要 295 才能打满算力。慢 1000 倍。</p>
+<hr />
+<h2 id="33">3.3 第一级优化：共享内存分块</h2>
+<p><strong>核心思路</strong>：让同一个 Thread Block 的线程<strong>共同</strong>把 A、B 的一块装进共享内存，然后各自用这块数据计算，复用后再换下一块。</p>
+<h3 id="_1">单级分块</h3>
+<div class="codehilite"><pre><span></span><code>把 C 切成 (BLOCK_M × BLOCK_N) 的块，每个 Thread Block 负责一块。
+
+Thread Block 处理 C[i:i+BM, j:j+BN]：
+  for k_tile in range(0, K, BLOCK_K):
+    # 阶段1：协作加载（所有线程一起把数据搬进 SRAM）
+    从 HBM 加载 A[i:i+BM, k_tile:k_tile+BK] 进 smem_A
+    从 HBM 加载 B[k_tile:k_tile+BK, j:j+BN] 进 smem_B
+    __syncthreads()  # 确保所有线程加载完毕
+
+    # 阶段2：每个线程用 SRAM 里的数据计算自己负责的元素
+    for k in range(BLOCK_K):
+        C_thread += smem_A[thread_row, k] * smem_B[k, thread_col]
+
+    __syncthreads()  # 确保所有线程用完当前 tile 再换下一块
+</code></pre></div>
+
+<p><strong>算术强度提升</strong>：</p>
+<div class="codehilite"><pre><span></span><code>A 的 tile 大小：BM × BK × 4 Bytes
+B 的 tile 大小：BK × BN × 4 Bytes
+这块数据被 BM × BN 个线程各用一次，其中 A 的每一行被用 BN 次，B 的每一列被用 BM 次
+
+算术强度 ≈ 2 × BM × BN × BK / (BM×BK + BK×BN) × (1/4Byte)
+         ≈ BM × BN / (BM + BN) × 0.5   [当 BM=BN=128 时]
+         ≈ 32 FLOP/Byte   ← 比朴素提升 100 倍
+</code></pre></div>
+
+<p>实际 BM=BN=128，BK=16 时算术强度约 32。还不够，继续优化。</p>
+<hr />
+<h2 id="34-gpu">3.4 三级分块：对应 GPU 的三级内存层次</h2>
+<p>GPU 有三级内存：HBM → 共享内存（SRAM）→ 寄存器。高效 GEMM 需要三级分块全部用上。</p>
+<div class="codehilite"><pre><span></span><code>Level 1：Thread Block Tile（Block 级别分块）
+  A_tile: BM × BK  装进共享内存
+  B_tile: BK × BN  装进共享内存
+  一次从 HBM 加载，供整个 Block 复用
+
+Level 2：Warp Tile（Warp 级别分块）
+  每个 Warp 从共享内存里取自己负责的子块
+  WM × WN 大小，供 32 个线程复用
+
+Level 3：Thread Tile（线程级别分块）
+  每个线程用寄存器存一个 TM × TN 的小矩阵
+  直接在寄存器里做外积（outer product）累加
+</code></pre></div>
+
+<h3 id="outer-product">外积（Outer Product）计算模式</h3>
+<p>高效的线程级矩阵乘采用<strong>外积</strong>而非点积：</p>
+<div class="codehilite"><pre><span></span><code>朴素（点积模式）：
+  每个线程算 C 的一个元素
+  c[i][j] = sum_k a[i][k] * b[k][j]   ← 每次迭代 A 和 B 各用 1 次
+
+外积模式：
+  每个线程负责 C 的 TM×TN 的小块
+  对每个 k：
+    从 A 取一列（TM 个元素）存到寄存器 a_reg[TM]
+    从 B 取一行（TN 个元素）存到寄存器 b_reg[TN]
+    做外积：c_reg[i][j] += a_reg[i] * b_reg[j]  （TM×TN 次乘加）
+
+  ← 每次迭代：读 TM + TN 个元素，做 TM×TN 次乘加
+  算术强度 = TM×TN / (TM + TN)
+  当 TM=TN=8：算术强度 = 64/16 = 4
+  加上 Block 分块的复用，总算术强度可达 128+
+</code></pre></div>
+
+<h3 id="cutlass">数字化示例（CUTLASS 典型配置）</h3>
+<div class="codehilite"><pre><span></span><code>H100 SXM5 上的高效 GEMM（BF16）：
+
+Block Tile：  BM=128, BN=256, BK=64
+Warp Tile：   WM=64, WN=64
+Thread Tile： TM=8, TN=8
+
+每个 Block 有 (128/64)×(256/64) = 2×4 = 8 个 Warp
+每个 Warp 有 (64/8)×(64/8) = 8×8 = 64 个线程（≈ 2 个 Warp，取整为 32 线程/Warp）
+
+共享内存用量：
+  smem_A = 128×64×2 Bytes = 16 KB（BF16）
+  smem_B = 64×256×2 Bytes = 32 KB
+  合计 48 KB / Block，低于 H100 的 228 KB/SM 上限 ✓
+
+寄存器用量：
+  每个线程：TM×TN = 64 个 BF16 寄存器（c_reg）
+            + TM + TN = 16 个寄存器（a_reg, b_reg）
+  合计约 80 个寄存器/线程，在 65536/256 = 256 上限内 ✓
+</code></pre></div>
+
+<hr />
+<h2 id="35">3.5 双缓冲：消除计算等待内存</h2>
+<p>单缓冲的问题：每次 k_tile 迭代，所有线程先等数据加载完（HBM → SRAM），再计算，再等下一轮加载……计算和加载串行。</p>
+<p><strong>双缓冲</strong>（Software Pipelining）：在计算当前 tile 的同时，<strong>异步</strong>预加载下一个 tile：</p>
+<div class="codehilite"><pre><span></span><code>时间 →
+  单缓冲：[加载 tile₀][计算 tile₀][加载 tile₁][计算 tile₁][加载 tile₂]...
+  双缓冲：[加载 tile₀][加载 tile₁   ←异步→  ][计算 tile₀][加载 tile₂][计算 tile₁]...
+                                  └── 两个 SRAM 缓冲区交替使用 ──┘
+</code></pre></div>
+
+<p>实现时维护两个共享内存缓冲区（buffer A 和 buffer B），当前迭代用 A 计算时，用 CUDA 异步拷贝（<code>cp.async</code>，H100 支持）把下一个 tile 加载进 B，完成后切换。</p>
+<p>H100 的 <code>cp.async</code> 指令允许在不占用计算流水线的情况下发起 HBM → SRAM 的数据搬运，是实现双缓冲的硬件基础。</p>
+<hr />
+<h2 id="36-tensor-core">3.6 Tensor Core 的接入</h2>
+<p>上面讨论的都是用 CUDA Core 做矩阵乘，实际高效 GEMM 必须用 Tensor Core。</p>
+<h3 id="warp-level-mma">Warp-level MMA（矩阵乘累加）</h3>
+<p>H100 的 Tensor Core 支持 <code>m16n8k16</code> 的 MMA 操作：一个 Warp（32 个线程）协作完成一次 16×16×16 的矩阵乘累加（BF16 输入，FP32 累加）。</p>
+<p>一次 <code>mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32</code> 指令：<br />
+- 输入：A fragment (16×16)，B fragment (16×8)<br />
+- 累加：C fragment (16×8，FP32)<br />
+- 计算：C += A × B<br />
+- Warp 里 32 个线程各持有 fragment 的一部分（分布式寄存器）</p>
+<h3 id="tensor-core">要"喂饱" Tensor Core</h3>
+<p>Tensor Core 理论峰值 989 TFLOPS（BF16，H100），但 Warp 调度器必须不断给它送 MMA 指令才能维持高吞吐。如果 MMA 指令之间有气泡（等待内存、Warp 分歧、寄存器依赖），性能就会下降。</p>
+<p>实际高效的 GEMM（如 cuBLAS）能达到 85–90% 的峰值利用率，关键就是把双缓冲、分块参数调优、MMA 指令发射密度三者调到最优配合。</p>
+<hr />
+<h2 id="37-cutlass-gemm">3.7 CUTLASS：可定制的 GEMM 模板库</h2>
+<h3 id="cublas">为什么不直接用 cuBLAS</h3>
+<p>cuBLAS 的 GEMM 极度优化，但只能做 <code>C = α·A·B + β·C</code>。大模型里的常见需求：</p>
+<ul>
+<li><code>C = GEMM(A, B) + bias</code>（加 bias）</li>
+<li><code>C = activation(GEMM(A, B))</code>（融合激活）</li>
+<li><code>C = int8_quantize(GEMM(A, B))</code>（融合量化）</li>
+<li><code>C = GEMM(A, B) * gate</code>（SwiGLU 里的门控）</li>
+</ul>
+<p>这些都需要在 GEMM 的最后一步（写出 C 之前）做额外计算——这就是 <strong>Epilogue</strong>（收尾）。</p>
+<p>cuBLAS 不支持自定义 Epilogue，而 <strong>CUTLASS</strong>（CUDA Templates for Linear Algebra Subroutines and Solvers）专为此设计：</p>
+<div class="codehilite"><pre><span></span><code>CUTLASS 的分层结构：
+
+Device Level:   GemmUniversal           ← 用户接口
+    ↓
+Kernel Level:   GemmUniversal&lt;...&gt;      ← 整个 kernel 的逻辑
+    ↓
+Collective:     MainloopSm90 + Epilogue  ← 主循环 + 收尾，可替换
+    ↓
+Tile:           TiledMMA + SmemLayout    ← 分块参数，模板参数传入
+    ↓
+Atom:           MMA_Atom (m16n8k16)      ← 底层 PTX 指令
+</code></pre></div>
+
+<h3 id="epilogue">自定义 Epilogue 示例</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// CUTLASS 的 Epilogue 支持 &quot;访问者模式&quot;（EVT：Epilogue Visitor Tree）</span>
+<span class="c1">// 可以把任意 element-wise 操作链接在 GEMM 后面</span>
+
+<span class="c1">// 示例：GEMM + bias + ReLU + 输出量化为 INT8</span>
+<span class="k">using</span><span class="w"> </span><span class="n">EpilogueOp</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cutlass</span><span class="o">::</span><span class="n">epilogue</span><span class="o">::</span><span class="kr">thread</span><span class="o">::</span><span class="n">LinearCombinationRelu</span><span class="o">&lt;</span>
+<span class="w">    </span><span class="n">ElementOutput</span><span class="p">,</span><span class="w">           </span><span class="c1">// 输出类型 INT8</span>
+<span class="w">    </span><span class="mi">128</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">ElementOutput</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w">  </span><span class="c1">// 向量化宽度</span>
+<span class="w">    </span><span class="n">ElementAccumulator</span><span class="p">,</span><span class="w">      </span><span class="c1">// 累加器类型 FP32</span>
+<span class="w">    </span><span class="n">ElementComputeEpilogue</span><span class="p">,</span><span class="w">  </span><span class="c1">// 中间计算精度 FP32</span>
+<span class="w">    </span><span class="n">cutlass</span><span class="o">::</span><span class="n">epilogue</span><span class="o">::</span><span class="kr">thread</span><span class="o">::</span><span class="n">ScaleType</span><span class="o">::</span><span class="n">NoBetaScaling</span>
+<span class="o">&gt;</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="stream-k">Stream-K：解决尾部负载不均</h3>
+<p>标准的 GEMM 分块方式（Data-Parallel 模式）把 C 矩阵按 Block Tile 均匀分配给各 SM。但当矩阵大小不是 Block Tile 的整数倍时，最后一批 Block 数量少于 SM 数，造成 SM 空闲。</p>
+<div class="codehilite"><pre><span></span><code>例子：M=N=1000, BM=BN=128
+  需要 ceil(1000/128)² = 8×8 = 64 个 Block
+  H100 有 132 个 SM
+  第一轮：132 个 SM 全部运行（但只有 64 个 Block）
+  → 有 132 - 64 = 68 个 SM 空转！
+</code></pre></div>
+
+<p><strong>Stream-K</strong>（CUTLASS 3.x）把工作按"SM 数 × 若干轮"切片，每个 SM 分到近似等量的 k 方向工作，用 reduction 汇总跨 SM 的部分和，消除尾部空闲。对中小矩阵效果显著。</p>
+<hr />
+<h2 id="38">3.8 实测数字与选型建议</h2>
+<h3 id="h100-sxm5-gemm-bf16">H100 SXM5 的 GEMM 实测（BF16，方阵）</h3>
+<table>
+<thead>
+<tr>
+<th>矩阵大小</th>
+<th>cuBLAS</th>
+<th>CUTLASS 3</th>
+<th>理论峰值</th>
+<th>利用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4096×4096×4096</td>
+<td>875 TFLOPS</td>
+<td>858 TFLOPS</td>
+<td>989 TFLOPS</td>
+<td>88%</td>
+</tr>
+<tr>
+<td>8192×8192×8192</td>
+<td>921 TFLOPS</td>
+<td>908 TFLOPS</td>
+<td>989 TFLOPS</td>
+<td>93%</td>
+</tr>
+<tr>
+<td>1024×4096×4096</td>
+<td>380 TFLOPS</td>
+<td>412 TFLOPS</td>
+<td>989 TFLOPS</td>
+<td>42%</td>
+</tr>
+<tr>
+<td>1×4096×4096</td>
+<td>4.2 TFLOPS</td>
+<td>4.8 TFLOPS</td>
+<td>989 TFLOPS</td>
+<td>0.5%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ batch=1 的推理场景，GEMM 利用率不足 1%。这是推理优化的核心挑战，见第 09 章。</p>
+</blockquote>
+<h3 id="_2">选型建议</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>推荐</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训练，标准形状</td>
+<td>cuBLAS（通过 PyTorch 自动调用）</td>
+<td>最优化，开箱即用</td>
+</tr>
+<tr>
+<td>训练，需要融合 Epilogue</td>
+<td>CUTLASS</td>
+<td>模板化 Epilogue，性能接近 cuBLAS</td>
+</tr>
+<tr>
+<td>推理，需要融合量化/激活</td>
+<td>CUTLASS 或 TensorRT-LLM 的内置 kernel</td>
+<td>融合量化收益大</td>
+</tr>
+<tr>
+<td>实验性自定义 kernel</td>
+<td>Triton（见第 07 章）</td>
+<td>开发速度快</td>
+</tr>
+<tr>
+<td>MoE Grouped GEMM</td>
+<td>grouped_gemm 库（基于 CUTLASS）</td>
+<td>处理不规则 batch 大小</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="39">3.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>核心要点：
+
+GEMM 优化的本质 = 提高算术强度 = 让每字节数据做更多计算
+
+三级分块对应三级内存：
+  Block Tile → 共享内存（SRAM）
+  Warp Tile  → 寄存器文件
+  Thread Tile → 寄存器（外积计算）
+
+双缓冲 = 让加载和计算流水线重叠，消除等待
+
+Tensor Core 需要 m16n8k16 的 Warp 级 MMA 指令，
+维度必须是 16 的倍数才能用上
+
+cuBLAS：最快但不可定制
+CUTLASS：可定制 Epilogue，Stream-K 解决负载均衡
+
+batch=1 推理时 GEMM 算术强度约 1，是推理性能的根本瓶颈
+
+下一章：注意力机制的 GEMM 有特殊性，FlashAttention 怎么把它优化到极致。
+</code></pre></div>
+
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://github.com/NVIDIA/cutlass">CUTLASS 官方文档与示例</a><br />
+- <a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrrr From First Principles</a>（强烈推荐，通俗版屋顶线 + GEMM 分析）<br />
+- <a href="https://developer.nvidia.com/blog/dissecting-the-ampere-gpu-architecture-through-microbenchmarking/">Dissecting the Ampere GPU Architecture</a><br />
+- Stream-K 论文：<a href="https://arxiv.org/abs/2301.03598"><em>Stream-K: Work-centric Parallel Decomposition for Dense Matrix-Matrix Multiplication on the GPU</em></a></p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

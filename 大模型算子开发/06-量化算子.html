@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 · 量化算子：带宽减半 = 速度翻倍</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="06">06 · 量化算子：带宽减半 = 速度翻倍</h1>
+<blockquote>
+<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM）</a><br />
+<strong>目标</strong>：搞清楚量化的数学原理、主流方案（INT8/FP8/GPTQ）、实际部署里的量化 kernel 实现，以及 DeepSeek 的 FP8 训练实践。</p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>量化</strong>（Quantization）—— 用位宽更低的数据类型（INT8、FP8、INT4）表示原本是 FP16/BF16 的张量，减少内存占用和带宽消耗。<br />
+<strong>对称量化 / 非对称量化</strong> —— 是否有零点偏移（zero point），对称量化用 <code>q = round(x / scale)</code>，非对称量化用 <code>q = round(x / scale) + zero_point</code>。<br />
+<strong>Per-tensor / Per-channel / Per-token 量化</strong> —— 量化粒度，粒度越细精度越高，但计算开销和存储开销也越大。<br />
+<strong>W8A16 / W8A8 / W4A16</strong> —— 权重（W）和激活值（A）分别用几位来表示的简写，例如 W8A16 表示权重 INT8、激活 FP16。<br />
+<strong>SmoothQuant</strong> —— 通过平滑激活值的分布（把"刺"从激活迁移到权重），让 W8A8 量化更精准。<br />
+<strong>FP8（E4M3 / E5M2）</strong> —— 8 位浮点格式，H100 原生硬件支持，是当前训练量化的主流选择。<br />
+<strong>GPTQ</strong> —— 训练后仅量化权重的方案，用二阶梯度信息最小化量化误差，支持 INT4/INT3。<br />
+<strong>AWQ</strong>（Activation-aware Weight Quantization）—— 保留对激活值影响大的权重通道不量化，其余量化为 INT4，精度优于 GPTQ。</p>
+<hr />
+<h2 id="61">6.1 为什么量化能提速</h2>
+<p>大模型推理几乎全是 Memory Bound（见第 02 章）。瓶颈是 HBM 带宽，不是算力。</p>
+<div class="codehilite"><pre><span></span><code>H100 带宽：3.35 TB/s
+H100 FP16 算力：989 TFLOPS
+屋脊点：295 FLOP/Byte
+
+推理 batch=1 的 GEMM 算术强度：约 1 FLOP/Byte
+→ 99.7% 的时间在等 HBM，算力空转 99.7%
+</code></pre></div>
+
+<p>量化的直接效果：</p>
+<div class="codehilite"><pre><span></span><code>FP16 → INT8：每个数从 2 Bytes → 1 Byte，带宽需求减半
+FP16 → INT4：每个数从 2 Bytes → 0.5 Byte，带宽需求减为 1/4
+
+推理 batch=1 时，带宽减半 ≈ 速度翻倍
+（前提：量化 kernel 的额外开销不显著）
+</code></pre></div>
+
+<p>此外：<br />
+- 显存占用减少，可以装更大的模型或更大的 batch<br />
+- batch 越大时收益逐渐下降（因为大 batch 时权重带宽已被分摊，算力开始成为瓶颈）</p>
+<hr />
+<h2 id="62">6.2 量化的数学基础</h2>
+<h3 id="uniform-quantization">均匀量化（Uniform Quantization）</h3>
+<p>把浮点数映射到固定范围的整数：</p>
+<div class="codehilite"><pre><span></span><code>对称量化（常用于权重）：
+  scale = max(|x|) / (2^(b-1) - 1)     b = 位宽（8 → 127）
+  q = round(x / scale)                  q ∈ [-127, 127]
+  x̂ = q × scale                        反量化
+
+非对称量化（常用于激活值，分布不对称）：
+  scale = (max(x) - min(x)) / (2^b - 1)
+  zero_point = round(-min(x) / scale)
+  q = round(x / scale) + zero_point     q ∈ [0, 255]（INT8 无符号）
+  x̂ = (q - zero_point) × scale
+</code></pre></div>
+
+<h3 id="_1">量化粒度</h3>
+<p>量化粒度决定了精度和灵活性的权衡：</p>
+<div class="codehilite"><pre><span></span><code>Per-tensor：整个张量共用一个 scale（最粗，精度最低）
+  scale = max(|W|) / 127
+
+Per-channel（权重量化的标准做法）：每个输出通道一个 scale
+  scale[i] = max(|W[i, :]|) / 127
+
+Per-token（激活量化的常用做法）：每个 token（每行）一个 scale
+  scale[j] = max(|X[j, :]|) / 127
+
+Per-group（GPTQ/AWQ 常用）：每 g 个权重共用一个 scale
+  通常 g = 128，是 per-channel 和 per-tensor 的折中
+</code></pre></div>
+
+<p>粒度越细，精度越高，但也需要存储更多 scale 参数，且矩阵乘法后需要处理不同 scale 的混合。</p>
+<hr />
+<h2 id="63-w8a16">6.3 W8A16：最保守的量化</h2>
+<p>权重用 INT8 存储，激活值保持 FP16。</p>
+<p><strong>前向计算流程</strong>：</p>
+<div class="codehilite"><pre><span></span><code>weight_int8 (存储在 HBM) → 加载时反量化为 FP16 → 正常 FP16 GEMM
+</code></pre></div>
+
+<p><strong>优点</strong>：<br />
+- 精度损失极小（权重分布通常比较平滑，容易量化）<br />
+- 不需要校准数据<br />
+- 现有 FP16 GEMM kernel 完全可用</p>
+<p><strong>缺点</strong>：<br />
+- 计算阶段仍用 FP16，Tensor Core 吞吐没有提升<br />
+- 带宽省一半（权重从 HBM 读出是 INT8，但计算前要反量化）<br />
+- 反量化的开销约占 5–10%</p>
+<p><strong>适用场景</strong>：模型太大放不进显存，或需要节省显存，对速度要求不那么极致。</p>
+<hr />
+<h2 id="64-w8a8smoothquant">6.4 W8A8（SmoothQuant）：算力 + 带宽双重提升</h2>
+<p>权重和激活值都用 INT8，可以使用 INT8 Tensor Core（H100：1979 TOPS，是 BF16 的 2 倍）。</p>
+<p><strong>难点：激活值里的"刺"</strong></p>
+<p>权重的分布通常比较平滑，容易量化。但激活值（尤其是大模型里的中间层输出）常有少数极大的异常值（Outlier）：</p>
+<div class="codehilite"><pre><span></span><code>激活值分布示意：
+  ████████████████  ← 99% 的值在 [-2, 2]
+                             ██  ← 1% 的值高达 ±100
+
+如果直接量化：
+  scale = 100 / 127 ≈ 0.79
+  正常值 2.0 → round(2.0 / 0.79) = round(2.53) = 3   ← 量化误差极大！
+  正常范围 [-2, 2] 被压缩到 [-3, 3]，实际精度只有 3 位
+</code></pre></div>
+
+<h3 id="smoothquant">SmoothQuant 的解决方案</h3>
+<p>把激活值的"刺"<strong>迁移</strong>到权重侧，让两边都变得容易量化：</p>
+<div class="codehilite"><pre><span></span><code>原始：Y = X · W   （X 有刺，W 较平滑）
+
+引入对角矩阵 s（平滑因子）：
+Y = (X · diag(s)⁻¹) · (diag(s) · W)
+    ────────────────    ─────────────
+         X̃（平滑后）     W̃（吸收了&quot;刺&quot;）
+
+选择 s_j = max(|X[:, j]|)^α / max(|W[j, :]|)^(1-α)   α ∈ [0, 1]
+
+α=0.5 时：把刺的&quot;责任&quot;平均分给 X 和 W
+</code></pre></div>
+
+<p>平滑后，X̃ 和 W̃ 的动态范围都更接近正态分布，INT8 量化误差大幅降低。</p>
+<p><strong>实测效果（LLaMA-65B，INT8）</strong>：<br />
+- W8A8（无 SmoothQuant）：PPL 上升约 2–5<br />
+- W8A8（SmoothQuant）：PPL 几乎不变（vs FP16 基准差 &lt; 0.1）</p>
+<hr />
+<h2 id="65-fp8h100">6.5 FP8：H100 时代的主流选择</h2>
+<p>FP8 是用 8 位表示浮点数，有两种格式：</p>
+<div class="codehilite"><pre><span></span><code>E4M3（4 位指数，3 位尾数）：
+  范围：约 [-448, 448]，精度约 3 位有效数字
+  适合：前向传播（权重、激活值，不需要太大范围）
+
+E5M2（5 位指数，2 位尾数）：
+  范围：约 [-57344, 57344]，精度约 2 位有效数字
+  适合：反向传播（梯度可能有极大值，需要大范围）
+</code></pre></div>
+
+<p><strong>为什么 FP8 优于 INT8</strong>：<br />
+- FP8 保留了浮点的非均匀精度分布（小数附近精度高，大数附近精度低）<br />
+- 梯度和激活值的分布通常是近似正态或对数正态，FP8 的非均匀分布与之匹配更好<br />
+- H100 原生支持 FP8 MMA 指令，吞吐是 BF16 的 2 倍（1979 vs 989 TFLOPS）</p>
+<h3 id="deepseek-v3-fp8">DeepSeek-V3 的 FP8 混合精度训练</h3>
+<p>DeepSeek-V3/V4 技术报告（2024）中详细描述了 FP8 训练策略：</p>
+<div class="codehilite"><pre><span></span><code>组件                精度        原因
+────────────────────────────────────────────
+主要 GEMM（FFN、QKV 投影）  FP8 E4M3  速度 + 显存
+注意力计算（QK^T、PV）      FP8 E4M3  同上
+梯度                        FP8 E5M2  需要更大范围
+梯度累加                    FP32      防止舍入误差累积
+残差连接                    BF16      稳定性
+LayerNorm / RMSNorm         BF16      敏感操作
+嵌入层 / LM head            BF16      精度要求高
+</code></pre></div>
+
+<p><strong>训练结果</strong>：<br />
+- 与全 BF16 训练相比，PPL 差异 &lt; 0.02%（可忽略）<br />
+- 训练速度提升约 1.6 倍<br />
+- 显存减少约 30%（主要来自激活值缓存）</p>
+<p><strong>关键工程细节</strong>：<br />
+- 每 128 个元素一组，共用一个 FP8 scale（per-group 量化）<br />
+- scale 存为 FP32，在 BF16 Tensor Core 上单独计算<br />
+- 每隔几步更新一次 scale（历史最大值的指数移动平均）</p>
+<hr />
+<h2 id="66-gptq">6.6 GPTQ：训练后仅量化权重</h2>
+<p>GPTQ（Frantar et al., 2022）是目前最广泛用于端侧/低显存部署的权重量化方案，支持 INT4/INT3。</p>
+<h3 id="_2">核心思路：用二阶信息最小化量化误差</h3>
+<p>朴素的 round-to-nearest 量化：直接四舍五入。<br />
+GPTQ：<strong>每量化一个权重，就把这个量化误差补偿到剩余的权重上</strong>，最小化整体 GEMM 输出误差。</p>
+<div class="codehilite"><pre><span></span><code>对于权重矩阵 W（每列独立处理）：
+  按列逐一量化：
+    w_q[i] = quantize(w[i])              量化第 i 列
+    err[i]  = w[i] - w_q[i]             量化误差
+    w[i+1:] -= err[i] × H⁻¹[i, i+1:] / H⁻¹[i, i]   补偿到剩余列
+
+  H 是 Hessian 矩阵（用少量校准数据计算）
+</code></pre></div>
+
+<p>实际上用的是 OBS（Optimal Brain Surgeon）的近似：只需要少量校准数据（约 128 条样本）计算 Hessian 的近似。</p>
+<h3 id="gptq">GPTQ 实测效果</h3>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>精度</th>
+<th>FP16 PPL</th>
+<th>INT4（GPTQ）PPL</th>
+<th>大小（FP16→INT4）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LLaMA-2 7B</td>
+<td>INT4/group=128</td>
+<td>5.47</td>
+<td>5.68</td>
+<td>13 GB → 3.5 GB</td>
+</tr>
+<tr>
+<td>LLaMA-2 13B</td>
+<td>INT4/group=128</td>
+<td>4.88</td>
+<td>5.02</td>
+<td>26 GB → 7 GB</td>
+</tr>
+<tr>
+<td>LLaMA-2 70B</td>
+<td>INT4/group=128</td>
+<td>3.32</td>
+<td>3.44</td>
+<td>140 GB → 35 GB</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ INT4 GPTQ 的 70B 模型可以装进一块 40 GB 的 A100，而 FP16 需要 4 块。</p>
+</blockquote>
+<hr />
+<h2 id="67-awq">6.7 AWQ：激活感知权重量化</h2>
+<p>AWQ（Lin et al., 2023）的核心洞察：<strong>不是所有权重都同等重要</strong>。对激活值影响大的权重通道（对应激活值大的输入维度），量化误差传播也更大。</p>
+<div class="codehilite"><pre><span></span><code>直觉：
+  y[j] += w[i, j] * x[i]
+
+  若 x[i] 很大（激活值的&quot;刺&quot;所在维度），
+  则 w[i, j] 的量化误差被放大 |x[i]| 倍，
+  传播到输出的误差也是 |x[i]| 倍。
+</code></pre></div>
+
+<p>AWQ 的做法：<br />
+1. 找出哪些输入维度 i 对应的 <code>|x[i]|</code> 最大（约 1% 的维度）<br />
+2. 这些维度的权重<strong>不量化</strong>（保持 FP16），其余量化为 INT4<br />
+3. 对这 1% 的权重用 FP16 乘法，其余用 INT4 乘法</p>
+<p><strong>效果</strong>：AWQ 在 INT4 精度下通常比 GPTQ 高 0.1–0.3 PPL，尤其对小模型（7B）效果明显。</p>
+<hr />
+<h2 id="68-kernel">6.8 量化 kernel 的实现要点</h2>
+<p>量化 GEMM 和普通 GEMM 的区别：</p>
+<div class="codehilite"><pre><span></span><code>W8A8 INT8 GEMM 流程：
+  1. 从 HBM 加载 X_int8, W_int8（已量化存储）
+  2. 在 SRAM 里用 INT8 Tensor Core 做矩阵乘，输出 INT32 累加
+  3. 把 INT32 结果反量化：Y = Y_int32 × scale_X × scale_W
+  4. 写回 Y_fp16 到 HBM
+
+关键：步骤 3 的反量化可以在 GEMM Epilogue 里融合（CUTLASS 支持）
+</code></pre></div>
+
+<p>INT4 packed GEMM（GPTQ/AWQ）：</p>
+<div class="codehilite"><pre><span></span><code>INT4 没有原生硬件支持（H100 最低是 INT8）
+实现方式：把两个 INT4 值 pack 进一个 INT8
+  [i4₀ | i4₁] → u8（高 4 位 + 低 4 位）
+
+计算时：
+  先 unpack 为 INT8
+  用 INT8 Tensor Core 计算（相当于每次 GEMM 处理效率减半）
+
+所以 W4A16（GPTQ 常用）实际上是：
+  INT4 权重 → unpack 为 INT8 / FP16 → FP16 Tensor Core GEMM
+  带宽省 4×（读权重时），但计算速度不提升（还是 FP16 GEMM）
+</code></pre></div>
+
+<hr />
+<h2 id="69">6.9 量化方案选型速查</h2>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>权重精度</th>
+<th>激活精度</th>
+<th>适用场景</th>
+<th>精度损失</th>
+<th>速度收益</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16 基准</td>
+<td>BF16</td>
+<td>BF16</td>
+<td>训练、高精度推理</td>
+<td>无</td>
+<td>基准</td>
+</tr>
+<tr>
+<td>FP8 E4M3</td>
+<td>FP8</td>
+<td>FP8</td>
+<td>H100 训练/推理</td>
+<td>极小</td>
+<td>1.5–2×</td>
+</tr>
+<tr>
+<td>W8A8 SmoothQuant</td>
+<td>INT8</td>
+<td>INT8</td>
+<td>生产推理（A100/H100）</td>
+<td>小</td>
+<td>1.3–1.8×</td>
+</tr>
+<tr>
+<td>W8A16</td>
+<td>INT8</td>
+<td>FP16</td>
+<td>显存受限部署</td>
+<td>极小</td>
+<td>1.1–1.3×</td>
+</tr>
+<tr>
+<td>W4A16 GPTQ</td>
+<td>INT4</td>
+<td>FP16</td>
+<td>端侧/单卡部署</td>
+<td>中</td>
+<td>1.5–2.5×（带宽）</td>
+</tr>
+<tr>
+<td>W4A16 AWQ</td>
+<td>INT4</td>
+<td>FP16</td>
+<td>端侧/单卡部署</td>
+<td>小→中</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="610">6.10 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>量化的核心逻辑：
+  推理是 Memory Bound → 减少位宽 → 减少 HBM 带宽需求 → 速度提升
+
+精度损失来源：
+  1. 量化粒度（粒度越粗误差越大）
+  2. 激活值异常值（&quot;刺&quot;）
+  3. 反量化运算的舍入累积
+
+主要方案：
+  FP8 训练   → H100 原生硬件支持，精度几乎不损，DeepSeek-V3 标配
+  W8A8       → 算力+带宽双提升，需要 SmoothQuant 处理激活值
+  W8A16      → 最保守，精度高，只省带宽
+  W4A16 GPTQ/AWQ → 端侧部署，模型尺寸减 4×，精度有损失
+
+量化 kernel 的关键工程：
+  反量化融合进 GEMM Epilogue（CUTLASS）
+  INT4 需要 pack/unpack，无原生 INT4 Tensor Core（H100）
+
+下一章：Triton，用 Python 写 GPU kernel 的正确方式。
+</code></pre></div>
+
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://arxiv.org/abs/2211.10438">SmoothQuant 论文</a>（Xiao et al., 2022）<br />
+- <a href="https://arxiv.org/abs/2210.17323">GPTQ 论文</a>（Frantar et al., 2022）<br />
+- <a href="https://arxiv.org/abs/2306.00978">AWQ 论文</a>（Lin et al., 2023）<br />
+- <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a>（FP8 训练细节见 §3.3）<br />
+- <a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#fp8-math-support">FP8 格式规范</a>（NVIDIA 官方文档）</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

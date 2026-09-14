@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 · 推理侧算子：从训练到服务，问题完全不同</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="09">09 · 推理侧算子：从训练到服务，问题完全不同</h1>
+<blockquote>
+<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="04-FlashAttention全系.html">04 章（FlashAttention）</a>、<a href="06-量化算子.html">06 章（量化）</a><br />
+<strong>目标</strong>：搞清楚大模型推理服务的独特挑战——KV Cache 管理、连续批处理、投机采样，以及 vLLM/SGLang 的核心算子设计。</p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>KV Cache</strong> —— 推理时缓存每层每个 token 的 Key 和 Value，避免每次生成新 token 时重新计算历史序列，是自回归推理的基本优化。<br />
+<strong>PagedAttention</strong> —— 把 KV Cache 按"页"管理（类似 OS 虚拟内存），解决 KV Cache 的显存碎片和动态增长问题，是 vLLM 的核心贡献。<br />
+<strong>连续批处理</strong>（Continuous Batching）—— 不等一批请求全部完成，而是每生成一个 token 就检查是否有新请求可以加入，大幅提升 GPU 利用率。<br />
+<strong>Prefill / Decode 阶段</strong> —— Prefill（预填充）：一次处理整个 Prompt；Decode（解码）：每次只生成一个新 token。两者的计算特性截然不同。<br />
+<strong>投机采样</strong>（Speculative Decoding）—— 用小模型（Draft Model）猜测后续若干 token，再用大模型（Target Model）并行验证，通过并行验证代替串行生成来提速。<br />
+<strong>RadixAttention</strong>（前缀缓存）—— SGLang 的 KV Cache 管理机制，以 Radix Tree 结构复用相同前缀的 KV Cache，减少 Prefill 计算。<br />
+<strong>Chunked Prefill</strong> —— 把长 Prompt 的 Prefill 切成小块，与 Decode 穿插执行，减少 Decode 请求的等待延迟。</p>
+<hr />
+<h2 id="91-vs">9.1 训练 vs 推理：两个截然不同的问题</h2>
+<p>训练时：<br />
+- 一批固定长度的序列，Forward + Backward，计算量确定<br />
+- 显存占用：激活值（随 batch/序列长度增长）+ 权重 + 梯度 + 优化器状态<br />
+- 瓶颈：算力（大 batch 时 GEMM Compute Bound）</p>
+<p>推理时：<br />
+- 请求动态到达，序列长度未知，每次只生成一个 token（Decode 阶段）<br />
+- 显存占用：权重（固定）+ KV Cache（随请求数和序列长度增长，动态变化）<br />
+- 瓶颈：HBM 带宽（batch=1 时 GEMM Memory Bound，见第 02 章）</p>
+<div class="codehilite"><pre><span></span><code>训练 GEMM 形状（batch=32, seq=2048）：
+  GEMM: (32×2048, H) × (H, 4H) = (65536, H) × (H, 4H)
+  算术强度 ≈ 65536 / (65536 + 4H) × ... 约 200 FLOP/Byte（接近屋脊点）
+
+推理 Decode GEMM 形状（batch=1）：
+  GEMM: (1, H) × (H, 4H)
+  算术强度 ≈ 1 FLOP/Byte（严重 Memory Bound）
+</code></pre></div>
+
+<p><strong>推理的核心挑战</strong>：每次 Decode 只处理 1 个新 token，但要读一次所有权重（权重带宽成瓶颈），以及读一次所有历史 KV Cache（KV 带宽成瓶颈）。</p>
+<hr />
+<h2 id="92-kv-cache">9.2 KV Cache：自回归推理的基础</h2>
+<h3 id="kv-cache">没有 KV Cache 会怎样</h3>
+<p>自回归生成时，每生成第 t 个 token，需要用到前 t-1 个 token 的 K、V：</p>
+<div class="codehilite"><pre><span></span><code>生成 token₁：QK^T 算 1×1 的注意力
+生成 token₂：QK^T 算 1×2（需要重新算 token₁ 的 K, V）
+生成 token₃：QK^T 算 1×3（需要重新算 token₁, token₂ 的 K, V）
+...
+生成 token_N：QK^T 算 1×N（需要重新算所有历史 K, V）
+
+总计算量 ∝ N²（完全不可接受）
+</code></pre></div>
+
+<h3 id="kv-cache_1">有 KV Cache</h3>
+<p>把每一步生成的 K、V 缓存下来，下一步直接用，只计算新 token 的 Q：</p>
+<div class="codehilite"><pre><span></span><code>KV Cache: 把生成过的每个 token 的 K, V 存在 HBM 里
+
+生成 token_t（新）：
+  1. 用新 token 的 embedding 算出新的 q_t, k_t, v_t（GEMM）
+  2. 把 k_t, v_t 追加到 KV Cache
+  3. 用 q_t 和整个 KV Cache 做 Attention（只有 q 是新的，序列是 1×t）
+  4. 算 FFN 输出
+
+每步计算量 = O(N)（N 是当前序列长度），总计算量 = O(N²)，但每步延迟是 O(N)
+</code></pre></div>
+
+<h3 id="kv-cache_2">KV Cache 的显存开销</h3>
+<div class="codehilite"><pre><span></span><code>一层 Attention 的 KV Cache 大小：
+  每个 token: 2（K + V）× n_heads × head_dim × 2 Bytes（BF16）
+  LLaMA-3 70B（H=8192, n_kv_heads=8, head_dim=128）：
+    每 token 每层 = 2 × 8 × 128 × 2 = 4096 Bytes = 4 KB
+    全部 80 层：4 KB × 80 = 320 KB / token
+
+  批量 100 个请求，每个序列长度 2048：
+    KV Cache = 100 × 2048 × 320 KB = 64 GB   ← 超过一块 H100！
+</code></pre></div>
+
+<p>KV Cache 显存是推理服务的主要显存消耗，也是限制并发请求数的关键约束。</p>
+<hr />
+<h2 id="93-pagedattention-os-kv-cache">9.3 PagedAttention：像 OS 管理内存一样管理 KV Cache</h2>
+<h3 id="kv-cache_3">朴素 KV Cache 的问题</h3>
+<p>朴素实现：每个请求预分配一块连续显存存 KV Cache，按最大序列长度 padding：</p>
+<div class="codehilite"><pre><span></span><code>问题 1：内部碎片（Internal Fragmentation）
+  预分配 2048 token 的空间，实际只用 512 token
+  浪费 75% 的预分配显存
+
+问题 2：外部碎片（External Fragmentation）
+  请求结束时释放 KV Cache，留下不连续的空洞
+  即使总空闲显存足够，也可能找不到连续空间给新请求
+
+问题 3：无法共享前缀
+  多个请求有相同的系统提示（System Prompt），KV Cache 无法复用
+</code></pre></div>
+
+<h3 id="pagedattention">PagedAttention 的解法</h3>
+<p>把 KV Cache 分成固定大小的"页"（Page/Block），类似操作系统的虚拟内存分页：</p>
+<div class="codehilite"><pre><span></span><code>物理 Block（Page）：
+  固定大小，例如每块 16 个 token 的 KV Cache
+  H100 80GB 可以分成约 10000 个这样的 Block
+
+逻辑 Block Table：
+  每个请求维护一张 Block Table：逻辑块号 → 物理块号
+  类似 OS 的页表
+
+  请求 A（序列长度 35 token）：
+    逻辑块 0 → 物理块 42
+    逻辑块 1 → 物理块 7
+    逻辑块 2 → 物理块 93  ← 还在用，但只有 3/16 满
+
+  请求 B 来了，共享同一个 System Prompt（前 16 token）：
+    逻辑块 0 → 物理块 42  ← 直接复用，引用计数 +1
+    逻辑块 1 → 物理块 新分配
+</code></pre></div>
+
+<p><strong>Paged Attention kernel</strong> 需要在计算时动态查 Block Table，用间接寻址访问 KV Cache：</p>
+<div class="codehilite"><pre><span></span><code>标准 FlashAttention：
+  k_ptr = KV_cache_base + (layer_id * seq_len + token_id) * kv_dim
+
+Paged Attention：
+  block_id = block_table[seq_id][token_id // block_size]
+  block_offset = token_id % block_size
+  k_ptr = KV_cache_base + (block_id * block_size + block_offset) * kv_dim
+</code></pre></div>
+
+<p>间接寻址会引入少量额外开销（一次查表），但 HBM 延迟已经很大，这点开销可以忽略。</p>
+<hr />
+<h2 id="94-prefill-vs-decode">9.4 Prefill vs Decode：两段截然不同的计算</h2>
+<h3 id="prefill">Prefill（预填充阶段）</h3>
+<p>处理用户输入的 Prompt，并行算出所有 token 的 KV，同时生成第一个输出 token：</p>
+<div class="codehilite"><pre><span></span><code>输入：Prompt = [tok₀, tok₁, ..., tok_L]（L 个 token）
+计算：
+  QKV 投影：(L, H) × (H, 3H) = (L, 3H)   ← GEMM，L 通常 512–32768
+  注意力：L×L 的注意力矩阵（FlashAttention 处理）
+  FFN：(L, H) → (L, 4H) → (L, H)
+
+GEMM 形状：(L, H) × (H, H)，L 较大
+算术强度：高（Compute Bound，GPU 利用率高）
+</code></pre></div>
+
+<h3 id="decode">Decode（解码阶段）</h3>
+<p>每次只生成一个 token，Attention 需要看 Prompt + 已生成序列的完整 KV Cache：</p>
+<div class="codehilite"><pre><span></span><code>输入：新 token（1 个），KV Cache（L_current 个历史 token）
+计算：
+  QKV 投影：(1, H) × (H, 3H)   ← GEMM，M=1，极度 Memory Bound
+  注意力：(1, H) × (H, L_current) = (1, L_current)   ← 向量 × 矩阵
+  FFN：(1, H) → (1, 4H) → (1, H)   ← GEMM，M=1
+
+GEMM 形状：(1, H) × (H, H)，算术强度 ≈ 1 FLOP/Byte
+GPU 利用率：&lt;1%（严重 Memory Bound）
+</code></pre></div>
+
+<p><strong>关键洞察</strong>：Decode 阶段的瓶颈是内存带宽（读权重 + 读 KV Cache），和算力几乎无关。提速的方法是增大 batch size（分摊权重读取开销）。</p>
+<hr />
+<h2 id="95">9.5 连续批处理：动态调度的核心</h2>
+<h3 id="_1">朴素批处理的问题</h3>
+<div class="codehilite"><pre><span></span><code>请求 A：Prompt 10 token，输出 100 token
+请求 B：Prompt 10 token，输出 5 token
+请求 C：Prompt 10 token，输出 200 token
+
+朴素批处理：等所有请求都完成才结束这个 batch
+  GPU 等待时间线：
+  [Prefill A,B,C][Decode 1][Decode 2][Decode 3][Decode 4][Decode 5][...][Decode 100][...]
+                                                                    ↑
+                             B 在第 5 个 Decode 步已经完成，但要等 A 和 C 继续跑到 200 步
+  B 结束后，GPU 里该请求的 KV Cache 和 Batch Slot 被浪费
+</code></pre></div>
+
+<h3 id="iteration-level-scheduling">连续批处理（Iteration-Level Scheduling）</h3>
+<p>每生成一个 token（每一步 Decode）后，检查哪些请求已完成，立即将新请求加入 batch：</p>
+<div class="codehilite"><pre><span></span><code>Decode 步 5：B 完成 → 立即弹出 B，加入等待队列里的 D
+Decode 步 6：A,C,D 同时 Decode
+...
+
+好处：GPU 一直满载，新请求不用等待整个 batch 结束
+代价：batch 里的序列长度动态变化，需要 varlen 注意力支持（FA2 的 cu_seqlens 机制）
+</code></pre></div>
+
+<p>实现细节：<br />
+- 每步结束后检查 <code>&lt;EOS&gt;</code> token（结束标志）<br />
+- 弹出完成的请求，归还 KV Cache Pages<br />
+- 把新请求的 Prompt Prefill 插入（Chunked Prefill，见下）</p>
+<hr />
+<h2 id="96">9.6 投机采样：并行验证代替串行生成</h2>
+<h3 id="decode_1">问题：Decode 阶段的串行瓶颈</h3>
+<p>每次 Decode 生成一个 token，用大模型（例如 70B）生成，需要把所有权重读一遍。生成 100 个 token 就要读 100 遍权重，带宽利用率极低（因为 batch=1 时单次 Decode 只做极少的 FLOP）。</p>
+<h3 id="_2">投机采样的思路</h3>
+<p>用小模型（Draft Model，例如 1B）快速生成若干 token，再用大模型（Target Model，70B）并行验证：</p>
+<div class="codehilite"><pre><span></span><code>小模型 Draft 4 个 token（快，因为只需读 1B 权重）：
+  [tok₁, tok₂, tok₃, tok₄]
+
+大模型并行验证（一次 Prefill）：
+  输入：[历史 + tok₁ + tok₂ + tok₃ + tok₄]（4 个 token 一起处理）
+  输出：[验证tok₁, 验证tok₂, 验证tok₃, 验证tok₄]
+
+  如果 tok₁,tok₂,tok₃ 与大模型一致，tok₄ 不一致：
+    接受 tok₁,tok₂,tok₃，用大模型的 tok₄&#39; 替换（重采样）
+    本轮生成 4 个 token（用 1 次大模型 Prefill 代替 4 次大模型 Decode）
+
+加速比：Draft 被接受的比例越高（acceptance rate），加速比越高
+  acceptance rate 95% → 平均每轮接受 3.8 token，1 次验证代替 ~3.8 次 Decode
+  实测加速 2–3× 常见（DeepSeek-V3 报告在特定场景达到 3×）
+</code></pre></div>
+
+<h3 id="_3">实现细节</h3>
+<p><strong>Draft Model 的选择</strong>：<br />
+- 从 Target Model 蒸馏的小模型（同架构，更少层）<br />
+- Self-Speculative Decoding：Target Model 的早期层（early exit）作为 Draft<br />
+- Medusa：给 Target Model 加多个并行头，每个头预测后续 token</p>
+<p><strong>验证的 kernel</strong>：<br />
+大模型做 Prefill 验证时，输入 d 个 Draft token，可以用同一次 FlashAttention 计算：<br />
+- Causal mask 保证每个位置只看自己之前的 token<br />
+- 验证后用 rejection sampling 决定接受哪些 token</p>
+<hr />
+<h2 id="97-radixattentionsglang">9.7 RadixAttention（SGLang 的前缀复用）</h2>
+<p>许多推理请求有相同的前缀（System Prompt、Few-shot 示例、工具描述）。</p>
+<div class="codehilite"><pre><span></span><code>请求 1：[System Prompt（1024 token）] + [用户问题 A]
+请求 2：[System Prompt（1024 token）] + [用户问题 B]
+请求 3：[System Prompt（1024 token）] + [用户问题 C]
+
+每次都重新计算 System Prompt 的 KV Cache = 浪费 3× Prefill 计算
+</code></pre></div>
+
+<p><strong>RadixAttention</strong>（SGLang）：用 Radix Tree（基数树）存储已计算过的 KV Cache 前缀：</p>
+<div class="codehilite"><pre><span></span><code>Radix Tree：
+  根节点
+  └── [System Prompt 1024 token 的 KV Cache]
+       ├── [用户问题 A 的 KV Cache] → 回答 A
+       ├── [用户问题 B 的 KV Cache] → 回答 B
+       └── [用户问题 C 的 KV Cache] → 回答 C
+
+请求 2 来时：
+  匹配公共前缀 → 直接复用 System Prompt 的 KV Cache
+  只需计算用户问题 B 的 KV Cache
+  节省 1024 / (1024 + len(B)) × 100% 的 Prefill 计算
+</code></pre></div>
+
+<p>Radix Tree 的复用需要精确的 token 级匹配（因为 KV Cache 对应精确的 token 序列），这对系统提示等确定性前缀非常有效，对动态生成的前缀效果有限。</p>
+<hr />
+<h2 id="98-chunked-prefill-token">9.8 Chunked Prefill：平衡首 token 延迟</h2>
+<p>长 Prompt 的 Prefill 会独占 GPU 很长时间，期间 Decode 请求只能等待（TTFT，首 token 时间变长）。</p>
+<p><strong>Chunked Prefill</strong>：把长 Prompt 切成若干 Chunk，与 Decode 步交替执行：</p>
+<div class="codehilite"><pre><span></span><code>不用 Chunked Prefill：
+  [────────────── Prefill 8K token ──────────────][Decode]...
+  ← Decode 请求等待 8K token 的 Prefill 时间
+
+用 Chunked Prefill（chunk_size=512）：
+  [Prefill chunk 0][Decode B][Prefill chunk 1][Decode B][Prefill chunk 2]...
+  ← Decode 每 512 token Prefill 后就能插入，延迟降低 16×
+</code></pre></div>
+
+<p>代价：Prefill 的总计算量不变，但被打散后，每次 GEMM 的形状更小（算术强度稍有下降）。实际权衡取决于对 TTFT（首 token 延迟）和 TBT（token 间隔时间）的要求。</p>
+<hr />
+<h2 id="99">9.9 推理框架的算子层支持总结</h2>
+<table>
+<thead>
+<tr>
+<th>算子/机制</th>
+<th>vLLM</th>
+<th>SGLang</th>
+<th>TRT-LLM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PagedAttention KV Cache</td>
+<td>✓（原创）</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>连续批处理</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>FlashAttention 2/3</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>投机采样</td>
+<td>✓（Medusa, Draft）</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>RadixAttention / 前缀缓存</td>
+<td>前缀缓存</td>
+<td>RadixAttention（原创）</td>
+<td>部分</td>
+</tr>
+<tr>
+<td>Chunked Prefill</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>FP8 / INT8 量化</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓（原生）</td>
+</tr>
+<tr>
+<td>MoE Grouped GEMM</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="910">9.10 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>推理的独特挑战（与训练根本不同）：
+
+Decode 阶段：M=1 的 GEMM，算术强度 ≈ 1，严重 Memory Bound
+  → 提速核心：增大 batch size、量化减少读写量
+
+KV Cache：显存是瓶颈，管理是难点
+  → PagedAttention：分页管理，消灭碎片，支持共享前缀
+
+连续批处理：动态调度，每步后弹出完成请求、加入新请求
+  → GPU 利用率从 ~30% 提升到 ~70%+
+
+投机采样：小模型 Draft + 大模型并行验证
+  → 带宽利用率提升 2–3×（并行验证 vs 串行 Decode）
+
+RadixAttention：前缀 KV Cache 复用
+  → 系统提示重复使用时节省大量 Prefill 计算
+
+Chunked Prefill：Prefill 和 Decode 穿插执行
+  → 降低长 Prompt 请求对其他请求的 TTFT 影响
+
+整个系列的核心主线：
+  硬件 → 屋顶线 → GEMM → FlashAttention → 融合 → 量化 → Triton → MoE → 推理
+  贯穿一条线：Memory Bound 是大模型的根本瓶颈，
+  所有优化手段本质上都是减少 HBM 读写或提高数据复用率。
+</code></pre></div>
+
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://arxiv.org/abs/2309.06180">vLLM 论文：Efficient Memory Management for LLM Serving with PagedAttention</a>（Kwon et al., 2023）<br />
+- <a href="https://arxiv.org/abs/2312.07104">SGLang 论文：Efficient Execution of Structured Language Model Programs</a><br />
+- <a href="https://arxiv.org/abs/2211.17192">Speculative Decoding</a>（Leviathan et al., 2022）<br />
+- <a href="https://arxiv.org/abs/2401.10774">Medusa: Simple Framework for Accelerating LLM Generation with Multiple Decoding Heads</a><br />
+- <a href="https://www.usenix.org/conference/osdi22/presentation/yu">Continuous Batching（Orca 论文）</a>（Yu et al., 2022）<br />
+- <a href="https://github.com/NVIDIA/TensorRT-LLM">TRT-LLM 文档</a>（NVIDIA 官方推理框架）</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 · 训推一致性：算子层的数值对齐问题</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="11">11 · 训推一致性：算子层的数值对齐问题</h1>
+<blockquote>
+<p><strong>前置</strong>：<a href="06-量化算子.html">06 章（量化算子）</a>、<a href="10-RL算子.html">10 章（RL 算子）</a><br />
+<strong>关联</strong>：<a href="../强化学习训练框架/04-训推一致性.html">强化学习训练框架 04-训推一致性</a>（该篇讲系统架构层；本章专注 kernel 和数值层）<br />
+<strong>目标</strong>：搞清楚同一份权重在训练和推理两端为什么会算出不同的数，每种差异的来源在哪一层，以及各层对应的 kernel 级解法。</p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>浮点非结合性</strong>（Floating-point Non-associativity）—— <code>(a+b)+c ≠ a+(b+c)</code>，浮点加法不满足结合律，累加顺序不同结果就不同，是训推数值差异的底层根源。<br />
+<strong>QAT</strong>（Quantization-Aware Training，量化感知训练）—— 在训练前向传播里插入 FakeQuantize 算子，让模型在训练期间就"见到"推理时的量化噪声，从而自适应。<br />
+<strong>STE</strong>（Straight-Through Estimator，直通估计器）—— QAT 中量化操作的梯度近似：前向做量化，反向当量化不存在，梯度直通。<br />
+<strong>Absorptive MLA</strong>（吸收式多头潜在注意力）—— MLA 在 Decode 阶段把低秩 KV 压缩矩阵吸收进 W_Q/W_K/W_V，等价于 MQA，改变了算子计算路径。<br />
+<strong>Keep Routing / R3</strong>（路由重放）—— MoE 推理时记录每个 token 的 Expert 路由决策，训练时按原路由重放，避免训练和推理的 Expert 累加顺序不同。<br />
+<strong>bitwise reproducibility</strong>（逐位可复现）—— 训练和推理对同一输入产生完全相同的二进制结果，是最严格的一致性标准，实现代价极高。<br />
+<strong>TITO</strong>（Token-In-Token-Out，令牌级输入输出）—— 推理引擎直接把 token 序列传给训练引擎，不经过 detokenize → retokenize，消除分词边界引入的差异。</p>
+<hr />
+<h2 id="111">11.1 问题的本质</h2>
+<p>训练和推理用的是同一份权重，理论上对同一个输入应该得到完全相同的输出。实际上它们不同，而且这个差异会直接影响 RL 训练的 loss：</p>
+<div class="codehilite"><pre><span></span><code>PPO loss 中的 ratio：
+  ratio = exp(log_prob_new - log_prob_old)
+         ↑ 训练引擎算的     ↑ 推理引擎算的
+
+ratio 本该等于 1（同样的权重，同样的输入）
+实际上 ratio ∈ [0.85, 1.15] 是很常见的
+  → 梯度被无端放大或缩小 15%
+  → 不是策略变了，是数值噪声
+</code></pre></div>
+
+<p>这个问题不会报错，不会触发 NaN，只是悄悄让训练效果变差，或者某一步梯度爆炸。</p>
+<p>openPangu 的技术报告里把不一致的来源分成三类（A：定义失配，B：计算图重排，C：硬件非确定性），本章从算子层把每类的具体表现和 kernel 级解法展开。</p>
+<hr />
+<h2 id="112-a">11.2 精度格式差异（A 类：定义失配）</h2>
+<p>最直接的来源：训练用 BF16，推理用量化格式（INT8、FP8、INT4）。</p>
+<h3 id="1121">11.2.1 量化误差的累积</h3>
+<div class="codehilite"><pre><span></span><code>训练时：y = x @ W.to(bf16)
+推理时：y = x @ dequant(W_int8, scale)
+
+单层误差：
+  相对误差 ~ 2^{-(bits-1)} = 1/127 ≈ 0.8%（INT8）
+
+N 层 Transformer 后的累积：
+  误差不独立，方向可能对齐，累积到约 0.8% × √N（随机游走近似）
+  N=32 层：累积误差 ~ 4.5%  → ratio 偏移可达 1.045，梯度放大 4.5%
+  N=80 层（LLaMA-3 70B）：~ 7%  → ratio 偏移可达 1.07
+</code></pre></div>
+
+<h3 id="1122-qat">11.2.2 QAT：在训练里插入量化噪声</h3>
+<p>解法是让模型在训练时就见到推理的量化误差，参数自动适应：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FakeQuantizeINT8</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">autograd</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">scale</span><span class="p">):</span>
+        <span class="c1"># 前向：模拟 INT8 量化的四舍五入误差</span>
+        <span class="n">x_scaled</span> <span class="o">=</span> <span class="n">x</span> <span class="o">/</span> <span class="n">scale</span>
+        <span class="n">x_clamp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="n">x_scaled</span><span class="p">,</span> <span class="o">-</span><span class="mi">128</span><span class="p">,</span> <span class="mi">127</span><span class="p">)</span>
+        <span class="n">x_round</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">x_clamp</span><span class="p">)</span>          <span class="c1"># ← 引入量化误差</span>
+        <span class="k">return</span> <span class="n">x_round</span> <span class="o">*</span> <span class="n">scale</span>                   <span class="c1"># 反量化回 FP16</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">backward</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="n">grad_output</span><span class="p">):</span>
+        <span class="c1"># 反向：STE，梯度直通，当量化不存在</span>
+        <span class="k">return</span> <span class="n">grad_output</span><span class="p">,</span> <span class="kc">None</span>                 <span class="c1"># ← 梯度不经过 round</span>
+
+<span class="c1"># 在每层 Linear 的权重上包一层 FakeQuantize</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">QATLinear</span><span class="p">(</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+        <span class="n">scale</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">weight</span><span class="o">.</span><span class="n">abs</span><span class="p">()</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">/</span> <span class="mf">127.0</span>
+        <span class="n">w_fq</span> <span class="o">=</span> <span class="n">FakeQuantizeINT8</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">weight</span><span class="p">,</span> <span class="n">scale</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">F</span><span class="o">.</span><span class="n">linear</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">w_fq</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">bias</span><span class="p">)</span>
+</code></pre></div>
+
+<p>训练完成后，权重已经"习惯"了 INT8 的噪声，用真正的 INT8 做推理时误差更小，ratio 偏移也更小。</p>
+<h3 id="1123-fp8">11.2.3 FP8 端到端训练（最彻底的对齐方式）</h3>
+<p>DeepSeek-V3 采用的路线：<strong>把训练前向也换成 FP8</strong>，使训练和推理用完全相同的数值格式：</p>
+<div class="codehilite"><pre><span></span><code>训练阶段：
+  前向 GEMM：FP8（E4M3）← 和推理完全一致
+  反向 GEMM：BF16（梯度精度不降）
+  权重更新：FP32 Master Weight
+
+推理阶段：
+  GEMM：FP8（E4M3）← 和训练前向一致
+
+数值差异：0（两端同一个 kernel，同一种精度）
+</code></pre></div>
+
+<p>代价：需要精细管理每层的动态 scale factor（权重 scale、激活 scale 分开维护），以及处理 FP8 溢出（E4M3 动态范围只有 ±448）。</p>
+<hr />
+<h2 id="113-b">11.3 算子计算路径差异（B 类：计算图重排）</h2>
+<p>即使精度相同，计算图的不同也会导致浮点结果不同。</p>
+<h3 id="1131-mla-absorptive">11.3.1 MLA 的 Absorptive 路径</h3>
+<p>MLA（Multi-head Latent Attention，多头潜在注意力）是 DeepSeek 提出的 KV Cache 压缩方案。它的核心是把 K/V 投影分解为低秩矩阵：</p>
+<div class="codehilite"><pre><span></span><code>标准 MHA：
+  K = X @ W_K，V = X @ W_V
+  KV Cache 存 K, V，大小 = 2 × d_model × L tokens
+
+MLA（Non-Absorptive，训练/Prefill 模式）：
+  c_KV = X @ W_down    ← 压缩到低秩 r &lt;&lt; d_model
+  K = c_KV @ W_K_up    ← 从低秩还原
+  V = c_KV @ W_V_up
+  KV Cache 只存 c_KV，大小 = r × L tokens（r/d_model ≈ 1/8 的压缩比）
+
+MLA（Absorptive，Decode 推理模式）：
+  把两次矩阵乘合并：W_K_eff = W_down @ W_K_up
+  K = X @ W_K_eff       ← 一次 GEMM，等价于 MQA
+  不需要存 c_KV，直接存等效的低秩 K
+</code></pre></div>
+
+<p><strong>关键问题</strong>：Non-Absorptive 是 <code>(X @ W_down) @ W_K_up</code>，Absorptive 是 <code>X @ (W_down @ W_K_up)</code>。</p>
+<p>矩阵乘法满足结合律，数学上完全等价。但 FP16/BF16 的矩阵乘法<strong>不完全满足结合律</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Non-Absorptive：
+  step 1: c = X @ W_down      ← X: (B,S,H) × W_down: (H,r)，中间有 r 个数
+  step 2: K = c @ W_K_up      ← c: (B,S,r) × W_K_up: (r,H&#39;)
+
+Absorptive：
+  W_K_eff = W_down @ W_K_up   ← 预计算合并后的权重 (H,H&#39;)
+  K = X @ W_K_eff              ← 一次 GEMM
+
+两条路的浮点累加序列不同 → K 的末位不同 → Attention 分数不同 → 输出不同
+差异量级：约 1–2 ULP（最低有效位），看起来极小，但累积 80 层后会可见
+</code></pre></div>
+
+<p><strong>这不是 bug，而是性能优化的必然代价</strong>：Decode 时必须用 Absorptive 路径才能用 MQA 的 KV Cache，训练时用 Non-Absorptive 路径才能正确优化低秩矩阵。解决方法是接受这个差异，在 IS 修正层（见 11.6 节）兜底，而不是强制两端走同一路径。</p>
+<h3 id="1132-moe-expert">11.3.2 MoE Expert 累加顺序</h3>
+<p>MoE 的输出是多个 Expert 输出的加权和：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">output</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">gate_score</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">*</span> <span class="n">expert_output</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">top_k_experts</span><span class="p">)</span>
+</code></pre></div>
+
+<p>问题：Expert 选出后以什么顺序累加？</p>
+<div class="codehilite"><pre><span></span><code>训练侧（常见实现）：按 Expert-ID 升序排列后累加
+  output = g[2] * e[2] + g[5] * e[5] + g[7] * e[7]  （Expert 2,5,7 按序）
+
+推理侧（性能优化后）：按 gate_score 降序排列后累加（分数高的先加）
+  output = g[5] * e[5] + g[7] * e[7] + g[2] * e[2]  （分数 5&gt;7&gt;2）
+
+浮点加法不满足交换律（严格说来），加法顺序不同 → 结果不同
+对 BF16：差异约在 10^{-3} 量级（相对误差）
+</code></pre></div>
+
+<h3 id="1133">11.3.3 并行切分对累加顺序的影响</h3>
+<p>训练用 TP=8（张量并行，8 路切分），推理用 TP=4，两者的 AllReduce 通信方式不同：</p>
+<div class="codehilite"><pre><span></span><code>TP=8 时的 GEMM 后 AllReduce：
+  每卡算 1/8 的矩阵乘结果，然后 sum across 8 卡
+  累加顺序：由 Ring-AllReduce 的环形顺序决定
+
+TP=4 时：
+  每卡算 1/4，然后 sum across 4 卡
+  累加的中间值和顺序完全不同
+
+→ 即使权重一样，TP 不同就会引入数值差异
+</code></pre></div>
+
+<hr />
+<h2 id="114-c">11.4 硬件非确定性（C 类）</h2>
+<p>最难处理的一类：即使代码完全一样，不同运行之间结果也可能不同。</p>
+<h3 id="1141-splitk-gemm">11.4.1 SplitK GEMM</h3>
+<p>GEMM 可以沿 K 轴并行化（多个 SM 分别计算部分和，再 Reduce 合并）。问题在于 SM 完成的顺序是不确定的，AtomicAdd 收集结果时的累加顺序因此随机：</p>
+<div class="codehilite"><pre><span></span><code>SplitK=4 时：
+  SM 0 算 A[:,0:K/4] @ B[0:K/4,:]
+  SM 1 算 A[:,K/4:K/2] @ B[K/4:K/2,:]
+  SM 2 算 A[:,K/2:3K/4] @ ...
+  SM 3 算 A[:,3K/4:K] @ ...
+
+AtomicAdd 汇总：
+  假设 SM 3 先完成 → 先加 SM 3 的结果
+  下次运行 SM 1 先完成 → 先加 SM 1 的结果
+
+→ 相同的输入，相同的代码，每次运行结果不同（最后几位差异）
+</code></pre></div>
+
+<p><strong>解法</strong>：使用 deterministic GEMM 模式，禁用 SplitK 的 AtomicAdd，改用 reduction tree（确定性的树形累加）。代价是性能降低约 10–30%（取决于矩阵大小）。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># PyTorch 的确定性模式</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">use_deterministic_algorithms</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">backends</span><span class="o">.</span><span class="n">cudnn</span><span class="o">.</span><span class="n">deterministic</span> <span class="o">=</span> <span class="kc">True</span>
+
+<span class="c1"># 这会强制 CUDA 后端选择确定性的 GEMM 实现</span>
+<span class="c1"># 某些情况下会触发 RuntimeError，需要检查哪些算子不支持确定性模式</span>
+</code></pre></div>
+
+<h3 id="1142-flash-attention">11.4.2 Flash Attention 的确定性问题</h3>
+<p>FA2/FA3 的反向传播用了 AtomicAdd 来汇总多个 Block 对 dK、dV 的梯度贡献，默认是非确定性的：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># flash_attn 的确定性反向（flash-attn &gt;= 2.3）</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">flash_attn</span><span class="w"> </span><span class="kn">import</span> <span class="n">flash_attn_func</span>
+
+<span class="n">output</span> <span class="o">=</span> <span class="n">flash_attn_func</span><span class="p">(</span><span class="n">q</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">deterministic</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="c1"># deterministic=True：用确定性的 reduction，不用 AtomicAdd</span>
+<span class="c1"># 代价：反向传播速度降低约 10–15%</span>
+</code></pre></div>
+
+<h3 id="1143-allreduce">11.4.3 AllReduce 拓扑选择</h3>
+<p>在分布式训练中，AllReduce 的结果取决于通信拓扑（Ring / Tree / Recursive Halving-Doubling），而框架可能根据当前网络状态动态选择拓扑：</p>
+<div class="codehilite"><pre><span></span><code>Ring AllReduce（8 卡）：
+  累加顺序固定为环形，结果确定
+
+Tree AllReduce：
+  二叉树归约，不同根节点分配导致累加顺序变化
+
+动态选择 → 两次运行可能用不同拓扑 → 累加顺序不同 → 结果不同
+</code></pre></div>
+
+<p><strong>解法</strong>：固定 AllReduce 算法，禁用 NCCL 的自动算法选择：</p>
+<div class="codehilite"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">NCCL_ALGO</span><span class="o">=</span>Ring<span class="w">          </span><span class="c1"># 固定使用 Ring 算法</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NCCL_PROTO</span><span class="o">=</span>Simple<span class="w">       </span><span class="c1"># 禁用 LL128 等低延迟协议（这些改变累加顺序）</span>
+</code></pre></div>
+
+<hr />
+<h2 id="115">11.5 算子融合带来的差异</h2>
+<p>训练和推理对同一组算子可能使用不同的融合策略，融合策略改变了中间值的精度。</p>
+<h3 id="1151-layernorm-rmsnorm">11.5.1 LayerNorm / RMSNorm 的融合</h3>
+<div class="codehilite"><pre><span></span><code>不融合（分两步）：
+  hidden = linear(x)    ← BF16 输出
+  out = rms_norm(hidden) ← 读入 BF16，内部转 FP32 做 sum，写出 BF16
+
+融合版本（一个 kernel 里完成）：
+  linear 的输出直接在寄存器里（不写回 HBM），以 FP32 传给 norm
+  整个 linear + rms_norm 共享一个 FP32 累加器
+
+差异：中间 hidden 的精度不同（BF16 vs FP32）→ norm 的输入精度不同 → 输出有差异
+</code></pre></div>
+
+<p><strong>解法</strong>：训练和推理使用完全相同的融合 kernel。torch.compile 可以做到这一点：同一段 Python 代码，TorchInductor 对训练和推理生成同一个 Triton kernel，融合策略一致。</p>
+<h3 id="1152-attention-bias">11.5.2 Attention Bias 的处理位置</h3>
+<p>causal mask 可以在 softmax 之前加（训练端常见），也可以在 FlashAttention kernel 内部处理（推理端）：</p>
+<div class="codehilite"><pre><span></span><code>训练端（单独 kernel）：
+  S = Q @ K^T / sqrt(d)
+  S += causal_mask          ← 单独一次 element-wise 写 HBM
+  out = softmax(S) @ V
+
+FlashAttention（fused kernel）：
+  在 SRAM 里做 S = Q_tile @ K_tile^T / sqrt(d)
+  立即加 mask（不写 HBM）
+  立即做在线 softmax
+  立即乘 V_tile
+
+差异来源：mask 加法发生在 BF16 还是 FP32 累加器里，以及是否有中间写回
+量级：极小（&lt; 1e-4），通常可忽略，但严格 bitwise 一致性时要处理
+</code></pre></div>
+
+<hr />
+<h2 id="116">11.6 分层解法汇总</h2>
+<p>不同层次的解法有不同的代价和效果：</p>
+<div class="codehilite"><pre><span></span><code>算法层（最便宜，但不根治）
+  ↓
+接口层（中等代价，消除分词边界问题）
+  ↓
+数值格式层（中等代价，消除大部分精度差异）
+  ↓
+Kernel 层（最昂贵，但可以做到 bitwise 一致）
+</code></pre></div>
+
+<h3 id="1161-is">11.6.1 算法层：IS 修正（兜底）</h3>
+<p>承认 ratio ≠ 1，用重要性采样（Importance Sampling）修正：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># PPO with IS correction</span>
+<span class="n">ratio</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">log_prob_new</span> <span class="o">-</span> <span class="n">log_prob_old</span><span class="p">)</span>
+
+<span class="c1"># 截断式 IS（TIS）：限制单个 token 的权重</span>
+<span class="n">ratio_clipped</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="n">ratio</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-</span> <span class="n">epsilon</span><span class="p">,</span> <span class="mi">1</span> <span class="o">+</span> <span class="n">epsilon</span><span class="p">)</span>
+
+<span class="c1"># CISPO：裁剪重要性权重本身，而不是 ratio × advantage</span>
+<span class="c1"># 当 ratio 偏离 1 超过阈值时，直接 mask 掉该 token</span>
+<span class="n">mask</span> <span class="o">=</span> <span class="p">(</span><span class="n">ratio</span> <span class="o">&gt;</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="p">(</span><span class="mi">1</span> <span class="o">+</span> <span class="n">delta</span><span class="p">))</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">ratio</span> <span class="o">&lt;</span> <span class="p">(</span><span class="mi">1</span> <span class="o">+</span> <span class="n">delta</span><span class="p">))</span>
+<span class="n">loss</span> <span class="o">=</span> <span class="o">-</span><span class="p">(</span><span class="n">ratio_clipped</span> <span class="o">*</span> <span class="n">advantage</span> <span class="o">*</span> <span class="n">mask</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+</code></pre></div>
+
+<p>IS 修正能兜住数值差异带来的梯度放大问题，但不消除差异本身。当差异系统性地偏向一个方向时（比如 MLA 的 Absorptive 路径始终让 ratio &lt; 1），IS 会系统性地降低某类 token 的学习信号。</p>
+<h3 id="1162-tito">11.6.2 接口层：TITO</h3>
+<p>把 tokenize/detokenize 从训推接口里去掉，直接传 token ID 序列：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 错误做法（Text-In-Text-Out）</span>
+<span class="n">response_text</span> <span class="o">=</span> <span class="n">inference_engine</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="n">prompt_text</span><span class="p">)</span>
+<span class="n">token_ids</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">response_text</span><span class="p">)</span>      <span class="c1"># ← 可能和原来的 token_ids 不同！</span>
+<span class="n">log_probs_train</span> <span class="o">=</span> <span class="n">policy</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">token_ids</span><span class="p">)</span>
+
+<span class="c1"># 正确做法（Token-In-Token-Out，TITO）</span>
+<span class="n">token_ids</span><span class="p">,</span> <span class="n">log_probs_rollout</span> <span class="o">=</span> <span class="n">inference_engine</span><span class="o">.</span><span class="n">generate_with_logprobs</span><span class="p">(</span><span class="n">prompt_ids</span><span class="p">)</span>
+<span class="n">log_probs_train</span> <span class="o">=</span> <span class="n">policy</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">token_ids</span><span class="p">)</span>      <span class="c1"># ← 同一份 token_ids，无分词差异</span>
+</code></pre></div>
+
+<p>TITO 不需要修改任何 kernel，是最便宜的一条改进，消除了分词边界引入的序列差异。</p>
+<h3 id="1163-fp8-qat">11.6.3 数值格式层：FP8 端到端 / QAT</h3>
+<p>见 11.2 节，FP8 训练是最彻底的格式对齐方式。</p>
+<h3 id="1164-kernel-kernel">11.6.4 Kernel 层：确定性 kernel 库</h3>
+<p>DeepSeek 的解法：构建一套 <strong>批次不变（batch-invariant）且确定性的 kernel 库</strong>，保证：<br />
+- 同一个输入，批次大小改变，结果不变（不用 SplitK 这类依赖批次的优化）<br />
+- 同一个输入，两次运行结果完全相同（不用 AtomicAdd）</p>
+<p>实现代价：需要为每个关键算子（GEMM、Attention、AllReduce）维护两套实现：一套高性能的（训练用），一套确定性的（用于需要 bitwise 对齐的场景）。</p>
+<div class="codehilite"><pre><span></span><code>批次不变性要求：
+  GEMM 的分块参数（BM, BN, BK）不随 batch 变化
+  SplitK 的切分数固定，或完全不用 SplitK
+  Reduction 用确定性的树形结构
+
+确定性要求：
+  禁用所有 AtomicAdd
+  AllReduce 固定算法和拓扑
+  Flash Attention 用 deterministic=True
+
+代价：性能下降约 10–25%（和&quot;不惜代价高性能&quot;模式相比）
+适用场景：专门用于生成 log_prob_old 的 Rollout 路径
+</code></pre></div>
+
+<hr />
+<h2 id="117">11.7 三个维度的算子差异汇总</h2>
+<p>把前两章和本章的内容整合成一张完整的横切面图：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Compute Bound 算子</th>
+<th>Memory Bound 算子</th>
+<th>独有算子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练</strong></td>
+<td>dW GEMM（M=B×T，Compute Bound）</td>
+<td>AdamW（读写 4 份参数）</td>
+<td>梯度 AllReduce、激活存储、词表 Cross-Entropy</td>
+</tr>
+<tr>
+<td><strong>推理</strong></td>
+<td>Prefill GEMM（M=T）</td>
+<td>Decode GEMM（M=1，极端 Memory Bound）</td>
+<td>PagedAttention、KV Cache 管理、量化 GEMM</td>
+</tr>
+<tr>
+<td><strong>RL</strong></td>
+<td>Re-forward GEMM、Reference Prefill</td>
+<td>Rollout Decode（最主要的时间消耗）</td>
+<td>LogProb 收集、GAE、PPO clip、Weight Offload</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>不一致来源</th>
+<th>类别</th>
+<th>量级</th>
+<th>算子层解法</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>权重量化（BF16→INT8/FP4）</td>
+<td>A 类</td>
+<td>0.8%/层，累积 4–7%</td>
+<td>QAT / FP8 端到端</td>
+<td>训练改造成本高</td>
+</tr>
+<tr>
+<td>MLA Absorptive/Non-Absorptive</td>
+<td>B 类</td>
+<td>&lt; 1e-3/层，累积可见</td>
+<td>IS 修正兜底（结构性，不可消除）</td>
+<td>接受差异</td>
+</tr>
+<tr>
+<td>MoE Expert 累加顺序</td>
+<td>B 类</td>
+<td>&lt; 1e-3</td>
+<td>Keep Routing / R3 路由重放</td>
+<td>接口契约改造</td>
+</tr>
+<tr>
+<td>并行切分（TP 不同）</td>
+<td>B 类</td>
+<td>&lt; 1e-3/层</td>
+<td>训推用相同 TP 度</td>
+<td>推理效率损失</td>
+</tr>
+<tr>
+<td>算子融合策略不同</td>
+<td>B 类</td>
+<td>&lt; 1e-4</td>
+<td>torch.compile 统一代码路径</td>
+<td>编译时间增加</td>
+</tr>
+<tr>
+<td>SplitK AtomicAdd</td>
+<td>C 类</td>
+<td>&lt; 1e-4，随机</td>
+<td>deterministic GEMM</td>
+<td>性能 -10~30%</td>
+</tr>
+<tr>
+<td>Flash Attention 反向 AtomicAdd</td>
+<td>C 类</td>
+<td>&lt; 1e-4，随机</td>
+<td><code>deterministic=True</code></td>
+<td>反向 -10~15%</td>
+</tr>
+<tr>
+<td>NCCL AllReduce 拓扑</td>
+<td>C 类</td>
+<td>&lt; 1e-4，随机</td>
+<td>固定 <code>NCCL_ALGO=Ring</code></td>
+<td>通信效率小损</td>
+</tr>
+<tr>
+<td>分词边界（detokenize→retokenize）</td>
+<td>接口</td>
+<td>序列不同，差异巨大</td>
+<td>TITO</td>
+<td>零成本</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="118">11.8 实践中的优先级</h2>
+<p>不是所有不一致都值得修，按实际收益排序：</p>
+<p><strong>第一优先级（几乎总是值得做）</strong>：<br />
+- TITO —— 零代价，消除分词差异</p>
+<p><strong>第二优先级（RL 训练有明显收益）</strong>：<br />
+- IS 修正（CISPO/TIS）—— 在 loss 层面兜住所有剩余差异<br />
+- 禁用 SplitK（或启用 deterministic GEMM）—— 消除随机性，让训练可复现</p>
+<p><strong>第三优先级（有精度要求时）</strong>：<br />
+- QAT —— 如果推理用 INT8/FP4，训练时加 FakeQuantize<br />
+- FP8 端到端训练 —— 如果训练本身就在 FP8 下进行（DeepSeek 路线）</p>
+<p><strong>只在极端场景需要</strong>：<br />
+- Keep Routing / R3 —— 如果 MoE 规模大，且实测到路由顺序差异影响训练<br />
+- 全量 bitwise 确定性 kernel 库 —— 性能代价大，只有超大规模 MoE + 异步 RL 才值得</p>
+<hr />
+<h2 id="119">11.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>训推数值差异的三层根源：
+
+A 类（定义失配）：精度格式不同
+  → QAT 或 FP8 端到端训练
+
+B 类（计算图重排）：浮点非结合性
+  → MLA：结构性，IS 修正兜底
+  → MoE：Keep Routing 重放累加顺序
+  → 融合策略：torch.compile 统一代码路径
+
+C 类（硬件非确定性）：AtomicAdd 顺序随机
+  → deterministic GEMM + FA deterministic=True
+  → 固定 NCCL_ALGO=Ring
+
+接口层快赢：
+  TITO：零代价，消除分词边界引起的序列差异
+  IS 修正：算法层兜底，不消除差异，但限制梯度放大
+
+严格性层次：
+  IS 修正 &lt; TITO &lt; QAT &lt; deterministic kernel &lt; FP8 端到端
+  越往右越彻底，代价也越高
+
+实践建议：
+  先上 TITO + IS 修正，观察 ratio 分布
+  ratio 标准差 &gt; 0.1 时考虑下一层解法
+  PCC(log_prob_train, log_prob_rollout) &gt; 0.99 时已经足够
+</code></pre></div>
+
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://arxiv.org/abs/2505.09439">openPangu-2.0-Pro 技术报告 §10.3</a>（训推一致性三分类框架）<br />
+- <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a>（FP8 训练策略、Keep Routing、batch-invariant kernel）<br />
+- <a href="https://arxiv.org/abs/2405.04434">MLA 原始论文（DeepSeek-V2）</a>（Absorptive 路径推导）<br />
+- <a href="https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/flash_attn_interface.py">Flash Attention 确定性反向</a>（<code>deterministic</code> 参数）<br />
+- <a href="../强化学习训练框架/04-训推一致性.html">强化学习训练框架 04-训推一致性</a>（系统架构层的视角，与本章互补）</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

@@ -19,6 +19,8 @@
 | [07 · Triton 编程](07-Triton编程.md) | 编程模型、写 kernel、调优、与 CUDA 对比 | 用 Python 写 GPU kernel 的正确方式 |
 | [08 · MoE 算子与通信](08-MoE算子与通信.md) | All-to-All、Expert Parallel、Grouped GEMM | MoE 为什么难、难在哪 |
 | [09 · 推理侧算子](09-推理侧算子.md) | PagedAttention、连续批处理、投机采样、RadixAttention | 从训练到服务，问题完全不同 |
+| [10 · RL 算子](10-RL算子.md) | Rollout 算子、GAE、PPO clip、GRPO、多模型内存争用 | RL 训练和推理算子的差异在哪 |
+| [11 · 训推一致性：算子层](11-训推一致性算子层.md) | QAT/FP8 端到端、MLA Absorptive、MoE 路由重放、确定性 kernel | 同一份权重为什么算出不同的数 |
 | [附 · 速查表](附-速查表.md) | 硬件参数、关键公式、工具链对照 | 随时翻查 |
 
 ---
@@ -28,7 +30,9 @@
 **从零入门**：01 → 02 → 03 → 04 → 05  
 **关注推理部署**：02 → 04 → 06 → 09  
 **要写自定义 kernel**：01 → 02 → 03 → 07  
-**做 MoE 训练**：03 → 08  
+**做 MoE 训练**：03 → 08
+**做 RL 训练**：09 → 10 → 11
+**排查训推数值差异**：06 → 11  
 
 ---
 

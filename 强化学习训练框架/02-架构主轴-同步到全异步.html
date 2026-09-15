@@ -552,6 +552,40 @@ config/  shell/  unittest/
 
 <p>真正有意思的是它的调度策略——<strong>Windowed FIFO（窗口化先进先出）</strong>：</p>
 <p>✅ 队列 <code>Q = [T_0, T_1, ..., T_{N-1}]</code>，维护一个头指针 <code>i</code>，窗口是 <code>[T_i, T_{i+W-1}]</code>。<strong>窗口内</strong>谁先完成用谁（贪心，不等顺序），<strong>跨窗口边界</strong>必须严格按序。实践取 <strong><code>W = 0.3N</code></strong>。</p>
+<p>⚠️ 这条规则太抽象，用一个具体例子走一遍。设 N = 10 道题，窗口 <code>W = 3</code>，各题生成耗时差别极大：</p>
+<div class="codehilite"><pre><span></span><code>T_0: 60s   T_1: 5s   T_2: 8s   T_3: 5s   T_4: 50s   T_5: 6s  ...
+  ↑ 长尾
+</code></pre></div>
+
+<p>头指针 <code>i = 0</code>，窗口 = <code>[T_0, T_1, T_2]</code>，这三道题同时在跑：</p>
+<table>
+<thead>
+<tr>
+<th>时刻</th>
+<th>发生什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>t=0</code></td>
+<td>窗口 <code>[T_0 T_1 T_2]</code> 三个一起启动。T_3 想进来？门关着</td>
+</tr>
+<tr>
+<td><code>t=5s</code></td>
+<td>T_1 完成 → <strong>立刻交付</strong>训练侧（窗口内不等顺序，这就是「贪心」的部分）</td>
+</tr>
+<tr>
+<td><code>t=8s</code></td>
+<td>T_2 完成 → 立刻交付。窗口里只剩 T_0 在磨</td>
+</tr>
+<tr>
+<td><code>t=60s</code></td>
+<td>T_0 完成 → 交付，头指针前进到 3，窗口滑到 <code>[T_3 T_4 T_5]</code>，三个一起启动</td>
+</tr>
+</tbody>
+</table>
+<p>关键在 <code>t=8s → t=60s</code> 这一段：<strong>T_3 明明只要 5 秒，却必须干等 T_0</strong>。这是故意的，就是「跨窗口边界严格按序」的代价。</p>
+<p>这个「等」买到的是<strong>陈旧度的硬上界</strong>：任何一条进入训练的轨迹，它出发时的权重与当前权重最多差一个窗口（<code>W = 0.3N</code>，约三分之一步）。全异步里这个差距没有上界。顺带还堵住了另一个坑——完全贪心下长难题会被系统性地挤出 batch，<strong>数据分布会偏</strong>。</p>
 <p>⚠️ 这就是在两个极端之间<strong>显式插值</strong>：</p>
 <div class="codehilite"><pre><span></span><code>W = 1  ──────────────────► 严格 FIFO：完全按顺序，长尾全暴露
                               ↑

@@ -652,6 +652,143 @@ RL 的整体 MFU 低（通常 5–15%）
 - <a href="https://github.com/volcengine/verl">veRL: Volcano Engine RL for LLMs</a>（开源 RL 框架，含 PPO/GRPO 实现）<br />
 - <a href="https://github.com/OpenRLHF/OpenRLHF">OpenRLHF</a>（Ray-based RL 框架，Worker 分离架构）<br />
 - <a href="https://github.com/mgmalek/efficient_cross_entropy">Flash Cross-Entropy</a>（大词表 cross-entropy 的 kernel 优化）</p>
+<hr />
+<h2 id="108-miles-slime">10.8 MILES 相比 SLIME 做了什么</h2>
+<blockquote>
+<p><strong>背景</strong>：SLIME（Simple Lightweight Infrastructure for Model Exploration）是 LMSYS 开源的轻量 RL 后训练框架，证明了"极简设计也能跑通 RL 训练"。MILES（Model Infrastructure for Large-scale Enterprise Systems）是其生产级续作，针对大规模 MoE 模型补充了三项关键工程改进。</p>
+</blockquote>
+<h3 id="1081-truly-on-policy">10.8.1 真正在策略训练（Truly On-Policy）</h3>
+<p>SLIME 解决了"同一引擎的确定性"问题，但训练端（Megatron/FSDP）和推理端（SGLang）仍然是两套独立的 kernel 路径，对同一输入会算出不同的 log-prob。</p>
+<p>这个差异有多大？以 K3 KL 散度衡量（见第 11 章对 KL 近似公式的分析）：</p>
+<div class="codehilite"><pre><span></span><code>Dense 模型（Qwen3-4B）：  K3 KL ≈ 10⁻⁵ ~ 10⁻³  通常不造成崩溃
+MoE 模型（Qwen30B-A3B）：K3 KL ≈ 10⁻³ ~ 10⁻¹  在特定 checkpoint 可复现地崩溃
+</code></pre></div>
+
+<p>MoE 中 KL 更大的原因：logit 的微小差异就会改变 topk Expert 路由决策，两端激活不同的 Expert，累积误差被放大。</p>
+<p>MILES 的解法是构建一套<strong>跨训推一致的 kernel 栈</strong>，把训练侧和推理侧的算子路径对齐到 bitwise 级别：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>选用的实现</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FlashAttention-3</td>
+<td>FA3（同时用于 Prefill 和 Decode）</td>
+<td>两端用同一个 Attention kernel</td>
+</tr>
+<tr>
+<td>MatMul</td>
+<td>DeepGEMM（批次无关的确定性实现）</td>
+<td>消灭 SplitK AtomicAdd 带来的随机性</td>
+</tr>
+<tr>
+<td>RMSNorm</td>
+<td>batch-invariant kernel（Thinking Machines Lab）</td>
+<td>归一化结果不随 batch 大小变化</td>
+</tr>
+<tr>
+<td>算子融合</td>
+<td><code>torch.compile</code>（统一融合策略）</td>
+<td>减少训练和推理因融合路径不同带来的差异</td>
+</tr>
+</tbody>
+</table>
+<p><strong>限制</strong>：当前只对 Dense 模型实现了完整的 bitwise 对齐。MoE 的训推一致仍然依赖算法层的 IS 修正（见下文）。对 Megatron/FSDP 内部的改动也比较侵入，有一定性能开销。</p>
+<p>SLIME 的对应解法：TIS（Truncated Importance Sampling）和 MIS（Masked Importance Sampling）作为算法层兜底。MILES 把这两者都保留下来，作为 MoE 和非 Dense 场景的默认防护：</p>
+<div class="codehilite"><pre><span></span><code>TIS [0.5, 1.5]：把 ratio 截断到 [0.5, 1.5]，防止极端权重放大梯度
+MIS（Masked IS）：在 TIS 基础上，对累积 ratio 超过信任阈值的整条序列
+                  直接 mask 掉（丢弃梯度），而不是截断
+                  效果：MoE 崩溃 checkpoint 可被 MIS 修复，TIS 单独不够
+</code></pre></div>
+
+<p>实验发现：MIS 在正常训练中几乎没有性能代价（很少触发 mask），但在 MoE 的不稳定阶段能可靠地阻止崩溃。LMSYS 建议把 MIS 作为 MoE RL 训练的默认配置。</p>
+<h3 id="1082-online-speculative-decoding">10.8.2 在线投机解码（Online Speculative Decoding）</h3>
+<p>投机解码（Speculative Decoding）是 Rollout 阶段提速的常见手段：用一个轻量草稿模型（Draft Model）提前生成多个 token，再由目标模型（Target/Verifier）批量验证，利用验证是并行的这一特性来提高吞吐。</p>
+<p>SLIME 的实现中，草稿模型在 RL 训练过程中<strong>冻结</strong>——即用训练开始时的初始权重一直生成草稿，直到训练结束。</p>
+<p><strong>问题</strong>：目标模型的策略在持续更新，草稿模型与其越来越偏离，草稿 token 的接受率（Acceptance Rate）随着训练步数增加而单调下降：</p>
+<div class="codehilite"><pre><span></span><code>训练初期：草稿接受率 ~ 70–80%（草稿模型和目标模型策略接近）
+训练后期：草稿接受率 ~ 30–40%（策略偏差大，草稿大部分被拒绝）
+接受率低 → 验证批次里大量 token 被丢弃 → 有效吞吐下降
+</code></pre></div>
+
+<p>MILES 的解法：在 RL 训练过程中对草稿模型持续做<strong>在线 SFT</strong>（Supervised Fine-Tuning），让草稿模型跟踪目标模型的策略演进：</p>
+<div class="codehilite"><pre><span></span><code>每轮 RL 更新后：
+  1. 目标模型产生新的权重
+  2. 以目标模型的输出为监督信号，对草稿模型做一步 SFT
+  3. 草稿模型持续跟踪目标策略
+
+效果：草稿接受率在训练全程维持高位
+      Rollout 阶段吞吐提升 25%+（对比冻结草稿模型），
+      在训练后期效果尤其明显
+</code></pre></div>
+
+<p>实现这套机制需要配套解决若干工程问题：</p>
+<ul>
+<li><strong>变长序列的 SFT</strong>：RL 生成的序列长度不均匀，草稿模型的 SFT 需要支持 sequence packing + context parallelism 来高效利用 GPU</li>
+<li><strong>Loss mask 边界处理</strong>：打包后的序列在 causal attention 下存在跨序列的 mask 边界问题，需要精确处理 padding/EOS 位置的 loss 计算</li>
+<li><strong>梯度隔离</strong>：草稿模型的 SFT 梯度不能流进 LM head 和 embedding（否则词表分布会偏移），需要对这两个模块做梯度隔离</li>
+<li><strong>权重同步</strong>：Megatron 训练后的目标模型权重需要定期广播给 SGLang 侧的草稿模型，权重同步的频率和通信开销需要调优</li>
+</ul>
+<h3 id="1083-oom">10.8.3 内存稳定性与 OOM 处理</h3>
+<p>大规模 MoE 训练的一个实际痛点是内存管理的脆弱性：FSDP 内存估计偏差、NCCL 通信缓冲区占用、多模型权重的 offload 时序，都可能在训练中途触发 OOM 崩溃，丢失当前 checkpoint。</p>
+<p>MILES 针对这类问题做了几项修复：</p>
+<p><strong>OOM 错误传播</strong>：之前 OOM 事件会导致进程硬崩溃，checkpoint 无法保存。MILES 把 OOM 包装成可恢复错误，在触发时先保存 checkpoint 再退出，下次从 checkpoint 继续。</p>
+<p><strong>NCCL 内存裕量</strong>：NCCL 的通信缓冲区在通信量峰值时会短暂占用大量显存，而 FSDP 的内存估计没有为此预留空间，导致恰好在 AllReduce 时 OOM。MILES 在内存规划中加入了显式的 NCCL 内存裕量（memory margin）。</p>
+<p><strong>FSDP 内存占用修复</strong>：修复了 FSDP 在某些配置下过度分配内存的问题（具体为 <code>reshard_after_forward=False</code> 场景下的重复保留）。</p>
+<p><strong>灵活的权重 offload</strong>：新增了 move-based offload（把权重移到 CPU，而非拷贝）和部分 offload（只 offload 部分层）选项，降低多模型场景的 host 内存峰值。</p>
+<h3 id="1084-slime-vs-miles">10.8.4 SLIME vs MILES 对比</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>SLIME</th>
+<th>MILES</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训推一致性</td>
+<td>TIS/MIS 算法修正（兜底）</td>
+<td>Truly On-Policy（bitwise 对齐）+ MIS（MoE 兜底）</td>
+</tr>
+<tr>
+<td>投机解码草稿模型</td>
+<td>训练期间冻结，后期接受率下降</td>
+<td>在线 SFT 跟踪目标策略，25%+ Rollout 提速</td>
+</tr>
+<tr>
+<td>OOM 处理</td>
+<td>硬崩溃，丢 checkpoint</td>
+<td>可恢复错误 + NCCL 内存裕量 + 灵活 offload</td>
+</tr>
+<tr>
+<td>MoE 支持</td>
+<td>基础支持</td>
+<td>针对 MoE KL 崩溃专项加固（MIS 默认开启）</td>
+</tr>
+<tr>
+<td>定位</td>
+<td>研究验证，证明轻量设计可行</td>
+<td>生产部署，面向企业级 MoE 训练稳定性</td>
+</tr>
+<tr>
+<td>上游关系</td>
+<td>—</td>
+<td>MILES 大部分改进已回合并到 SLIME 主线</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ Truly On-Policy 目前只对 Dense 模型实现了完整的 bitwise 对齐，MoE 暂时仍依赖 MIS 修正。</p>
+</blockquote>
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://lmsys.org/blog/2025-11-19-miles">MILES 技术博客</a>（LMSYS, 2025.11）<br />
+- <a href="https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/rlhf/slime/mismatch/blog-en.html">SLIME 训推一致性专项分析</a>（含 K3 KL 实验数据）<br />
+- <a href="https://github.com/deepseek-ai/DeepGEMM">DeepGEMM</a>（确定性 MatMul 库，DeepSeek 开源）</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

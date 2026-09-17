@@ -33,6 +33,7 @@ PPO 和 GRPO 的公式差别不是重点，重点是「换了算法之后，框�
 | [07-选型与实践.md](07-选型与实践.md) | ★ | 决策图：我该用哪个，什么时候不该自研 |
 | [slime拆解.md](slime拆解.md) | ★★ | 源码走查：GLM 系列背后的框架，「刻意不做抽象」的那一派 |
 | [OpenRLHF拆解.md](OpenRLHF拆解.md) | ★★ | 源码走查：13,411 行，架构最直白的对照组 |
+| [MILES拆解.md](MILES拆解.md) | ★★★ | SLIME 的生产级下游：Truly On-Policy + Online Speculative Decoding + 显存稳定性 |
 | [附-速查表.md](附-速查表.md) | — | 缩写总表：英文全称 + 中文 + 一句话 + 在哪一章展开 |
 
 ---

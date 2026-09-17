@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MILES 拆解：建在 slime 上的生产级 RL 框架</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="miles-slime-rl">MILES 拆解：建在 slime 上的生产级 RL 框架</h1>
+<blockquote>
+<p><strong>这一篇干什么</strong>：MILES 是 slime 的下游，对标 <a href="slime拆解.html">slime拆解.md</a> 的写法，重点讲清楚「MILES 加了什么、为什么要加」。<br />
+<strong>难度</strong> ★★★<br />
+<strong>⚠️ 本文数字来源：MILES 技术报告（radixark，2026）。Dense 模型的 KL 数字、25%+ 加速数字均来自报告原文，MoE 相关改善幅度为本文推断，标 ⚠️。</strong></p>
+</blockquote>
+<hr />
+<h2 id="_1">前置阅读</h2>
+<ul>
+<li><a href="slime拆解.html">slime拆解.md</a> —— MILES 建在 slime 之上，slime 的架构和设计哲学不在本篇重复</li>
+<li><a href="04-训推一致性.html">04-训推一致性.md</a> —— Truly On-Policy 的背景，B-class / C-class 不一致的分类</li>
+<li><a href="../大模型算子开发/10-RL算子.html">大模型算子开发/10-RL算子.md</a> —— Rollout 阶段的算子图，Weight Offload 的代价分析</li>
+</ul>
+<hr />
+<h2 id="1-slime-miles">1 · 定位：slime 到 MILES 的一句话</h2>
+<p>slime 的设计目标是<strong>快速迭代算法</strong>——它明确拒绝抽象，换来了「上游升级零改动」。MILES 的设计目标是<strong>生产规模稳定运行</strong>——数百卡集群连续训练数天，不崩、不漂移、不 OOM。</p>
+<p>两者的关系不是竞争，是分工：</p>
+<div class="codehilite"><pre><span></span><code>slime：算法实验 → 跑通 → 找到 TIS/MIS 这类修正方案
+         ↓
+MILES：生产工程 → 稳跑 → Truly On-Policy + Online Speculative Decoding + 显存稳定性
+</code></pre></div>
+
+<p>✅ slime README 的 <em>"Ecosystem Built on slime"</em> 一节把 MILES 列为官方下游，不是第三方移植。</p>
+<hr />
+<h2 id="2-slime">2 · slime 留下了哪些问题</h2>
+<p>slime 用 <strong>TIS</strong>（Token-level Importance Sampling，token 级重要性采样）和 <strong>MIS</strong>（Masked Importance Sampling，掩码重要性采样）解决了「算法层面的训推不一致」——当训练分布和生成分布发生偏移时，用重要性权重修正。这足以让研究性训练跑通，但有两个问题在生产规模会放大：</p>
+<p><strong>问题一：算法修正是补丁，不是消除</strong></p>
+<p>TIS/MIS 修正的是分布偏移的<strong>影响</strong>，没有消除偏移本身。K3 KL 散度（衡量训练端和推理端输出分布差距的指标，见 <a href="04-训推一致性.html">04 章</a>）在 Dense 模型上仍然在 10⁻³ 量级，MoE 模型在 10⁻² 量级。对于需要精确策略梯度的长训练来说，这个持续的底噪会积累。</p>
+<p><strong>问题二：Rollout 是最大的时间瓶颈，但 slime 没有加速它</strong></p>
+<p><a href="../大模型算子开发/10-RL算子.html">10-RL算子.md</a> §10.8 的数据：Rollout（Decode 阶段）占 PPO 整体耗时约 45–55%，而 GPU 利用率只有 1–5%。标准 Speculative Decoding 可以加速 Rollout，但 RL 训练过程中 Actor 权重持续更新，草稿模型的接受率会随时间下滑，加速效果逐渐失效。</p>
+<p>MILES 的三个主要模块分别对应这两个问题加上一个隐性问题（长时稳定性）。</p>
+<hr />
+<h2 id="3-truly-on-policy">3 · Truly On-Policy：比特级对齐</h2>
+<h3 id="31">3.1 目标</h3>
+<p>把训练端和推理端对同一序列产生的 logits 对齐到<strong>比特级相同</strong>，K3 KL 散度压到 ~10⁻⁵。这不是修正，是消除偏移的根源。</p>
+<h3 id="32">3.2 四个算子统一</h3>
+<p>训推数值差异来自四个地方，MILES 逐一统一：</p>
+<table>
+<thead>
+<tr>
+<th>算子</th>
+<th>slime 状态</th>
+<th>MILES 选择</th>
+<th>差异根因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Attention</td>
+<td>FA2（训练端）/ FA3（推理端）</td>
+<td>全部换成 FA3</td>
+<td>FA2 和 FA3 的 tile 大小与累加顺序不同，数值不等价</td>
+</tr>
+<tr>
+<td>GEMM</td>
+<td>cuBLAS（训练端）/ DeepGEMM（推理端）</td>
+<td>全部换成 DeepGEMM</td>
+<td>FP8 路径的量化缩放因子计算方式不一致</td>
+</tr>
+<tr>
+<td>Batch 不变性</td>
+<td>无保证</td>
+<td>引入 batch-invariant GEMM kernel</td>
+<td>MoE expert 在不同 batch size 下排序不同，累加顺序改变结果</td>
+</tr>
+<tr>
+<td>运行时路径</td>
+<td>eager mode</td>
+<td>torch.compile</td>
+<td>不同运行时分支（有无梯度、有无 KV cache）走不同代码路径</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-dense-only">3.3 Dense-only 的限制</h3>
+<p><strong>Truly On-Policy 目前只对 Dense 架构完全成立。</strong></p>
+<p>MoE 模型存在「B-class 不一致」（见 <a href="04-训推一致性.html">04 章 §4.x</a>）：专家激活是动态的，不同 batch 下同一序列可能激活不同专家组合，导致计算图的<strong>拓扑</strong>发生变化，单纯统一算子解决不了这个根因。</p>
+<p>实测 K3 KL 散度对比：</p>
+<table>
+<thead>
+<tr>
+<th>模型架构</th>
+<th>slime（有 TIS/MIS）</th>
+<th>MILES（Truly On-Policy）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dense 7B</td>
+<td>~10⁻³</td>
+<td><strong>~10⁻⁵</strong>（✅ 下降 2 个数量级）</td>
+</tr>
+<tr>
+<td>Dense 32B</td>
+<td>~5×10⁻³</td>
+<td><strong>~10⁻⁵</strong>（✅）</td>
+</tr>
+<tr>
+<td>MoE 30B（A3B）</td>
+<td>~10⁻²</td>
+<td>~10⁻³（⚠️ 改善但无法归零）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ MoE 的 10⁻³ 是本文基于报告「改善但未归零」描述的推断，报告未给出精确数字。</p>
+</blockquote>
+<hr />
+<h2 id="4-online-speculative-decoding-actor">4 · Online Speculative Decoding：让草稿模型持续追随 Actor</h2>
+<h3 id="41">4.1 问题</h3>
+<p><strong>标准 Speculative Decoding</strong> 的加速原理：用一个小草稿模型（Draft Model）提前生成候选 token 序列，再由 Actor（大模型）验证。验证通过的 token 免去了 Actor 的逐 token Decode 代价。</p>
+<p>在 RL 训练里，这个方案有一个致命缺陷：Actor 的权重每隔 K 步就更新一次，草稿模型如果保持不变，它和 Actor 之间的分布距离会单调增大，接受率持续下滑，到后期几乎没有加速效果。</p>
+<h3 id="42-online-sft">4.2 解法：Online SFT 持续追随</h3>
+<p>MILES 在 RL 训练主循环的同时，对草稿模型做 <strong>Online SFT</strong>：每次 Actor 完成权重更新后，用 Actor 对当前 Rollout 序列的 logits 作为蒸馏目标，给草稿模型做一次小批量有监督微调。</p>
+<div class="codehilite"><pre><span></span><code>一个 MILES 迭代：
+  ① Actor Rollout（用当前 Actor + Draft 做 Speculative Decode）
+  ② Policy Update（更新 Actor 权重）
+  ③ Draft SFT（用新 Actor 的 logits 蒸馏 Draft）←新增
+  ④ Draft 权重同步到 SGLang 推理引擎
+  回到 ①
+</code></pre></div>
+
+<p>接受率因此能在整个训练过程中保持较高水平，而不是单调下滑。</p>
+<h3 id="43">4.3 四个工程要求</h3>
+<p>Online SFT 引入了四个额外的工程约束：</p>
+<p><strong>① 序列打包（Sequence Packing）</strong></p>
+<p>Draft SFT 的训练数据来自 Actor 的 Rollout，样本长度分布不均匀。用 varlen Attention 把不同长度的序列拼接成一条长序列，消除 padding 浪费（参见 <a href="../大模型算子开发/10-RL算子.html">10-RL算子.md §10.6.1</a>）。</p>
+<p><strong>② 上下文并行（Context Parallelism, CP）</strong></p>
+<p>序列打包后单条序列很长，超出单卡容量。Draft SFT 需要 CP 分布式并行，不能只放在单卡上跑。</p>
+<p><strong>③ 梯度隔离</strong></p>
+<p>Draft 和 Actor 共享 LM Head 和 Embedding 层权重（节省显存）。Draft SFT 的梯度<strong>不能传播</strong>到这两层，否则会干扰 Actor 的训练分布。实现上用 <code>detach()</code> + 自定义 <code>requires_grad</code> 掩码在反向传播时截断。</p>
+<p><strong>④ Megatron ↔ SGLang 权重同步</strong></p>
+<p>Draft SFT 在 Megatron 训练框架里完成，但 Speculative Decode 在 SGLang 推理引擎里执行。每次 Draft SFT 之后，新权重需要同步到 SGLang。这复用了 slime 已有的 <code>update_weights</code> 机制（见 <a href="03-权重同步.html">03-权重同步.md</a>），但需要额外维护一套针对 Draft 的同步路径。</p>
+<h3 id="44">4.4 实测效果</h3>
+<p>✅ Rollout 阶段加速约 <strong>25%+</strong>，在 response 长度较长（&gt;1024 tokens）的任务上收益更显著（Decode 阶段更长，Speculative Decode 的收益窗口更大）。</p>
+<hr />
+<h2 id="5">5 · 显存稳定性：生产规模的防御工事</h2>
+<p>slime 的显存管理够用于研究性训练（运行数小时），不够用于连续数天的生产训练。MILES 逐一修了四类问题：</p>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>根因</th>
+<th>MILES 解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>偶发 OOM</td>
+<td>长序列 Rollout 后激活显存未及时释放，下一个 Policy Update 阶段触发 OOM</td>
+<td>阶段切换时显式调用 <code>gc.collect()</code> + <code>torch.cuda.empty_cache()</code></td>
+</tr>
+<tr>
+<td>NCCL OOM</td>
+<td>NCCL 通信缓冲区没有预留裕量，在 AllReduce 峰值时触发</td>
+<td>配置参数 <code>nccl_mem_margin_bytes</code>，预先锁定一块裕量内存</td>
+</tr>
+<tr>
+<td>FSDP 显存泄漏</td>
+<td>FSDP（Fully Sharded Data Parallel，完全分片数据并行）的 <code>_unshard</code> 路径在部分情况下不释放临时 tensor</td>
+<td>用 weakref hook 在 forward 结束后强制触发释放</td>
+</tr>
+<tr>
+<td>Offload 灵活性不足</td>
+<td>旧实现只支持全量 offload 或全量不 offload，无法细粒度控制</td>
+<td>支持「按模块粒度」的 flexible offload：可以只 offload Reference Model 的部分层，保留 Actor 关键层在 GPU</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>FSDP</strong> = Fully Sharded Data Parallel，完全分片数据并行，PyTorch 原生的分布式训练范式。</p>
+</blockquote>
+<hr />
+<h2 id="6-slime-vs-miles">6 · SLIME vs MILES 对比</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>SLIME</th>
+<th>MILES</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>定位</strong></td>
+<td>轻量级研究框架，快速算法迭代</td>
+<td>生产级框架，面向大规模稳定训练</td>
+</tr>
+<tr>
+<td><strong>训推一致性</strong></td>
+<td>TIS + MIS（算法层面修正偏移影响）</td>
+<td>Truly On-Policy（算子层面消除偏移根因，Dense 专属）</td>
+</tr>
+<tr>
+<td><strong>Rollout 加速</strong></td>
+<td>标准 Speculative Decoding（接受率随训练下滑）</td>
+<td>Online Speculative Decoding（持续 SFT 维持接受率，稳定 25%+ 加速）</td>
+</tr>
+<tr>
+<td><strong>显存稳定性</strong></td>
+<td>基础 offload + 基本 gc 调用</td>
+<td>OOM 恢复 + NCCL margin + FSDP fix + flexible offload</td>
+</tr>
+<tr>
+<td><strong>适用规模</strong></td>
+<td>单机到约 64 卡集群</td>
+<td>数百卡集群，连续数天训练</td>
+</tr>
+<tr>
+<td><strong>上游关系</strong></td>
+<td>独立框架（参见 <a href="slime拆解.html">slime拆解.md</a>）</td>
+<td>建立在 SLIME 之上，复用调度、权重同步、TIS/MIS</td>
+</tr>
+<tr>
+<td><strong>K3 KL（Dense）</strong></td>
+<td>~10⁻³</td>
+<td><strong>~10⁻⁵</strong>（✅ 报告数字）</td>
+</tr>
+<tr>
+<td><strong>K3 KL（MoE）</strong></td>
+<td>~10⁻²</td>
+<td>~10⁻³（⚠️ 推断，B-class 问题未根治）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7">7 · 本篇小结</h2>
+<table>
+<thead>
+<tr>
+<th>结论</th>
+<th>分级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MILES 建立在 slime 之上，复用 TIS/MIS、调度层、权重同步</td>
+<td>✅ slime README 原文</td>
+</tr>
+<tr>
+<td>Truly On-Policy = 统一 FA3 + DeepGEMM + batch-invariant kernel + torch.compile</td>
+<td>✅ 报告</td>
+</tr>
+<tr>
+<td>Dense 模型 K3 KL：slime ~10⁻³ → MILES ~10⁻⁵，下降 2 个数量级</td>
+<td>✅ 报告</td>
+</tr>
+<tr>
+<td>MoE 模型 B-class 不一致仍存在，Truly On-Policy 对 MoE 只能改善不能根治</td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>Online Speculative Decoding = 每轮 Actor 更新后对草稿模型做在线 SFT</td>
+<td>✅ 报告</td>
+</tr>
+<tr>
+<td>四个工程要求：序列打包 + CP + 梯度隔离 + Megatron↔SGLang 权重同步</td>
+<td>✅ 报告</td>
+</tr>
+<tr>
+<td>Rollout 加速 25%+（长序列任务收益更大）</td>
+<td>✅ 报告</td>
+</tr>
+<tr>
+<td>显存四类修复：OOM gc、NCCL margin、FSDP weakref hook、flexible offload</td>
+<td>✅ 报告</td>
+</tr>
+</tbody>
+</table>
+<p><strong>相关文档</strong>：<br />
+- <a href="slime拆解.html">slime拆解.md §8</a> —— MILES 的上游，生态关系<br />
+- <a href="04-训推一致性.html">04-训推一致性.md</a> —— Truly On-Policy 的理论背景<br />
+- <a href="../大模型算子开发/10-RL算子.html">大模型算子开发/10-RL算子.md</a> —— Rollout 算子图与 Speculative Decoding 算子成本<br />
+- <a href="../大模型算子开发/11-训推一致性算子层.html">大模型算子开发/11-训推一致性算子层.md</a> —— B-class / C-class 不一致的算子层分析</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

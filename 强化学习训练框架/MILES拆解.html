@@ -275,7 +275,9 @@ MILES：生产工程 → 稳跑 → Truly On-Policy + Online Speculative Decodin
 <p><strong>问题一：算法修正是补丁，不是消除</strong></p>
 <p>TIS/MIS 修正的是分布偏移的<strong>影响</strong>，没有消除偏移本身。K3 KL 散度（衡量训练端和推理端输出分布差距的指标，见 <a href="04-训推一致性.html">04 章</a>）在 Dense 模型上仍然在 10⁻³ 量级，MoE 模型在 10⁻² 量级。对于需要精确策略梯度的长训练来说，这个持续的底噪会积累。</p>
 <p><strong>问题二：Rollout 是最大的时间瓶颈，但 slime 没有加速它</strong></p>
-<p><a href="../大模型算子开发/10-RL算子.html">10-RL算子.md</a> §10.8 的数据：Rollout（Decode 阶段）占 PPO 整体耗时约 45–55%，而 GPU 利用率只有 1–5%。标准 Speculative Decoding 可以加速 Rollout，但 RL 训练过程中 Actor 权重持续更新，草稿模型的接受率会随时间下滑，加速效果逐渐失效。</p>
+<p><a href="../大模型算子开发/10-RL算子.html">10-RL算子.md</a> §10.8 的推演：Rollout（Decode 阶段）占整体耗时 <strong>64%</strong>（理论下界口径下是 77.3%）——它不是瓶颈之一，它就是瓶颈本身。</p>
+<p>这里要分清两个常被混为一谈的「利用率」：Rollout 的<strong>算力</strong>利用率确实极低（batch=64 时约 14%，batch=1 时 0.3%），但<strong>带宽</strong>利用率接近 100%。算力低是 Memory Bound 的定义，是物理规律，不是浪费；真正被浪费掉的是<strong>长尾</strong>——一个批次里序列长度差异巨大，先生成完的槽位空转等最慢的那条，批次有效利用率只有 31.25%，折算下来吞掉整体约 33% 的时间（详见 §10.2）。</p>
+<p>标准 Speculative Decoding 可以加速 Rollout，但 RL 训练过程中 Actor 权重持续更新，草稿模型的接受率会随时间下滑，加速效果逐渐失效。</p>
 <p>MILES 的三个主要模块分别对应这两个问题加上一个隐性问题（长时稳定性）。</p>
 <hr />
 <h2 id="3-truly-on-policy">3 · Truly On-Policy：比特级对齐</h2>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>10 · RL 算子：训练循环里的推理算子与训练算子如何共存</title>
+<title>10 · RL 算子：推理算子和训练算子在同一个循环里怎么共存</title>
 <style>
     :root {
       --bg:        oklch(97% 0.005 250);
@@ -246,413 +246,2185 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <body>
 <div class="page-wrap">
 <div class="md-body">
-<h1 id="10-rl">10 · RL 算子：训练循环里的推理算子与训练算子如何共存</h1>
+<h1 id="10-rl">10 · RL 算子：推理算子和训练算子在同一个循环里怎么共存</h1>
 <blockquote>
 <p><strong>前置</strong>：<a href="03-GEMM深度剖析.html">03 章（GEMM）</a>、<a href="04-FlashAttention全系.html">04 章（FlashAttention）</a>、<a href="09-推理侧算子.html">09 章（推理侧算子）</a><br />
-<strong>目标</strong>：搞清楚 PPO/GRPO 的计算图里有哪些算子、每个算子的形状特征和性能瓶颈，以及为什么同一个 GPU 上同时跑推理算子和训练算子会带来独特的工程难题。</p>
+<strong>目标</strong>：能自己画出一次 RL 迭代的数据流图（谁在哪些卡上跑、搬什么数据、谁等谁），能把各阶段耗时占比算出来并指出瓶颈在哪，能手算 GRPO 的优势估计和 PPO 的 clip 生效条件。<br />
+<strong>读法</strong>：本章只用<strong>一套配置</strong>（8B 模型 + 8×H100 + GRPO），从 §10.1 一路算到章末，所有数字都能拿纸笔验算。<strong>建议跟着算一遍</strong>——RL 里最容易被想错的几件事（瓶颈在哪、clip 什么时候生效、GAE 的串行性要不要紧），算过就不会再错。</p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
-<p><strong>Rollout</strong>（展开采样）—— RL 训练的数据生成阶段，用当前策略模型（Actor）自回归生成回答序列，算子形态和推理 Decode 完全相同。<br />
-<strong>LogProb</strong>（对数概率）—— 对生成序列里每个 token 计算模型输出的对数概率，PPO loss 的核心输入，比 Decode 时的 argmax 代价高。<br />
-<strong>GAE</strong>（Generalized Advantage Estimation，广义优势估计）—— 沿时间步做带折扣的 TD 误差累加，估计每步动作的相对价值，有顺序依赖，难以并行。<br />
-<strong>PPO clip</strong>（近端策略优化裁剪）—— <code>min(ratio·A, clip(ratio, 1±ε)·A)</code>，element-wise 操作，算力开销极小但实现细节影响训练稳定性。<br />
-<strong>GRPO</strong>（Group Relative Policy Optimization，组内相对策略优化）—— 去掉 Value Model，用同一个 prompt 生成多个回答的相对奖励代替 GAE，减少一个模型但改变了批次形状。<br />
-<strong>Weight Offload</strong>（权重卸载）—— 把暂时不用的模型权重从 GPU HBM 搬到 CPU DRAM，释放显存给当前阶段使用，代价是 PCIe 传输延迟。<br />
-<strong>重要性采样</strong>（Importance Sampling, IS）—— 用推理时的概率和训练时的概率之比修正离策略偏差，当两者相差太大时裁剪比值防止梯度爆炸。</p>
+<p><strong>RL</strong>（Reinforcement Learning，强化学习）—— 本章特指用于大模型后训练的策略梯度类算法，PPO / GRPO 都属于这一类。<br />
+<strong>Rollout</strong>（展开采样）—— RL 训练的数据生成阶段，用当前策略模型（Actor，行动者）自回归生成回答。算子形态和推理的 Decode 完全相同。<br />
+<strong>PPO</strong>（Proximal Policy Optimization，近端策略优化）—— 最经典的策略梯度算法，用 clip（裁剪）把每次更新限制在旧策略附近。<br />
+<strong>GRPO</strong>（Group Relative Policy Optimization，组相对策略优化）—— 对同一个 prompt 采 G 条回答，用<strong>组内相对奖励</strong>代替 Value Model 的估值。DeepSeekMath 提出，DeepSeek-R1 沿用。<br />
+<strong>Advantage</strong>（优势）—— 「这个动作比平均水平好多少」，是策略梯度里乘在 log-prob 前面的系数。它决定每个 token 的梯度方向和大小。<br />
+<strong>GAE</strong>（Generalized Advantage Estimation，广义优势估计）—— PPO 算优势的方法，沿时间步倒着做带折扣的累加，有顺序依赖。<br />
+<strong>LogProb</strong>（对数概率，log-probability）—— 模型给某个 token 打的概率取自然对数，记作 log π(a|s)。PPO / GRPO loss 的核心输入。<br />
+<strong>Importance Ratio</strong>（重要性采样比）—— <code>ratio = π_new(a) / π_old(a) = exp(logp_new − logp_old)</code>，用来修正「数据是旧策略采的、梯度要给新策略」这个错位。<br />
+<strong>IS</strong>（Importance Sampling，重要性采样）—— 上面那个比值背后的统计学方法。<br />
+<strong>KL</strong>（Kullback-Leibler divergence，KL 散度，又称相对熵）—— 衡量两个概率分布差多远，RL 里用来惩罚「跑得离原模型太远」。<br />
+<strong>Reference Model</strong>（参考模型）—— RL 开始前的那份权重的冻结副本，KL 惩罚项的对照基准。只做前向，不需要梯度。<br />
+<strong>Reward Model</strong>（奖励模型）/ <strong>Verifier</strong>（验证器）—— 给回答打分的东西。前者是一个神经网络，后者是一段规则代码（如数学答案比对）。<br />
+<strong>RLVR</strong>（Reinforcement Learning with Verifiable Rewards，可验证奖励强化学习）—— 用规则验证器代替奖励模型的路线，现在推理模型训练的主流。<br />
+<strong>长尾（Rollout Tail）</strong>—— 一批序列里有的早停有的写到上限，导致 Decode 后半段活跃序列数急剧衰减。<strong>这是 RL rollout 独有的浪费，也是本章最重要的一个数字。</strong><br />
+<strong>Weight Sync</strong>（权重同步）—— Policy Update 算出新权重后，把它送给 Rollout 引擎的那一步。<br />
+<strong>Weight Offload</strong>（权重卸载）—— 把暂时不用的权重从 GPU 的 HBM 搬到 CPU 的 DRAM（Dynamic Random-Access Memory，动态随机存储器），腾显存。<br />
+<strong>varlen</strong>（variable length，变长）—— 不做 padding（填充），把一批不等长序列首尾相接拼成一条，用 <code>cu_seqlens</code> 记边界。<br />
+<strong>MFU</strong>（Model FLOPs Utilization，模型算力利用率）—— 实际做的有效浮点运算 ÷ 硬件峰值算力，定义见 <a href="附-速查表.html">附-速查表 §B.3</a>。</p>
 <hr />
-<h2 id="101-rl">10.1 RL 训练循环的两阶段结构</h2>
-<p>标准 PPO 的训练循环由两个截然不同的阶段交替组成：</p>
-<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────┐
-│                    一个 PPO Iteration                    │
-│                                                         │
-│  阶段一：Rollout（数据生成）                             │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  Actor 模型          推理 Decode × N steps      │   │
-│  │  Reference 模型      推理 Prefill（算 log_prob）  │   │
-│  │  Reward/Value 模型   推理 Prefill（打分）         │   │
-│  └─────────────────────────────────────────────────┘   │
-│           ↓ 收集 (token_ids, logprobs, rewards, values) │
-│                                                         │
-│  阶段二：Policy Update（参数更新）                       │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  Actor 模型   训练 Prefill + Backward + Optimizer│   │
-│  │  Value 模型   训练 Prefill + Backward（可选）     │   │
-│  └─────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+<h2 id="101-rl">10.1 先看全景：一次 RL 迭代里数据怎么流</h2>
+<p>RL 和监督训练最大的区别是：<strong>训练数据不是从磁盘读的，是自己现场生成的</strong>。所以一次迭代里有两个完全不同形态的计算阶段交替出现。先把全景图画清楚，后面每一节都是在给这张图的某一格填数字。</p>
+<h3 id="1011">10.1.1 全章统一的配置</h3>
+<div class="codehilite"><pre><span></span><code>模型     LLaMA-3-8B（N = 8.0 × 10⁹ 参数），BF16（2 字节/元素）
+         32 层，隐藏维度 H = 4096
+         32 个 Q head / 8 个 KV head（GQA），head_dim = 128
+         词表 V = 128256
+         → 权重 = 8.0e9 × 2 B = 16 GB
+         → KV Cache 每 token = 2(K和V) × 8 head × 128 × 2 B × 32 层 = 128 KB
+
+硬件     8 × H100 SXM5（132 SM / BF16 稠密 989 TFLOPS / HBM3 80 GB / 3.35 TB/s）
+         卡间 NVLink 900 GB/s 双向，机间 InfiniBand 400 Gb/s = 50 GB/s
+
+算法     GRPO，KL 惩罚系数 β &gt; 0（保留 Reference Model）
+         每次迭代取 B = 64 个 prompt，每个 prompt 采 G = 8 条回答 → 512 条序列
+         prompt 长 512 token，回答长度上限 4096 token
+
+布置     Rollout：8 张卡各放一份完整权重（DP=8，数据并行），每卡负责 64 条序列
+         Train  ：8 张卡，ZeRO-2（Zero Redundancy Optimizer，零冗余优化器）分片
 </code></pre></div>
 
-<p><strong>关键矛盾</strong>：Rollout 阶段要用推理引擎（追求低延迟、高吞吐、KV Cache），Policy Update 阶段要用训练引擎（追求高 GPU 利用率、激活存储、梯度计算）。两者对显存的需求模式完全不同，必须通过 weight offload 或 worker 分离来协调。</p>
-<hr />
-<h2 id="102-rollout">10.2 Rollout 阶段的算子图</h2>
-<p>Rollout 的核心是 Actor 模型的自回归 Decode，算子形态和第 09 章的推理 Decode 完全相同，但额外需要：</p>
-<h3 id="1021-logprob">10.2.1 LogProb 收集</h3>
-<p>普通推理只做 argmax，不需要完整的 softmax 概率。但 PPO 需要知道每个<strong>已生成 token 的精确对数概率</strong>：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 普通推理（Greedy Decode）</span>
-<span class="n">logits</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>           <span class="c1"># (batch, vocab_size)</span>
-<span class="n">token</span> <span class="o">=</span> <span class="n">logits</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>   <span class="c1"># 只取最大值，O(V) 比较</span>
+<blockquote>
+<p>★ 这套配置贯穿全章。<strong>每个数字都从这几行推出来</strong>，所以你换一个模型或换一套卡，照着同样的步骤重算就行。硬件数字与 <a href="附-速查表.html">附-速查表 §A</a> 一致。</p>
+</blockquote>
+<h3 id="1012">10.1.2 九个步骤，两条泳道</h3>
+<div class="codehilite"><pre><span></span><code>一次 GRPO 迭代（同步模式）
 
-<span class="c1"># RL Rollout 需要的 LogProb</span>
-<span class="n">logits</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>           <span class="c1"># (batch, vocab_size)，V ≈ 128K</span>
-<span class="n">log_probs</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">log_softmax</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>   <span class="c1"># ← 全词表 softmax！</span>
-<span class="n">token_logprob</span> <span class="o">=</span> <span class="n">log_probs</span><span class="p">[</span><span class="nb">range</span><span class="p">(</span><span class="n">batch</span><span class="p">),</span> <span class="n">token_ids</span><span class="p">]</span>  <span class="c1"># 取生成 token 的概率</span>
-
-<span class="c1"># 代价差异：</span>
-<span class="c1">#   argmax：O(V) 比较，不需要 exp，延迟极低</span>
-<span class="c1">#   log_softmax：O(V) 的 exp + sum + log，内存读写量是 argmax 的 3-4×</span>
-<span class="c1">#   V=128K 时，logits 矩阵 = 128K × sizeof(BF16) = 256 KB / token</span>
+步骤                          在哪里跑                  搬进来什么              产出什么
+──────────────────────────────────────────────────────────────────────────────────────
+① 取 prompt                   CPU / 数据集              64 个 prompt           复制成 512 条
+② Prefill                     Rollout 卡组（8 卡）      512×512 个 token       512 份 KV Cache
+③ Decode × 4096 步            Rollout 卡组              上一步的 token         token + logp_old
+④ 打分                        CPU 验证器                512 条回答的文本       512 个 reward
+⑤ 优势估计（组内归一化）      CPU（或任一张卡）         512 个 reward          512 个 advantage
+⑥ Reference 前向              Train 卡组（8 卡）        512×~1792 个 token     logp_ref
+⑦ Re-forward + Backward       Train 卡组                同上 + advantage       梯度
+⑧ AdamW 更新                  Train 卡组                梯度 + 优化器状态      新权重
+⑨ 权重同步                    Train → Rollout           新权重 16 GB           Rollout 引擎刷新
 </code></pre></div>
 
-<p><strong>性能影响</strong>：LogProb 收集把 Decode 的内存带宽需求提高了约 3-4 倍。对于批量处理，每个 token 生成后都需要完整读写一遍词表，词表越大（LLaMA-3 128K、Qwen 152K）这个开销越显著。</p>
-<h3 id="1022-reference-model-logprob">10.2.2 Reference Model 的 LogProb</h3>
-<p>PPO 需要同时知道 Actor 和 Reference Model 对同一序列的 log_prob，用于计算 KL 散度。Reference Model 不需要 Decode，只做 <strong>Prefill Forward</strong>（把已生成序列一次性过一遍）：</p>
-<div class="codehilite"><pre><span></span><code>Reference Model 的计算模式：
-  输入：完整生成序列 (B, T)，T = prompt_len + response_len
-  模式：Prefill（T 步一次性），不是逐 token Decode
-  形状：M = B × T，当 T=512 时 M=512，接近 Compute Bound
+<p>把它按时间轴摊开，<strong>谁等谁</strong>就一目了然了：</p>
+<div class="codehilite"><pre><span></span><code>时间 ──────────────────────────────────────────────────────────────────→
 
-  相比 Actor 的 Decode（M=1）：
-  Reference Prefill 的算术强度高约 T 倍，GPU 利用率好得多
+Rollout 卡组   ██████████████████████████  ........................  ████
+               ②③ Decode 4096 步            空  转（等新权重）          下一轮
+
+Train 卡组     ..........................  ██████████████████  ........
+               空  转（等  数  据）           ⑥⑦⑧ 前向反向更新      空转
+
+CPU            ..........................  ██  ................................
+                                            ④⑤ 打分 + 优势估计
+
+权重通路       ..................................................  ══&gt;  ⑨ 同步
+
+  █ = 在干活      . = 空转      ══&gt; = 搬权重
+
+★ 两条泳道从不重叠。Rollout 跑的时候训练卡闲着，训练跑的时候 Rollout 卡闲着。
 </code></pre></div>
 
-<p>如果 Actor 和 Reference 共享同一个 GPU，通常的策略是：<br />
-- Actor 做 Decode 时，Reference 等待（显存冲突）<br />
-- Actor Decode 完一批序列后，Reference 对整批序列做 Prefill</p>
-<h3 id="1023-rewardvalue-model">10.2.3 Reward/Value Model</h3>
-<p>和 Reference 类似，也是 Prefill 模式，但可能是不同大小的模型（Value Model 通常比 Policy 小）。</p>
-<hr />
-<h2 id="103-policy-update">10.3 Policy Update 阶段的算子图</h2>
-<p>Policy Update 的算子流：</p>
-<div class="codehilite"><pre><span></span><code>① Re-forward（重新前向）
-   输入：Rollout 生成的序列 (B × T_max, H)
-   模式：Prefill，Compute Bound（如果 B×T 够大）
-   注意：这是第二次跑 Actor 的前向，用于精确计算 π_new 的 log_prob
-
-② Log_prob 差值 → ratio 计算（element-wise）
-   ratio = exp(log_prob_new - log_prob_old)   ← log_prob_old 是 Rollout 时存的
-   代价：O(B × T)，极小
-
-③ GAE 计算（CPU 或 GPU sequential）
-   advantage[t] = δ_t + γλ·advantage[t+1]
-   δ_t = reward[t] + γ·value[t+1] - value[t]
-   注意：这个递推有时间步顺序依赖，不能并行化！
-   实践上：在 GPU 上用 for 循环或 scan 算，或者搬到 CPU 做
-
-④ PPO Loss（element-wise）
-   loss = -min(ratio·A, clip(ratio, 1-ε, 1+ε)·A)
-   再加 Value Loss 和 KL 惩罚项
-
-⑤ Backward
-   和标准训练 Backward 相同，但 loss 形状是 (B × T)
-   GEMM 形状同 Forward，梯度 dW 的形状是 (B × T, H)
-
-⑥ AdamW 更新
-   读 grad + m + v，写 param + m + v
-   4 × param_count × 4 Bytes（FP32 状态）
-</code></pre></div>
-
-<h3 id="gae">GAE 的串行性问题</h3>
-<p>GAE 是 Policy Update 里最难并行化的算子：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 正向写法（不能并行）：</span>
-<span class="n">advantages</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">T</span><span class="p">,</span> <span class="n">batch_size</span><span class="p">)</span>
-<span class="n">last_gae</span> <span class="o">=</span> <span class="mi">0</span>
-<span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">reversed</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">T</span><span class="p">)):</span>
-    <span class="n">delta</span> <span class="o">=</span> <span class="n">rewards</span><span class="p">[</span><span class="n">t</span><span class="p">]</span> <span class="o">+</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">values</span><span class="p">[</span><span class="n">t</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">values</span><span class="p">[</span><span class="n">t</span><span class="p">]</span>
-    <span class="n">advantages</span><span class="p">[</span><span class="n">t</span><span class="p">]</span> <span class="o">=</span> <span class="n">last_gae</span> <span class="o">=</span> <span class="n">delta</span> <span class="o">+</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">lam</span> <span class="o">*</span> <span class="n">last_gae</span>
-
-<span class="c1"># 等价的 parallel scan 写法（可以 GPU 并行，但实现复杂）：</span>
-<span class="c1"># 本质是把递推关系写成 (a[t], b[t]) 的仿射变换，用 prefix scan 并行</span>
-<span class="c1"># advantages[t] = sum_{k=t}^{T-1} (γλ)^{k-t} * delta[k]</span>
-<span class="c1"># 展开成 parallel prefix sum 后可以 O(log T) 并行</span>
-</code></pre></div>
-
-<p>实际工程里大多数框架直接在 CPU 上跑 GAE（序列长度通常 ≤ 2048，CPU 速度够用），避免实现 GPU scan。veRL 和 OpenRLHF 都是这样处理的。</p>
-<hr />
-<h2 id="104-grpo">10.4 GRPO 对算子图的影响</h2>
-<p>GRPO（DeepSeekMath、DeepSeek-R1 使用）去掉了 Value Model，改变了批次结构：</p>
-<div class="codehilite"><pre><span></span><code>PPO 的 batch 形状：
-  (B prompts) × (1 response per prompt)
-  GAE 需要 Value Model 的输出
-
-GRPO 的 batch 形状：
-  (B prompts) × (G responses per prompt)，G 通常为 8-16
-  优势估计 = (reward - mean(rewards)) / std(rewards)，组内归一化
-  不需要 Value Model，不需要 GAE
-</code></pre></div>
-
-<p><strong>算子层变化</strong>：</p>
+<blockquote>
+<p>★ <strong>这张图就是整个 RL 工程的核心矛盾</strong>。监督训练只有一条泳道，从头到尾在干同一件事；RL 有两条互相等待的泳道，而且两边要的东西完全相反——Rollout 要低延迟、大 KV Cache、小显存占用，Update 要高算力利用率、大激活存储、全套优化器状态。后面 §10.9 的显存账和 §10.10 的异步方案，都是在治这张图上的那两块「空转」。</p>
+</blockquote>
+<h3 id="1013-3-mb-16-gb">10.1.3 搬的数据量：上行 3 MB，下行 16 GB</h3>
+<p>很多人第一次看 RL 架构图会以为「Rollout 产出的一大堆 token 和概率」是通信大头。算一下就知道完全不是：</p>
 <table>
 <thead>
 <tr>
-<th>方面</th>
-<th>PPO</th>
-<th>GRPO</th>
+<th>方向</th>
+<th>内容</th>
+<th>大小</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>模型数量</td>
-<td>Actor + Reference + Reward + Value = 4 个</td>
-<td>Actor + Reference + Reward = 3 个</td>
+<td>Rollout → Train（上行）</td>
+<td><code>token_ids</code>：512 × 1024 个 int32</td>
+<td>2.10 MB</td>
 </tr>
 <tr>
-<td>Batch 形状</td>
-<td>(B, T)</td>
-<td>(B×G, T)，G 倍扩展</td>
+<td>Rollout → Train（上行）</td>
+<td><code>logp_old</code>：512 × 512 个 float32</td>
+<td>1.05 MB</td>
 </tr>
 <tr>
-<td>GAE</td>
-<td>需要，有顺序依赖</td>
-<td>不需要，换成组内 mean/std</td>
+<td>Rollout → Train（上行）</td>
+<td><code>reward</code>：512 个 float32</td>
+<td>2 KB</td>
 </tr>
 <tr>
-<td>GEMM M 维</td>
-<td>B×T</td>
-<td>B×G×T（G=8 时 8 倍）</td>
+<td></td>
+<td><strong>上行合计</strong></td>
+<td><strong>≈ 3.2 MB</strong></td>
 </tr>
 <tr>
-<td>优势估计算子</td>
-<td>递推，串行</td>
-<td><code>mean</code> + <code>std</code> + element-wise，完全并行</td>
-</tr>
-<tr>
-<td>Value loss</td>
-<td>需要，多一次 Backward</td>
-<td>没有</td>
+<td>Train → Rollout（下行）</td>
+<td>新权重（8B，BF16）</td>
+<td><strong>16 GB</strong></td>
 </tr>
 </tbody>
 </table>
-<p>GRPO 的最大算子层优势是把串行的 GAE 换成了全并行的组内统计，而且批次更大，GEMM 形状更接近 Compute Bound。缺点是每个 prompt 要生成 G 个回答，Rollout 阶段的计算量是 PPO 的 G 倍。</p>
+<div class="codehilite"><pre><span></span><code>下行 ÷ 上行 = 16 GB ÷ 3.2 MB ≈ 5000 倍
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>RL 的通信成本几乎全在「把新权重送回推理引擎」这一步上</strong>，而不是在采样结果上。这也解释了为什么框架设计里「权重怎么同步」永远是第一章，而「采样结果怎么传」从来不是问题。§10.9 会把这 16 GB 在四种部署方式下的耗时算出来。</p>
+</blockquote>
+<h3 id="1014-logp_old">10.1.4 一个提醒：<code>logp_old</code> 到底谁算的</h3>
+<p>上表里的 <code>logp_old</code> 是 Rollout 引擎（vLLM / SGLang）顺手吐出来的。但它也可以由训练引擎在步骤 ⑥ 重算一遍。这两种做法算出来的数<strong>不一样</strong>——同一份权重、同一串 token，两个引擎给出的 log-prob 会有差异。</p>
+<div class="codehilite"><pre><span></span><code>ratio = exp(logp_new − logp_old)
+
+若 logp_old 由训练引擎重算，且只做 1 次更新：
+    logp_new 和 logp_old 来自同一份权重、同一套 kernel
+    → ratio ≡ 1（精确），clip 完全不起作用
+
+若 logp_old 由推理引擎给出：
+    → ratio ≠ 1，偏离量纯粹来自训推数值失配
+    → 这部分差异不是「策略变了」，是噪声
+</code></pre></div>
+
+<p>这个差异的来源、量级和治法是 <a href="11-训推一致性算子层.html">11 章</a> 的全部内容，本章不重复；只需要在这里记住一件事：<strong>§10.5 里 clip 生效的门槛，有相当一部分是被数值噪声吃掉的</strong>，那一节会把这笔账代进去。</p>
 <hr />
-<h2 id="105">10.5 多模型显存竞争</h2>
-<p>RL 训练里同时需要多个模型，是推理和训练里都没有的场景：</p>
-<div class="codehilite"><pre><span></span><code>PPO 四模型的显存需求（以 LLaMA-3 70B 为例，BF16）：
-
-Actor（要做 Backward）：
-  权重  = 70B × 2B = 140 GB
-  激活存储（序列长 T=1024）≈ 40 GB（含 KV cache 和 attention 中间值）
-  梯度 ≈ 140 GB（和权重等大）
-  Adam 状态（FP32）≈ 280 GB（m + v）
-  合计：~600 GB
-
-Reference（只做 Prefill，不需要梯度）：
-  权重 = 140 GB
-  无梯度，无 Adam 状态
-
-Reward Model（通常较小，如 7B）：
-  权重 ≈ 14 GB
-
-Value Model（通常和 Actor 同大）：
-  权重 = 140 GB + 梯度 + Adam ≈ 420 GB
-
-H100 单卡 80 GB，8 卡合计 640 GB → 还是不够！
-</code></pre></div>
-
-<p><strong>解法分三层</strong>：</p>
-<p><strong>① Rollout/Update 时间分离 + Weight Offload</strong></p>
-<div class="codehilite"><pre><span></span><code>Rollout 阶段：
-  - Actor 权重在 GPU（Decode 用）
-  - Reference 权重在 GPU（Prefill 用）
-  - Value/Critic 权重 offload 到 CPU DRAM
-  - Actor 的 Adam 状态 offload 到 CPU
-
-Policy Update 阶段：
-  - Actor 权重 + 梯度 + Adam 状态 全部在 GPU
-  - Reference 权重 offload 到 CPU
-  - Reward/Value 用完即卸载
-
-Offload 带宽成本：
-  PCIe 4.0 × 16 双向约 32 GB/s
-  70B × 2B = 140 GB 上传/下载约需 4–5 秒
-  → 每次权重切换会暂停 ~5 秒，这是 RL 训练吞吐低的直接原因之一
-</code></pre></div>
-
-<p><strong>② Worker 分离（推理 Worker + 训练 Worker）</strong></p>
-<p>把 Rollout 和 Policy Update 放到不同的 GPU 组：</p>
-<div class="codehilite"><pre><span></span><code>Rollout Workers（N 卡）：
-  专跑 Actor Decode + Reference Prefill
-  用 vLLM/SGLang，追求推理吞吐
-  KV Cache 常驻
-
-Training Workers（M 卡）：
-  专跑 Policy Update
-  用 Megatron/FSDP，追求训练 MFU
-
-权重同步：
-  Policy Update 完后，Training Workers 把新权重广播给 Rollout Workers
-  同步量 = 模型大小，每次约 140 GB（分布在 NVLink 上）
-</code></pre></div>
-
-<p>这是 OpenRLHF、veRL、Slime 等框架的主流架构，代价是需要更多 GPU 和更复杂的调度逻辑。</p>
-<p><strong>③ 参数共享（Reference = frozen Actor）</strong></p>
-<p>Reference Model 权重和 Actor 完全相同，只是冻结不更新。可以通过权重共享节省一份显存：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># Reference 不保存单独副本，直接共享 Actor 的参数</span>
-<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
-    <span class="n">ref_logprobs</span> <span class="o">=</span> <span class="n">actor_model</span><span class="p">(</span><span class="n">input_ids</span><span class="p">)</span>  <span class="c1"># 用 no_grad 包住，当 Reference 用</span>
-</code></pre></div>
-
-<p>这只在 Actor 权重变化不大（训练初期）时近似有效，不是精确的 Reference。DeepSeek-R1 的 GRPO 实现就是这样，因为它没有单独的 Reference Model。</p>
-<hr />
-<h2 id="106-logprob">10.6 LogProb 的批量计算优化</h2>
-<p>Rollout 结束后，Policy Update 的第一步是对整批生成序列重算 log_prob（Re-forward）。这是一个 <strong>Prefill 形状的 GEMM</strong>，批次较大，相对 Compute Bound。但有一个坑：</p>
-<h3 id="1061">10.6.1 序列长度不均匀</h3>
-<p>Rollout 生成的序列长度各不相同（有的回答长，有的短）。直接 padding 到最大长度会浪费大量计算：</p>
-<div class="codehilite"><pre><span></span><code>假设 batch=16，序列长度分布：
-  2 条：512 tokens
-  8 条：1024 tokens  
-  4 条：2048 tokens
-  2 条：4096 tokens
-
-Padding 到 4096：
-  实际计算量 = (2×512 + 8×1024 + 4×2048 + 2×4096) × H GEMM = ~30K 有效 tokens
-  Padded 计算量 = 16 × 4096 × H GEMM = 65K tokens
-  浪费 = 55%
-
-varlen Prefill（FA2 的 varlen 模式）：
-  把所有序列拼接成一条长序列，cu_seqlens 记录边界
-  实际计算量 = 30K tokens，无浪费
-</code></pre></div>
-
-<p><strong>最佳实践</strong>：Re-forward 阶段用 varlen Attention（flash_attn_varlen），按实际长度排序并打包，同时配合 Grouped GEMM 或 bucket 化策略处理不均匀的 FFN 形状。</p>
-<h3 id="1062-cross-entropy">10.6.2 Cross-Entropy 在大词表下的瓶颈</h3>
-<p>计算训练 loss 时需要对 logits 做 cross-entropy：</p>
-<div class="codehilite"><pre><span></span><code><span class="n">loss</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">cross_entropy</span><span class="p">(</span><span class="n">logits</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">vocab_size</span><span class="p">),</span> <span class="n">labels</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">))</span>
-<span class="c1"># logits: (B×T, V)，V=128K 时是个 (B×T) × 128K 的矩阵</span>
-
-<span class="c1"># 内存分析：</span>
-<span class="c1">#   logits 读入：B×T × 128K × 2B = 当 B×T=16K 时 ≈ 4 GB</span>
-<span class="c1">#   softmax exp：需要同样大小的中间矩阵</span>
-<span class="c1">#   写出 loss：标量</span>
-<span class="c1">#   实际上是 Memory Bound 的 element-wise 操作</span>
-</code></pre></div>
-
-<p>解法：使用 <strong>Chunked Cross-Entropy</strong>，把词表维度分块计算，每次只把一块 logits 读入 SRAM：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 分块，每次处理 vocab_chunk_size 个词</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">chunked_cross_entropy</span><span class="p">(</span><span class="n">logits</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">chunk_size</span><span class="o">=</span><span class="mi">4096</span><span class="p">):</span>
-    <span class="n">batch_size</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">vocab_size</span> <span class="o">=</span> <span class="n">logits</span><span class="o">.</span><span class="n">shape</span>
-    <span class="n">loss</span> <span class="o">=</span> <span class="mi">0</span>
-    <span class="n">max_logit</span> <span class="o">=</span> <span class="n">logits</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># 数值稳定</span>
-
-    <span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">vocab_size</span><span class="p">,</span> <span class="n">chunk_size</span><span class="p">):</span>
-        <span class="n">end</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">start</span> <span class="o">+</span> <span class="n">chunk_size</span><span class="p">,</span> <span class="n">vocab_size</span><span class="p">)</span>
-        <span class="n">chunk</span> <span class="o">=</span> <span class="n">logits</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">start</span><span class="p">:</span><span class="n">end</span><span class="p">]</span> <span class="o">-</span> <span class="n">max_logit</span>
-        <span class="c1"># 只计算这个块的 softmax 分母贡献</span>
-        <span class="o">...</span>
-
-    <span class="c1"># HBM 读取量从 B×T×V 降低到分块后的大小</span>
-    <span class="c1"># 每个 chunk 复用 SRAM 里的 max_logit，减少重复读取</span>
-</code></pre></div>
-
-<p>实际项目里常用 Flash Cross-Entropy（lm-cross-entropy 库），原理和 FlashAttention 类似：把词表维度分块，在 SRAM 里完成 exp+sum，不写中间矩阵到 HBM。</p>
-<hr />
-<h2 id="107-kl">10.7 KL 散度的算子实现</h2>
-<p>PPO 的 KL 惩罚项：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 精确 KL（需要完整 softmax）</span>
-<span class="n">kl</span> <span class="o">=</span> <span class="p">(</span><span class="n">prob_actor</span> <span class="o">*</span> <span class="p">(</span><span class="n">log_prob_actor</span> <span class="o">-</span> <span class="n">log_prob_ref</span><span class="p">))</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># 对词表求和</span>
-
-<span class="c1"># 近似 KL（只用已生成 token 的 logprob，实践中更常用）</span>
-<span class="c1"># 对每个已生成 token：</span>
-<span class="n">kl_approx</span> <span class="o">=</span> <span class="n">log_prob_actor</span> <span class="o">-</span> <span class="n">log_prob_ref</span>  <span class="c1"># element-wise，形状 (B, T)</span>
-<span class="n">kl_penalty</span> <span class="o">=</span> <span class="n">kl_approx</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
-
-<span class="c1"># 两者差别：</span>
-<span class="c1">#   精确 KL：需要完整词表的概率分布，内存开销高</span>
-<span class="c1">#   近似 KL：只用 token 级别的 log_prob 差，对 PPO 来说够用</span>
-<span class="c1">#   Schulman 的近似：kl ≈ (ratio - 1) - log(ratio)，可以进一步避免 log 运算</span>
-</code></pre></div>
-
-<p>在 RL 框架里，KL 散度本身是个 element-wise 算子，计算开销可忽略。真正的开销在于获取 <code>log_prob_ref</code>——这需要 Reference Model 的完整前向传播。</p>
-<hr />
-<h2 id="108-ppo">10.8 实测数字：PPO 各阶段耗时分布</h2>
-<p>以 LLaMA-3 8B，8×H100，batch=64 prompt，response=512 tokens 为例的粗略分布：</p>
+<h2 id="102-rollout-decode">10.2 Rollout 阶段：算子和推理 Decode 一样，浪费的地方不一样</h2>
+<p>Rollout 的算子清单和 <a href="09-推理侧算子.html">09 章</a> 的 Decode 一字不差：逐 token 自回归，每步读一遍全部权重、读一遍 KV Cache、算一次 GEMM（General Matrix Multiply，通用矩阵乘）、采样出下一个 token。既然算子一样，这一节只讲<strong>两件 RL 独有的事</strong>。</p>
+<h3 id="1021">10.2.1 第一件事：长尾让批次衰减（本章最重要的数字）</h3>
+<p>推理服务里，一条序列生成完了，调度器立刻塞一条新的进来补位——这叫连续批处理（Continuous Batching），批次大小基本恒定。<strong>RL 的 rollout 不能这么干</strong>：这一批就 512 条序列，是算法定死的（64 个 prompt × 8 条回答），有序列写完了也没有新活可补。</p>
+<p>结果是：<strong>批次只会衰减，不会回升。</strong></p>
+<p>用一张卡上的 64 条序列举例，假设长度分布是这样（后面所有 rollout 的数字都用这组）：</p>
 <table>
 <thead>
 <tr>
-<th>阶段</th>
-<th>典型耗时占比</th>
+<th>条数</th>
+<th>回答长度</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32</td>
+<td>512</td>
+<td>简单题，早早答完</td>
+</tr>
+<tr>
+<td>16</td>
+<td>1024</td>
+<td></td>
+</tr>
+<tr>
+<td>8</td>
+<td>2048</td>
+<td></td>
+</tr>
+<tr>
+<td>8</td>
+<td>4096</td>
+<td>写到上限被截断</td>
+</tr>
+</tbody>
+</table>
+<p>把 Decode 的 4096 步切成四段，列出每一步有多少条序列还活着：</p>
+<table>
+<thead>
+<tr>
+<th>步区间</th>
+<th>步数</th>
+<th>活跃序列</th>
+<th>这段产出的 token</th>
+<th>每步权重读</th>
+<th>这段的权重读耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 – 512</td>
+<td>512</td>
+<td>64</td>
+<td>32768</td>
+<td>4.78 ms</td>
+<td>2.45 s</td>
+</tr>
+<tr>
+<td>513 – 1024</td>
+<td>512</td>
+<td>32</td>
+<td>16384</td>
+<td>4.78 ms</td>
+<td>2.45 s</td>
+</tr>
+<tr>
+<td>1025 – 2048</td>
+<td>1024</td>
+<td>16</td>
+<td>16384</td>
+<td>4.78 ms</td>
+<td>4.89 s</td>
+</tr>
+<tr>
+<td>2049 – 4096</td>
+<td>2048</td>
+<td>8</td>
+<td>16384</td>
+<td>4.78 ms</td>
+<td>9.78 s</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>4096</strong></td>
+<td>—</td>
+<td><strong>81920</strong></td>
+<td>—</td>
+<td><strong>19.6 s</strong></td>
+</tr>
+</tbody>
+</table>
+<p>每步的权重读耗时是怎么来的：</p>
+<div class="codehilite"><pre><span></span><code>一步必须把 16 GB 权重完整读一遍（Decode 是 Memory Bound，见 09 章）
+    16 GB ÷ 3.35 TB/s = 4.776 ms       ← 和这一步有几条序列活着【完全无关】
+</code></pre></div>
+
+<p><strong>关键就在最后那半句。</strong> 一步的固定成本是 4.78 ms，无论这一步在给 64 条序列出 token，还是只给 8 条。于是：</p>
+<div class="codehilite"><pre><span></span><code>实际产出              = 81920 个 token
+若批次恒定 64 跑满 4096 步 = 64 × 4096 = 262144 个 token
+                          ────────────────────────
+批次有效利用率         = 81920 ÷ 262144 = 31.25%
+
+每个 token 的权重读成本 = 19.6 s ÷ 81920      = 239 µs
+理想（批次恒 64）       = 4.776 ms ÷ 64        = 74.6 µs
+                          ────────────────────────
+长尾让每 token 成本涨了  239 ÷ 74.6 = 3.20 倍   （= 1 ÷ 31.25% ✓）
+</code></pre></div>
+
+<p>画出来是这个形状：</p>
+<div class="codehilite"><pre><span></span><code>活跃序列数
+  64 ┤████████████████
+     │                ▲ 一半序列在第 512 步就答完了
+  32 ┤                ████████████████
+     │
+  16 ┤                                ████████████████████████████
+   8 ┤                                                            ████████████████████████████████████████████████████████
+     └────────────────┴───────────────┴──────────────────────────┴──────────────────────────────────────────────────────────→
+     0              512            1024                        2048                                                     4096
+                                                                                                                    Decode 步
+
+     ← 前 512 步产出 32768 token，耗 2.45 s →     ← 后 2048 步只产出 16384 token，耗 9.78 s →
+       每 token 成本 74.6 µs（理想值）              每 token 成本 597 µs（理想值的 8 倍）
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这是整章最值得记住的一张图。</strong> RL 的 rollout 慢，不是因为 Decode 的 kernel 写得差——它的 HBM 带宽利用率已经接近 100%，没有优化余地。慢是因为<strong>后半段在为 8 条序列付 64 条序列的固定成本</strong>。优化方向因此完全不同：不是调 kernel，而是「让批次别衰减」（§10.10 的三条路：加大 batch、异步 rollout、partial rollout）。</p>
+<p>⚠️ 上表只算了权重读。KV Cache 的读取量随上下文长度<strong>平方</strong>增长，长序列下不可忽略，§10.8 会把它单独算进来（这组配置下是 5.4 s，占 rollout 的 21%）。</p>
+</blockquote>
+<h3 id="1022-logprob">10.2.2 顺手纠正一个流传很广的说法：LogProb 收集并不贵</h3>
+<p>RL 的 Rollout 比普通推理多要一样东西：<strong>每个生成 token 的精确对数概率</strong> <code>logp_old</code>。普通推理只要知道「采哪个 token」，RL 还要知道「采它的概率是多少」。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 普通推理（贪心解码）：只要下标</span>
+<span class="n">token</span> <span class="o">=</span> <span class="n">logits</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>                                    <span class="c1"># logits: (batch, V)</span>
+
+<span class="c1"># RL Rollout：要下标，还要这个下标上的对数概率</span>
+<span class="n">log_probs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">log_softmax</span><span class="p">(</span><span class="n">logits</span><span class="o">.</span><span class="n">float</span><span class="p">(),</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>        <span class="c1"># ← 全词表，且必须 FP32</span>
+<span class="n">token_logprob</span> <span class="o">=</span> <span class="n">log_probs</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">token_ids</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">))</span>
+</code></pre></div>
+
+<p>常见的说法是「这让 Decode 的带宽需求涨了 3–4 倍」。<strong>代进数字就知道这个结论错了三个数量级</strong>：</p>
+<div class="codehilite"><pre><span></span><code>一个 token 的 logits     = V × 2 B = 128256 × 2 = 256 KB
+log_softmax 的搬运量     ≈ 读 256 KB（求 max）+ 读 256 KB（求 exp 和）+ 写 4 B
+                          （融合 kernel 一趟就够，非融合最多三趟，取 768 KB 上界）
+一步里 64 条序列合计      ≈ 64 × 768 KB = 48 MB
+
+同一步必须读的权重        = 16 GB = 16384 MB
+                          ────────────────────────
+占比                      = 48 ÷ 16384 = 0.29%
+</code></pre></div>
+
+<p><strong>0.29%，不是 300%。</strong> 原因很简单：Decode 的搬运量被 16 GB 的权重彻底主导，logits 那 256 KB/token 在它面前是尘埃。而且实际开销还要更低——vLLM / SGLang 为了做 temperature（温度）和 top-p 采样，本来就要算一遍 softmax，<strong>返回采样 token 的 log-prob 是白送的</strong>。</p>
+<blockquote>
+<p>⚠️ 原文「LogProb 收集把 Decode 的内存带宽需求提高约 3–4 倍」是错的，已改正。它大概是把「单个 token 的 logits 搬运量是 argmax 的 3–4 倍」（这句对）当成了「整个 Decode 的带宽需求涨 3–4 倍」（这句错）。判断这类说法有个通用办法：<strong>把它和当前阶段的主导项放在同一个分母上比一比</strong>。</p>
+<p>★ 那 log-prob 的代价什么时候真的会咬人？在<strong>训练侧</strong>。Update 阶段要对 917504 个 token 一次性算 logits，那个张量是 235 GB——这才是真问题，见 §10.6.2。同一个操作，在 Decode 侧可以忽略，在 Prefill 侧是显存炸弹，<strong>差别全在 M 维（token 数）上</strong>。</p>
+</blockquote>
+<h3 id="1023-reference-reward-rollout">10.2.3 Reference / Reward 模型：形状和 Rollout 完全不同</h3>
+<p>同一批序列，Actor 是逐 token Decode（M = 活跃序列数），Reference 是整批一次过（M = 总 token 数）。这两种形状在屋顶线上的位置天差地别，按 <a href="附-速查表.html">附-速查表 §B.2</a> 的 GEMM 算术强度公式（<code>I ≈ M·K·N / (M·K + K·N + M·N)</code>，K = N = H = 4096）代一下：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Actor Decode（后半段）</th>
+<th>Actor Decode（前半段）</th>
+<th>Reference 前向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GEMM 的 M 维</td>
+<td>8</td>
+<td>64</td>
+<td>114688（单卡这一批的全部 token）</td>
+</tr>
+<tr>
+<td>算术强度 I</td>
+<td>≈ 8 FLOP/Byte</td>
+<td>≈ 62 FLOP/Byte</td>
+<td>≈ 2000 FLOP/Byte</td>
+</tr>
+<tr>
+<td>相对 H100 屋脊点 295</td>
+<td>远在左边</td>
+<td>左边</td>
+<td><strong>远在右边</strong></td>
+</tr>
+<tr>
+<td>瓶颈</td>
+<td>Memory Bound</td>
+<td>Memory Bound</td>
+<td><strong>Compute Bound</strong></td>
+</tr>
+<tr>
+<td>硬件利用率</td>
+<td>带宽 ~100%，算力 2%</td>
+<td>带宽 ~100%，算力 14%</td>
+<td>算力 ⚠️ 40–55%</td>
+</tr>
+</tbody>
+</table>
+<p>算力利用率那一行值得盯一眼：</p>
+<div class="codehilite"><pre><span></span><code>Decode 后半段（8 条活跃，上下文平均 4608 token）：
+  FLOP = 2N × 8 = 2 × 8e9 × 8      = 1.28 × 10¹¹
+  权重读 16 GB → 4.78 ms
+  KV 读 8 × 4608 × 128 KB = 4.83 GB → 1.44 ms
+  合计 6.22 ms
+  → 20.6 TFLOPS = 989 的 2.1%
+
+Decode 前半段（64 条活跃，上下文平均 1024 token）：
+  FLOP = 2 × 8e9 × 64             = 1.024 × 10¹²
+  权重读 4.78 ms + KV 读 (64 × 1024 × 128 KB = 8.59 GB) → 2.56 ms = 7.34 ms
+  → 140 TFLOPS = 989 的 14.1%
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>别把「Decode 算力利用率 2%」当成浪费。</strong> Decode 的带宽利用率接近 100%，它已经把硬件能给的都拿到了——算力利用率低是 Memory Bound 算子的<strong>定义</strong>，不是缺陷（<a href="02-屋顶线与性能剖析.html">02 章</a>）。RL 里真正的浪费是 §10.2.1 那个「批次衰减」：同样把带宽打满，一步只服务 8 条序列而不是 64 条。<strong>一个是物理规律，一个是工程问题，只有后者可以改。</strong></p>
+<p>⚠️ 原文写「Rollout 的 GPU 利用率只有 1–5%」，没有说是算力还是带宽，也没有说批次多大。按上面的推演：batch = 1 时算力利用率约 0.3%，batch = 64 时约 14%，而带宽利用率在两种情况下都接近 100%。<strong>引用这类利用率数字必须同时给出批次大小和口径</strong>，否则无法解读。</p>
+</blockquote>
+<hr />
+<h2 id="103-policy-update">10.3 Policy Update 阶段的算子图</h2>
+<p>Rollout 交上来 512 条序列（共 917504 个 token：512 × 512 个 prompt token + 655360 个生成 token）。这一阶段要把它们变成一次权重更新。</p>
+<h3 id="1031">10.3.1 六个步骤，每步的形状和代价</h3>
+<div class="codehilite"><pre><span></span><code>Policy Update 的算子流（→ 表示数据依赖）
+
+  token_ids (512, ≤4608)  ──①──→ logits (917504, 128256)
+                                    │
+  logp_old (Rollout 给的) ──────────┼──②──→ ratio (917504,)
+                                    │           │
+  reward (512,) ──④──→ advantage ───┼───────────┼──③──→ loss (标量)
+                                    │           │
+  logp_ref (Reference 给的) ────────┴───────────┴──⑤──→ KL 惩罚项
+                                                        │
+                                                    ⑥ Backward → 梯度 → AdamW
+</code></pre></div>
+
+<p>逐个算代价（8×H100，917504 个 token，N = 8e9）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>算子</th>
+<th>形状</th>
+<th>计算/搬运量</th>
+<th>理论耗时</th>
 <th>瓶颈</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Actor Rollout（Decode）</td>
-<td>45–55%</td>
-<td>Memory Bound（M=1 GEMM）</td>
-</tr>
-<tr>
-<td>Reference LogProb（Prefill）</td>
-<td>10–15%</td>
-<td>Compute Bound（M=512）</td>
-</tr>
-<tr>
-<td>Reward 评分</td>
-<td>5–10%</td>
+<td>①</td>
+<td>Re-forward（重算前向）</td>
+<td>M = 917504，2N/token</td>
+<td>14.7 PFLOP</td>
+<td>1.86 s</td>
 <td>Compute Bound</td>
 </tr>
 <tr>
-<td>GAE 计算</td>
-<td>&lt;1%</td>
-<td>CPU 串行</td>
+<td>①b</td>
+<td>lm_head + log_softmax</td>
+<td>(917504, 128256)</td>
+<td><strong>⚠️ 见 §10.6.2</strong></td>
+<td>—</td>
+<td>Memory Bound + 显存炸弹</td>
 </tr>
 <tr>
-<td>Re-forward（Policy Update）</td>
-<td>15–20%</td>
+<td>②</td>
+<td><code>ratio = exp(logp_new − logp_old)</code></td>
+<td>(917504,)</td>
+<td>约 3 次逐元素运算</td>
+<td><strong>&lt; 10 µs</strong></td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>③</td>
+<td>PPO clip loss</td>
+<td>(917504,)</td>
+<td>约 6 次逐元素运算</td>
+<td><strong>&lt; 20 µs</strong></td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>④</td>
+<td>优势估计（组内 mean/std）</td>
+<td>(512,) → 广播</td>
+<td>512 个标量的统计</td>
+<td><strong>&lt; 1 ms</strong></td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>KL 惩罚项</td>
+<td>(917504,)</td>
+<td>约 4 次逐元素运算</td>
+<td><strong>&lt; 15 µs</strong></td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>Backward</td>
+<td>4N/token</td>
+<td>29.4 PFLOP</td>
+<td>3.71 s</td>
 <td>Compute Bound</td>
 </tr>
 <tr>
-<td>Backward + Optimizer</td>
-<td>10–15%</td>
-<td>Compute + Memory</td>
+<td>⑦</td>
+<td>AdamW（ZeRO-2 分片到 8 卡）</td>
+<td>8e9 参数</td>
+<td>每卡读写 28 GB</td>
+<td><strong>8 ms</strong></td>
+<td>Memory Bound</td>
+</tr>
+</tbody>
+</table>
+<p>① 和 ⑥ 的算法：每 token 前向 2N FLOP、反向 4N FLOP（2N 算输入梯度 + 2N 算权重梯度），合计 6N，来源见 <a href="附-速查表.html">附-速查表 §B.3</a>。</p>
+<div class="codehilite"><pre><span></span><code>① 前向：2 × 8e9 × 917504 = 1.468 × 10¹⁶ = 14.7 PFLOP
+⑥ 反向：4 × 8e9 × 917504 = 2.936 × 10¹⁶ = 29.4 PFLOP
+   合计：6N          = 44.0 PFLOP
+   ÷ (8 × 989 TFLOPS) = 5.57 s     ← 理论下界
+   ⚠️ 按 MFU 40% 估 = 13.9 s        ← 现实量级
+</code></pre></div>
+
+<p>⑦ AdamW 的账（这一步经常被高估）：</p>
+<div class="codehilite"><pre><span></span><code>混合精度 AdamW 每个参数要碰的东西：
+    读 BF16 梯度 2 B + 读 FP32 master 权重 4 B + 读 m 4 B + 读 v 4 B  = 14 B
+    写 FP32 master 4 B + 写 m 4 B + 写 v 4 B + 写 BF16 权重 2 B       = 14 B
+                                                             ───────
+                                                        合计 28 B/参数
+
+8e9 参数 × 28 B = 224 GB
+ZeRO-2 把优化器状态和梯度分片到 8 卡 → 每卡 28 GB
+    28 GB ÷ 3.35 TB/s = 8.4 ms
+    占整个 Update 阶段（5.57 s）的 0.15%
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 原文写「AdamW：4 × param_count × 4 Bytes（FP32 状态）」，这个式子没说清是读还是写、也漏了 BF16 权重和梯度那两份，正确的口径是<strong>每参数读写合计 28 字节</strong>（上面逐项列了）。更要紧的是结论：原文把「Backward + Optimizer」并成一项算 10–15%，会让人以为优化器有可观开销——<strong>它只占 0.15%</strong>，RL 里完全不用管它。</p>
+</blockquote>
+<h3 id="1032-loss">10.3.2 一个反直觉的结论：loss 本身是免费的</h3>
+<p>把上表的 ② ③ ④ ⑤ 加起来：</p>
+<div class="codehilite"><pre><span></span><code>ratio + clip + 优势估计 + KL  &lt;  1 ms
+Re-forward + Backward          =  5570 ms
+                                  ──────────
+loss 相关算子占比              &lt;  0.02%
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>PPO / GRPO 的全部「算法特色」（ratio、clip、advantage、KL）在算子层是零成本的。</strong> 它们都是 (917504,) 这个一维张量上的几次逐元素运算，<code>torch.compile</code> 顺手就融成一个 kernel（<a href="05-算子融合.html">05 章</a>）。RL 的性能问题一个都不在这些算子里——全在 §10.2.1 的长尾和 §10.6.2 的大词表上。这也意味着：<strong>你在 loss 里加一个新项（比如换个 KL 估计量、加一个熵正则），性能上是白送的</strong>，可以放心试。</p>
+</blockquote>
+<h3 id="1033-gae">10.3.3 那 GAE 的串行性到底要不要紧</h3>
+<p>PPO 的优势估计 GAE 有一个从后往前的递推，不能并行：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># GAE：从最后一个时间步倒推回来</span>
+<span class="n">advantages</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">T</span><span class="p">,</span> <span class="n">B</span><span class="p">)</span>
+<span class="n">last_gae</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="nb">reversed</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">T</span><span class="p">)):</span>                      <span class="c1"># ← T 次串行迭代，没法并行</span>
+    <span class="n">delta</span> <span class="o">=</span> <span class="n">rewards</span><span class="p">[</span><span class="n">t</span><span class="p">]</span> <span class="o">+</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">values</span><span class="p">[</span><span class="n">t</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">values</span><span class="p">[</span><span class="n">t</span><span class="p">]</span>
+    <span class="n">last_gae</span> <span class="o">=</span> <span class="n">delta</span> <span class="o">+</span> <span class="n">gamma</span> <span class="o">*</span> <span class="n">lam</span> <span class="o">*</span> <span class="n">last_gae</span>
+    <span class="n">advantages</span><span class="p">[</span><span class="n">t</span><span class="p">]</span> <span class="o">=</span> <span class="n">last_gae</span>
+</code></pre></div>
+
+<p>「不能并行」听起来很严重。<strong>但并行化的收益要和总耗时比，才知道值不值得做</strong>：</p>
+<div class="codehilite"><pre><span></span><code>T = 512 时，这个循环有 512 次迭代
+每次迭代在 PyTorch eager 模式下大约发 4 个小 kernel
+kernel 下发成本 ⚠️ 约 2–3 µs/个（[05 章 §5.5.1](05-算子融合.md)）
+    → 512 × 4 × 2.5 µs ≈ 5.1 ms
+
+搬到 CPU 上用 NumPy 跑（每次迭代是一个长度 512 的向量运算）：
+    → 512 × 约 1 µs ≈ 0.5 ms
+
+对照：整个迭代耗时 ≈ 33 s（§10.8 会算出来）
+    → GAE 占 5.1 ms ÷ 33 s = 0.015%
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>就算换成长 CoT（Chain-of-Thought，思维链）场景，T = 32768：
+    32768 × 4 × 2.5 µs ≈ 328 ms
+    此时一次迭代也会长到几分钟量级 → 占比仍在 0.1% 以下
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>GAE 的串行性是个真问题吗？算一下就知道不是。</strong> 它是一个「看起来很糟、量起来无关」的典型。用 parallel scan（并行前缀扫描，把递推写成仿射变换的复合，O(log T) 步）确实能把它降到微秒级，但省下来的 5 ms 相对 33 s 毫无意义，却要付出实现和调试的代价。<strong>先量，再优化</strong>——这是 <a href="02-屋顶线与性能剖析.html">02 章</a> 那条「诊断漏斗」在 RL 上的一次直接应用。</p>
+<p>⚠️ 原文说「GAE 是 Policy Update 里最难并行化的算子」并花了不少篇幅讲 parallel scan。「最难并行化」是对的，但它同时也是<strong>最不需要并行化</strong>的，原文没给这个占比，容易让人把优化精力放错地方。另外原文断言「veRL 和 OpenRLHF 都在 CPU 上跑 GAE」——⚠️ 各框架的实现细节和版本有关，本节不做具体断言，只保留「放哪都够快」这个结论。</p>
+</blockquote>
+<hr />
+<h2 id="104-grpo">10.4 优势估计：用一个玩具例子看懂 GRPO 在做什么</h2>
+<p>优势（advantage）是策略梯度里乘在 log-prob 前面的那个系数，它决定<strong>每个 token 的梯度往哪个方向走、走多大</strong>。这一节把 GRPO 和 GAE 各手算一遍，两个例子都能拿计算器验。</p>
+<h3 id="1041-grpo-prompt4-4-reward">10.4.1 GRPO：一个 prompt、4 条回答、4 个 reward</h3>
+<p>GRPO 的想法极其朴素：<strong>同一道题采几个答案，比一比谁好谁坏，好的鼓励、坏的抑制。</strong> 公式就一行：</p>
+<div class="codehilite"><pre><span></span><code>对同一个 prompt 的 G 条回答，reward 分别是 r₁ … r_G
+
+        r_i − mean(r₁…r_G)
+A_i = ──────────────────────        ← 「组内归一化」
+          std(r₁…r_G)
+
+然后：这条回答里【每一个 token】的 advantage 都等于 A_i
+</code></pre></div>
+
+<p>取 G = 4，reward 用最常见的 0/1 正确性（RLVR 场景下验证器的输出），四条回答两对两错：</p>
+<table>
+<thead>
+<tr>
+<th>回答</th>
+<th>reward <code>r</code></th>
+<th><code>r − mean</code></th>
+<th>advantage <code>A = (r−mean)/std</code></th>
+<th>这条回答里每个 token 的梯度方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>1</td>
+<td>+0.5</td>
+<td><strong>+1.0</strong></td>
+<td>提高这些 token 的概率</td>
 </tr>
 <tr>
-<td>权重同步（Worker 分离模式）</td>
-<td>5–10%</td>
-<td>NVLink/PCIe 带宽</td>
+<td>②</td>
+<td>1</td>
+<td>+0.5</td>
+<td><strong>+1.0</strong></td>
+<td>提高</td>
+</tr>
+<tr>
+<td>③</td>
+<td>0</td>
+<td>−0.5</td>
+<td><strong>−1.0</strong></td>
+<td>降低</td>
+</tr>
+<tr>
+<td>④</td>
+<td>0</td>
+<td>−0.5</td>
+<td><strong>−1.0</strong></td>
+<td>降低</td>
+</tr>
+</tbody>
+</table>
+<p>中间量自己验一遍：</p>
+<div class="codehilite"><pre><span></span><code>mean = (1 + 1 + 0 + 0) ÷ 4 = 0.5
+各项偏差 = +0.5, +0.5, −0.5, −0.5
+偏差平方和 = 4 × 0.25 = 1.0
+总体标准差 std = √(1.0 ÷ 4) = √0.25 = 0.5      ← 分母用 G（总体标准差）
+A = ±0.5 ÷ 0.5 = ±1.0
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这就是「组相对」三个字的全部含义</strong>：不需要任何模型去估「这道题大概能得几分」（那是 PPO 里 Value Model 的活），<strong>同组的另外 3 条回答就是基准线</strong>。省掉一个和 Actor 同样大的模型，这是 GRPO 最大的工程收益。</p>
+</blockquote>
+<h3 id="1042-g-4">10.4.2 把 G = 4 的五种情况全列出来：两个陷阱现形</h3>
+<p>上面那组数太对称了，看不出门道。把「组内答对几条」从 0 到 4 全试一遍：</p>
+<table>
+<thead>
+<tr>
+<th>组内答对数</th>
+<th>reward 序列</th>
+<th>mean</th>
+<th>总体 std</th>
+<th>答对的 A</th>
+<th>答错的 A</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4 / 4</td>
+<td>1,1,1,1</td>
+<td>1.00</td>
+<td><strong>0</strong></td>
+<td><strong>0/0 → 0</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>3 / 4</td>
+<td>1,1,1,0</td>
+<td>0.75</td>
+<td>0.4330</td>
+<td>+0.5774（×3）</td>
+<td><strong>−1.7321</strong></td>
+</tr>
+<tr>
+<td>2 / 4</td>
+<td>1,1,0,0</td>
+<td>0.50</td>
+<td>0.5000</td>
+<td>+1.0000（×2）</td>
+<td>−1.0000（×2）</td>
+</tr>
+<tr>
+<td>1 / 4</td>
+<td>1,0,0,0</td>
+<td>0.25</td>
+<td>0.4330</td>
+<td><strong>+1.7321</strong></td>
+<td>−0.5774（×3）</td>
+</tr>
+<tr>
+<td>0 / 4</td>
+<td>0,0,0,0</td>
+<td>0.00</td>
+<td><strong>0</strong></td>
+<td>—</td>
+<td><strong>0/0 → 0</strong></td>
+</tr>
+</tbody>
+</table>
+<p>验算「3 / 4」那一行：</p>
+<div class="codehilite"><pre><span></span><code>mean = 0.75
+偏差 = +0.25, +0.25, +0.25, −0.75
+偏差平方和 = 3 × 0.0625 + 0.5625 = 0.1875 + 0.5625 = 0.75
+std = √(0.75 ÷ 4) = √0.1875 = 0.43301
+答对：+0.25 ÷ 0.43301 = +0.57735
+答错：−0.75 ÷ 0.43301 = −1.73205
+校验：3 × 0.57735 − 1.73205 = 1.73205 − 1.73205 = 0   ✓ 组内 advantage 恒和为 0
+</code></pre></div>
+
+<p><strong>陷阱一：全对和全错的组，梯度是 0。</strong></p>
+<div class="codehilite"><pre><span></span><code>4/4 和 0/4 时 std = 0，实现里会写成 (r − mean) / (std + eps)
+分子也是 0 → advantage 全是 0 → 这一组的 rollout 白跑了
+</code></pre></div>
+
+<p>这不是 bug，是算法的定义（组内没有差异 → 没有可比的信息）。但它有真实的算力代价：</p>
+<div class="codehilite"><pre><span></span><code>假设数据集里 25% 的 prompt 太简单（8 条全对）、10% 太难（8 条全错）
+    → ⚠️ 35% 的 rollout 算力产出零梯度
+按 §10.8 的账，rollout 占一次迭代 77%
+    → 白烧掉 0.35 × 77% ≈ 27% 的整体时间
+</code></pre></div>
+
+<blockquote>
+<p>★ 这就是<strong>动态采样</strong>（dynamic sampling，DAPO 等做法）的动机：先采一批，把全对/全错的组丢掉，不够就再采，直到攒够有效组。它省的不是 kernel 时间，是「零梯度组」的整段 rollout。⚠️ 上面的 25% / 10% 是示意值，实际比例完全取决于数据集难度和当前模型水平，<strong>必须自己统计</strong>——这也是 RL 训练里最该上的一个监控指标。</p>
+</blockquote>
+<p><strong>陷阱二：除以 std 会放大「几乎全对」和「几乎全错」的组。</strong></p>
+<p>看表里的 |A| 最大值：2/4 那组是 1.0，而 3/4 和 1/4 那组是 <strong>1.7321</strong>。</p>
+<div class="codehilite"><pre><span></span><code>3/4 的组里，那唯一一条错答拿到 −1.7321 的 advantage
+2/4 的组里，每条错答只拿到 −1.0
+                              ──────────
+同样答错，梯度大了 1.73 倍，仅仅因为「组里别人都答对了」
+</code></pre></div>
+
+<p>推广到 G = 8：如果 7 对 1 错，那条错答的 |A| = <strong>2.6458</strong>，是 4 对 4 错时（|A| = 1）的 2.65 倍（§10.11 自测题 1 让你自己算一遍）。这个放大不来自任何算法意图，纯粹是「除以一个很小的 std」的副作用。</p>
+<blockquote>
+<p>⚠️ 这是 Dr.GRPO 等后续工作指出的<strong>标准差归一化偏置</strong>：分母 std 随组内难度剧烈变化，等于给不同难度的题目配了不同的学习率，而且方向是反的（越极端的组学得越猛）。一种修法是<strong>去掉除 std，只减 mean</strong>（<code>A_i = r_i − mean</code>），这样 3/4 组的错答 A = −0.75、2/4 组的错答 A = −0.5，比值只有 1.5 倍，温和得多。⚠️ 哪种更好取决于任务，本节只负责把这个机制讲清楚。</p>
+</blockquote>
+<p><strong>还有一个容易踩的实现细节：总体标准差还是样本标准差。</strong></p>
+<div class="codehilite"><pre><span></span><code>G = 4，reward = 1,1,0,0，偏差平方和 = 1.0
+
+总体标准差（分母 G，NumPy/PyTorch 默认 ddof=0）：
+    std = √(1.0 ÷ 4) = 0.5000  →  A = ±1.0000
+
+样本标准差（分母 G−1，即 ddof=1）：
+    std = √(1.0 ÷ 3) = 0.5774  →  A = ±0.8660
+                                    ──────────
+                              差 13.4%，等于悄悄改了 13.4% 的学习率
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 换一个框架、或者把 <code>torch.std()</code>（默认 ddof=1）误当成 <code>np.std()</code>（默认 ddof=0）用，advantage 的整体尺度就会差十几个百分点。<strong>这不报错、不发散，只是训练曲线对不上别人的复现结果</strong>，是 RL 里非常高频的一类静默差异。G 越小差得越多：G=4 差 13.4%，G=8 差 6.9%，G=16 差 3.3%。</p>
+</blockquote>
+<h3 id="1043-ppo-gae">10.4.3 PPO 的 GAE：同一件事的另一种做法</h3>
+<p>PPO 不做分组，它用一个 Value Model（价值模型，又叫 Critic）去估「当前状态大概能得几分」，再用 GAE 把逐步的估值误差累起来。公式两行：</p>
+<div class="codehilite"><pre><span></span><code>δ_t = r_t + γ · V(s_{t+1}) − V(s_t)              ← 单步的「估值误差」（TD 误差）
+A_t = δ_t + γλ · A_{t+1}                          ← 从后往前累加，A_T = 0
+</code></pre></div>
+
+<p>取一条长度 4 的序列（实际就是 4 个 token），大模型 RL 里通常 γ = 1（不折扣未来，因为奖励在序列末尾）、λ = 0.95，奖励只在最后一个 token 上给：</p>
+<table>
+<thead>
+<tr>
+<th>t</th>
+<th>r_t</th>
+<th>V(s_t)</th>
+<th>δ_t = r_t + V(s_{t+1}) − V(s_t)</th>
+<th>A_t = δ_t + 0.95·A_{t+1}</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0.5</td>
+<td>0 + 0.6 − 0.5 = <strong>0.1</strong></td>
+<td>0.1 + 0.95 × 0.3755 = <strong>0.4567</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td>0</td>
+<td>0.6</td>
+<td>0 + 0.7 − 0.6 = <strong>0.1</strong></td>
+<td>0.1 + 0.95 × 0.29 = <strong>0.3755</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td>0</td>
+<td>0.7</td>
+<td>0 + 0.8 − 0.7 = <strong>0.1</strong></td>
+<td>0.1 + 0.95 × 0.2 = <strong>0.29</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td>1</td>
+<td>0.8</td>
+<td>1 + 0 − 0.8 = <strong>0.2</strong></td>
+<td>0.2 + 0.95 × 0 = <strong>0.2</strong></td>
+</tr>
+</tbody>
+</table>
+<p>（V(s_4) = 0，因为序列结束了。计算顺序是<strong>从下往上</strong>：先算 t=3，再 t=2、t=1、t=0。）</p>
+<blockquote>
+<p>★ <strong>注意 GAE 和 GRPO 在同一件事上的分工差别</strong>：GRPO 给整条回答<strong>一个</strong>数（A = ±1，广播到每个 token）；GAE 给每个 token <strong>各自一个</strong>数（0.4567 / 0.3755 / 0.29 / 0.2）。GAE 的信号更细（能区分「这一步走得好」和「那一步走得差」），代价是必须多养一个和 Actor 同样大的 Value Model —— 按 §10.9 的账，那是 <strong>128 GB 显存</strong>加上多一次前向和反向。<strong>GRPO 就是用「信号变粗」换了这 128 GB 和那一整套计算。</strong></p>
+</blockquote>
+<p>两种做法的算子层对照：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>PPO + GAE</th>
+<th>GRPO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>需要的模型</td>
+<td>Actor + Reference + Reward + <strong>Value</strong></td>
+<td>Actor + Reference + Reward</td>
+</tr>
+<tr>
+<td>优势估计算子</td>
+<td>T 步串行递推（§10.3.3：5 ms，不要紧）</td>
+<td><code>mean</code> + <code>std</code>，完全并行（&lt; 1 ms）</td>
+</tr>
+<tr>
+<td>advantage 粒度</td>
+<td>每 token 一个</td>
+<td>每条回答一个（广播到 token）</td>
+</tr>
+<tr>
+<td>Rollout 的量</td>
+<td>B 条序列</td>
+<td><strong>B × G 条序列</strong>（G = 8 时 8 倍）</td>
+</tr>
+<tr>
+<td>Update 的 GEMM M 维</td>
+<td>B × T</td>
+<td>B × G × T（更靠 Compute Bound 一侧）</td>
+</tr>
+<tr>
+<td>额外的反向</td>
+<td>Value Model 要单独反向</td>
+<td>无</td>
+</tr>
+<tr>
+<td>显存（8B，见 §10.9）</td>
+<td>多 128 GB</td>
+<td>—</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ Rollout（Decode）占了将近一半时间，而它的 GPU 利用率只有 1–5%。这是 RL 训练整体 MFU 远低于监督训练的根本原因。<br />
-提升 Rollout 吞吐是 RL 框架优化的第一优先级，主要手段是增大 Rollout batch size 和使用推理优化框架（vLLM/SGLang）。</p>
+<p>★ <strong>一句话对比</strong>：GRPO 把「多养一个模型」换成了「多采 G 倍的样本」。前者是显存+算力的固定成本，后者是 rollout 的线性成本——而 rollout 恰好是最贵的那一段（§10.8）。所以 GRPO 不是无条件更省：<strong>它省显存，但 rollout 的活变成 G 倍</strong>。它之所以在推理模型训练上大获成功，是因为 RLVR 场景下采样本身就必须多采（要在多条 CoT 里找出对的那条），G 倍采样是刚需而非额外开销。</p>
 </blockquote>
 <hr />
-<h2 id="109">10.9 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>RL 训练的算子特征：
+<h2 id="105-clipratio-14">10.5 重要性采样比与 clip：ratio = 1.4 之后梯度变成什么</h2>
+<p>这一节讲 PPO 里最容易被想错的一个算子。它的计算量是零（§10.3.2 算过），但<strong>理解错了会把训练调坏</strong>。</p>
+<h3 id="1051-ratio">10.5.1 ratio 是什么、为什么需要它</h3>
+<p>Rollout 是用<strong>旧权重</strong> π_old 采的，梯度要更新的是<strong>新权重</strong> π_new。数据和目标错位了，得修：</p>
+<div class="codehilite"><pre><span></span><code>ratio = π_new(a|s) ÷ π_old(a|s) = exp(logp_new − logp_old)
+                                       ↑           ↑
+                            这次前向算的   Rollout 时记下的
 
-Rollout 阶段：
-  = 推理 Decode（M=1，Memory Bound）
-  + LogProb 收集（全词表 softmax，额外 3-4× 带宽）
-  + Reference Prefill（M=T，Compute Bound，同时或串行）
-  内存压力 = 3-4 个模型同时或轮流在 GPU 上
-
-Policy Update 阶段：
-  = Prefill Forward（Re-forward，Compute Bound）
-  + GAE（CPU 串行递推，或 GPU parallel scan）
-  + PPO clip（element-wise，可忽略）
-  + Backward + AdamW（和标准训练相同）
-
-GRPO vs PPO：
-  去掉 Value Model，GAE → 组内 mean/std（完全并行）
-  Batch 变 G 倍，GEMM 形状更 Compute Bound
-
-显存管理：
-  Weight Offload：阶段切换时搬权重，PCIe 延迟是痛点
-  Worker 分离：推理 Worker + 训练 Worker，需要权重同步
-
-RL 的整体 MFU 低（通常 5–15%）
-原因：Rollout Decode 占 50% 时间但 GPU 利用率 1–5%
-优化方向：用推理框架跑 Rollout，增大 batch size，异步流水线
-
-下一章：训练和推理在算子层如何保持数值一致性。
+ratio &gt; 1：新策略比旧策略更爱这个 token
+ratio = 1：两者一样（第一次更新、且 logp_old 由训练引擎算时，精确为 1）
+ratio &lt; 1：新策略比旧策略更不爱这个 token
 </code></pre></div>
 
-<p><strong>延伸资料</strong>：<br />
-- <a href="https://arxiv.org/abs/1707.06347">Proximal Policy Optimization 原论文</a>（Schulman et al., 2017）<br />
-- <a href="https://arxiv.org/abs/2402.03300">DeepSeekMath：GRPO 算法</a>（Shao et al., 2024）<br />
-- <a href="https://github.com/volcengine/verl">veRL: Volcano Engine RL for LLMs</a>（开源 RL 框架，含 PPO/GRPO 实现）<br />
-- <a href="https://github.com/OpenRLHF/OpenRLHF">OpenRLHF</a>（Ray-based RL 框架，Worker 分离架构）<br />
-- <a href="https://github.com/mgmalek/efficient_cross_entropy">Flash Cross-Entropy</a>（大词表 cross-entropy 的 kernel 优化）</p>
+<p>它对应的 log-prob 差值有多小，值得先建立个量感：</p>
+<table>
+<thead>
+<tr>
+<th>ratio</th>
+<th>对应的 <code>logp_new − logp_old</code>（自然对数）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.7</td>
+<td>−0.3567</td>
+</tr>
+<tr>
+<td><strong>0.8</strong>（= 1 − ε）</td>
+<td><strong>−0.2231</strong></td>
+</tr>
+<tr>
+<td>0.85</td>
+<td>−0.1625</td>
+</tr>
+<tr>
+<td>1.0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>1.15</td>
+<td>+0.1398</td>
+</tr>
+<tr>
+<td><strong>1.2</strong>（= 1 + ε）</td>
+<td><strong>+0.1823</strong></td>
+</tr>
+<tr>
+<td>1.4</td>
+<td>+0.3365</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>clip 的边界只有 ±0.18 个自然对数单位。</strong> 记住这个数：单个 token 的 log-prob 只要动 0.18，就撞到信任域的边界了。<a href="11-训推一致性算子层.html">11 章 §11.1</a> 说「ratio ∈ [0.85, 1.15] 很常见」，换算过来就是 −0.16 ~ +0.14——<strong>光是训推数值失配就已经吃掉了 clip 预算的 77~89%</strong>，真正留给「策略确实变了」的余量几乎没有。这两章的连接点就在这一个数上。</p>
+</blockquote>
+<h3 id="1052-clip">10.5.2 clip 到底在裁什么：把四种情况全算出来</h3>
+<p>PPO 的目标函数（要<strong>最大化</strong>的那个，loss 是它的相反数）：</p>
+<div class="codehilite"><pre><span></span><code>objective = min( ratio · A ,  clip(ratio, 1−ε, 1+ε) · A )
+
+ε 通常取 0.2，所以 clip 把 ratio 夹到 [0.8, 1.2]
+</code></pre></div>
+
+<p>取 ε = 0.2，把 A 的正负和 ratio 的大小组合起来，逐格算：</p>
+<table>
+<thead>
+<tr>
+<th>A</th>
+<th>ratio</th>
+<th><code>ratio·A</code></th>
+<th><code>clip(ratio)·A</code></th>
+<th><code>min</code> 取哪个</th>
+<th>被裁剪?</th>
+<th>对 logp_new 的梯度系数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>+1</strong></td>
+<td>0.5</td>
+<td>0.5</td>
+<td>0.8</td>
+<td><strong>0.5</strong>（未裁剪支）</td>
+<td>否</td>
+<td>+0.5</td>
+</tr>
+<tr>
+<td><strong>+1</strong></td>
+<td>0.9</td>
+<td>0.9</td>
+<td>0.9</td>
+<td>0.9</td>
+<td>否</td>
+<td>+0.9</td>
+</tr>
+<tr>
+<td><strong>+1</strong></td>
+<td>1.1</td>
+<td>1.1</td>
+<td>1.1</td>
+<td>1.1</td>
+<td>否</td>
+<td>+1.1</td>
+</tr>
+<tr>
+<td><strong>+1</strong></td>
+<td><strong>1.4</strong></td>
+<td>1.4</td>
+<td><strong>1.2</strong></td>
+<td><strong>1.2</strong>（裁剪支）</td>
+<td><strong>是</strong></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><strong>−1</strong></td>
+<td><strong>0.5</strong></td>
+<td>−0.5</td>
+<td><strong>−0.8</strong></td>
+<td><strong>−0.8</strong>（裁剪支）</td>
+<td><strong>是</strong></td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td><strong>−1</strong></td>
+<td>0.9</td>
+<td>−0.9</td>
+<td>−0.9</td>
+<td>−0.9</td>
+<td>否</td>
+<td>−0.9</td>
+</tr>
+<tr>
+<td><strong>−1</strong></td>
+<td>1.1</td>
+<td>−1.1</td>
+<td>−1.1</td>
+<td>−1.1</td>
+<td>否</td>
+<td>−1.1</td>
+</tr>
+<tr>
+<td><strong>−1</strong></td>
+<td>1.4</td>
+<td><strong>−1.4</strong></td>
+<td>−1.2</td>
+<td><strong>−1.4</strong>（未裁剪支）</td>
+<td>否</td>
+<td><strong>−1.4</strong></td>
+</tr>
+</tbody>
+</table>
+<p>梯度系数那一列怎么来的：</p>
+<div class="codehilite"><pre><span></span><code>ratio = exp(Δ)，其中 Δ = logp_new − logp_old
+d(ratio)/dΔ = exp(Δ) = ratio
+
+未裁剪支被选中：d(ratio·A)/dΔ = A · ratio      ← 梯度正常流动
+裁剪支被选中：  clip(ratio)·A 对 ratio 是【常数】
+                → d/dΔ = 0                       ← 梯度被完全切断
+</code></pre></div>
+
+<p><strong>直接回答本节标题的问题</strong>：A = +1、ratio = 1.4 时，目标函数取的是 <code>clip(1.4) × 1 = 1.2</code>，这是一个不含 <code>logp_new</code> 的常数，所以<strong>这个 token 的梯度精确为 0</strong>——它对本次权重更新贡献不了一丝一毫。不是「梯度被缩小到 1.2/1.4」，是<strong>归零</strong>。</p>
+<blockquote>
+<p>★ <strong>clip 只在四种情况里的两种生效</strong>，这是全节最重要的结论：</p>
+<p><code>A &gt; 0 且 ratio &gt; 1+ε   →  裁剪，梯度归零   「这个 token 已经够爱了，别再加了」
+A &lt; 0 且 ratio &lt; 1−ε   →  裁剪，梯度归零   「这个 token 已经够嫌了，别再减了」
+A &gt; 0 且 ratio &lt; 1−ε   →  不裁剪            「本该鼓励，却跑反了，必须使劲拉回来」
+A &lt; 0 且 ratio &gt; 1+ε   →  不裁剪            「本该抑制，却更爱了，必须使劲拉回来」</code></p>
+<p>换句话说：<strong>clip 只拦「顺着已有方向跑太远」，从不拦「往回拉」。</strong> 那句流传很广的「clip 把 ratio 限制在 [0.8, 1.2]」是错的——上表第一行 ratio = 0.5 和最后一行 ratio = 1.4 都没有被限制，梯度照样流。</p>
+</blockquote>
+<h3 id="1053-dual-clip">10.5.3 那个没被裁剪的角落会爆：dual-clip</h3>
+<p>看上表最后一行：A = −1、ratio = 1.4，梯度系数是 <strong>−1.4</strong>，比 ratio = 1.0 时的 −1.0 还<strong>大</strong>。把 ratio 推得更极端：</p>
+<div class="codehilite"><pre><span></span><code>Δ = logp_new − logp_old = 3.0   →   ratio = exp(3) = 20.09
+A = −1 时，梯度系数 = A · ratio = −20.09        ← 单个 token 的梯度放大 20 倍
+
+Δ = 10                          →   ratio = 22026
+                                    梯度系数 = −22026                ← 一个 token 掀翻整个 batch
+</code></pre></div>
+
+<p>而 ratio 是 <code>exp()</code> 出来的，<strong>指数放大</strong>：Δ 只要错 10 个自然对数单位（在长序列上完全可能，尤其是 token 概率本身很小的时候），ratio 就是四位数。</p>
+<p>两个必须做的防护：</p>
+<div class="codehilite"><pre><span></span><code>① 在【log 空间】先夹住，再取 exp —— 而不是取完 exp 再夹
+     delta = (logp_new - logp_old).clamp(min=-20.0, max=20.0)
+     ratio = delta.exp()
+   若不夹：Δ = 90 时 exp(90) = 1.2e39 &gt; FP32 上限 3.4e38 → inf → loss 变 NaN
+   （BF16 的上限也是约 3.39e38，且精度更差，ratio 必须在 FP32 里算）
+
+② dual-clip（双侧裁剪）：A &lt; 0 时再加一道上限 c（常取 3）
+     objective = max( min(ratio·A, clip(ratio,1−ε,1+ε)·A) , c·A )
+   A &lt; 0 时，把最坏情况锁在 c·A = −3，而不是 −22026
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 这两条都是「不加也能跑起来、跑到某一步突然 NaN 或 loss 尖刺」的那类问题，而且<strong>日志上看不出原因</strong>——你看到的是 loss 炸了，看不到是某个 token 的 ratio 上了四位数。排查方法：把每步的 <code>ratio.max()</code>、<code>ratio.min()</code>、以及「被裁剪 token 的比例」（clip fraction）打到监控里。clip fraction 是 RL 训练最有信息量的单个指标：<strong>它长期低于 5% 说明更新太保守（可以加大学习率或多做几个 inner step），长期高于 30% 说明每步走太远（数据被白采了一大半）</strong>。</p>
+</blockquote>
+<h3 id="1054-ratio-1">10.5.4 一个容易忽略的前提：ratio ≡ 1 的情况</h3>
+<p>如果每批 rollout 数据只做<strong>一次</strong>梯度更新，而且 <code>logp_old</code> 是用训练引擎算的（不是推理引擎给的）：</p>
+<div class="codehilite"><pre><span></span><code>logp_new 和 logp_old 来自同一份权重、同一套 kernel、同一次前向
+    → Δ ≡ 0，ratio ≡ 1
+    → clip 永远不触发，PPO 的 clip 项完全是装饰
+</code></pre></div>
+
+<p>这时 PPO 退化成最朴素的策略梯度。clip 要起作用，必须满足下面至少一条：</p>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>为什么 ratio ≠ 1</th>
+<th>这部分偏离该不该修</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一批数据做多次更新（多个 inner epoch）</td>
+<td>第 2 次起权重确实变了</td>
+<td>不该修，这是算法设计</td>
+</tr>
+<tr>
+<td>异步 RL：rollout 用的是 N 步之前的权重</td>
+<td>策略确实旧了（off-policy 偏移）</td>
+<td>不该修，用 IS 修正</td>
+</tr>
+<tr>
+<td><code>logp_old</code> 由推理引擎给出</td>
+<td><strong>纯数值失配</strong></td>
+<td><strong>该修</strong>，见 <a href="11-训推一致性算子层.html">11 章</a></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>ratio 的偏离里混着两种完全不同的东西</strong>：一种是算法要的（策略真的变了），一种是不该有的（两个引擎算不准）。<strong>判断一个 RL 系统健不健康之前，先要分清你看到的 ratio 偏离属于哪一半。</strong> 一个干净的诊断办法：把「一次更新 + 训练引擎算 logp_old」这个配置跑一遍，此时 ratio 应当<strong>精确</strong>等于 1（浮点意义上到最后几位）；如果不是，就是实现有 bug。这条诊断在 <a href="11-训推一致性算子层.html">11 章</a> 会被反复用到。</p>
+</blockquote>
 <hr />
+<h2 id="106-policy-update">10.6 Policy Update 的三个陷阱：形状、显存、精度</h2>
+<p>§10.3 说 loss 那几个算子是免费的。<strong>Update 阶段真正会咬人的是另外三件事</strong>，一件关于形状，一件关于显存，一件关于精度。</p>
+<h3 id="1061-padding">10.6.1 序列长度不均匀：padding 到底浪费了多少</h3>
+<p>Rollout 产出的序列长度差异极大（§10.2.1 那张长尾图就是它的另一面）。Update 阶段要把它们组成 batch，最朴素的做法是全部 padding（填充）到最长的那条。</p>
+<p>取一个 batch = 16 的例子，长度分布：</p>
+<table>
+<thead>
+<tr>
+<th>条数</th>
+<th>长度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>512</td>
+</tr>
+<tr>
+<td>8</td>
+<td>1024</td>
+</tr>
+<tr>
+<td>4</td>
+<td>2048</td>
+</tr>
+<tr>
+<td>2</td>
+<td>4096</td>
+</tr>
+</tbody>
+</table>
+<p><strong>线性算子（所有 GEMM：QKVO 投影、FFN）的浪费</strong>，计算量正比于 token 数：</p>
+<div class="codehilite"><pre><span></span><code>真实 token 数 = 2×512 + 8×1024 + 4×2048 + 2×4096
+              = 1024  + 8192   + 8192   + 8192
+              = 25600
+
+padding 到 4096 后 = 16 × 4096 = 65536
+
+有效率 = 25600 ÷ 65536 = 39.1%      →  浪费 60.9%
+</code></pre></div>
+
+<p><strong>Attention 的浪费更严重</strong>，因为它的计算量正比于序列长度的<strong>平方</strong>：</p>
+<div class="codehilite"><pre><span></span><code>真实（Σ T²）  = 2×512² + 8×1024² + 4×2048² + 2×4096²
+              = 524288 + 8388608 + 16777216 + 33554432
+              = 59,244,544
+
+padding 后     = 16 × 4096² = 268,435,456
+
+有效率 = 59,244,544 ÷ 268,435,456 = 22.1%   →  浪费 77.9%
+</code></pre></div>
+
+<p>（causal mask（因果掩码）让两边都减半，比值不变。）</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>线性算子（GEMM）</th>
+<th>Attention</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>计算量正比于</td>
+<td>token 数（T¹）</td>
+<td>序列长度平方（T²）</td>
+</tr>
+<tr>
+<td>本例有效率</td>
+<td>39.1%</td>
+<td><strong>22.1%</strong></td>
+</tr>
+<tr>
+<td>本例浪费</td>
+<td>60.9%</td>
+<td><strong>77.9%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>长度分布越散，Attention 的浪费越比 GEMM 严重</strong>，因为平方放大了差异。所以 varlen（变长）在长序列 RL 里不是可选优化，是必需品。</p>
+</blockquote>
+<p>解法就是不做 padding——把所有序列首尾相接拼成一条，用 <code>cu_seqlens</code>（cumulative sequence lengths，累积序列长度）记边界：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># padding 方案：(16, 4096, H)，65536 个 token 位，其中 39936 个是废的</span>
+<span class="n">x_padded</span> <span class="o">=</span> <span class="n">pad_sequence</span><span class="p">(</span><span class="n">seqs</span><span class="p">,</span> <span class="n">batch_first</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>          <span class="c1"># 浪费 60.9%</span>
+<span class="n">out</span> <span class="o">=</span> <span class="n">flash_attn_func</span><span class="p">(</span><span class="n">q</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">causal</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="c1"># varlen 方案：(25600, H)，一个废位都没有</span>
+<span class="n">x_packed</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">seqs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>                        <span class="c1"># 拼成一条长序列</span>
+<span class="n">cu_seqlens</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">,</span> <span class="mi">3072</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">=</span> <span class="n">flash_attn_varlen_func</span><span class="p">(</span>
+    <span class="n">q</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span>
+    <span class="n">cu_seqlens_q</span><span class="o">=</span><span class="n">cu_seqlens</span><span class="p">,</span> <span class="n">cu_seqlens_k</span><span class="o">=</span><span class="n">cu_seqlens</span><span class="p">,</span>
+    <span class="n">max_seqlen_q</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span> <span class="n">max_seqlen_k</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span>
+    <span class="n">causal</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>                    <span class="c1"># ← kernel 按 cu_seqlens 分段，不跨序列做 attention</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<p><code>cu_seqlens</code> 的作用是告诉 kernel「第 i 条序列占 <code>[cu_seqlens[i], cu_seqlens[i+1])</code> 这一段」，Attention 只在段内算，绝不跨段——这样拼在一起也不会串味。原理见 <a href="04-FlashAttention全系.html">04 章</a>。</p>
+<blockquote>
+<p>⚠️ 原文这里的两个数字都算错了：把真实 token 数写成「~30K」（实为 <strong>25600</strong>），把浪费写成「55%」（实为 <strong>60.9%</strong>）。而且原文只算了 GEMM，漏了平方放大的 Attention——那一项的浪费是 77.9%，比 GEMM 严重得多，恰恰是 varlen 最主要的收益来源。</p>
+<p>★ FFN（Feed-Forward Network，前馈网络）那一侧也别忘了：varlen 只解决了 Attention 和线性层的 token 维浪费。如果模型是 MoE（Mixture of Experts，混合专家），每个专家收到的 token 数还是不均匀的，要再叠一层 Grouped GEMM 或分桶策略，见 <a href="08-MoE算子与通信.html">08 章</a>。</p>
+</blockquote>
+<h3 id="1062-cross-entropyupdate">10.6.2 大词表 Cross-Entropy：Update 阶段真正的显存炸弹</h3>
+<p>§10.2.2 说 Decode 侧的 logits 可以忽略。<strong>Update 侧完全相反</strong>，因为 M 维从「64 条活跃序列」变成了「91 万个 token」：</p>
+<div class="codehilite"><pre><span></span><code>Update 要算的 logits 张量 = (917504, 128256)
+    元素数 = 917504 × 128256 = 1.177 × 10¹¹
+    BF16   = 2.354 × 10¹¹ B = 235 GB          ← 比 8 张 H100 的显存总和（640 GB）的三分之一还多
+</code></pre></div>
+
+<p>就算 DP=8 把 token 分到 8 张卡上，每卡 114688 个 token：</p>
+<table>
+<thead>
+<tr>
+<th>张量</th>
+<th>大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>logits（BF16）</td>
+<td>114688 × 128256 × 2 B = <strong>29.4 GB</strong></td>
+</tr>
+<tr>
+<td>log_softmax 的 FP32 中间量</td>
+<td>114688 × 128256 × 4 B = <strong>58.8 GB</strong></td>
+</tr>
+<tr>
+<td>反向要的 <code>dlogits</code>（FP32）</td>
+<td><strong>58.8 GB</strong></td>
+</tr>
+<tr>
+<td><strong>峰值合计</strong></td>
+<td><strong>≈ 147 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>一张 H100 只有 80 GB。</strong> 而且这还没算模型权重（16 GB）、激活（几十 GB）和优化器分片。</p>
+<blockquote>
+<p>★ <strong>这一项是 RL Update 阶段最容易 OOM（Out Of Memory，显存溢出）的地方，而且和模型大小无关，只和「token 数 × 词表大小」有关。</strong> 词表从 32K（LLaMA-2）涨到 128K（LLaMA-3）、152K（Qwen）之后，它从「有点大」变成了「必须专门处理」。</p>
+</blockquote>
+<p>标准解法是 <strong>chunked / fused linear cross-entropy</strong>：不把完整 logits 物化出来，而是沿 <strong>token 维</strong>切块，每块算完 loss 和梯度就立刻丢掉 logits，只累加对隐状态和 lm_head 权重的梯度。</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fused_linear_ce</span><span class="p">(</span><span class="n">h</span><span class="p">,</span> <span class="n">W_lm</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">chunk</span><span class="o">=</span><span class="mi">1024</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;h: (M, H) 隐状态；W_lm: (V, H) 输出层；labels: (M,)</span>
+<span class="sd">    永不物化完整的 (M, V) logits —— 峰值只有一块的大小。&quot;&quot;&quot;</span>
+    <span class="n">total_loss</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">dh</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>                       <span class="c1"># 对隐状态的梯度，按块累加</span>
+    <span class="n">dW</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">W_lm</span><span class="p">)</span>                    <span class="c1"># 对 lm_head 的梯度，按块累加</span>
+    <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">h</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">chunk</span><span class="p">):</span>
+        <span class="n">e</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">s</span> <span class="o">+</span> <span class="n">chunk</span><span class="p">,</span> <span class="n">h</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+        <span class="n">logits_c</span> <span class="o">=</span> <span class="p">(</span><span class="n">h</span><span class="p">[</span><span class="n">s</span><span class="p">:</span><span class="n">e</span><span class="p">]</span> <span class="o">@</span> <span class="n">W_lm</span><span class="o">.</span><span class="n">T</span><span class="p">)</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>       <span class="c1"># (chunk, V)，FP32，只此一块活着</span>
+        <span class="n">loss_c</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">functional</span><span class="o">.</span><span class="n">cross_entropy</span><span class="p">(</span>
+            <span class="n">logits_c</span><span class="p">,</span> <span class="n">labels</span><span class="p">[</span><span class="n">s</span><span class="p">:</span><span class="n">e</span><span class="p">],</span> <span class="n">reduction</span><span class="o">=</span><span class="s2">&quot;sum&quot;</span><span class="p">)</span>
+        <span class="c1"># 手写这一块的反向：dlogits = softmax(logits) - onehot(label)</span>
+        <span class="n">p</span> <span class="o">=</span> <span class="n">logits_c</span><span class="o">.</span><span class="n">softmax</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">p</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">e</span> <span class="o">-</span> <span class="n">s</span><span class="p">),</span> <span class="n">labels</span><span class="p">[</span><span class="n">s</span><span class="p">:</span><span class="n">e</span><span class="p">]]</span> <span class="o">-=</span> <span class="mf">1.0</span>
+        <span class="n">dh</span><span class="p">[</span><span class="n">s</span><span class="p">:</span><span class="n">e</span><span class="p">]</span> <span class="o">=</span> <span class="n">p</span> <span class="o">@</span> <span class="n">W_lm</span>                          <span class="c1"># (chunk, H)</span>
+        <span class="n">dW</span> <span class="o">+=</span> <span class="n">p</span><span class="o">.</span><span class="n">T</span> <span class="o">@</span> <span class="n">h</span><span class="p">[</span><span class="n">s</span><span class="p">:</span><span class="n">e</span><span class="p">]</span>                          <span class="c1"># (V, H)</span>
+        <span class="n">total_loss</span> <span class="o">+=</span> <span class="n">loss_c</span>
+        <span class="k">del</span> <span class="n">logits_c</span><span class="p">,</span> <span class="n">p</span>                             <span class="c1"># ← 立刻释放，下一块复用同一块显存</span>
+    <span class="k">return</span> <span class="n">total_loss</span> <span class="o">/</span> <span class="n">h</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dh</span><span class="p">,</span> <span class="n">dW</span>
+</code></pre></div>
+
+<p>算一下峰值：</p>
+<div class="codehilite"><pre><span></span><code>chunk = 1024 时
+    一块 logits（FP32） = 1024 × 128256 × 4 B = 525 MB
+    加上它的梯度         = 525 MB
+                          ────────
+    峰值 ≈ 1.05 GB       ← 对比朴素写法的 147 GB
+
+省下 ≈ 146 GB，代价是 114688 ÷ 1024 = 112 次循环
+    每次循环的 GEMM 是 (1024, 4096) × (4096, 128256)，M = 1024 仍然够大
+    → 仍然 Compute Bound，几乎没有效率损失
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这一招和 FlashAttention 是同一个思路</strong>：把「先物化一个巨大的中间矩阵、再归约」改成「分块、边算边归约、永不物化」。<a href="05-算子融合.html">05 章 §5.4</a> 的判据②（中间结果片上/显存装不下就得改算法）在这里是第二次出现——第一次是 FlashAttention 的 N×N 矩阵，这次是 M×V 的 logits 矩阵。<strong>判据是同一条，只是换了一个维度。</strong></p>
+<p>⚠️ 原文给的分块代码是沿<strong>词表维</strong>切的（<code>for start in range(0, vocab_size, chunk_size)</code>），而且开头先做了 <code>logits.max(dim=-1)</code>——这要求完整 logits <strong>已经在显存里</strong>，恰好把要省的那 147 GB 又占回去了，省不下任何东西。正确的切法是沿 <strong>token 维</strong>切，并且把 lm_head 的 GEMM 也放进循环里（即上面代码里的 <code>h[s:e] @ W_lm.T</code>），这样完整 logits 从头到尾没有出现过。现成实现有 Liger-Kernel 的 <code>fused_linear_cross_entropy</code> 和 Cut Cross-Entropy（CCE），生产环境直接用它们，别自己写。</p>
+</blockquote>
+<h3 id="1063-log-prob-fp32">10.6.3 log-prob 的数值稳定性：为什么 FP32 不是可选项</h3>
+<p><code>logp = log_softmax(logits)</code> 有两个必须在 FP32 里做的理由。</p>
+<p><strong>理由一：朴素写法会溢出。</strong></p>
+<div class="codehilite"><pre><span></span><code>定义式：logp_i = log( exp(z_i) ÷ Σ_j exp(z_j) )
+</code></pre></div>
+
+<p>拿 3 个词的玩具词表试两组 logits：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>朴素写法</th>
+<th>稳定写法（先减最大值）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>z = [10, 9, 1]</strong></td>
+<td>exp = [22026.5, 8103.08, 2.71828]，和 = 30132.27</td>
+<td>m = 10，移位后 [0, −1, −9]</td>
+</tr>
+<tr>
+<td></td>
+<td>logp₀ = 10 − ln(30132.27) = 10 − 10.3134 = <strong>−0.3134</strong></td>
+<td>exp = [1, 0.367879, 0.00012341]，和 = 1.368003</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td>logp₀ = 0 − ln(1.368003) = <strong>−0.3134</strong> ✓ 一致</td>
+</tr>
+<tr>
+<td><strong>z = [100, 99, 91]</strong></td>
+<td>exp(100) = 2.688 × 10⁴³</td>
+<td>m = 100，移位后 [0, −1, −9]（<strong>和上面一模一样</strong>）</td>
+</tr>
+<tr>
+<td></td>
+<td>&gt; FP32 上限 3.403 × 10³⁸ → <strong>inf</strong></td>
+<td>logp₀ = <strong>−0.3134</strong> ✓</td>
+</tr>
+<tr>
+<td></td>
+<td>inf ÷ inf → <strong>NaN</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>稳定写法（所有框架的 log_softmax 都这么实现）：
+    m    = max(z)
+    logp_i = (z_i − m) − log( Σ_j exp(z_j − m) )
+                              ↑ 这一项叫 logsumexp，最大的被减项恒为 exp(0)=1，绝不溢出
+</code></pre></div>
+
+<blockquote>
+<p>★ 注意 z = [100, 99, 91] 这组：<strong>移位之后和 [10, 9, 1] 完全相同</strong>，答案也完全相同。softmax 只关心 logits 的<strong>差</strong>，不关心绝对值——减最大值这一步是免费的（不改变结果），却把溢出彻底消除了。</p>
+</blockquote>
+<p><strong>理由二：BF16 的精度根本装不下 log-prob 的差。</strong></p>
+<p>BF16（Brain Floating Point 16，16 位脑浮点）有 1 位符号 + 8 位指数 + 7 位尾数，有效位只有 8 位（含隐含位）。它的<strong>绝对</strong>精度随数值大小变化：</p>
+<div class="codehilite"><pre><span></span><code>在数值 10 附近：  10 = 1.25 × 2³
+                  相邻可表示数的间隔 = 2³ × 2⁻⁷ = 0.0625
+                  最大舍入误差       = 0.03125
+
+在数值 2.5 附近： 2.5 = 1.25 × 2¹
+                  间隔 = 2¹ × 2⁻⁷ = 0.015625
+                  最大舍入误差 = 0.0078125
+</code></pre></div>
+
+<p>把这两个误差和 §10.5.1 那张表对上：</p>
+<div class="codehilite"><pre><span></span><code>① logits 存成 BF16 就引入 0.031 的误差
+   → logp 误差 ≈ 0.031
+   → ratio 误差 ≈ exp(0.031) − 1 = 3.2%
+   → 占 clip 预算（±0.1823）的 0.031 ÷ 0.1823 = 17%     ← 白送出去 17% 的信任域
+
+② 更糟的是【相减】。典型情形：
+   logp_new = −2.5117，logp_old = −2.5000，真实差 Δ = −0.0117
+
+   在 BF16 里：2.5 附近的间隔是 0.015625 &gt; |Δ| = 0.0117
+   → 两个数会舍入到【同一个】BF16 值
+   → Δ 算出来是 0，ratio ≡ 1
+   → 【梯度信号被整数舍入吃干净了】，而且不报错
+
+   在 FP32 里：2.5 附近的间隔是 2¹ × 2⁻²³ = 2.4 × 10⁻⁷
+   → Δ = −0.0117 保留约 5 位有效数字，完好无损
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这是典型的灾难性抵消（catastrophic cancellation）</strong>：两个数量级相近的数相减，结果的有效位数等于「原数有效位数 − 抵消掉的位数」。logp 都在 −2 ~ −3 量级、差值却在 0.01 量级，等于抵消掉了 2 个十进制位——BF16 的 2.4 个十进制位根本不够用。<strong>规则很硬：logits 可以用 BF16 算 GEMM，但 <code>log_softmax</code>、<code>gather</code>、<code>ratio = exp(Δ)</code> 这三步必须在 FP32 里做</strong>（代码上就是 <code>logits.float()</code> 那一下）。上面 §10.6.2 的 <code>fused_linear_ce</code> 里 <code>.float()</code> 就是为这件事。</p>
+<p>★ 顺便说清楚一个常见疑问：「反正 BF16 训练都能收敛，log-prob 为什么这么金贵？」因为权重和激活的 BF16 误差是<strong>随机的、会被大量样本平均掉</strong>的，而 log-prob 之差是<strong>信号本身</strong>——它不是被计算的量的噪声，它就是那个量。噪声和信号同阶的时候，多少样本也平均不出来。</p>
+</blockquote>
+<hr />
+<h2 id="107-kl">10.7 KL 惩罚：三种估计量，代同一组数字算一遍</h2>
+<p>KL（Kullback-Leibler divergence，KL 散度）惩罚项的作用是拦住「策略为了骗高分而跑得离原模型太远」。它在算子层是零成本的（§10.3.2），但<strong>选哪个估计量会影响训练稳定性</strong>，而三者的差别用两个 token 就能看清。</p>
+<h3 id="1071-kl">10.7.1 精确 KL 为什么没人用</h3>
+<p>定义式要对<strong>整个词表</strong>求和：</p>
+<div class="codehilite"><pre><span></span><code>KL(π_θ ‖ π_ref) = Σ_v  π_θ(v) · ( log π_θ(v) − log π_ref(v) )
+                   ↑ 对 V = 128256 个词逐个求和
+</code></pre></div>
+
+<p>代进 §10.6.2 的形状就知道为什么它不可行：</p>
+<div class="codehilite"><pre><span></span><code>需要两份完整的 (917504, 128256) log-prob 张量（Actor 的和 Reference 的）
+    = 2 × 235 GB = 470 GB
+对比 8 张 H100 的显存总和 640 GB
+→ 光是 KL 这一项就吃掉 73% 的显存                 ✗ 不可能
+</code></pre></div>
+
+<p>所以实践中一律用<strong>单样本估计量</strong>：只看已生成的那个 token，不看整个词表。这样每个 token 只需要两个标量（<code>logp_new</code> 和 <code>logp_ref</code>），张量形状从 (M, V) 塌成 (M,)——从 235 GB 降到 3.7 MB。</p>
+<h3 id="1072">10.7.2 三个估计量</h3>
+<p>记 <code>logρ = logp_ref − logp_new</code>（注意方向：ref 减 new），<code>ρ = exp(logρ)</code>：</p>
+<table>
+<thead>
+<tr>
+<th>名称</th>
+<th>公式</th>
+<th>无偏?</th>
+<th>恒非负?</th>
+<th>谁在用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>k1</strong></td>
+<td><code>−logρ</code> = <code>logp_new − logp_ref</code></td>
+<td>✅ 无偏</td>
+<td>❌ <strong>可以为负</strong></td>
+<td>最朴素的实现</td>
+</tr>
+<tr>
+<td><strong>k2</strong></td>
+<td><code>½ · (logρ)²</code></td>
+<td>❌ 有偏</td>
+<td>✅</td>
+<td>部分 RLHF 实现</td>
+</tr>
+<tr>
+<td><strong>k3</strong></td>
+<td><code>ρ − 1 − logρ</code></td>
+<td>✅ 无偏</td>
+<td>✅</td>
+<td><strong>GRPO 原论文 / 主流</strong></td>
+</tr>
+</tbody>
+</table>
+<p>k3 无偏的原因一行就能看出来：</p>
+<div class="codehilite"><pre><span></span><code>E_{a~π_θ}[ρ] = Σ_v π_θ(v) · π_ref(v)/π_θ(v) = Σ_v π_ref(v) = 1
+    → E[ρ − 1] = 0
+    → E[k3] = E[ρ − 1] + E[−logρ] = 0 + KL = KL    ✓ 无偏
+
+而 ρ − 1 − logρ ≥ 0 对任意 ρ &gt; 0 都成立（x − 1 ≥ log x）    ✓ 恒非负
+</code></pre></div>
+
+<h3 id="1073-token">10.7.3 代两个 token 进去</h3>
+<p>取两个 token，一个 Actor 比 Reference 更保守，一个更激进：</p>
+<table>
+<thead>
+<tr>
+<th>token</th>
+<th><code>logp_new</code></th>
+<th><code>logp_ref</code></th>
+<th><code>logρ</code></th>
+<th><code>ρ = exp(logρ)</code></th>
+<th><strong>k1</strong></th>
+<th><strong>k2</strong></th>
+<th><strong>k3</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>−2.0</td>
+<td>−2.3</td>
+<td>−0.3</td>
+<td>0.740818</td>
+<td><strong>+0.3</strong></td>
+<td>0.045</td>
+<td>0.740818 − 1 + 0.3 = <strong>0.040818</strong></td>
+</tr>
+<tr>
+<td>B</td>
+<td>−2.3</td>
+<td>−2.0</td>
+<td>+0.3</td>
+<td>1.349859</td>
+<td><strong>−0.3</strong> ← 负的！</td>
+<td>0.045</td>
+<td>1.349859 − 1 − 0.3 = <strong>0.049859</strong></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>两 token 平均</strong></td>
+<td><strong>0.000</strong></td>
+<td><strong>0.045</strong></td>
+<td><strong>0.045339</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>看 k1 那一列：两个 token 一正一负，平均下来是 0。</strong> 可是这两个 token 上 Actor 和 Reference 明明不同——KL 散度按定义<strong>不可能是负数、也不该是 0</strong>。k1 逐样本可以为负，只有在「样本足够多、且严格从 π_θ 采样」时平均才收敛到真实 KL；样本一少就会给出负值甚至负的平均值。而 <code>loss = ... + β · KL</code> 里如果 KL 是负的，<strong>惩罚项就变成了奖励项——你在奖励模型跑远</strong>。这是 RL 实现里非常隐蔽的一类 bug。</p>
+<p>★ k2 和 k3 都恒非负，而且在小偏离下几乎相等（把 <code>e^x − 1 − x</code> 泰勒展开 = <code>x²/2 + x³/6 + …</code>，首项就是 k2）。上表里 k2 = 0.045、k3 的平均 = 0.045339，差 0.75%。<strong>k3 的优势是「无偏 + 非负」两个性质同时满足</strong>，代价是多算一个 <code>exp</code>——而 <code>ρ</code> 本来就是 §10.5 那个 ratio 的倒数，手上早就有了，<strong>实际额外成本为零</strong>。</p>
+<p>⚠️ 原文说「Schulman 的近似 kl ≈ (ratio−1) − log(ratio) 可以进一步避免 log 运算」，这句是错的：k3 的式子里<strong>明明含着 log</strong>。它不需要<strong>额外</strong>的 log，是因为 <code>logρ</code> 就是两个 log-prob 之差、手上已经有了；它的价值在于<strong>无偏且非负</strong>，和省算力毫无关系。另外原文把「近似 KL」笼统地叫 <code>log_prob_actor − log_prob_ref</code>（即 k1）并说「对 PPO 来说够用」，没提它可以为负这个坑。</p>
+</blockquote>
+<h3 id="1074-logp_ref">10.7.4 真正的成本：拿到 logp_ref 要跑一次完整前向</h3>
+<div class="codehilite"><pre><span></span><code>KL 算子本身（k3，形状 (917504,)）：约 4 次逐元素运算 → &lt; 15 µs
+要它的输入 logp_ref：Reference Model 对 917504 个 token 跑一次前向
+                     = 2N × 917504 = 14.7 PFLOP
+                     = 1.86 s（理论）/ ⚠️ 3.71 s（按 50% MFU）
+                       ────────────────────────
+                     比例约 250000 : 1
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这是 RL 里「算子开销」和「获取输入的开销」差距最悬殊的一处。</strong> 也正因为如此，一批后续算法（DAPO、Dr.GRPO 等）直接把 KL 系数 β 设成 0 —— 一旦 β = 0，Reference Model 整个不需要了，<strong>省掉 16 GB 显存和一次完整前向（按 §10.8 是整个迭代的 7%）</strong>。⚠️ 这是算法选择而非纯工程优化：去掉 KL 约束后模型更容易「跑偏」（输出风格漂移、重复、语言混杂），值不值得取决于任务。GRPO 原论文（DeepSeekMath）和 DeepSeek-R1 都<strong>保留</strong>了 KL 项和 Reference Model。</p>
+<p>⚠️ 原文在 §10.5 ③ 写「DeepSeek-R1 的 GRPO 实现……没有单独的 Reference Model」，这与 GRPO 原论文和 R1 论文里都带 KL 惩罚项（因而必须有 Reference）不符，已改正为上面的说法。去掉 Reference 的是后来的一批变体。<strong>这一条建议你自己回一手论文核对</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="108-rollout">10.8 把耗时占比算出来：瓶颈在 rollout，不在反向传播</h2>
+<p>现在把前面所有的数字并到一张表里。配置还是 §10.1.1 那一套。</p>
+<h3 id="1081">10.8.1 理论下界</h3>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>计算量 / 搬运量</th>
+<th>怎么算的</th>
+<th>理论耗时</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rollout · prompt Prefill</td>
+<td>2N × 262144 tok = 4.19 PFLOP</td>
+<td>÷ (8 × 989 TFLOPS)</td>
+<td>0.53 s</td>
+<td>1.6%</td>
+</tr>
+<tr>
+<td><strong>Rollout · Decode 权重读</strong></td>
+<td>4096 步 × 16 GB = 65.5 TB</td>
+<td>÷ 3.35 TB/s</td>
+<td><strong>19.56 s</strong></td>
+<td><strong>59.3%</strong></td>
+</tr>
+<tr>
+<td><strong>Rollout · Decode KV 读</strong></td>
+<td>18.14 TB（见下）</td>
+<td>÷ 3.35 TB/s</td>
+<td><strong>5.41 s</strong></td>
+<td><strong>16.4%</strong></td>
+</tr>
+<tr>
+<td>打分（规则验证器，CPU）</td>
+<td>—</td>
+<td>⚠️ 与 GPU 不重叠</td>
+<td>⚠️ 0.1–1 s</td>
+<td>~1%</td>
+</tr>
+<tr>
+<td>优势估计（组内 mean/std）</td>
+<td>512 个标量</td>
+<td>—</td>
+<td>&lt; 1 ms</td>
+<td>~0%</td>
+</tr>
+<tr>
+<td>Reference 前向</td>
+<td>2N × 917504 = 14.7 PFLOP</td>
+<td>÷ 7.912 PFLOPS</td>
+<td>1.86 s</td>
+<td>5.6%</td>
+</tr>
+<tr>
+<td>Re-forward + Backward</td>
+<td>6N × 917504 = 44.0 PFLOP</td>
+<td>÷ 7.912 PFLOPS</td>
+<td>5.57 s</td>
+<td>16.9%</td>
+</tr>
+<tr>
+<td>ratio / clip / KL</td>
+<td>(917504,) 逐元素</td>
+<td>—</td>
+<td>&lt; 0.05 ms</td>
+<td>~0%</td>
+</tr>
+<tr>
+<td>AdamW（ZeRO-2 分片）</td>
+<td>每卡读写 28 GB</td>
+<td>÷ 3.35 TB/s</td>
+<td>8 ms</td>
+<td>0.02%</td>
+</tr>
+<tr>
+<td>权重同步（同机 NVLink）</td>
+<td>16 GB</td>
+<td>÷ 450 GB/s</td>
+<td>36 ms</td>
+<td>0.11%</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td></td>
+<td><strong>≈ 33.0 s</strong></td>
+<td><strong>100%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>KV 读那 18.14 TB 的来历（每条序列在第 t 步要读 <code>512 + t − 1</code> 个 token 的 KV，按 <code>511L + L(L+1)/2</code> 求和）：</p>
+<table>
+<thead>
+<tr>
+<th>条数</th>
+<th>回答长 L</th>
+<th>单条的 KV token 读取数</th>
+<th>小计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32</td>
+<td>512</td>
+<td>511×512 + 512×513/2 = 392,960</td>
+<td>12,574,720</td>
+</tr>
+<tr>
+<td>16</td>
+<td>1024</td>
+<td>511×1024 + 1024×1025/2 = 1,048,064</td>
+<td>16,769,024</td>
+</tr>
+<tr>
+<td>8</td>
+<td>2048</td>
+<td>511×2048 + 2048×2049/2 = 3,144,704</td>
+<td>25,157,632</td>
+</tr>
+<tr>
+<td>8</td>
+<td>4096</td>
+<td>511×4096 + 4096×4097/2 = 10,483,712</td>
+<td>83,869,696</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>合计</strong></td>
+<td><strong>138,371,072</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>138,371,072 × 128 KB = 1.814 × 10¹³ B = 18.14 TB
+                     ÷ 3.35 TB/s      = 5.41 s
+</code></pre></div>
+
+<h3 id="1082">10.8.2 加上现实效率因子</h3>
+<p>理论下界是「kernel 完美、调度零开销」的极限。乘上各阶段实际能达到的效率：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>理论</th>
+<th>效率假设（⚠️ 全部是量级估计）</th>
+<th>现实耗时</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rollout · Prefill</td>
+<td>0.53 s</td>
+<td>MFU 50%</td>
+<td>1.06 s</td>
+<td>2.1%</td>
+</tr>
+<tr>
+<td>Rollout · Decode 权重读</td>
+<td>19.56 s</td>
+<td>带宽达成率 80%</td>
+<td>24.5 s</td>
+<td>48.4%</td>
+</tr>
+<tr>
+<td>Rollout · Decode KV 读</td>
+<td>5.41 s</td>
+<td>同上</td>
+<td>6.8 s</td>
+<td>13.4%</td>
+</tr>
+<tr>
+<td>打分（CPU）</td>
+<td>—</td>
+<td>—</td>
+<td>0.3 s</td>
+<td>0.6%</td>
+</tr>
+<tr>
+<td>Reference 前向</td>
+<td>1.86 s</td>
+<td>MFU 50%</td>
+<td>3.71 s</td>
+<td>7.3%</td>
+</tr>
+<tr>
+<td>Re-forward + Backward</td>
+<td>5.57 s</td>
+<td>MFU 40%</td>
+<td>13.9 s</td>
+<td>27.5%</td>
+</tr>
+<tr>
+<td>AdamW</td>
+<td>8 ms</td>
+<td>—</td>
+<td>0.02 s</td>
+<td>0.04%</td>
+</tr>
+<tr>
+<td>权重同步</td>
+<td>36 ms</td>
+<td>含 layout 转换</td>
+<td>⚠️ 0.3 s</td>
+<td>0.6%</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td>33.0 s</td>
+<td></td>
+<td><strong>≈ 50.6 s</strong></td>
+<td><strong>100%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>Rollout 三项合计 = 1.06 + 24.5 + 6.8 = 32.4 s  →  64.0%
+Update（前向+反向+优化器）        = 13.9 s  →  27.5%
+Reference 前向                    =  3.71 s →   7.3%
+其余（打分、优势、loss、同步）    &lt;  0.7 s  →   1.2%
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>本节的结论，也是本章的核心结论：瓶颈在 rollout（64%），不在反向传播（27.5%）。</strong> 而且请注意这个结论<strong>不依赖那些 ⚠️ 效率假设</strong>——在理论下界那张表里，rollout 占 77%，比例甚至更高。原因很结实：rollout 的 19.56 s 权重读是一个<strong>带宽硬下界</strong>，不管 kernel 写得多好都省不掉；而 Update 那一侧还有 60% 的算力余量（MFU 40% → 100%）可以榨。</p>
+<p>★ <strong>rollout 里 48% 的整体时间花在「读权重」上，而其中 69% 是长尾浪费的（§10.2.1：批次有效利用率 31.25%）。</strong> 把这两个数字乘起来：<code>48% × (1 − 31.25%) = 33%</code> —— <strong>一次 RL 迭代里有三分之一的时间，纯粹是在为已经写完的序列反复搬那 16 GB 权重。</strong> 这是 RL 训练最大的一块可回收浪费，也是 §10.10 三条优化路线全都冲着它去的原因。</p>
+</blockquote>
+<h3 id="1083-mfu">10.8.3 整体 MFU</h3>
+<div class="codehilite"><pre><span></span><code>一次迭代真正做了多少有效浮点运算：
+    Rollout Prefill    2N × 262144  =  4.19 PFLOP
+    Rollout Decode     2N × 655360  = 10.49 PFLOP
+    Reference 前向     2N × 917504  = 14.68 PFLOP
+    Update 前向+反向   6N × 917504  = 44.04 PFLOP
+                                      ───────────
+                                      73.4 PFLOP
+
+硬件在 50.6 s 里能提供：8 × 989 TFLOPS × 50.6 s = 400.3 PFLOP
+
+MFU = 73.4 ÷ 400.3 = ⚠️ 18.3%
+</code></pre></div>
+
+<p>对照 <a href="附-速查表.html">附-速查表 §B.3</a>：单机 8×H100 做监督训练，业界顶级水平是 MFU 40–50%。</p>
+<blockquote>
+<p>⚠️ <strong>原文说「RL 的整体 MFU 通常 5–15%」没有给来源和口径。</strong> 按本章这套配置推算是约 18%，落点取决于三件事：长尾有多严重（本例 31% 利用率）、response 上限设多长（越长尾巴越重）、以及是否保留 Reference。<strong>这个数字不能脱离配置引用</strong>——同一套代码把 response 上限从 4096 降到 1024，MFU 就会明显上去，因为长尾被截短了。</p>
+<p>⚠️ <strong>原文 §10.8 标题写「实测数字」但没有任何测试环境、框架版本或来源</strong>，其中「Backward + Optimizer 10–15%」「权重同步 5–10%」两行与本节的推算差得比较远（本节分别是 27.5% 和 0.6%）。本节改成从 §10.1.1 那套配置<strong>一步步推出来</strong>的预算表，每一格都能自己验算；⚠️ 标记的地方是效率假设，不是实测。<strong>要引用具体百分比，请在自己的集群上用 Nsight Systems 或框架自带的 timer 量一遍。</strong></p>
+</blockquote>
+<hr />
+<h2 id="109">10.9 两套引擎的显存账与权重同步账</h2>
+<h3 id="1091">10.9.1 显存：按「每参数多少字节」记账</h3>
+<p>混合精度 AdamW 训练一个参数要留五份东西：</p>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>精度</th>
+<th>字节/参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>权重</td>
+<td>BF16</td>
+<td>2</td>
+</tr>
+<tr>
+<td>梯度</td>
+<td>BF16</td>
+<td>2</td>
+</tr>
+<tr>
+<td>master 权重</td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td>AdamW 的 m（一阶动量）</td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td>AdamW 的 v（二阶动量）</td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>训练态合计</strong></td>
+<td></td>
+<td><strong>16</strong></td>
+</tr>
+</tbody>
+</table>
+<p>只做前向的模型（Reference、Reward Model、Rollout 引擎的权重副本）只要 <strong>2 字节/参数</strong>。于是：</p>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>字节/参数</th>
+<th>8B 模型</th>
+<th>70B 模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actor（训练态）</td>
+<td>16</td>
+<td><strong>128 GB</strong></td>
+<td><strong>1120 GB</strong></td>
+</tr>
+<tr>
+<td>Reference（冻结）</td>
+<td>2</td>
+<td>16 GB</td>
+<td>140 GB</td>
+</tr>
+<tr>
+<td>Reward Model（同尺寸，冻结）</td>
+<td>2</td>
+<td>16 GB</td>
+<td>140 GB</td>
+</tr>
+<tr>
+<td>Rollout 引擎的权重副本</td>
+<td>2</td>
+<td>16 GB</td>
+<td>140 GB</td>
+</tr>
+<tr>
+<td>Critic / Value Model（<strong>只 PPO 需要</strong>，训练态）</td>
+<td>16</td>
+<td><strong>128 GB</strong></td>
+<td><strong>1120 GB</strong></td>
+</tr>
+<tr>
+<td><strong>GRPO 合计</strong>（无 Critic）</td>
+<td></td>
+<td><strong>176 GB</strong></td>
+<td><strong>1540 GB</strong></td>
+</tr>
+<tr>
+<td><strong>PPO 合计</strong></td>
+<td></td>
+<td><strong>304 GB</strong></td>
+<td><strong>2660 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>8 × H100 = 640 GB
+
+8B  + GRPO：176 GB（27.5%）→ 剩 464 GB 给激活和 KV Cache        ✓ 宽裕
+8B  + PPO ：304 GB（47.5%）→ 剩 336 GB                          ✓ 够用
+70B + GRPO：1540 GB → 光放状态就要 ⌈1540/80⌉ = 20 张卡，实际 32 张起
+70B + PPO ：2660 GB → 光放状态就要 34 张卡，实际 48 张起
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>Critic 是 PPO 最贵的一件行李</strong>：8B 规模下它一个人就占 128 GB，和 Actor 一样重，等于把显存需求翻倍。§10.4.3 说「GRPO 用信号变粗换掉了 Value Model」，换掉的就是这 128 GB（70B 下是 1120 GB）。<strong>这才是 GRPO 在大模型上迅速普及的第一位原因</strong>，advantage 公式简单只是副产品。</p>
+<p>⚠️ 原文这段的数字有两处错：① 70B 的 Adam 状态写成「≈ 280 GB（m + v）」——m 和 v 各是 <code>70e9 × 4 B = 280 GB</code>，两个合起来是 <strong>560 GB</strong>，还要再加 FP32 master 权重 280 GB；② 由此得出的「Actor 合计 ~600 GB」也偏小，按上面的 16 B/参数口径是 <strong>1120 GB</strong>。同样地，原文「Value Model ≈ 420 GB」应为 1120 GB。<strong>记住 16 字节/参数这个口径，比记任何具体 GB 数都有用</strong>——换模型直接乘。</p>
+</blockquote>
+<p><strong>Rollout 阶段的显存大头不是权重，是 KV Cache</strong>：</p>
+<div class="codehilite"><pre><span></span><code>每卡 64 条序列，上下文上限 = 512（prompt）+ 4096（回答）= 4608 token
+每 token KV = 128 KB
+
+按最坏情况预留：64 × 4608 × 128 KB = 38.65 GB
+实际峰值（§10.2.1 的长度分布，在第 512 步）：64 × 1024 × 128 KB = 8.59 GB
+                                              ──────────────
+                                     预留 ÷ 实际 = 4.5 倍
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这 4.5 倍就是 PagedAttention 的全部价值</strong>（<a href="09-推理侧算子.html">09 章</a>）：按页按需分配，不为「万一每条都写到 4096」预留。在 RL 里它比在推理服务里更值钱——因为 rollout 的长度分布比线上请求更散（同一个 prompt 的 8 条回答长度可以差 8 倍）。</p>
+</blockquote>
+<h3 id="1092">10.9.2 权重同步：四种部署，四个数量级</h3>
+<p>Update 算完新权重，得让 Rollout 引擎用上。同步量 = 模型的 BF16 大小 = 8B 下 <strong>16 GB</strong>、70B 下 <strong>140 GB</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>部署方式</th>
+<th>走哪条通路</th>
+<th>带宽</th>
+<th>8B（16 GB）</th>
+<th>70B（140 GB）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① Colocate（训练/推理共用同一批卡，分时复用）</td>
+<td>卡内 HBM</td>
+<td>3.35 TB/s（读+写记 2×）</td>
+<td>9.6 ms（理论）</td>
+<td>84 ms（理论）</td>
+</tr>
+<tr>
+<td>② 分离卡组，同机</td>
+<td>NVLink</td>
+<td>450 GB/s（单向）</td>
+<td><strong>36 ms</strong></td>
+<td><strong>311 ms</strong></td>
+</tr>
+<tr>
+<td>③ 分离卡组，跨机</td>
+<td>InfiniBand 400 Gb/s</td>
+<td>50 GB/s</td>
+<td><strong>320 ms</strong></td>
+<td><strong>2.80 s</strong></td>
+</tr>
+<tr>
+<td>④ CPU offload 往返</td>
+<td>PCIe 5.0 ×16</td>
+<td>⚠️ 实测约 50 GB/s</td>
+<td><strong>0.64 s</strong>（下+上 32 GB）</td>
+<td><strong>5.60 s</strong>（280 GB）</td>
+</tr>
+</tbody>
+</table>
+<p>占一次迭代（50.6 s）的比例：</p>
+<div class="codehilite"><pre><span></span><code>② 同机 NVLink：0.036 ÷ 50.6 = 0.07%
+③ 跨机 IB    ：0.32  ÷ 50.6 = 0.6%
+④ CPU 往返   ：0.64  ÷ 50.6 = 1.3%
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>权重同步在同步 RL 里通常不是瓶颈</strong>，哪怕是最慢的 CPU offload 往返也只占百分之一二。它变成问题的场合只有两种：<strong>（a）每次迭代的 rollout 很短</strong>（小 batch、短 response，于是分母小了），<strong>（b）模型很大且必须跨机</strong>（70B 跨机 2.8 s，若迭代本身只有 30 s 就接近 10%）。判断办法还是那个：<strong>把同步耗时和这一轮 rollout 耗时放在同一个分母上比。</strong></p>
+<p>⚠️ 原文这里有两处要纠正：① 把 PCIe 4.0 ×16 的带宽写成「双向约 32 GB/s」——31.5 GB/s 是它的<strong>单向</strong>带宽（双向合计约 63 GB/s）；而且 H100 SXM5 用的是 <strong>PCIe 5.0 ×16</strong>，单向理论 63 GB/s，⚠️ 实测约 50 GB/s，比原文假设快一倍。② 由此得出的结论「每次权重切换会暂停 ~5 秒，这是 RL 训练吞吐低的直接原因之一」——按上表，5.6 s 只在「70B + CPU offload 往返」这一种最坏组合下成立，而且占比仍然只有个位百分比。<strong>RL 吞吐低的直接原因是 §10.8 那个 rollout 长尾（占 33%），不是权重同步。</strong></p>
+<p>⚠️ ①（Colocate）那行的「9.6 ms」是纯搬运的理论值，<strong>实际远大于此</strong>：权重要从训练引擎的分片布局（Megatron 的 TP/PP 切分、或 FSDP 的 flat parameter）转换成推理引擎的分片布局，中间有 all-gather、reshape、以及推理引擎重建 KV Cache 池的开销。⚠️ 社区报告的落点从亚秒到数秒都有，<strong>差异来自实现而非带宽，必须在自己的框架上测</strong>。本章不给一个具体数字。</p>
+</blockquote>
+<hr />
+<h2 id="1010">10.10 优化的先后顺序：先治长尾</h2>
+<p>§10.8 指出可回收的最大一块浪费是「rollout 的长尾」（占整体 33%）。按投入产出比排一下能治它的手段。</p>
+<h3 id="10101">10.10.1 治长尾的三条路</h3>
+<div class="codehilite"><pre><span></span><code>① 加大 rollout 批次（最省事）
+     每卡 64 条 → 256 条：每步的 16 GB 权重读被 4 倍的序列摊薄
+     每 token 权重读成本 4.776 ms ÷ 256 = 18.7 µs（原来 74.6 µs）
+     ★ 但长尾比例【不变】—— 它只是把整条曲线抬高，衰减的形状一样
+     ✗ 受 KV Cache 显存限制：256 条 × 4608 token × 128 KB = 155 GB &gt; 80 GB
+       → 必须配 PagedAttention + 显存超额分配，或降低 response 上限
+
+② 异步 RL（收益最大，改动最大）
+     不等这一批全部生成完就开始训练：Rollout 卡组持续产出，Train 卡组持续消费
+     ★ 直接消掉 §10.1.2 那张图上的两块「空转」
+     ✗ 代价：训练用的权重比采样用的权重旧了 N 步 → off-policy 偏移
+       这部分 ratio ≠ 1 是设计使然，只能用 IS 修正，不该当成 bug 修
+       （见 [11 章 §11.6.4](11-训推一致性算子层.md)）
+
+③ Partial Rollout（部分展开）
+     到达步数上限就把没写完的序列【存起来】，下一轮接着写
+     ★ 长尾被截断：每轮的步数固定，批次不再衰减到个位数
+     ✗ 代价：一条序列横跨多个权重版本 → off-policy 偏移更复杂
+</code></pre></div>
+
+<p>配合这三条的还有 §10.4.2 那个<strong>动态采样</strong>：把全对/全错（advantage 恒为 0）的组提前丢掉，别让它们占着 rollout 的名额。它治的是另一种浪费（零梯度组），和治长尾是叠加的。</p>
+<h3 id="10102">10.10.2 完整的优先级清单</h3>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>手段</th>
+<th>治哪块浪费</th>
+<th>本章依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td>Rollout 用专门的推理引擎（vLLM / SGLang），开 PagedAttention + 连续批处理 + CUDA Graph</td>
+<td>权重读、KV 预留、下发开销</td>
+<td>§10.2、§10.9.1</td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td>加大 rollout 批次到显存能吃下的上限</td>
+<td>长尾（摊薄固定成本）</td>
+<td>§10.2.1</td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td>Update 用 varlen + fused linear cross-entropy</td>
+<td>padding 浪费 61%/78%、loss 层 147 GB</td>
+<td>§10.6.1、§10.6.2</td>
+</tr>
+<tr>
+<td><strong>4</strong></td>
+<td>动态采样，丢掉零梯度组</td>
+<td>⚠️ 可能高达 35% 的无效 rollout</td>
+<td>§10.4.2</td>
+</tr>
+<tr>
+<td><strong>5</strong></td>
+<td>β = 0 去掉 Reference（若任务允许）</td>
+<td>7% 的迭代时间 + 16 GB 显存</td>
+<td>§10.7.4</td>
+</tr>
+<tr>
+<td><strong>6</strong></td>
+<td>异步 / Partial Rollout</td>
+<td>两条泳道的空转</td>
+<td>§10.1.2、§10.10.1</td>
+</tr>
+<tr>
+<td><strong>7</strong></td>
+<td>权重同步优化（布局预转换、点对点广播）</td>
+<td>⚠️ 通常 &lt; 2%</td>
+<td>§10.9.2</td>
+</tr>
+<tr>
+<td>—</td>
+<td>优化 loss 那几个逐元素算子</td>
+<td><strong>0.02%，别做</strong></td>
+<td>§10.3.2</td>
+</tr>
+<tr>
+<td>—</td>
+<td>GAE 改 parallel scan</td>
+<td><strong>0.015%，别做</strong></td>
+<td>§10.3.3</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>每一步之后都要实测，不要连着做完再测。</strong> 尤其是第 2 条：批次加大会同时改变显存占用、KV Cache 压力和调度行为，收益不是线性的，而且很容易在某个批次大小上突然触发显存抖动（KV Cache 池不够 → 引擎开始抢占和重算）。量的办法见 <a href="02-屋顶线与性能剖析.html">02 章</a>。</p>
+<p>★ 清单最后两行是本章最想让你记住的东西：<strong>RL 里最"有算法味"的两个算子（PPO 的 clip、GAE 的递推）在性能上都是零，而最朴素的两件事（怎么攒批、怎么算 loss 层）才是全部瓶颈。</strong> 这个错位很反直觉，但它在 §10.8 的表里写得清清楚楚。</p>
+</blockquote>
+<hr />
+<h2 id="1011_1">10.11 本章小结</h2>
+<p><strong>一句话</strong>：RL 的算子没有一个是新的（Rollout = 推理 Decode，Update = 训练前向反向），新的是<strong>两套形态完全不同的计算被塞进同一个循环</strong>，而由此产生的浪费（长尾、零梯度组、两条泳道的空转）比任何单个 kernel 的优化空间都大一个数量级。</p>
+<p><strong>一次迭代的时间预算</strong>（8B + 8×H100 + GRPO，512 条序列，response 上限 4096）</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>理论下界</th>
+<th>⚠️ 现实量级</th>
+<th>占比</th>
+<th>瓶颈类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rollout · Prefill</td>
+<td>0.53 s</td>
+<td>1.06 s</td>
+<td>2.1%</td>
+<td>Compute Bound</td>
+</tr>
+<tr>
+<td><strong>Rollout · Decode 权重读</strong></td>
+<td><strong>19.56 s</strong></td>
+<td><strong>24.5 s</strong></td>
+<td><strong>48.4%</strong></td>
+<td><strong>Memory Bound（硬下界）</strong></td>
+</tr>
+<tr>
+<td>Rollout · Decode KV 读</td>
+<td>5.41 s</td>
+<td>6.8 s</td>
+<td>13.4%</td>
+<td>Memory Bound</td>
+</tr>
+<tr>
+<td>Reference 前向</td>
+<td>1.86 s</td>
+<td>3.71 s</td>
+<td>7.3%</td>
+<td>Compute Bound</td>
+</tr>
+<tr>
+<td>Re-forward + Backward</td>
+<td>5.57 s</td>
+<td>13.9 s</td>
+<td>27.5%</td>
+<td>Compute Bound</td>
+</tr>
+<tr>
+<td>优势 + ratio + clip + KL</td>
+<td>&lt; 1 ms</td>
+<td>&lt; 1 ms</td>
+<td><strong>≈ 0%</strong></td>
+<td>免费</td>
+</tr>
+<tr>
+<td>AdamW</td>
+<td>8 ms</td>
+<td>0.02 s</td>
+<td>0.04%</td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>权重同步（同机 NVLink）</td>
+<td>36 ms</td>
+<td>0.3 s</td>
+<td>0.6%</td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>33.0 s</strong></td>
+<td><strong>50.6 s</strong></td>
+<td></td>
+<td>MFU ⚠️ 约 18%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 三个必须记住的比例：
+    Rollout 占 64%，Update 占 27.5%     → 瓶颈在采样，不在反向传播
+    长尾浪费掉整体的 33%                → 这是最大的一块可回收浪费
+    loss 相关算子占 0.02%               → 算法侧的优化在性能上是免费的
+</code></pre></div>
+
+<p><strong>Rollout 的长尾（§10.2.1，本章最重要的机制）</strong></p>
+<div class="codehilite"><pre><span></span><code>一步 Decode 的固定成本 = 16 GB ÷ 3.35 TB/s = 4.78 ms
+                           ↑ 和这一步有几条序列活着【完全无关】
+
+本例：64 条序列，长度 512/1024/2048/4096 各若干，跑 4096 步
+    实际产出 81920 token，若批次恒 64 则应产出 262144 token
+    批次有效利用率 = 31.25%
+    每 token 的权重读成本被放大 1 ÷ 31.25% = 3.20 倍
+
+★ 推理服务不存在这个问题（连续批处理会补位）；
+  RL 存在，因为这一批的序列数是算法定死的，没有新活可补。
+</code></pre></div>
+
+<p><strong>两种优势估计（§10.4）</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GRPO（组内归一化）</th>
+<th>PPO + GAE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>公式</td>
+<td><code>A_i = (r_i − mean) / std</code></td>
+<td><code>A_t = δ_t + γλ·A_{t+1}</code></td>
+</tr>
+<tr>
+<td>advantage 粒度</td>
+<td>每条回答一个</td>
+<td>每个 token 一个</td>
+</tr>
+<tr>
+<td>要不要 Value Model</td>
+<td><strong>不要</strong></td>
+<td>要（8B 下多 128 GB 显存）</td>
+</tr>
+<tr>
+<td>算子代价</td>
+<td>mean/std，全并行，&lt; 1 ms</td>
+<td>T 步串行，5 ms（<strong>无关紧要</strong>）</td>
+</tr>
+<tr>
+<td>Rollout 量</td>
+<td><strong>B × G 条（G 倍）</strong></td>
+<td>B 条</td>
+</tr>
+<tr>
+<td>三个坑</td>
+<td>全对/全错组零梯度；除 std 放大极端组 1.73 倍；ddof=0/1 差 13.4%</td>
+<td>依赖 Value Model 的估值质量</td>
+</tr>
+</tbody>
+</table>
+<p><strong>PPO clip 的四象限（§10.5）</strong></p>
+<div class="codehilite"><pre><span></span><code>ε = 0.2 时，clip 把 ratio 夹到 [0.8, 1.2]。但它只在两种情况生效：
+
+  A &gt; 0 且 ratio &gt; 1.2  →  裁剪，梯度【精确为 0】   （ratio=1.4 时目标锁在 1.2）
+  A &lt; 0 且 ratio &lt; 0.8  →  裁剪，梯度【精确为 0】
+  A &gt; 0 且 ratio &lt; 0.8  →  不裁剪，梯度系数 = A·ratio
+  A &lt; 0 且 ratio &gt; 1.2  →  不裁剪，梯度系数 = A·ratio  ← 会爆，靠 dual-clip 兜
+
+★ clip 只拦「顺着已有方向跑太远」，从不拦「往回拉」。
+  「clip 把 ratio 限制在 [0.8,1.2]」这句话是错的。
+
+★ clip 边界换算成 log-prob 只有 ±0.1823。
+  训推数值失配造成的 ratio ∈ [0.85,1.15] 就吃掉其中 77–89%（见 11 章）。
+</code></pre></div>
+
+<p><strong>三个必须在 FP32 里做的地方（§10.6.3）</strong></p>
+<div class="codehilite"><pre><span></span><code>① log_softmax：先减最大值，否则 exp 溢出（exp(100) &gt; FP32 上限）
+② gather 取 token 的 log-prob
+③ ratio = exp(logp_new − logp_old)：先在 log 空间 clamp(±20) 再 exp
+
+★ BF16 在 2.5 附近的间隔是 0.015625，而 logp 之差典型只有 0.01
+  → 两个数被舍入到同一个 BF16 值 → Δ = 0 → 梯度信号被整数舍入吃干净，不报错
+</code></pre></div>
+
+<p><strong>四个被纠正的常见错误说法</strong></p>
+<table>
+<thead>
+<tr>
+<th>常见说法</th>
+<th>实际</th>
+<th>依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「LogProb 收集让 Decode 带宽涨 3–4 倍」</td>
+<td>涨 <strong>0.29%</strong>（logits 256 KB/token 对比权重 16 GB/step）</td>
+<td>§10.2.2</td>
+</tr>
+<tr>
+<td>「GAE 的串行性是 RL 的性能痛点」</td>
+<td>占 <strong>0.015%</strong>，改了也没用</td>
+<td>§10.3.3</td>
+</tr>
+<tr>
+<td>「AdamW / 权重同步是 RL 吞吐低的原因」</td>
+<td>分别占 <strong>0.04%</strong> 和 <strong>0.6%</strong>；真正的原因是 rollout 长尾（33%）</td>
+<td>§10.8、§10.9.2</td>
+</tr>
+<tr>
+<td>「clip 把 ratio 限制在 [1−ε, 1+ε]」</td>
+<td>四象限里只有两个生效</td>
+<td>§10.5.2</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自测三题</strong>（答案在下面，都能拿计算器验）</p>
+<ol>
+<li>GRPO，G = 8，同一个 prompt 的 8 条回答里 7 条答对（reward = 1）、1 条答错（reward = 0）。用总体标准差（分母 G）算出：组内均值、标准差、答对回答的 advantage、答错回答的 advantage。然后回答：<code>|A_答错| ÷ |A_答对|</code> 等于多少？这个比值和 G 是什么关系？</li>
+<li>PPO，ε = 0.2，某个 token 的 advantage A = −1。分别在 ratio = 0.7 和 ratio = 1.5 两种情况下判断：目标函数取的是哪一支？这个 token 的梯度是 0 还是非 0？如果非 0，对 <code>logp_new</code> 的梯度系数是多少？另外，ratio = 0.7 对应的 <code>logp_new − logp_old</code> 是多少？</li>
+<li>一张 H100 上跑 32 条序列的 rollout，权重 16 GB，HBM 带宽 3.35 TB/s。回答长度分布是：16 条 256 token、8 条 1024 token、8 条 2048 token。算出：Decode 要跑多少步、光权重读要多少秒、实际产出多少 token、批次有效利用率、以及每个 token 的权重读成本是理想值（批次恒 32）的几倍。</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li>均值 = 7 ÷ 8 = <strong>0.875</strong>。偏差是 +0.125（7 个）和 −0.875（1 个），偏差平方和 = 7 × 0.015625 + 0.765625 = 0.109375 + 0.765625 = <strong>0.875</strong>；总体方差 = 0.875 ÷ 8 = 0.109375，标准差 = <strong>0.330719</strong>。答对的 advantage = 0.125 ÷ 0.330719 = <strong>+0.377964</strong>；答错的 = −0.875 ÷ 0.330719 = <strong>−2.645751</strong>（校验：7 × 0.377964 − 2.645751 = 0 ✓，组内 advantage 恒和为 0）。比值 = 0.875 ÷ 0.125 = <strong>7</strong>——标准差在分子分母上约掉了，所以这个比值精确等于 <strong>G − 1</strong>，与 reward 的具体取值无关。意味着 <strong>G 越大，那唯一一条错答承担的负梯度越重</strong>（G = 16 时是 15 倍），这正是 §10.4.2 讲的「除 std 放大极端组」效应在 0/1 奖励下的极端形态。参见 §10.4.2。</li>
+<li><strong>ratio = 0.7</strong>：未裁剪支 = 0.7 × (−1) = −0.7；<code>clip(0.7, 0.8, 1.2)</code> = 0.8，裁剪支 = −0.8；<code>min(−0.7, −0.8)</code> = <strong>−0.8，取裁剪支</strong> → 裁剪支对 ratio 是常数 → <strong>梯度精确为 0</strong>。<strong>ratio = 1.5</strong>：未裁剪支 = −1.5；裁剪支 = 1.2 × (−1) = −1.2；<code>min(−1.5, −1.2)</code> = <strong>−1.5，取未裁剪支</strong> → <strong>梯度非 0</strong>，系数 = <code>A · ratio</code> = −1 × 1.5 = <strong>−1.5</strong>（比 ratio = 1 时的 −1.0 还大，这正是 §10.5.3 要用 dual-clip 兜住的角落）。ratio = 0.7 对应 <code>logp_new − logp_old</code> = ln 0.7 = <strong>−0.3567</strong>。参见 §10.5.1–§10.5.3。</li>
+<li>最长的序列是 2048 token，所以要跑 <strong>2048 步</strong>。每步权重读 = 16 GB ÷ 3.35 TB/s = 4.776 ms，总计 2048 × 4.776 ms = <strong>9.78 s</strong>。实际产出 = 16 × 256 + 8 × 1024 + 8 × 2048 = 4096 + 8192 + 16384 = <strong>28672 token</strong>。若批次恒定 32 跑满 2048 步应产出 32 × 2048 = 65536 token，所以批次有效利用率 = 28672 ÷ 65536 = <strong>43.75%</strong>。每 token 权重读成本 = 9.78 s ÷ 28672 = <strong>341 µs</strong>，理想值 = 4.776 ms ÷ 32 = <strong>149 µs</strong>，放大 341 ÷ 149 = <strong>2.29 倍</strong>（= 1 ÷ 43.75% ✓）。参见 §10.2.1。</li>
+</ol>
+<blockquote>
+<p><strong>下一章</strong>：本章反复提到「<code>logp_old</code> 由推理引擎给出时 ratio ≠ 1，而 clip 的预算只有 ±0.1823」。那个偏离从哪来、有多大、怎么治，是下一章的全部内容。见 <a href="11-训推一致性算子层.html">11 · 训推一致性算子层</a>。</p>
+<p><strong>昇腾对照</strong>：RL 两个阶段在昇腾上的对应物是——Rollout 用 MindIE 或 vLLM-Ascend，Decode 阶段务必开 <strong>ACLGraph</strong>（昇腾的单算子下发路径比 GPU 更长，见 <a href="附-速查表.html">附-速查表 §L.6</a> 与 <a href="05-算子融合.html">05 章 §5.5</a> 的 Host Bound 判据）；训练侧用 MindSpeed 系列。本章 §10.2.1 那条「一步 Decode 的固定成本与活跃序列数无关，所以长尾按比例放大每 token 成本」<strong>与硬件无关，在昇腾上同样成立</strong>，而且因为昇腾每步的固定下发成本更高，长尾的惩罚只会更重。§10.9.2 的权重同步账换一下带宽数字即可（HCCS / PCIe 数字见 <a href="附-速查表.html">附-速查表 §J.3</a>）。§10.6.1 的 varlen 在昇腾上要改用 <code>input_layout="TND"</code> + <code>actual_seq_qlen</code>，不能直接照搬 <code>cu_seqlens</code>，对照见 <a href="附-速查表.html">附-速查表 §K.4</a> 和 <a href="14-GPU到NPU迁移实战.html">14 章</a>。</p>
+</blockquote>
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://arxiv.org/abs/1707.06347">Proximal Policy Optimization 原论文</a>（Schulman et al., 2017；§10.5 的 clip 目标函数出处）<br />
+- <a href="https://arxiv.org/abs/2402.03300">DeepSeekMath：GRPO 算法</a>（Shao et al., 2024；§10.4.1 的组内归一化与 §10.7.2 的 k3 估计量出处）<br />
+- <a href="https://arxiv.org/abs/2501.12948">DeepSeek-R1</a>（GRPO 在推理模型上的大规模应用）<br />
+- <a href="http://joschu.net/blog/kl-approx.html">Approximating KL Divergence</a>（Schulman 的博文，k1 / k2 / k3 三个估计量的原始出处，§10.7 的推导按它来）<br />
+- <a href="https://github.com/volcengine/verl">veRL: Volcano Engine RL for LLMs</a>（开源 RL 框架，含 PPO/GRPO 实现与 colocate 架构）<br />
+- <a href="https://github.com/OpenRLHF/OpenRLHF">OpenRLHF</a>（Ray 架构，Worker 分离的参考实现）<br />
+- <a href="https://github.com/THUDM/slime">slime</a>（Megatron + SGLang 的 RL 框架，权重同步路径值得读）<br />
+- <a href="https://github.com/linkedin/Liger-Kernel">Liger-Kernel</a>（<code>fused_linear_cross_entropy</code> 等融合 kernel，§10.6.2 的现成实现）<br />
+- <a href="https://github.com/mgmalek/efficient_cross_entropy">efficient_cross_entropy</a>（大词表 cross-entropy 的分块 kernel，原理同 §10.6.2）</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

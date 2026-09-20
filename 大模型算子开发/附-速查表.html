@@ -409,14 +409,24 @@ FlashAttention 重计算后：
 </code></pre></div>
 
 <h3 id="b5-kv-cache">B.5 KV Cache 大小</h3>
-<div class="codehilite"><pre><span></span><code>每 token 每层 KV Cache（FP16）：
-  = 2 × 2 × d_model × sizeof(FP16)
-  = 2 × 2 × d_model × 2 Bytes
-  = 8 × d_model Bytes
+<div class="codehilite"><pre><span></span><code>通式（唯一该记的那个）：
+  每 token 每层 = 2 × n_kv_heads × head_dim × 字节数
+                  ↑ K 和 V 两份
 
-LLaMA-3 70B 示例（d_model=8192，80 层）：
-  每 token = 8 × 8192 = 65536 Bytes ≈ 64 KB（单层）× 80 层 = 5 MB/token
-  注：GQA 时按实际 KV head 数折算
+  MHA（n_kv_heads × head_dim = d_model）时退化为：
+    FP16 下 = 2 × d_model × 2 = 4 × d_model Bytes
+
+⚠️ 本表此前写的是 8 × d_model，多乘了一个 2，所有下游数字都翻倍了。
+
+LLaMA-3 70B 实际值（80 层，GQA：8 个 KV head × head_dim 128）：
+  每 token = 80 × 2 × (8 × 128) × 2 = 327680 Bytes = 320 KiB
+
+  ⚠️ 别用 d_model=8192 硬套 MHA 公式——那会算出 2.56 MB/token，
+     整整高估 8 倍。70B 是 GQA，KV head 只有 8 个不是 64 个。
+     GQA 省下的正是这 8 倍。
+
+  80 GB 卡装得下多少：(80 − 权重 141/TP8 ≈ 17.6 − 开销 4) ≈ 58 GiB
+                      ÷ 320 KiB ≈ 190K token
 </code></pre></div>
 
 <h3 id="b6">B.6 量化误差与位宽</h3>
@@ -424,10 +434,18 @@ LLaMA-3 70B 示例（d_model=8192，80 层）：
   x_q = round(x / s)，x_dq = x_q × s
   s = max(|x|) / (2^(b-1) - 1)
 
-FP8 E4M3：动态范围 ±448，精度 ~3 有效位（十进制）
-FP8 E5M2：动态范围 ±57344，精度 ~2 有效位（十进制）
-INT8：   动态范围 [-128, 127]，精度 ~2.4 有效位
-INT4：   动态范围 [-8, 7]，精度 ~1.2 有效位
+FP8 E4M3：动态范围 ±448，    尾数 3 bit（+ 隐含位 = 4 bit 有效数）→ ≈1.2 位十进制
+FP8 E5M2：动态范围 ±57344，  尾数 2 bit（+ 隐含位 = 3 bit 有效数）→ ≈0.9 位十进制
+INT8：   动态范围 [-128, 127]，8 bit                            → ≈2.4 位十进制
+INT4：   动态范围 [-8, 7]，    4 bit                             → ≈1.2 位十进制
+
+⚠️ 本表此前把 FP8 两行写成「~3 / ~2 有效位（十进制）」，那是把
+   尾数的二进制位数当成了十进制有效位。换算是 log10(2^有效位数)。
+
+★ 记这个对比就够：E4M3 和 INT4 的十进制精度是同一量级（都 ≈1.2 位），
+  但 E4M3 的动态范围宽了几个数量级 —— 这正是 FP8 在有离群值时
+  比 INT8/INT4 稳的原因，而不是因为它「更准」。
+  ⚠️ 没有离群值、分布均匀时，INT8（2.4 位）反而比 E4M3 更准。
 </code></pre></div>
 
 <hr />
@@ -708,19 +726,33 @@ INT4：   动态范围 [-8, 7]，精度 ~1.2 有效位
 <hr />
 <h2 id="g-moe-deepseek-v3">G. MoE 关键数字（DeepSeek-V3 规模参考）</h2>
 <div class="codehilite"><pre><span></span><code>模型规模：671B 参数，37B 激活
-专家配置：256 专家，Top-8 路由，EP=32（每节点 8 卡）
+专家配置：256 路由专家 + 1 共享专家，Top-8 路由
 隐藏维度：H = 7168
 
-All-to-All 通信量（每层，单向）：
-  = tokens × H × sizeof(BF16) × (EP-1)/EP
-  例：batch=4096 tokens，H=7168，EP=32
-  ≈ 4096 × 7168 × 2 × 31/32 ≈ 1.76 GB（发送）
+EP 配置随场景不同（都是官方口径，别混用）：
+  训练        EP=64（跨 8 机），PP=16，TP=1，2048 张 H800
+  推理 Prefill EP=32（含 32 个冗余专家）
+  推理 Decode  EP=144（⚠️ 技术报告写 EP=320，开源周博客写 EP=144，时期不同）
+
+All-to-All 通信量（每层）：
+  单向 = tokens × Top-K × H × sizeof(dtype) × (1 − 1/EP)
+                    ↑ 别漏这一项：每个 token 要发给 K 个专家
+  Dispatch + Combine = 上式 × 2
+
+  例：tokens=4096，K=8，H=7168，BF16，EP=64
+    单向 = 4096 × 8 × 7168 × 2 × 63/64 ≈ 462 MB
+    往返 ≈ 924 MB
 
 Grouped GEMM 的不规则性：
-  Top-K=8，每专家平均 tokens = batch × 8 / 256 = batch/32
-  batch=4096 → 每专家约 128 tokens（实际按 Poisson 分布，有专家空 / 过载）
+  每专家平均 tokens = tokens × K / 256 = tokens / 32
+  tokens=4096 → 每专家约 128 个（实际按 Poisson 分布，有专家空 / 过载）
+  ⚠️ 每专家须 ≥ 约 362 个 token 才跨得过屋脊点 295，128 个远不够
+     → 专家 GEMM 在训练时通常仍是 Memory Bound
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ 本表此前的算式漏了 <code>× Top-K</code>，且把 56.9 MB 写成了 1.76 GB（差 30 倍），已修正。带宽单位、逐卡推演、以及 EP 与 TP 通信量之比 <code>K/p</code> 的推导见 <a href="08-MoE算子与通信.html">08 章 §8.3</a>。<strong>NVLink 900 GB/s 是双向聚合值，算单向发送要用 450 GB/s。</strong></p>
+</blockquote>
 <hr />
 <h2 id="h">H. 推理侧关键概念速查</h2>
 <table>

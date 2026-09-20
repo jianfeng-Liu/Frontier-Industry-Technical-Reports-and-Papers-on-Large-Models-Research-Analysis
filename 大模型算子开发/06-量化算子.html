@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>06 · 量化算子：带宽减半 = 速度翻倍</title>
+<title>06 · 量化算子：让每个数占的字节变少</title>
 <style>
     :root {
       --bg:        oklch(97% 0.005 250);
@@ -246,321 +246,1953 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <body>
 <div class="page-wrap">
 <div class="md-body">
-<h1 id="06">06 · 量化算子：带宽减半 = 速度翻倍</h1>
+<h1 id="06">06 · 量化算子：让每个数占的字节变少</h1>
 <blockquote>
-<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM）</a><br />
-<strong>目标</strong>：搞清楚量化的数学原理、主流方案（INT8/FP8/GPTQ）、实际部署里的量化 kernel 实现，以及 DeepSeek 的 FP8 训练实践。</p>
+<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM）</a>、<a href="05-算子融合.html">05 章（算子融合）</a><br />
+<strong>目标</strong>：搞清楚量化到底在做什么算术、误差从哪来、每种方案（INT8 / FP8 / GPTQ / AWQ）各自用什么信息做取舍，以及量化 kernel 在工程上要处理哪些事。<br />
+<strong>读法</strong>：本章有一个贯穿全章的数值例子——<strong>8 个浮点数</strong>，从 §6.2 开始一路被反复量化：对称一遍、非对称一遍、三种粒度各一遍、掺进离群值再来一遍。<strong>所有数字都能用计算器验算，建议拿纸笔跟着算。</strong></p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
-<p><strong>量化</strong>（Quantization）—— 用位宽更低的数据类型（INT8、FP8、INT4）表示原本是 FP16/BF16 的张量，减少内存占用和带宽消耗。<br />
-<strong>对称量化 / 非对称量化</strong> —— 是否有零点偏移（zero point），对称量化用 <code>q = round(x / scale)</code>，非对称量化用 <code>q = round(x / scale) + zero_point</code>。<br />
-<strong>Per-tensor / Per-channel / Per-token 量化</strong> —— 量化粒度，粒度越细精度越高，但计算开销和存储开销也越大。<br />
-<strong>W8A16 / W8A8 / W4A16</strong> —— 权重（W）和激活值（A）分别用几位来表示的简写，例如 W8A16 表示权重 INT8、激活 FP16。<br />
-<strong>SmoothQuant</strong> —— 通过平滑激活值的分布（把"刺"从激活迁移到权重），让 W8A8 量化更精准。<br />
-<strong>FP8（E4M3 / E5M2）</strong> —— 8 位浮点格式，H100 原生硬件支持，是当前训练量化的主流选择。<br />
-<strong>GPTQ</strong> —— 训练后仅量化权重的方案，用二阶梯度信息最小化量化误差，支持 INT4/INT3。<br />
-<strong>AWQ</strong>（Activation-aware Weight Quantization）—— 保留对激活值影响大的权重通道不量化，其余量化为 INT4，精度优于 GPTQ。</p>
+<p><strong>量化</strong>（Quantization）—— 用位宽更低的数据类型（INT8、FP8、INT4）表示原本是 FP16/BF16 的张量，减少显存占用和 HBM 带宽消耗。<br />
+<strong>PTQ</strong>（Post-Training Quantization，训练后量化）—— 模型训练完之后再量化，不改训练流程，本章讲的绝大部分方案都属于这一类。<br />
+<strong>QAT</strong>（Quantization-Aware Training，量化感知训练）—— 在训练过程中就模拟量化误差，让权重自己适应，精度更好但要改训练，见 <a href="11-训推一致性算子层.html">11 章 §11.2.2</a>。<br />
+<strong>scale（缩放因子）/ zero-point（零点）</strong> —— 量化的两个参数：<code>scale</code> 决定一个整数刻度代表多大的实数，<code>zero-point</code> 决定实数 0 落在哪个整数上。<br />
+<strong>对称量化 / 非对称量化</strong> —— 是否带 zero-point。对称：<code>q = round(x / scale)</code>；非对称：<code>q = round(x / scale) + zero_point</code>。<br />
+<strong>RTN</strong>（Round-To-Nearest，就近取整）—— 最朴素的量化方法：直接四舍五入，不做任何补偿。本章所有高级方案都是在跟它比。<br />
+<strong>Per-tensor / Per-channel / Per-token / Per-group 量化</strong> —— 量化粒度，指"多少个数共用一个 scale"。粒度越细越准，但 scale 本身也要占空间。<br />
+<strong>离群值</strong>（Outlier，也叫"刺"）—— 张量里少数几个远大于其余元素的值。它撑大 scale，把其余元素的精度全部拖垮，是激活值量化的头号敌人。<br />
+<strong>W8A8 / W8A16 / W4A16</strong> —— 权重（Weight）和激活值（Activation）各用几位的简写。W8A16 = 权重 INT8、激活 FP16。<br />
+<strong>SmoothQuant</strong> —— 用一组逐通道的缩放因子，把激活的离群值"难度"等价地搬到权重上，让 W8A8 变得可行。<br />
+<strong>FP8（E4M3 / E5M2）</strong> —— 8 位浮点格式，E4M3 = 1 符号位 + 4 指数位 + 3 尾数位，E5M2 = 1 + 5 + 2。H100 的 Tensor Core 原生支持。<br />
+<strong>GPTQ</strong>（Generative Pre-trained Transformer Quantization）—— Frantar 等人提出的训练后权重量化方案，用<strong>二阶信息（Hessian 矩阵）</strong>做逐列误差补偿，支持 INT4/INT3。<br />
+<strong>AWQ</strong>（Activation-aware Weight Quantization，激活感知权重量化）—— 用<strong>激活值的逐通道幅度</strong>决定哪些权重通道重要，通过等价缩放保护它们，不做反向传播。<br />
+<strong>Hessian 矩阵</strong>（海森矩阵）—— 损失函数对参数的二阶导数矩阵。GPTQ 用它来判断"改动哪个权重对输出影响最小"。<br />
+<strong>PPL</strong>（Perplexity，困惑度）—— 语言模型的标准评测指标，越低越好。量化论文几乎都用它衡量精度损失。<br />
+<strong>SQNR</strong>（Signal-to-Quantization-Noise Ratio，信号量化噪声比）—— 另一个衡量量化误差的指标，单位 dB，越高越好。<br />
+<strong>MSE / RMSE</strong>（Mean Squared Error / Root Mean Squared Error，均方误差 / 均方根误差）—— 本章用 RMSE 横向比较各种量化方案的误差。<br />
+<strong>校准</strong>（Calibration）—— 用一小批真实数据跑一遍模型，统计出每层激活的取值范围，从而确定 scale。<br />
+<strong>屋脊点</strong>（Ridge Point）—— 峰值算力 ÷ 峰值带宽，见 <a href="02-屋顶线与性能剖析.html">02 章</a>。<strong>量化会让屋脊点也跟着变，这是本章最容易被忽略的一点。</strong></p>
 <hr />
-<h2 id="61">6.1 为什么量化能提速</h2>
-<p>大模型推理几乎全是 Memory Bound（见第 02 章）。瓶颈是 HBM 带宽，不是算力。</p>
-<div class="codehilite"><pre><span></span><code>H100 带宽：3.35 TB/s
-H100 FP16 算力：989 TFLOPS
-屋脊点：295 FLOP/Byte
-
-推理 batch=1 的 GEMM 算术强度：约 1 FLOP/Byte
-→ 99.7% 的时间在等 HBM，算力空转 99.7%
-</code></pre></div>
-
-<p>量化的直接效果：</p>
-<div class="codehilite"><pre><span></span><code>FP16 → INT8：每个数从 2 Bytes → 1 Byte，带宽需求减半
-FP16 → INT4：每个数从 2 Bytes → 0.5 Byte，带宽需求减为 1/4
-
-推理 batch=1 时，带宽减半 ≈ 速度翻倍
-（前提：量化 kernel 的额外开销不显著）
-</code></pre></div>
-
-<p>此外：<br />
-- 显存占用减少，可以装更大的模型或更大的 batch<br />
-- batch 越大时收益逐渐下降（因为大 batch 时权重带宽已被分摊，算力开始成为瓶颈）</p>
-<hr />
-<h2 id="62">6.2 量化的数学基础</h2>
-<h3 id="uniform-quantization">均匀量化（Uniform Quantization）</h3>
-<p>把浮点数映射到固定范围的整数：</p>
-<div class="codehilite"><pre><span></span><code>对称量化（常用于权重）：
-  scale = max(|x|) / (2^(b-1) - 1)     b = 位宽（8 → 127）
-  q = round(x / scale)                  q ∈ [-127, 127]
-  x̂ = q × scale                        反量化
-
-非对称量化（常用于激活值，分布不对称）：
-  scale = (max(x) - min(x)) / (2^b - 1)
-  zero_point = round(-min(x) / scale)
-  q = round(x / scale) + zero_point     q ∈ [0, 255]（INT8 无符号）
-  x̂ = (q - zero_point) × scale
-</code></pre></div>
-
-<h3 id="_1">量化粒度</h3>
-<p>量化粒度决定了精度和灵活性的权衡：</p>
-<div class="codehilite"><pre><span></span><code>Per-tensor：整个张量共用一个 scale（最粗，精度最低）
-  scale = max(|W|) / 127
-
-Per-channel（权重量化的标准做法）：每个输出通道一个 scale
-  scale[i] = max(|W[i, :]|) / 127
-
-Per-token（激活量化的常用做法）：每个 token（每行）一个 scale
-  scale[j] = max(|X[j, :]|) / 127
-
-Per-group（GPTQ/AWQ 常用）：每 g 个权重共用一个 scale
-  通常 g = 128，是 per-channel 和 per-tensor 的折中
-</code></pre></div>
-
-<p>粒度越细，精度越高，但也需要存储更多 scale 参数，且矩阵乘法后需要处理不同 scale 的混合。</p>
-<hr />
-<h2 id="63-w8a16">6.3 W8A16：最保守的量化</h2>
-<p>权重用 INT8 存储，激活值保持 FP16。</p>
-<p><strong>前向计算流程</strong>：</p>
-<div class="codehilite"><pre><span></span><code>weight_int8 (存储在 HBM) → 加载时反量化为 FP16 → 正常 FP16 GEMM
-</code></pre></div>
-
-<p><strong>优点</strong>：<br />
-- 精度损失极小（权重分布通常比较平滑，容易量化）<br />
-- 不需要校准数据<br />
-- 现有 FP16 GEMM kernel 完全可用</p>
-<p><strong>缺点</strong>：<br />
-- 计算阶段仍用 FP16，Tensor Core 吞吐没有提升<br />
-- 带宽省一半（权重从 HBM 读出是 INT8，但计算前要反量化）<br />
-- 反量化的开销约占 5–10%</p>
-<p><strong>适用场景</strong>：模型太大放不进显存，或需要节省显存，对速度要求不那么极致。</p>
-<hr />
-<h2 id="64-w8a8smoothquant">6.4 W8A8（SmoothQuant）：算力 + 带宽双重提升</h2>
-<p>权重和激活值都用 INT8，可以使用 INT8 Tensor Core（H100：1979 TOPS，是 BF16 的 2 倍）。</p>
-<p><strong>难点：激活值里的"刺"</strong></p>
-<p>权重的分布通常比较平滑，容易量化。但激活值（尤其是大模型里的中间层输出）常有少数极大的异常值（Outlier）：</p>
-<div class="codehilite"><pre><span></span><code>激活值分布示意：
-  ████████████████  ← 99% 的值在 [-2, 2]
-                             ██  ← 1% 的值高达 ±100
-
-如果直接量化：
-  scale = 100 / 127 ≈ 0.79
-  正常值 2.0 → round(2.0 / 0.79) = round(2.53) = 3   ← 量化误差极大！
-  正常范围 [-2, 2] 被压缩到 [-3, 3]，实际精度只有 3 位
-</code></pre></div>
-
-<h3 id="smoothquant">SmoothQuant 的解决方案</h3>
-<p>把激活值的"刺"<strong>迁移</strong>到权重侧，让两边都变得容易量化：</p>
-<div class="codehilite"><pre><span></span><code>原始：Y = X · W   （X 有刺，W 较平滑）
-
-引入对角矩阵 s（平滑因子）：
-Y = (X · diag(s)⁻¹) · (diag(s) · W)
-    ────────────────    ─────────────
-         X̃（平滑后）     W̃（吸收了&quot;刺&quot;）
-
-选择 s_j = max(|X[:, j]|)^α / max(|W[j, :]|)^(1-α)   α ∈ [0, 1]
-
-α=0.5 时：把刺的&quot;责任&quot;平均分给 X 和 W
-</code></pre></div>
-
-<p>平滑后，X̃ 和 W̃ 的动态范围都更接近正态分布，INT8 量化误差大幅降低。</p>
-<p><strong>实测效果（LLaMA-65B，INT8）</strong>：<br />
-- W8A8（无 SmoothQuant）：PPL 上升约 2–5<br />
-- W8A8（SmoothQuant）：PPL 几乎不变（vs FP16 基准差 &lt; 0.1）</p>
-<hr />
-<h2 id="65-fp8h100">6.5 FP8：H100 时代的主流选择</h2>
-<p>FP8 是用 8 位表示浮点数，有两种格式：</p>
-<div class="codehilite"><pre><span></span><code>E4M3（4 位指数，3 位尾数）：
-  范围：约 [-448, 448]，精度约 3 位有效数字
-  适合：前向传播（权重、激活值，不需要太大范围）
-
-E5M2（5 位指数，2 位尾数）：
-  范围：约 [-57344, 57344]，精度约 2 位有效数字
-  适合：反向传播（梯度可能有极大值，需要大范围）
-</code></pre></div>
-
-<p><strong>为什么 FP8 优于 INT8</strong>：<br />
-- FP8 保留了浮点的非均匀精度分布（小数附近精度高，大数附近精度低）<br />
-- 梯度和激活值的分布通常是近似正态或对数正态，FP8 的非均匀分布与之匹配更好<br />
-- H100 原生支持 FP8 MMA 指令，吞吐是 BF16 的 2 倍（1979 vs 989 TFLOPS）</p>
-<h3 id="deepseek-v3-fp8">DeepSeek-V3 的 FP8 混合精度训练</h3>
-<p>DeepSeek-V3/V4 技术报告（2024）中详细描述了 FP8 训练策略：</p>
-<div class="codehilite"><pre><span></span><code>组件                精度        原因
-────────────────────────────────────────────
-主要 GEMM（FFN、QKV 投影）  FP8 E4M3  速度 + 显存
-注意力计算（QK^T、PV）      FP8 E4M3  同上
-梯度                        FP8 E5M2  需要更大范围
-梯度累加                    FP32      防止舍入误差累积
-残差连接                    BF16      稳定性
-LayerNorm / RMSNorm         BF16      敏感操作
-嵌入层 / LM head            BF16      精度要求高
-</code></pre></div>
-
-<p><strong>训练结果</strong>：<br />
-- 与全 BF16 训练相比，PPL 差异 &lt; 0.02%（可忽略）<br />
-- 训练速度提升约 1.6 倍<br />
-- 显存减少约 30%（主要来自激活值缓存）</p>
-<p><strong>关键工程细节</strong>：<br />
-- 每 128 个元素一组，共用一个 FP8 scale（per-group 量化）<br />
-- scale 存为 FP32，在 BF16 Tensor Core 上单独计算<br />
-- 每隔几步更新一次 scale（历史最大值的指数移动平均）</p>
-<hr />
-<h2 id="66-gptq">6.6 GPTQ：训练后仅量化权重</h2>
-<p>GPTQ（Frantar et al., 2022）是目前最广泛用于端侧/低显存部署的权重量化方案，支持 INT4/INT3。</p>
-<h3 id="_2">核心思路：用二阶信息最小化量化误差</h3>
-<p>朴素的 round-to-nearest 量化：直接四舍五入。<br />
-GPTQ：<strong>每量化一个权重，就把这个量化误差补偿到剩余的权重上</strong>，最小化整体 GEMM 输出误差。</p>
-<div class="codehilite"><pre><span></span><code>对于权重矩阵 W（每列独立处理）：
-  按列逐一量化：
-    w_q[i] = quantize(w[i])              量化第 i 列
-    err[i]  = w[i] - w_q[i]             量化误差
-    w[i+1:] -= err[i] × H⁻¹[i, i+1:] / H⁻¹[i, i]   补偿到剩余列
-
-  H 是 Hessian 矩阵（用少量校准数据计算）
-</code></pre></div>
-
-<p>实际上用的是 OBS（Optimal Brain Surgeon）的近似：只需要少量校准数据（约 128 条样本）计算 Hessian 的近似。</p>
-<h3 id="gptq">GPTQ 实测效果</h3>
+<h2 id="61">6.1 先算一笔账：量化到底买到了什么</h2>
+<h3 id="611">6.1.1 两样东西：显存和带宽</h3>
+<p>量化省的从来不是"计算量"——FLOP（浮点运算次数）一次都没少。它省的是<strong>字节数</strong>，而字节数买到两样东西。</p>
+<p><strong>第一样：显存装得下。</strong> 以 LLaMA-3-8B（80.3 亿参数）为例：</p>
 <table>
 <thead>
 <tr>
-<th>模型</th>
-<th>精度</th>
-<th>FP16 PPL</th>
-<th>INT4（GPTQ）PPL</th>
-<th>大小（FP16→INT4）</th>
+<th>权重格式</th>
+<th>每个权重占的位数</th>
+<th>权重总大小</th>
+<th>能否装进一块 24 GB 消费卡</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>LLaMA-2 7B</td>
-<td>INT4/group=128</td>
-<td>5.47</td>
-<td>5.68</td>
-<td>13 GB → 3.5 GB</td>
+<td>BF16</td>
+<td>16</td>
+<td>8.03e9 × 2 = <strong>16.06 GB</strong></td>
+<td>勉强（剩不下 KV Cache）</td>
 </tr>
 <tr>
-<td>LLaMA-2 13B</td>
-<td>INT4/group=128</td>
-<td>4.88</td>
-<td>5.02</td>
-<td>26 GB → 7 GB</td>
+<td>INT8</td>
+<td>8</td>
+<td><strong>8.03 GB</strong></td>
+<td>可以</td>
 </tr>
 <tr>
-<td>LLaMA-2 70B</td>
-<td>INT4/group=128</td>
-<td>3.32</td>
-<td>3.44</td>
-<td>140 GB → 35 GB</td>
+<td>INT4（group = 128）</td>
+<td><strong>4.156</strong>（见 §6.2.6）</td>
+<td><strong>4.17 GB</strong></td>
+<td>绰绰有余</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第二样：Decode 跑得快。</strong> <a href="02-屋顶线与性能剖析.html">02 章 §2.4.4</a> 已经证明过：自回归生成（Decode）阶段是彻底的 Memory Bound（内存受限），每生成一个 token 都要把<strong>整个模型的权重从 HBM 读一遍</strong>，时间几乎完全等于"读权重的时间"。</p>
+<div class="codehilite"><pre><span></span><code>Decode 每步的理论下界 = 权重总字节数 ÷ HBM 带宽
+
+H100 SXM5，HBM3 带宽 3.35 TB/s：
+  BF16   16.06 GB ÷ 3350 GB/s = 4.79 ms/token  →  209 token/s
+  INT8    8.03 GB ÷ 3350 GB/s = 2.40 ms/token  →  417 token/s
+  INT4    4.17 GB ÷ 3350 GB/s = 1.25 ms/token  →  803 token/s
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 上面三个数字是<strong>理论上界</strong>，不是实测：它假定 batch = 1、忽略 KV Cache 和激活值的流量、忽略反量化开销、假定 HBM 带宽 100% 打满。真机上能拿到其中的 60–80% 就算不错了。但<strong>三者之间的比值（1 : 2 : 3.85）是可靠的</strong>，因为分母是同一个带宽。</p>
+<p>★ <strong>注意 INT4 的加速比是 3.85 倍而不是 4 倍。</strong> 差的那 0.15 就是 scale 参数占的空间——每 128 个权重要额外存一个 FP16 的 scale 和一个 INT4 的 zero-point。§6.2.6 会把这笔账算清楚。</p>
+</blockquote>
+<h3 id="612">6.1.2 在屋顶线上看：算术强度和屋脊点同时翻倍</h3>
+<p>这是本章和 <a href="02-屋顶线与性能剖析.html">02 章</a> 最要紧的联动，也是最容易搞错的地方。</p>
+<p>取 Decode 阶段的一个 GEMV（矩阵-向量乘，即 batch = 1 的 GEMM），权重矩阵 4096 × 4096：</p>
+<div class="codehilite"><pre><span></span><code>                             BF16 权重          INT8 权重（W8A8）
+  运算量                     33.55 MFLOP        33.55 MOP       （完全不变）
+  读权重字节                 33.55 MB           16.78 MB        （减半）
+  ─────────────────────────────────────────────────────────────
+  算术强度 I                 1.0 FLOP/Byte      2.0 OP/Byte     （翻倍 ↑）
+  该计算单元的屋脊点         295（BF16）        591（INT8）     （也翻倍 ↑）
+  I ÷ 屋脊点                 0.0034             0.0034          （一点没变）
+  ─────────────────────────────────────────────────────────────
+  搬完权重要多久             10.0 µs            5.0 µs          （减半 ✓）
+</code></pre></div>
+
+<p>（屋脊点的来源：BF16 稠密 989 TFLOPS ÷ 3.35 TB/s ≈ 295；INT8 稠密 1979 TOPS ÷ 3.35 TB/s ≈ 591。见 <a href="附-速查表.html">附-速查表 §A</a>。）</p>
+<blockquote>
+<p>★ <strong>看清楚这里发生了什么</strong>：量化把算术强度翻了一倍，但也把屋脊点翻了一倍，所以这个算子在屋顶线图上的<strong>相对位置一点没动</strong>——它还是一样"贫瘠"，算力利用率还是 0.34%。<strong>但绝对时间减半了</strong>，因为要搬的字节少了一半。<strong>在 Memory Bound 区里，量化的全部收益来自"字节变少"，和"INT8 算得更快"没有一分钱关系。</strong></p>
+<p>⚠️ <strong>一个常见的错误推论</strong>：既然 INT8 Tensor Core 是 BF16 的 2 倍算力，那 W8A8 应该快 2 倍。这个推论只在 <strong>Compute Bound</strong>（算力受限）的场景下成立——大 batch 训练、长序列 Prefill。Decode 场景下算力根本没在用，INT8 Tensor Core 那 2 倍算力是白送的，一点也兑现不了。<strong>同一个量化动作，收益来源随场景完全不同</strong>，这和 <a href="05-算子融合.html">05 章 §5.2.6</a> 讲融合时是同一个道理。</p>
+</blockquote>
+<h3 id="613-batch">6.1.3 量化的收益会随 batch 消失：算出临界点</h3>
+<p>既然收益来自"减少字节"，那当算子本身变成 Compute Bound 的时候，收益就该归零。这个临界点可以算出来。</p>
+<p>设权重矩阵 K × N = 4096 × 4096，batch（token 数）为 M，H100：</p>
+<div class="codehilite"><pre><span></span><code>运算量 = 2 × M × 4096 × 4096 = 3.355e7 × M  FLOP
+        → 在 BF16 Tensor Core（989 TFLOPS）上耗时 = 0.0339 × M  µs
+
+字节数 = 权重 + 激活进出
+        BF16 权重：33.55 MB           → 10.02 µs
+        INT4 权重：8.39 + 0.33 = 8.72 MB → 2.60 µs       （0.33 是 scale/zero-point）
+        激活进出：2 × M × 4096 × 2 = 16384 × M Byte → 0.00489 × M µs
+</code></pre></div>
+
+<p>令"算的时间"= "搬的时间"，解出临界 M：</p>
+<table>
+<thead>
+<tr>
+<th>权重格式</th>
+<th>方程</th>
+<th>临界 M</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16</td>
+<td>0.0339 M = 10.02 + 0.00489 M</td>
+<td><strong>M ≈ 345</strong></td>
+<td>超过 345 个 token 后，BF16 GEMM 本身就已是 Compute Bound</td>
+</tr>
+<tr>
+<td>INT4（激活仍 FP16）</td>
+<td>0.0339 M = 2.60 + 0.00489 M</td>
+<td><strong>M ≈ 90</strong></td>
+<td>超过 90 个 token 后，INT4 的带宽优势开始兑现不出时间</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>M = 1    （Decode，batch=1）        INT4 相对 BF16 提速 ≈ 10.02 / 2.60 = 3.85 倍  ★收益最大
+M = 90                              INT4 刚好触顶，再大就被算力卡住
+M = 345                             BF16 自己也触顶，两者时间相同，量化只剩显存收益
+M = 2048（Prefill / 训练）          两者都是 Compute Bound，W4A16 的加速比 ≈ 1.0
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 上面是<strong>单个 GEMM 的理论模型</strong>，忽略了 Attention、通信、kernel 启动，也假定 INT4 权重反量化后仍走 FP16 Tensor Core。真实系统的临界点会更模糊。但<strong>趋势是可靠的</strong>：<strong>batch 越大，权重量化的收益越小。</strong> 这解释了一个现象——端侧和单用户场景（batch = 1）大量用 W4A16，而高吞吐服务集群（batch 上百）更愿意用 W8A8 或 FP8，因为那边要的是算力，不只是带宽。</p>
+</blockquote>
+<h3 id="614-w8a16w8a8w4a16">6.1.4 三条路线：W8A16、W8A8、W4A16 各省在哪</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>权重</th>
+<th>激活</th>
+<th>省带宽</th>
+<th>省算力</th>
+<th>需要校准数据</th>
+<th>精度风险</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>W8A16</strong></td>
+<td>INT8</td>
+<td>FP16/BF16</td>
+<td>权重减半</td>
+<td>❌ 无（仍走 FP16 Tensor Core）</td>
+<td>❌ 不需要</td>
+<td>极低</td>
+</tr>
+<tr>
+<td><strong>W8A8</strong></td>
+<td>INT8</td>
+<td>INT8</td>
+<td>权重和激活都减半</td>
+<td>✅ INT8 Tensor Core 2×</td>
+<td>✅ 需要（激活范围要统计）</td>
+<td><strong>中，卡在激活离群值</strong></td>
+</tr>
+<tr>
+<td><strong>W4A16</strong></td>
+<td>INT4</td>
+<td>FP16/BF16</td>
+<td>权重减 3.85×</td>
+<td>❌ 无</td>
+<td>✅ 需要（GPTQ/AWQ 都要）</td>
+<td>中</td>
+</tr>
+<tr>
+<td><strong>FP8（W8A8 的浮点版）</strong></td>
+<td>FP8</td>
+<td>FP8</td>
+<td>都减半</td>
+<td>✅ FP8 Tensor Core 2×</td>
+<td>通常需要（或在线算 scale）</td>
+<td>低（见 §6.5）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>W8A16 是"最保守"的一档</strong>：只动权重，不动激活，因此不需要校准数据、不会踩激活离群值的坑、任何现成的 FP16 GEMM kernel 稍加改造就能用。代价是 Tensor Core 吞吐一点没涨，纯粹是带宽/显存的收益。</p>
+<blockquote>
+<p>★ <strong>为什么 W8A16 这么"弱"的方案仍然值得用</strong>：因为 Decode 的字节数里，权重占了绝大部分。LLaMA-3-8B，batch = 1、序列长 2048 时，每步要读 16 GB 权重，而 KV Cache 只有几十 MB 量级。<strong>只量化权重就能拿走 Decode 大部分的收益</strong>，而激活量化那部分风险高、收益小。这也是 <a href="02-屋顶线与性能剖析.html">02 章 §2.4.4</a> 那句"推理量化通常只量化权重就够"的完整理由。</p>
+<p>⚠️ 本章旧版写"W8A16 反量化的开销约占 5–10%"，<strong>这个数字没有来源，已删除</strong>。真实情况取决于 batch：batch = 1 时计算单元几乎全空着，反量化基本白送；batch 大到一定程度后，反量化本身会变成瓶颈（这正是 Marlin、Machete 这类 W4A16 专用 kernel 要解决的问题，见 §6.8）。</p>
+</blockquote>
+<hr />
+<h2 id="62-8">6.2 量化的数学基础：8 个数走完全程</h2>
+<p>这一节是全章的骨架。我们只用 8 个数，但要把它们量化 5 遍。</p>
+<p><strong>这就是那 8 个数</strong>（可以理解成一层权重里连续的 8 个元素）：</p>
+<div class="codehilite"><pre><span></span><code>x = [ -0.80,  0.25,  1.50, -2.10,  0.05,  3.81, -0.40,  1.00 ]
+      索引0   索引1  索引2  索引3   索引4  索引5  索引6   索引7
+</code></pre></div>
+
+<p>（挑 3.81 这个数是为了让算术干净：<code>3.81 ÷ 127 = 0.03</code> 整。真实张量当然不会这么配合，但流程完全一样。）</p>
+<h3 id="621">6.2.1 对称量化：完整走一遍</h3>
+<p><strong>三步公式</strong>（b = 位宽，这里 b = 8）：</p>
+<div class="codehilite"><pre><span></span><code>① 定 scale：      scale = max(|x|) / (2^(b-1) - 1)       分母对 INT8 是 127
+② 量化：          q = clamp( round(x / scale), -127, 127 )
+③ 反量化：        x̂ = q × scale
+</code></pre></div>
+
+<p>代进去：<code>max(|x|) = 3.81</code>，所以 <strong>scale = 3.81 ÷ 127 = 0.03</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>原值 x</th>
+<th>x / scale</th>
+<th>取整后 q（INT8）</th>
+<th>反量化 x̂ = q × 0.03</th>
+<th>绝对误差 x̂ − x</th>
+<th>相对误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>−0.80</td>
+<td>−26.667</td>
+<td><strong>−27</strong></td>
+<td>−0.81</td>
+<td>−0.01</td>
+<td>1.3%</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.25</td>
+<td>8.333</td>
+<td><strong>8</strong></td>
+<td>0.24</td>
+<td>−0.01</td>
+<td>4.0%</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.50</td>
+<td>50.000</td>
+<td><strong>50</strong></td>
+<td>1.50</td>
+<td>0.00</td>
+<td>0%</td>
+</tr>
+<tr>
+<td>3</td>
+<td>−2.10</td>
+<td>−70.000</td>
+<td><strong>−70</strong></td>
+<td>−2.10</td>
+<td>0.00</td>
+<td>0%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.05</td>
+<td>1.667</td>
+<td><strong>2</strong></td>
+<td>0.06</td>
+<td>+0.01</td>
+<td><strong>20.0%</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>3.81</td>
+<td>127.000</td>
+<td><strong>127</strong></td>
+<td>3.81</td>
+<td>0.00</td>
+<td>0%</td>
+</tr>
+<tr>
+<td>6</td>
+<td>−0.40</td>
+<td>−13.333</td>
+<td><strong>−13</strong></td>
+<td>−0.39</td>
+<td>+0.01</td>
+<td>2.5%</td>
+</tr>
+<tr>
+<td>7</td>
+<td>1.00</td>
+<td>33.333</td>
+<td><strong>33</strong></td>
+<td>0.99</td>
+<td>−0.01</td>
+<td>1.0%</td>
+</tr>
+</tbody>
+</table>
+<p>误差汇总：</p>
+<div class="codehilite"><pre><span></span><code>最大绝对误差 = 0.01              ← 理论上界是 scale/2 = 0.015，实际没到顶
+RMSE（均方根误差）：
+    平方和 = 5 × (0.01)² = 5.0e-4
+    MSE    = 5.0e-4 / 8 = 6.25e-5
+    RMSE   = 0.00791
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这张表里最该盯住的是索引 4</strong>：真值 0.05，量化回来变成 0.06，<strong>相对误差 20%</strong>。而索引 5（3.81）的相对误差是 0。这不是偶然——<strong>均匀量化的绝对误差处处相同（都不超过 scale/2），所以数值越小，相对误差越大。</strong> 这条性质贯穿整章：它是离群值为什么致命（§6.3）的原因，也是 FP8 为什么和 INT8 不同（§6.5）的原因。</p>
+<p>⚠️ <strong><code>round</code> 的实现细节会影响结果。</strong> <code>0.5</code> 这种正好卡在中间的情况，C/CUDA 的 <code>roundf</code> 是"远离零"（0.5 → 1，−0.5 → −1），而 IEEE-754 默认和 PyTorch 的 <code>torch.round</code> 是"就近取偶"（0.5 → 0，1.5 → 2）。两种实现对同一个张量会给出不同的整数，训练端和推理端用了不同实现就会引入无端的数值差异——这正是 <a href="11-训推一致性算子层.html">11 章</a> 讲的训推不一致的来源之一。</p>
+</blockquote>
+<h3 id="622-8">6.2.2 非对称量化：同样 8 个数再走一遍</h3>
+<p>对称量化默认"正负范围一样宽"。如果分布偏向一侧，对称量化会白白浪费掉一半档位。非对称量化多引入一个 <strong>zero-point（零点）</strong>，把整个区间平移到无符号整数 <code>[0, 255]</code> 上。</p>
+<div class="codehilite"><pre><span></span><code>① scale      = ( max(x) − min(x) ) / (2^b − 1)          分母对 INT8 是 255
+② zero_point = round( −min(x) / scale )                  实数 0 落在哪个整数上
+③ q          = clamp( round(x / scale) + zero_point, 0, 255 )
+④ x̂          = (q − zero_point) × scale
+</code></pre></div>
+
+<p>代进去：<code>max = 3.81</code>，<code>min = −2.10</code>，range = 5.91。</p>
+<div class="codehilite"><pre><span></span><code>scale      = 5.91 / 255 = 0.0231765
+zero_point = round( 2.10 / 0.0231765 ) = round(90.61) = 91
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>原值 x</th>
+<th>x / scale</th>
+<th>round</th>
+<th>+ zp = q（UINT8）</th>
+<th>反量化 x̂</th>
+<th>绝对误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>−0.80</td>
+<td>−34.517</td>
+<td>−35</td>
+<td><strong>56</strong></td>
+<td>−0.8112</td>
+<td>−0.0112</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.25</td>
+<td>10.787</td>
+<td>11</td>
+<td><strong>102</strong></td>
+<td>0.2549</td>
+<td>+0.0049</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.50</td>
+<td>64.720</td>
+<td>65</td>
+<td><strong>156</strong></td>
+<td>1.5065</td>
+<td>+0.0065</td>
+</tr>
+<tr>
+<td>3</td>
+<td>−2.10</td>
+<td>−90.609</td>
+<td>−91</td>
+<td><strong>0</strong></td>
+<td>−2.1091</td>
+<td>−0.0091</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.05</td>
+<td>2.157</td>
+<td>2</td>
+<td><strong>93</strong></td>
+<td>0.0464</td>
+<td>−0.0036</td>
+</tr>
+<tr>
+<td>5</td>
+<td>3.81</td>
+<td>164.391</td>
+<td>164</td>
+<td><strong>255</strong></td>
+<td>3.8009</td>
+<td>−0.0091</td>
+</tr>
+<tr>
+<td>6</td>
+<td>−0.40</td>
+<td>−17.259</td>
+<td>−17</td>
+<td><strong>74</strong></td>
+<td>−0.3940</td>
+<td>+0.0060</td>
+</tr>
+<tr>
+<td>7</td>
+<td>1.00</td>
+<td>43.147</td>
+<td>43</td>
+<td><strong>134</strong></td>
+<td>0.9966</td>
+<td>−0.0034</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>RMSE = 0.00721      （对称量化是 0.00791）
+改善 = 8.8%
+</code></pre></div>
+
+<p>注意两个细节：<strong>最小值恰好落到 q = 0，最大值恰好落到 q = 255</strong>——非对称量化的整个 256 个档位被完整用满了，这就是它的优势来源。而对称量化实际只用到了 <code>[−70, 127]</code> 这 198 个档位，剩下 57 个（<code>[−127, −71]</code>）全空着。</p>
+<h3 id="623">6.2.3 什么时候非对称才真的有用</h3>
+<p>上面只改善了 8.6%，看起来不值得多存一个 zero-point。因为<strong>这组数本来就大致对称</strong>（−2.10 到 3.81）。</p>
+<p>换一组<strong>单边分布</strong>的数——这是激活值的常态，因为 ReLU/GELU/SiLU 之后的值几乎都非负：</p>
+<div class="codehilite"><pre><span></span><code>a = [ 0.00,  0.40,  1.20,  2.00,  0.10,  3.20,  0.00,  0.80 ]     全部 ≥ 0
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>对称量化</th>
+<th>非对称量化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>scale</td>
+<td>3.20 / 127 = <strong>0.025197</strong></td>
+<td>(3.20 − 0.00) / 255 = <strong>0.012549</strong></td>
+</tr>
+<tr>
+<td>zero_point</td>
+<td>—</td>
+<td>round(0 / 0.012549) = <strong>0</strong></td>
+</tr>
+<tr>
+<td>实际用到的档位</td>
+<td>q ∈ [0, 127]，<strong>128 个</strong></td>
+<td>q ∈ [0, 255]，<strong>256 个</strong></td>
+</tr>
+<tr>
+<td>白白浪费的档位</td>
+<td>q ∈ [−127, −1]，<strong>127 个</strong></td>
+<td>0 个</td>
+</tr>
+<tr>
+<td>每一档代表多大</td>
+<td>0.0252</td>
+<td><strong>0.0125</strong></td>
+</tr>
+<tr>
+<td>最大量化误差</td>
+<td>0.0126</td>
+<td><strong>0.0063</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>步长正好减半，误差正好减半，等价于多了 1 个比特。</strong> 这就是"非对称量化用于激活值、对称量化用于权重"这条经验法则的全部内容——<strong>权重的分布大致以 0 为中心，用不着 zero-point；激活值经常是单边的，用了就白赚 1 bit。</strong></p>
+<blockquote>
+<p>⚠️ <strong>非对称量化在 GEMM（矩阵乘）里是有代价的，不只是多存一个数。</strong> 展开看：</p>
+<p><code>Y = Σ ( (q_x − zp_x) · s_x ) × ( (q_w − zp_w) · s_w )
+  = s_x · s_w · [ Σ q_x·q_w − zp_w·Σ q_x − zp_x·Σ q_w + K·zp_x·zp_w ]
+                  ▲主项，INT8 Tensor Core 干这个   ▲三个额外的修正项</code></p>
+<p>后面三项都得单独算：<code>Σ q_x</code> 要沿 K 方向对激活求和，<code>Σ q_w</code> 要对权重求和（可以离线预计算）。<strong>这就是为什么权重几乎一律用对称量化</strong>——<code>zp_w = 0</code> 时后两项直接消失，只剩一个可以在 Epilogue 里顺手算掉的修正项。</p>
+</blockquote>
+<h3 id="624">6.2.4 量化粒度：同一组数走三遍</h3>
+<p>"多少个数共用一个 scale"就是粒度。把那 8 个数摆成一个 <strong>2 × 4 的权重矩阵</strong>（2 个输出通道 × 4 个输入维度）：</p>
+<div class="codehilite"><pre><span></span><code>                 输入维度 0   输入维度 1   输入维度 2   输入维度 3      该行的 max|.|
+  输出通道 0        -0.80        0.25        1.50       -2.10            2.10
+  输出通道 1         0.05        3.81       -0.40        1.00            3.81
+</code></pre></div>
+
+<p>四种粒度在这个矩阵上分别是：</p>
+<div class="codehilite"><pre><span></span><code>Per-tensor（逐张量）        整个 2 × 4 共用 1 个 scale
+
+    所有 8 个数 ──  -0.80   0.25   1.50  -2.10
+                     0.05   3.81  -0.40   1.00      共用 scale = 3.81/127
+
+
+Per-channel（逐输出通道）   每一行一个 scale   ← 权重量化的标准做法
+
+    ├── 行 0   -0.80   0.25   1.50  -2.10           scale_0 = 2.10/127
+    └── 行 1    0.05   3.81  -0.40   1.00           scale_1 = 3.81/127
+
+
+Per-group（逐组，这里 g=2） 每行内再切成 2 段，共 4 个 scale
+
+    ├── 行 0 段 0   -0.80   0.25                    scale = 0.80/127
+    ├── 行 0 段 1    1.50  -2.10                    scale = 2.10/127
+    ├── 行 1 段 0    0.05   3.81                    scale = 3.81/127
+    └── 行 1 段 1   -0.40   1.00                    scale = 1.00/127
+
+
+Per-token（逐 token）       用于激活矩阵：每一行（每个 token）一个 scale
+                            形状上和 per-channel 一样，只是切的是另一个张量
+</code></pre></div>
+
+<p><strong>三种粒度的完整数值对比</strong>（都用对称量化）：</p>
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>原值</th>
+<th>per-tensor q / x̂</th>
+<th>误差</th>
+<th>per-channel q / x̂</th>
+<th>误差</th>
+<th>per-group(2) q / x̂</th>
+<th>误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>−0.80</td>
+<td>−27 / −0.8100</td>
+<td>−0.0100</td>
+<td>−48 / −0.7937</td>
+<td>+0.0063</td>
+<td>−127 / −0.8000</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.25</td>
+<td>8 / 0.2400</td>
+<td>−0.0100</td>
+<td>15 / 0.2480</td>
+<td>−0.0020</td>
+<td>40 / 0.2520</td>
+<td>+0.0020</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.50</td>
+<td>50 / 1.5000</td>
+<td>0</td>
+<td>91 / 1.5047</td>
+<td>+0.0047</td>
+<td>91 / 1.5047</td>
+<td>+0.0047</td>
+</tr>
+<tr>
+<td>3</td>
+<td>−2.10</td>
+<td>−70 / −2.1000</td>
+<td>0</td>
+<td>−127 / −2.1000</td>
+<td>0</td>
+<td>−127 / −2.1000</td>
+<td>0</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.05</td>
+<td>2 / 0.0600</td>
+<td>+0.0100</td>
+<td>2 / 0.0600</td>
+<td>+0.0100</td>
+<td>2 / 0.0600</td>
+<td><strong>+0.0100</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>3.81</td>
+<td>127 / 3.8100</td>
+<td>0</td>
+<td>127 / 3.8100</td>
+<td>0</td>
+<td>127 / 3.8100</td>
+<td>0</td>
+</tr>
+<tr>
+<td>6</td>
+<td>−0.40</td>
+<td>−13 / −0.3900</td>
+<td>+0.0100</td>
+<td>−13 / −0.3900</td>
+<td>+0.0100</td>
+<td>−51 / −0.4016</td>
+<td>−0.0016</td>
+</tr>
+<tr>
+<td>7</td>
+<td>1.00</td>
+<td>33 / 0.9900</td>
+<td>−0.0100</td>
+<td>33 / 0.9900</td>
+<td>−0.0100</td>
+<td>127 / 1.0000</td>
+<td><strong>0</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>                    scale 个数     RMSE        相对 per-tensor
+  per-tensor            1         0.00791          基准
+  per-channel           2         0.00676          好 14%
+  per-group (g=2)       4         0.00401          好 49%
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>粒度的收益完全取决于"离群值被隔离进多小的组"。</strong> 看索引 4（真值 0.05）：三种粒度下它的误差<strong>一模一样，都是 +0.01</strong>。因为它和 3.81 在同一行、同一组里，无论怎么切，那个最大值都跟它绑在一起。而索引 0 和索引 7 的误差被细粒度彻底消掉了，因为它们所在的小组最大值只有 0.80 和 1.00。<strong>细粒度不是万能药，它只能把"被离群值污染的范围"缩小，缩不到 0。</strong></p>
+<p>⚠️ <strong>per-channel 切哪一维不能搞错。</strong> 权重矩阵 <code>W[out, in]</code>，per-channel 指的是<strong>按输出通道（行）</strong> 切，因为 GEMM 输出 <code>Y[:, j] = X @ W[j, :]</code> 的第 j 列只由 W 的第 j 行决定——scale 可以整列提到 Epilogue 外面乘。如果按输入维度切，scale 会卡在 K 方向的归约里面，Tensor Core 累加到一半就得停下来乘 scale，工程上麻烦得多（DeepSeek 的 FP8 方案正是硬啃了这个麻烦，见 §6.5.3）。</p>
+</blockquote>
+<h3 id="625-per-token-per-channel">6.2.5 激活值为什么用 per-token 而不是 per-channel</h3>
+<p>激活矩阵 <code>X[token, channel]</code>，同样有两个方向可切，但答案和权重相反：</p>
+<div class="codehilite"><pre><span></span><code>X 的形状：M 个 token × K 个通道
+
+  per-token（切行）     每个 token 一个 scale     ✅ 常用
+      → 推理时 token 是一个一个来的，来一个算一个 scale，不需要提前知道范围
+      → scale 是 GEMM 输出的&quot;行方向&quot;缩放，可以在 Epilogue 里乘，免费
+
+  per-channel（切列）   每个通道一个 scale        ❌ 通常不用
+      → 这个方向正好是 GEMM 归约的 K 方向，scale 混在累加里面，
+        标准 INT8 Tensor Core 干不了这件事
+      → 但激活的离群值恰恰是&quot;逐通道&quot;的（§6.3.2），
+        所以这正是最想要却最难要的那个粒度 —— SmoothQuant（§6.4）就是绕过它的办法
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这是本章最关键的一个结构性事实</strong>：激活的离群值沿<strong>通道</strong>分布，而 GEMM 允许的廉价 scale 方向是 <strong>token</strong>。要的和能给的正好错开一个维度。SmoothQuant 之所以有效，不是因为它发明了更好的量化算法，而是因为它把"逐通道的难度"提前搬到了权重上——权重的 per-channel 是廉价的。</p>
+</blockquote>
+<h3 id="626-scale">6.2.6 scale 本身要占多少空间：算出"有效位宽"</h3>
+<p>粒度越细，scale 越多。这些 scale 不是免费的。</p>
+<p>以一个 4096 × 4096 的权重矩阵（16,777,216 个元素）为例：</p>
+<table>
+<thead>
+<tr>
+<th>粒度</th>
+<th>scale 个数</th>
+<th>scale 占用（FP16，每个 2 B）</th>
+<th>权重本体（INT8）</th>
+<th>额外开销</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>per-tensor</td>
+<td>1</td>
+<td>2 B</td>
+<td>16.78 MB</td>
+<td>0.00001%</td>
+</tr>
+<tr>
+<td>per-channel（4096 行）</td>
+<td>4096</td>
+<td>8 KB</td>
+<td>16.78 MB</td>
+<td><strong>0.05%</strong></td>
+</tr>
+<tr>
+<td>per-group，g = 128</td>
+<td>4096 × 32 = 131072</td>
+<td>256 KB</td>
+<td>16.78 MB</td>
+<td><strong>1.5%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>INT8 下这点开销可以忽略。但 <strong>INT4 下就不能忽略了</strong>，因为权重本体缩小了一半而 scale 没变：</p>
+<div class="codehilite"><pre><span></span><code>INT4，group = 128，非对称（scale 用 FP16，zero-point 用 INT4）：
+
+  每 128 个权重需要存：
+      权重  128 × 4 bit  = 64 字节
+      scale 1 个 FP16    =  2 字节
+      zp    1 个 INT4    =  0.5 字节
+                        ──────────
+      合计               = 66.5 字节
+
+  平均每个权重 = 66.5 × 8 ÷ 128 = 4.15625 bit      ← 不是 4 bit！
+</code></pre></div>
+
+<p>拿它回头验算 §6.1.1 那个"4.17 GB"：</p>
+<div class="codehilite"><pre><span></span><code>8.03e9 个参数 × 4.15625 bit ÷ 8 = 4.172e9 字节 = 4.17 GB      ✓ 对上了
+相对 BF16 的压缩比 = 16 ÷ 4.15625 = 3.85 倍                   ✓ 就是 §6.1.1 那个 3.85
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>group size 的取舍就是这张表</strong>：g = 128 时多付 3.9% 的体积换更细的粒度；g = 32 时 scale 开销涨到 15.6%（每 32 个权重要 2.5 字节，平均 4.625 bit），精度确实更好但体积优势被吃掉一大截。<strong>g = 128 是社区收敛下来的默认值</strong>，它落在"精度还行、开销还小"的甜点上。</p>
+</blockquote>
+<hr />
+<h2 id="63">6.3 离群值：一个数怎么毁掉整个张量</h2>
+<h3 id="631">6.3.1 把它算出来</h3>
+<p>回到 §6.2.1 那 8 个数，只改一个元素：把索引 5 的 <code>3.81</code> 换成 <strong><code>100.0</code></strong>（大约是其余元素典型量级的 100 倍）。其他 7 个数一字未动。</p>
+<div class="codehilite"><pre><span></span><code>x&#39; = [ -0.80,  0.25,  1.50, -2.10,  0.05,  100.0, -0.40,  1.00 ]
+                                            ▲ 就改了这一个
+</code></pre></div>
+
+<p><code>max(|x'|) = 100.0</code>，所以 <strong>scale 从 0.03 暴涨到 100 / 127 = 0.7874</strong>——大了 26 倍。</p>
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>原值</th>
+<th>新 q</th>
+<th>反量化 x̂</th>
+<th>新误差</th>
+<th>对照：§6.2.1 的误差</th>
+<th>恶化倍数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>−0.80</td>
+<td>−1</td>
+<td>−0.7874</td>
+<td>+0.0126</td>
+<td>−0.01</td>
+<td>1.3×</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.25</td>
+<td><strong>0</strong></td>
+<td><strong>0.0000</strong></td>
+<td>−0.2500</td>
+<td>−0.01</td>
+<td><strong>25×</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.50</td>
+<td>2</td>
+<td>1.5748</td>
+<td>+0.0748</td>
+<td>0.00</td>
+<td>—</td>
+</tr>
+<tr>
+<td>3</td>
+<td>−2.10</td>
+<td>−3</td>
+<td>−2.3622</td>
+<td>−0.2622</td>
+<td>0.00</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.05</td>
+<td><strong>0</strong></td>
+<td><strong>0.0000</strong></td>
+<td>−0.0500</td>
+<td>+0.01</td>
+<td>5×</td>
+</tr>
+<tr>
+<td>5</td>
+<td>100.0</td>
+<td>127</td>
+<td>100.0000</td>
+<td>0.0000</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>6</td>
+<td>−0.40</td>
+<td>−1</td>
+<td>−0.7874</td>
+<td>−0.3874</td>
+<td>+0.01</td>
+<td><strong>39×</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td>1.00</td>
+<td>1</td>
+<td>0.7874</td>
+<td>−0.2126</td>
+<td>−0.01</td>
+<td><strong>21×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>7 个&quot;正常&quot;元素的 RMSE：
+    量化前（无离群值）  0.00845
+    量化后（有离群值）  0.21868
+    恶化 26 倍 —— 恰好等于 scale 涨大的倍数
+</code></pre></div>
+
+<p>三个具体的灾难：</p>
+<div class="codehilite"><pre><span></span><code>① 索引 1（0.25）和索引 4（0.05）被直接抹成了 0
+   —— 它们的真值小于 scale/2 = 0.394，四舍五入后什么都不剩。信息完全丢失。
+
+② 索引 6（−0.40）被&quot;放大&quot;到 −0.79，误差比它本身还大（0.39 &gt; 0.40 的 97%）
+   —— 反量化后的值几乎和真值无关了。
+
+③ 8 个数原本用满了 [−70, 127] 这 198 个档位，
+   现在 7 个正常值全挤在 q ∈ {−3, −1, 0, 1, 2} 这 6 个档位里：
+       log₂(6) ≈ 2.6 bit
+   —— 花了 8 bit 的存储，正常值实际只拿到不到 3 bit 的精度。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>"一个离群值毁掉整个张量"不是修辞，是算术。</strong> scale 由 <code>max(|x|)</code> 单点决定，这个最大值涨多少倍，其余所有元素的绝对误差就涨多少倍。<strong>一个元素，全员买单。</strong></p>
+</blockquote>
+<h3 id="632">6.3.2 为什么激活有离群值而权重没有</h3>
+<p>这是两类张量最根本的区别，也决定了"权重好量化、激活难量化"这个基本事实。</p>
+<div class="codehilite"><pre><span></span><code>权重 W                          激活 X
+  ├── 训练时被 weight decay 和     ├── 是 GEMM 的输出，
+  │   梯度更新反复约束             │   由上千个数累加而来
+  ├── 分布接近高斯，尾巴很短       ├── 残差流会把每一层的输出累加起来，
+  ├── max / median 通常 &lt; 20 倍   │   某些通道的幅度会一层层堆积
+  └── 静态的，离线看一眼就知道     ├── 分布是长尾的，max / median 可达 数百倍
+                                   └── 动态的，换一批输入就变
+</code></pre></div>
+
+<p><strong>离群值有一个关键的结构性质：它们集中在固定的少数几个通道里。</strong> 同一个通道，对几乎所有 token 都是大的；其余通道对几乎所有 token 都是小的。这个现象在 6B 参数以上的模型里稳定出现，是 SmoothQuant 和 AWQ 共同的立论基础。</p>
+<div class="codehilite"><pre><span></span><code>一个典型的激活矩阵（示意，行 = token，列 = 通道）：
+
+              c0     c1     c2     c3  ...  c1847  ...  c4095
+  token 0    0.3    0.5   -0.2    0.8       92.1        0.4
+  token 1   -0.4    0.2    0.6   -0.1       88.7       -0.3
+  token 2    0.1   -0.6    0.3    0.5       95.4        0.2
+  token 3    0.5    0.4   -0.5    0.2       90.8       -0.6
+                                              ▲
+                              这一整列都很大，而且每个 token 都大
+</code></pre></div>
+
+<h3 id="633">6.3.3 为什么细粒度救不了它</h3>
+<p>把 §6.3.1 那 8 个数按 per-group（g = 4）切成两组再试一次：</p>
+<div class="codehilite"><pre><span></span><code>组 0 = [-0.80,  0.25,  1.50, -2.10]    max = 2.10，scale = 0.016535
+组 1 = [ 0.05, 100.0, -0.40,  1.00]    max = 100 ，scale = 0.787402
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>原值</th>
+<th>所在组</th>
+<th>反量化 x̂</th>
+<th>误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>−0.80</td>
+<td>组 0</td>
+<td>−0.7937</td>
+<td>+0.0063</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.25</td>
+<td>组 0</td>
+<td>0.2480</td>
+<td>−0.0020</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.50</td>
+<td>组 0</td>
+<td>1.5047</td>
+<td>+0.0047</td>
+</tr>
+<tr>
+<td>3</td>
+<td>−2.10</td>
+<td>组 0</td>
+<td>−2.1000</td>
+<td>0.0000</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.05</td>
+<td>组 1</td>
+<td><strong>0.0000</strong></td>
+<td><strong>−0.0500</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>100.0</td>
+<td>组 1</td>
+<td>100.0000</td>
+<td>0.0000</td>
+</tr>
+<tr>
+<td>6</td>
+<td>−0.40</td>
+<td>组 1</td>
+<td><strong>−0.7874</strong></td>
+<td><strong>−0.3874</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td>1.00</td>
+<td>组 1</td>
+<td><strong>0.7874</strong></td>
+<td><strong>−0.2126</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>组 0 完全恢复了正常</strong>（RMSE 0.0043，和没有离群值时一样好）；<strong>组 1 照旧被毁</strong>。</p>
+<blockquote>
+<p>★ <strong>细粒度量化只能给离群值"划隔离区"，不能治它。</strong> 隔离区里的元素照样陪葬。对权重来说这够用了（离群值稀疏、组小、影响范围有限），但对激活不够——因为激活的离群值是<strong>逐通道</strong>的（§6.3.2），而 GEMM 里逐通道那个方向的 scale 恰恰是最贵的（§6.2.5）。<strong>所以激活离群值必须用结构性手段解决，这就是 §6.4 SmoothQuant 存在的理由。</strong></p>
+</blockquote>
+<h3 id="634">6.3.4 三类通用对策</h3>
+<table>
+<thead>
+<tr>
+<th>对策</th>
+<th>做法</th>
+<th>代价</th>
+<th>代表</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>截断（Clipping）</strong></td>
+<td>不用 <code>max</code>，用分位数（如 99.9%）定 scale，超出的直接钳到边界</td>
+<td>离群值本身被算错，但其余 99.9% 精度大涨</td>
+<td>几乎所有 PTQ 校准工具的默认选项</td>
+</tr>
+<tr>
+<td><strong>迁移（Migration）</strong></td>
+<td>用一组等价变换，把幅度从难量化的一侧搬到好量化的一侧</td>
+<td>要额外存一组缩放因子；变换要严格等价</td>
+<td><strong>SmoothQuant</strong>（§6.4）、<strong>AWQ</strong>（§6.7）</td>
+</tr>
+<tr>
+<td><strong>旋转 / 混合精度</strong></td>
+<td>用哈达玛变换把离群值"打散"到所有通道；或把离群通道单独留 FP16</td>
+<td>前者多一次变换开销；后者 kernel 复杂、硬件不友好</td>
+<td>QuaRot、SpinQuant；FA3 的非相干处理（<a href="04-FlashAttention全系.html">04 章 §4.6</a>）；LLM.int8()</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>✅ INT4 GPTQ 的 70B 模型可以装进一块 40 GB 的 A100，而 FP16 需要 4 块。</p>
+<p>⚠️ <strong>截断的分位数不能照抄别人的数。</strong> 99.9% 对一个模型合适，对另一个可能就切掉了真正重要的信号。实践中用一小批校准数据扫几个候选值（99.0 / 99.9 / 99.99 / max），拿量化后的 MSE 或 PPL 挑最好的那个。这个搜索本身就是校准工具的主要工作量。</p>
 </blockquote>
 <hr />
-<h2 id="67-awq">6.7 AWQ：激活感知权重量化</h2>
-<p>AWQ（Lin et al., 2023）的核心洞察：<strong>不是所有权重都同等重要</strong>。对激活值影响大的权重通道（对应激活值大的输入维度），量化误差传播也更大。</p>
-<div class="codehilite"><pre><span></span><code>直觉：
-  y[j] += w[i, j] * x[i]
+<h2 id="64-w8a8-smoothquant">6.4 W8A8 与 SmoothQuant：把难度从激活搬到权重</h2>
+<h3 id="641-w8a8">6.4.1 W8A8 的诱惑与障碍</h3>
+<p>W8A8 是唯一能同时拿到"带宽减半"和"算力翻倍"的 INT8 方案：H100 的 INT8 Tensor Core 是 1979 TOPS，BF16 是 989 TFLOPS，正好 2 倍（<a href="附-速查表.html">附-速查表 §A</a>）。</p>
+<p>障碍只有一个，就是 §6.3 讲的激活离群值。用 §6.3.1 的话说：<strong>权重侧 INT8 是送分题，激活侧 INT8 是送命题。</strong></p>
+<h3 id="642-smoothquant">6.4.2 SmoothQuant 的核心恒等式</h3>
+<p>SmoothQuant 的想法出奇地简单：既然一侧太难、另一侧太容易，那就<strong>把难度分一部分过去</strong>。</p>
+<p>矩阵乘法有一个平凡的恒等式——中间插一对互逆的对角矩阵，结果不变：</p>
+<div class="codehilite"><pre><span></span><code>Y = X · W
+  = X · diag(s)⁻¹ · diag(s) · W
+  = ( X / s ) · ( s · W )
+     ▲ 逐通道除    ▲ 逐输入通道乘
+        X̃              W̃
 
-  若 x[i] 很大（激活值的&quot;刺&quot;所在维度），
-  则 w[i, j] 的量化误差被放大 |x[i]| 倍，
-  传播到输出的误差也是 |x[i]| 倍。
+  X̃ = X / s  →  每一列（通道）除以对应的 s_j
+  W̃ = s · W  →  每一行（输入通道）乘以对应的 s_j
 </code></pre></div>
 
-<p>AWQ 的做法：<br />
-1. 找出哪些输入维度 i 对应的 <code>|x[i]|</code> 最大（约 1% 的维度）<br />
-2. 这些维度的权重<strong>不量化</strong>（保持 FP16），其余量化为 INT4<br />
-3. 对这 1% 的权重用 FP16 乘法，其余用 INT4 乘法</p>
-<p><strong>效果</strong>：AWQ 在 INT4 精度下通常比 GPTQ 高 0.1–0.3 PPL，尤其对小模型（7B）效果明显。</p>
+<p><strong>因为 s 沿的是同一个维度（X 的列 = W 的行 = GEMM 的 K 维），这个变换严格等价，一个 FLOP 都没多。</strong></p>
+<h3 id="643-2">6.4.3 把它算出来：一个 2 通道的完整例子</h3>
+<p>设一个 token 的激活和一个 2×2 的权重：</p>
+<div class="codehilite"><pre><span></span><code>X = [ 0.5 , 60.0 ]        ← 通道 1 是离群通道，比通道 0 大 120 倍
+
+W = [ 0.9  -0.7 ]         ← 第 0 行 = 输入通道 0 的权重
+    [ 0.6   0.4 ]         ← 第 1 行 = 输入通道 1 的权重
+</code></pre></div>
+
+<p><strong>第一步：看看不做任何处理会有多糟。</strong> 激活 per-tensor 对称 INT8：</p>
+<div class="codehilite"><pre><span></span><code>scale_X = 60.0 / 127 = 0.472441
+  通道 0：0.5 / 0.472441 = 1.058 → round = 1 → 0.4724
+          误差 −0.0276，相对误差 5.5%
+  通道 1：60.0 → 127 → 60.0，误差 0
+</code></pre></div>
+
+<p><strong>第二步：算平滑因子。</strong> 公式是</p>
+<div class="codehilite"><pre><span></span><code>s_j = max|X[:, j]|^α  ÷  max|W[j, :]|^(1−α)          α ∈ [0, 1]，通常取 0.5
+</code></pre></div>
+
+<p>α = 0.5 时：</p>
+<div class="codehilite"><pre><span></span><code>s_0 = √0.5  ÷ √0.9 = 0.70711 ÷ 0.94868 = 0.745356
+s_1 = √60.0 ÷ √0.6 = 7.74597 ÷ 0.77460 = 10.000000
+</code></pre></div>
+
+<p><strong>第三步：应用变换。</strong></p>
+<div class="codehilite"><pre><span></span><code>X̃ = X / s = [ 0.5 / 0.745356 ,  60.0 / 10.0 ] = [ 0.670820 ,  6.000000 ]
+
+W̃ = s · W（第 j 行乘 s_j）：
+    行 0 × 0.745356 = [ 0.670820 , −0.521749 ]
+    行 1 × 10.0     = [ 6.000000 ,  4.000000 ]
+</code></pre></div>
+
+<p><strong>第四步：验算等价性</strong>（这一步一定要自己算一遍）：</p>
+<div class="codehilite"><pre><span></span><code>原式  X · W  = [ 0.5×0.9 + 60×0.6 ,  0.5×(−0.7) + 60×0.4 ]
+             = [ 0.45 + 36.0     ,  −0.35 + 24.0        ]
+             = [ 36.45           ,   23.65              ]
+
+新式  X̃ · W̃ = [ 0.670820×0.670820 + 6.0×6.0 ,  0.670820×(−0.521749) + 6.0×4.0 ]
+             = [ 0.45 + 36.0                 ,  −0.35 + 24.0                   ]
+             = [ 36.45                       ,   23.65                         ]     ✓ 完全一致
+</code></pre></div>
+
+<p><strong>第五步：看难度怎么移动的。</strong></p>
+<div class="codehilite"><pre><span></span><code>                    激活 X 的逐通道最大值        权重 W 的逐输入通道最大值
+
+  迁移前              c0: 0.5   c1: 60.0          r0: 0.9   r1: 0.6
+                      通道间落差 120 倍            通道间落差 1.5 倍，本来就平
+
+                           ▼ 每个通道除以 s_j           ▼ 每个输入通道乘以 s_j
+                             s = [0.745, 10.0]
+
+  迁移后              c0: 0.671  c1: 6.0          r0: 0.671  r1: 6.0
+                      通道间落差 8.9 倍            通道间落差 8.9 倍
+
+                      两边的最大值一模一样（都是 6.0），难度被均分了
+</code></pre></div>
+
+<p><strong>第六步：量化误差改善了多少。</strong> 激活 per-tensor 对称 INT8，新的 <code>max = 6.0</code>：</p>
+<div class="codehilite"><pre><span></span><code>scale_X̃ = 6.0 / 127 = 0.047244
+  通道 0：0.670820 / 0.047244 = 14.199 → round = 14 → 0.661417
+          误差 −0.009403，相对误差 1.4%       （迁移前是 5.5%，好了 3.9 倍）
+  通道 1：6.0 → 127 → 6.0，误差 0
+</code></pre></div>
+
+<p>代价在权重侧：<code>max|W|</code> 从 0.9 涨到 6.0，权重的 scale 大了 6.67 倍。但权重侧本来就有大量余量——它是静态的、分布平滑的、可以用 per-channel 的（§6.2.4），所以吃得下。</p>
+<h3 id="644">6.4.4 α 到底在调什么</h3>
+<p>α = 0.5 有一个漂亮的性质：<strong>迁移后两边的最大值完全相等，都等于两者的几何平均数。</strong></p>
+<div class="codehilite"><pre><span></span><code>迁移后激活的最大值 = max|X_j| / s_j = max|X_j|^(1−α) · max|W_j|^(1−α)
+迁移后权重的最大值 = max|W_j| · s_j = max|X_j|^α     · max|W_j|^α
+
+α = 0.5 时两式相等 = √( max|X_j| × max|W_j| )
+
+验算：√(0.5 × 0.9) = √0.45 = 0.670820   ✓ 和上面算出来的一样
+      √(60 × 0.6)  = √36   = 6.0        ✓
+</code></pre></div>
+
+<p>把 α 从 0 扫到 1，看本例通道 1（<code>max|X| = 60</code>，<code>max|W| = 0.6</code>）上发生什么：</p>
+<table>
+<thead>
+<tr>
+<th>α</th>
+<th>s_1 = 60^α ÷ 0.6^(1−α)</th>
+<th>迁移后激活 max</th>
+<th>迁移后权重 max</th>
+<th>两者乘积</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不做迁移（s = 1）</td>
+<td>1.00</td>
+<td>60.0</td>
+<td>0.6</td>
+<td><strong>36</strong></td>
+</tr>
+<tr>
+<td>0</td>
+<td>1 ÷ 0.6 = 1.667</td>
+<td>36.0</td>
+<td>1.0</td>
+<td><strong>36</strong></td>
+</tr>
+<tr>
+<td>0.5</td>
+<td>10.00</td>
+<td><strong>6.0</strong></td>
+<td><strong>6.0</strong></td>
+<td><strong>36</strong></td>
+</tr>
+<tr>
+<td>0.75</td>
+<td>21.564 ÷ 0.880 = 24.49</td>
+<td>2.45</td>
+<td>14.70</td>
+<td><strong>36</strong></td>
+</tr>
+<tr>
+<td>1.0</td>
+<td>60.00</td>
+<td>1.0</td>
+<td>36.0</td>
+<td><strong>36</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>最后一列是全表最重要的信息：乘积恒等于 36，怎么调 α 都不变。</strong> 因为 <code>(max|X| / s) × (max|W| × s) = max|X| × max|W|</code>，s 直接约掉了。<strong>迁移只能在两边之间分配难度，分不掉总量。</strong> α = 0.5 之所以是默认值，是因为在总量固定的前提下，把 36 拆成 6 × 6 比拆成 36 × 1 或 1 × 36 更"均衡"——两边都落在 INT8 吃得下的范围里。</p>
+<p>⚠️ <strong>注意 α = 0 不等于"什么都不做"。</strong> 公式在 α = 0 时取 <code>s_j = 1 / max|W_j|</code>，效果是把权重归一化到 1、把几乎全部难度留给激活（表里第二行，激活 max 仍高达 36）。真正的"什么都不做"是 s = 1，那是表的第一行。</p>
+<p>★ <strong>α 是一个旋钮，不是一个常数。</strong> 离群值特别凶的模型（论文里 OPT-175B 这类）需要更大的 α 把更多难度推给权重；离群值温和的模型 α = 0.5 甚至更小就够。<strong>调 α 的判据是量化后的端到端精度，不是任何一侧的最大值本身。</strong></p>
+</blockquote>
+<h3 id="645">6.4.5 工程上它是免费的</h3>
+<p><code>X / s</code> 这个除法看起来要多跑一遍逐元素 kernel，但实际上<strong>一次都不用跑</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Transformer 里 Linear 前面必然是 LayerNorm / RMSNorm，而归一化层自带一个逐通道的
+仿射参数 gamma（有的还有 beta）。于是：
+
+    把  gamma ← gamma / s，  beta ← beta / s   离线改一次
+    归一化层的输出就自动是 X̃ 了，运行时零开销
+
+  权重侧同理：W̃ = s · W 离线算好存下来，运行时就是普通的 INT8 权重
+</code></pre></div>
+
+<p><strong>所以 SmoothQuant 在推理时的额外开销确实是 0</strong>——所有工作都在离线的校准阶段完成。它需要的只是一批校准数据，用来统计每个通道的 <code>max|X[:, j]|</code>。</p>
+<blockquote>
+<p>⚠️ <strong>上一段的前提是"前面是归一化层"。</strong> 如果 Linear 前面直接跟着另一个 Linear 的输出、或者跟着 Attention 的输出投影，就没有现成的 gamma 可以吸收，得插一个真的逐元素乘法 kernel。这时它的成本就是一次 Memory Bound 的逐元素算子（<a href="05-算子融合.html">05 章</a> 的账），通常还是能融进上一个 kernel 的 Epilogue。</p>
+</blockquote>
+<h3 id="646">6.4.6 效果</h3>
+<blockquote>
+<p>⚠️ <strong>本章旧版这里写的是"LLaMA-65B，W8A8 无 SmoothQuant 时 PPL 上升 2–5"，这个数字没有出处，已删除。</strong> SmoothQuant 论文（Xiao et al., ICML 2023）自己的口径是：<strong>在 OPT、BLOOM、GLM、MT-NLG、Llama-1/2、Falcon、Mistral、Mixtral 上做 W8A8，精度损失可忽略；相对 FP16 最多 1.56 倍加速、2 倍显存节省</strong>；并且使得 530B 模型能在单节点上服务。</p>
+</blockquote>
+<p>论文里最有说服力的定性结论是：<strong>模型越大，朴素 W8A8 崩得越厉害，SmoothQuant 的价值越大。</strong> 因为离群值的幅度随模型规模增长——小模型（1B 量级）直接做 W8A8 往往也没事，到 100B 量级就会看到精度断崖。</p>
+<blockquote>
+<p>★ <strong>所以"要不要上 SmoothQuant"这个问题，答案取决于模型规模而不是取决于口味。</strong> 判断方法很直接：统计一下各层激活的 <code>max / median</code>，如果有层超过 50 倍，朴素 W8A8 基本无望。</p>
+</blockquote>
 <hr />
-<h2 id="68-kernel">6.8 量化 kernel 的实现要点</h2>
-<p>量化 GEMM 和普通 GEMM 的区别：</p>
-<div class="codehilite"><pre><span></span><code>W8A8 INT8 GEMM 流程：
-  1. 从 HBM 加载 X_int8, W_int8（已量化存储）
-  2. 在 SRAM 里用 INT8 Tensor Core 做矩阵乘，输出 INT32 累加
-  3. 把 INT32 结果反量化：Y = Y_int32 × scale_X × scale_W
-  4. 写回 Y_fp16 到 HBM
+<h2 id="65-fp8">6.5 FP8：把精度按数量级分配</h2>
+<h3 id="651">6.5.1 两种格式，先把位数摆出来</h3>
+<div class="codehilite"><pre><span></span><code>E4M3（1 符号 + 4 指数 + 3 尾数）          E5M2（1 符号 + 5 指数 + 2 尾数）
 
-关键：步骤 3 的反量化可以在 GEMM Epilogue 里融合（CUTLASS 支持）
+  S │ E E E E │ M M M                      S │ E E E E E │ M M
+  ▲     ▲         ▲                        ▲       ▲        ▲
+  │     │         └ 3 位尾数               │       │        └ 2 位尾数
+  │     └ 指数偏置 7                       │       └ 指数偏置 15
+  └ 符号                                   └ 符号
+
+  每个二进制数量级内有 2³ = 8 个刻度        每个数量级内有 2² = 4 个刻度
+  没有 Inf（省下来给数值范围）              有 Inf 和 NaN，和 IEEE-754 一样
 </code></pre></div>
 
-<p>INT4 packed GEMM（GPTQ/AWQ）：</p>
-<div class="codehilite"><pre><span></span><code>INT4 没有原生硬件支持（H100 最低是 INT8）
-实现方式：把两个 INT4 值 pack 进一个 INT8
-  [i4₀ | i4₁] → u8（高 4 位 + 低 4 位）
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>E4M3</th>
+<th>E5M2</th>
+<th>对照：INT8</th>
+<th>对照：BF16</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>最大正规数</td>
+<td><strong>448</strong></td>
+<td><strong>57344</strong></td>
+<td>127 × scale</td>
+<td>3.39e38</td>
+</tr>
+<tr>
+<td>最小正规数</td>
+<td>2⁻⁶ = 0.015625</td>
+<td>2⁻¹⁴ ≈ 6.10e−5</td>
+<td>1 × scale</td>
+<td>1.18e−38</td>
+</tr>
+<tr>
+<td>最小次正规数</td>
+<td>2⁻⁹ ≈ 0.00195</td>
+<td>2⁻¹⁶ ≈ 1.53e−5</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>动态范围（最大 ÷ 最小正规）</td>
+<td>≈ 2¹⁵</td>
+<td>≈ 2³⁰</td>
+<td>127（= 2⁷）</td>
+<td>≈ 2²⁷⁷</td>
+</tr>
+<tr>
+<td>最大相对舍入误差</td>
+<td>2⁻⁴ = <strong>6.25%</strong></td>
+<td>2⁻³ = <strong>12.5%</strong></td>
+<td>随数值大小变，见下</td>
+<td>2⁻⁸ = 0.39%</td>
+</tr>
+<tr>
+<td>十进制有效位</td>
+<td>≈ 1.2 位</td>
+<td>≈ 0.9 位</td>
+<td>随数值大小变</td>
+<td>≈ 2.4 位</td>
+</tr>
+</tbody>
+</table>
+<p>验算一下 448 这个数是怎么来的（可以自己推）：</p>
+<div class="codehilite"><pre><span></span><code>E4M3 指数字段最大可用值 = 1111₂ = 15，偏置 7 → 实际指数 = 15 − 7 = 8
+尾数最大（排除 111₂，那是 NaN）= 110₂ → 有效数 = 1.110₂ = 1.75
+          最大值 = 1.75 × 2⁸ = 1.75 × 256 = 448      ✓
 
-计算时：
-  先 unpack 为 INT8
-  用 INT8 Tensor Core 计算（相当于每次 GEMM 处理效率减半）
-
-所以 W4A16（GPTQ 常用）实际上是：
-  INT4 权重 → unpack 为 INT8 / FP16 → FP16 Tensor Core GEMM
-  带宽省 4×（读权重时），但计算速度不提升（还是 FP16 GEMM）
+E5M2 指数字段最大可用值 = 11110₂ = 30（11111 留给 Inf/NaN），偏置 15 → 指数 = 15
+尾数最大 = 11₂ → 有效数 = 1.75
+          最大值 = 1.75 × 2¹⁵ = 1.75 × 32768 = 57344  ✓
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong><a href="附-速查表.html">附-速查表 §B.6</a> 写的"E4M3 精度 ~3 有效位、E5M2 ~2 有效位"是按十进制理解的话偏高。</strong> 按比特算：E4M3 的有效数只有 4 bit（3 显式 + 1 隐含），<code>log₁₀(2⁴) ≈ 1.2</code> 位十进制；E5M2 是 3 bit，约 0.9 位。速查表那两个数更像是把"尾数位数"当成了"十进制有效位"。本章用上面这张按比特推导的表。</p>
+</blockquote>
+<h3 id="652-fp8-int8">6.5.2 FP8 和 INT8 的本质区别：精度怎么分配</h3>
+<p>这才是 FP8 值得单独讲一节的原因。<strong>INT8 的绝对误差处处相同；FP8 的相对误差处处相同。</strong></p>
+<p>用一个具体的张量对比：假设某张量最大值是 448（这样 E4M3 的范围刚好用满），INT8 per-tensor 对称量化的 <code>scale = 448 / 127 = 3.52756</code>。</p>
+<table>
+<thead>
+<tr>
+<th>真实值 x</th>
+<th>INT8 的 q</th>
+<th>INT8 反量化</th>
+<th>INT8 相对误差</th>
+<th>E4M3 最近可表示值</th>
+<th>E4M3 相对误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>448</td>
+<td>127</td>
+<td>448.0</td>
+<td>0%</td>
+<td>448</td>
+<td>0%</td>
+</tr>
+<tr>
+<td>100</td>
+<td>28</td>
+<td>98.77</td>
+<td>−1.2%</td>
+<td>96（128 以下步长 8）</td>
+<td>−4.0%</td>
+</tr>
+<tr>
+<td>10</td>
+<td>3</td>
+<td>10.58</td>
+<td>+5.8%</td>
+<td><strong>10（精确）</strong></td>
+<td><strong>0%</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td><strong>0</strong></td>
+<td><strong>0</strong></td>
+<td><strong>−100%</strong></td>
+<td><strong>1（精确）</strong></td>
+<td><strong>0%</strong></td>
+</tr>
+<tr>
+<td>0.1</td>
+<td><strong>0</strong></td>
+<td><strong>0</strong></td>
+<td><strong>−100%</strong></td>
+<td>0.1015625</td>
+<td>+1.6%</td>
+</tr>
+<tr>
+<td>0.01</td>
+<td><strong>0</strong></td>
+<td><strong>0</strong></td>
+<td><strong>−100%</strong></td>
+<td>0.009765625（次正规）</td>
+<td>−2.3%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>两条曲线在这里交叉了</strong>：大数上 INT8 更准（1.2% vs 4.0%），因为 INT8 的 255 个档位全堆在最大值附近；小数上 INT8 彻底失效（全部变 0），而 E4M3 保持约 4% 的相对误差不变。<strong>FP8 用"牺牲大数的精度"换"覆盖整个动态范围"。</strong></p>
+<p>⚠️ <strong>别把这张表当成"FP8 总是比 INT8 好"。</strong> 这个对比对 INT8 不公平，因为它用了最差的 per-tensor 粒度和最坏的 <code>max = 448</code>。真实部署里 INT8 用 per-channel / per-group 把每组的 <code>max</code> 压得很小，动态范围问题就大幅缓解了。<strong>§6.10.2 会给出一个反例：华为在 openPangu-7B 权重量化上的实测，INT8 per-channel 的 SQNR 排在所有 FP8 变体之前。</strong> FP8 的真正优势是<strong>训练</strong>——梯度的动态范围能跨好几个数量级，那是 INT8 无论怎么细粒度都搞不定的。</p>
+</blockquote>
+<h3 id="653-deepseek-v3-fp8">6.5.3 DeepSeek-V3 的 FP8 训练：本章旧版这里错得最多</h3>
+<blockquote>
+<p>⚠️ <strong>本章旧版这一节有四处事实错误，逐条改正</strong>：① 旧版说"注意力计算（QKᵀ、PV）用 FP8 E4M3"——<strong>错</strong>，DeepSeek-V3 明确把 attention 算子留在原精度。② 旧版说"梯度用 E5M2"——<strong>错</strong>，DeepSeek-V3 的特点恰恰是<strong>所有张量都用 E4M3</strong>，这是它和前人（Micikevicius 等 2022 的 E4M3/E5M2 混合方案）最大的区别。③ 旧版说"每隔几步更新一次 scale（历史最大值的指数移动平均）"——<strong>错</strong>，论文明确用的是<strong>在线（online）</strong> 计算，每个 tile/block 当场算 max，正是为了避免延迟缩放（delayed scaling）的问题。④ 旧版写"PPL 差异 &lt; 0.02%、训练速度提升约 1.6 倍、显存减少约 30%"——<strong>这三个数字论文里都没有</strong>，已删除；论文给的是<strong>相对 loss 误差始终低于 0.25%</strong>。另外旧版写"DeepSeek-V3/V4 技术报告"，V4 不存在，已改。</p>
+</blockquote>
+<p>以下全部按 <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a> §3.3 与 §3.5.2 的口径（✅ 论文披露）：</p>
+<p><strong>（1）哪些算 FP8，哪些不算</strong></p>
+<div class="codehilite"><pre><span></span><code>走 FP8（E4M3）的：
+  ├── 所有主要 GEMM：Fprop（前向）、Dgrad（对输入求梯度）、Wgrad（对权重求梯度）
+  └── 这三个 GEMM 占了训练算力的绝大部分
+
+保持原精度（BF16 / FP32）的：
+  ├── 嵌入层（embedding）
+  ├── 输出头（output head）
+  ├── MoE 门控（gating）           ← 路由是离散决策，一点噪声就会翻转，见 11 章
+  ├── 归一化算子（LayerNorm / RMSNorm）
+  └── 注意力算子（attention）      ← 不是 FP8！旧版这里写错了
+  另外：主权重、权重梯度、优化器状态全部保持高精度（靠 DP 切分摊薄显存）
+
+特例：
+  └── attention 之后那个 Linear 的输入用自定义的 E5M6 格式
+      （因为这份激活还要参与反向，对精度特别敏感）
+</code></pre></div>
+
+<p><strong>（2）量化粒度：两种，都是在线算的</strong></p>
+<div class="codehilite"><pre><span></span><code>激活：1 × 128 的 tile     —— 每个 token 的每 128 个通道一个 scale
+权重：128 × 128 的 block  —— 每 128 个输入通道 × 128 个输出通道一个 scale
+
+  ┌──────────── 权重 W（K × N）────────────
+  │ ┌─────┬─────┬─────┬─────
+  │ │128× │128× │128× │  ...     每个小方块一个独立 scale
+  │ │128  │128  │128  │
+  │ ├─────┼─────┼─────┼─────
+  │ │     │     │     │  ...
+  │ └─────┴─────┴─────┴─────
+
+  激活 X（M × K）
+  │ token 0 │ 128 通道 │ 128 通道 │ ...     每一小段一个独立 scale
+  │ token 1 │ 128 通道 │ 128 通道 │ ...
+</code></pre></div>
+
+<p>注意这个粒度的方向：<strong>scale 沿着 GEMM 的内维（K 方向）在变。</strong> 按 §6.2.4 说过的，这正是最贵的那个方向——标准 FP8 GEMM 不支持它，得自己写 kernel。DeepSeek 为此开源了 <strong>DeepGEMM</strong>。</p>
+<p><strong>（3）为什么必须自己做累加：Hopper 的 FP8 累加只有 14 bit</strong></p>
+<p>这是整节最硬核也最实用的一个硬件事实：</p>
+<div class="codehilite"><pre><span></span><code>H800/H100 的 FP8 Tensor Core 做累加时：
+  ① 把 32 个尾数乘积按最大指数右移对齐
+  ② 只取每个乘积最高的 14 bit 相加，其余截断
+  ③ 累加寄存器也只有 14 bit 精度
+
+  论文的 toy 实验：两个随机矩阵相乘，内维 K = 4096，
+  只靠 Tensor Core 累加的最大相对误差接近 2%     ← ✅ 论文口径
+</code></pre></div>
+
+<p>DeepSeek 的解法：<strong>每累加 N_C = 128 个元素（约 4 条 WGMMA 指令），就把部分和搬到 CUDA Core 上用 FP32 累加一次。</strong> 128 是"能显著改善精度、又不至于太贵"的最小间隔；而 Hopper 允许两条 WGMMA 并发，所以搬运和矩阵乘可以重叠，Tensor Core 不会闲着。</p>
+<blockquote>
+<p>★ <strong>这个细节值得记住，它是"低精度 GEMM 的精度不只取决于输入格式"的最好例子。</strong> 同样是 FP8 输入，累加用 14 bit 还是 FP32，K = 4096 时结果能差 2%。很多"FP8 训练发散了"的案例，根子在累加而不在格式。</p>
+</blockquote>
+<p><strong>（4）结果</strong></p>
+<div class="codehilite"><pre><span></span><code>在两个规模（对标 DeepSeek-V2-Lite 和 DeepSeek-V2）上、约 1T token 的验证：
+    相对 BF16 基线的 loss 相对误差始终 &lt; 0.25%     ← ✅ 论文口径
+    论文的评价是：这在正常训练噪声范围之内
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>论文没有给出"FP8 让训练快了多少倍"的独立数字。</strong> 网上流传的各种倍数（1.6×、2× 之类）都找不到一手出处，<strong>不要引用</strong>。可以肯定的只有：FP8 GEMM 的理论算力是 BF16 的 2 倍（1979 vs 989 TFLOPS，<a href="附-速查表.html">附-速查表 §A</a>），而训练里 GEMM 不是 100% 的时间，所以端到端的提升必然明显低于 2 倍。</p>
+</blockquote>
+<hr />
+<h2 id="66-gptq">6.6 GPTQ：用二阶信息决定怎么取舍</h2>
+<h3 id="661-rtn">6.6.1 RTN 的问题：它在优化错的东西</h3>
+<p>朴素的 RTN（Round-To-Nearest，就近取整）做的是：<strong>让量化后的权重尽量靠近原权重</strong>。</p>
+<p>但我们真正在乎的不是权重像不像，而是<strong>这一层的输出像不像</strong>。这两件事在权重之间有相关性时会分岔——而校准数据里的输入通道几乎总是相关的。</p>
+<p>GPTQ 的目标函数因此写成：</p>
+<div class="codehilite"><pre><span></span><code>min  ‖ X·W − X·Ŵ ‖²        ← 输出的差，不是权重的差
+ Ŵ
+其中 X 是一小批校准数据（约 128 条样本）跑出来的该层输入
+</code></pre></div>
+
+<h3 id="662-2">6.6.2 用 2 个权重把差别算出来</h3>
+<p>这是本节的核心例子，<strong>建议一定自己算一遍</strong>。</p>
+<p><strong>设定</strong>：某一层的某个输出神经元，只有 2 个输入通道，权重 <code>w = [1.40, 0.45]</code>。量化格点粗一点好看清楚：允许的取值是 <code>{0, 1, 2}</code>（步长 1.0）。</p>
+<p><strong>校准数据</strong>（3 条样本，2 个通道）：</p>
+<div class="codehilite"><pre><span></span><code>x⁽¹⁾ = (1, 0)
+x⁽²⁾ = (1, 1)
+x⁽³⁾ = (0, 1)
+
+Hessian 矩阵 H = XᵀX = [ 2  1 ]
+                       [ 1  2 ]         ← 非对角元 1 ≠ 0，说明两个通道是相关的
+
+H⁻¹ = (1/3) [  2  -1 ]
+            [ -1   2 ]
+</code></pre></div>
+
+<p><strong>方法 A：RTN。</strong> 各自四舍五入：</p>
+<div class="codehilite"><pre><span></span><code>w₀ = 1.40 → 1
+w₁ = 0.45 → 0
+结果 ŵ_RTN = [1, 0]
+</code></pre></div>
+
+<p><strong>方法 B：GPTQ。</strong> 逐列量化 + 误差补偿：</p>
+<div class="codehilite"><pre><span></span><code>第 1 列：
+  量化    q₀   = round(1.40) = 1
+  误差    err₀ = 1.40 − 1 = 0.40
+  补偿    w₁ ← w₁ − err₀ × H⁻¹[0,1] / H⁻¹[0,0]
+              = 0.45 − 0.40 × (−1/3) / (2/3)
+              = 0.45 − 0.40 × (−0.5)
+              = 0.45 + 0.20 = 0.65        ← 把第 1 列丢掉的东西&quot;补&quot;给第 2 列
+
+第 2 列：
+  量化    q₁   = round(0.65) = 1
+
+结果 ŵ_GPTQ = [1, 1]
+</code></pre></div>
+
+<p><strong>两种结果谁好？用真实的输出误差判。</strong></p>
+<p>真值输出：<code>y = x·w</code></p>
+<div class="codehilite"><pre><span></span><code>y⁽¹⁾ = 1×1.40 + 0×0.45 = 1.40
+y⁽²⁾ = 1×1.40 + 1×0.45 = 1.85
+y⁽³⁾ = 0×1.40 + 1×0.45 = 0.45
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>样本</th>
+<th>真值 y</th>
+<th>RTN <code>[1,0]</code> 的 ŷ</th>
+<th>RTN 误差</th>
+<th>GPTQ <code>[1,1]</code> 的 ŷ</th>
+<th>GPTQ 误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>x⁽¹⁾ = (1,0)</td>
+<td>1.40</td>
+<td>1.00</td>
+<td>−0.40</td>
+<td>1.00</td>
+<td>−0.40</td>
+</tr>
+<tr>
+<td>x⁽²⁾ = (1,1)</td>
+<td>1.85</td>
+<td>1.00</td>
+<td><strong>−0.85</strong></td>
+<td>2.00</td>
+<td>+0.15</td>
+</tr>
+<tr>
+<td>x⁽³⁾ = (0,1)</td>
+<td>0.45</td>
+<td>0.00</td>
+<td>−0.45</td>
+<td>1.00</td>
+<td>+0.55</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>误差平方和</strong></td>
+<td><strong>1.085</strong></td>
+<td><strong>误差平方和</strong></td>
+<td><strong>0.485</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>GPTQ 的输出误差是 RTN 的 45%，好了 2.2 倍。</strong></p>
+<p>而且可以穷举验证 <code>[1,1]</code> 确实是最优的：<code>{0,1,2}²</code> 一共 9 种组合，<code>[1,1]</code> = 0.485，<code>[2,0]</code> = 0.585，<code>[1,0]</code> = 1.085，其余更差。<strong>GPTQ 找到了最优解，RTN 没有。</strong></p>
+<blockquote>
+<p>★ <strong>最反直觉的一点在这里</strong>：在<strong>权重空间</strong>里，RTN 的 <code>[1,0]</code> 离真值 <code>[1.40, 0.45]</code> 更近（距离² = 0.40² + 0.45² = 0.3625），GPTQ 的 <code>[1,1]</code> 更远（0.40² + 0.55² = 0.4625）。<strong>GPTQ 故意选了一个"看起来更差"的权重，因为它在输出空间里更近。</strong> 这就是"用二阶信息做取舍"的具体含义——Hessian 告诉你哪些权重的改动会互相抵消。</p>
+</blockquote>
+<h3 id="663">6.6.3 完整算法与它要付的代价</h3>
+<div class="codehilite"><pre><span></span><code>对权重矩阵 W 的每一行（或整块），按列从左到右：
+
+  for i in 0 .. K-1:
+      q[i]   = quantize(w[i])                                    量化第 i 列
+      err    = (w[i] − q[i]) / H⁻¹[i, i]                          归一化的误差
+      w[i+1:] -= err × H⁻¹[i, i+1:]                               补偿给右边所有未量化的列
+
+  H = 2·XᵀX + λI，用约 128 条校准样本算出来；λ 是阻尼项，防止 H 不可逆
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>GPTQ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>需要什么信息</td>
+<td><strong>校准数据的二阶统计量</strong>（Hessian = XᵀX）</td>
+</tr>
+<tr>
+<td>计算成本</td>
+<td>要对 H 求逆（Cholesky 分解），⚠️ 7B 模型典型 10–30 分钟量级（单卡，随实现差异大）</td>
+</tr>
+<tr>
+<td>需要反向传播吗</td>
+<td>不需要，但需要逐层跑前向收集 X</td>
+</tr>
+<tr>
+<td>是否可能过拟合校准集</td>
+<td><strong>会</strong>，因为它在显式最小化校准集上的重构误差</td>
+</tr>
+<tr>
+<td>典型配置</td>
+<td>INT4，group = 128，对称或非对称都行</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>GPTQ 有一个著名的"顺序"敏感性。</strong> 严格按列从左到右量化时，误差全往右边堆，最右边那几列会被补偿得面目全非。实践中用 <code>act_order</code>（也叫 desc_act）选项：<strong>按激活幅度从大到小排序再量化</strong>，让重要的列先被量化、后面的列去承担补偿。开了它精度更好，但权重在内存里就不再连续，推理 kernel 要多一层索引，速度会掉一些。这是部署时的一个真实取舍。</p>
+</blockquote>
+<h3 id="664">6.6.4 实测效果</h3>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>FP16 基线 PPL</th>
+<th>INT4 / group=128 PPL</th>
+<th>PPL 上升</th>
+<th>权重大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Llama-2 7B</td>
+<td>5.47</td>
+<td>⚠️ ≈ 5.6</td>
+<td>≈ +0.15</td>
+<td>13.5 GB → <strong>3.5 GB</strong></td>
+</tr>
+<tr>
+<td>Llama-2 13B</td>
+<td>4.88</td>
+<td>⚠️ ≈ 5.0</td>
+<td>≈ +0.12</td>
+<td>26.0 GB → <strong>6.8 GB</strong></td>
+</tr>
+<tr>
+<td>Llama-2 70B</td>
+<td>3.32</td>
+<td>⚠️ ≈ 3.43</td>
+<td>≈ +0.11</td>
+<td>138 GB → <strong>35.8 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>PPL 数字标了 ⚠️，原因要说清楚。</strong> ① 旧版表里的 5.68 / 5.02 / 3.44 找不到一手出处，已换成第三方汇总复现的量级值。② 更重要的是：<strong>不同论文的绝对 PPL 不可混用</strong>。同一个 Llama-2 7B，评测序列长度取 2048 还是 4096，FP16 基线就能从 5.47 变到 5.12。<strong>只有同一张表内的差值才有意义。</strong> 引用任何量化论文的 PPL 时，必须连着评测脚本、序列长度、数据集（通常是 WikiText-2）一起引。③ 权重大小是按 §6.2.6 的 4.15625 bit 精确算出来的，不是估的。</p>
+<p>★ <strong>INT4 GPTQ 的 70B 模型（35.8 GB 权重）能装进一块 40 GB A100，FP16 需要 4 块。</strong> 但注意"装得进"和"跑得好"是两回事：40 GB 里减掉 35.8 GB 权重只剩 4.2 GB 给 KV Cache 和激活，batch 和上下文长度都会被卡死。实际部署通常还是会选 48 GB 或 80 GB 的卡。</p>
+</blockquote>
+<hr />
+<h2 id="67-awq-gptq">6.7 AWQ：和 GPTQ 用的是完全不同的信息</h2>
+<h3 id="671">6.7.1 先纠正一个流传很广的误解</h3>
+<blockquote>
+<p>⚠️ <strong>本章旧版说"AWQ 把 1% 的重要权重保持 FP16、其余量化为 INT4"，这是错的，而且错得很典型。</strong> 保留 1% 权重为 FP16 是 AWQ 论文用来<strong>论证动机</strong>的对照实验（"只保护 1% 的显著权重就能大幅降低量化误差"），论文紧接着就<strong>明确否定了这条路</strong>，理由是混合精度对硬件不友好——kernel 要同时处理两种格式，实现复杂且跑不快。<strong>AWQ 的实际做法是：所有权重统一量化为 INT4，通过一个等价的逐通道缩放来保护显著通道。</strong></p>
+</blockquote>
+<h3 id="672">6.7.2 核心洞察：用激活的幅度判断权重重不重要</h3>
+<div class="codehilite"><pre><span></span><code>一个输出元素：  y[j] = Σᵢ w[i, j] · x[i]
+
+如果 w[i, j] 有量化误差 Δ，它对输出的贡献误差是   Δ · x[i]
+                                                       ▲
+                                    被激活的幅度放大了 |x[i]| 倍
+</code></pre></div>
+
+<p>所以<strong>权重重不重要，不取决于权重自己有多大，取决于跟它相乘的那个激活通道有多大。</strong> 而激活的大通道是固定的少数几个（§6.3.2），于是：</p>
+<div class="codehilite"><pre><span></span><code>GPTQ 用的信息：校准数据的 Hessian（XᵀX），是二阶的、带通道间相关性的
+AWQ  用的信息：校准数据的逐通道平均幅度 mean|x[i]|，是一阶的、逐通道独立的
+</code></pre></div>
+
+<h3 id="673">6.7.3 把它算出来</h3>
+<p><strong>设定</strong>：某输出通道的 4 个权重，以及它们对应的 4 个输入通道的激活平均幅度：</p>
+<div class="codehilite"><pre><span></span><code>w   = [ 0.20 ,  0.31 , −0.24 ,  0.40 ]
+|x| = [ 30.0 ,   0.8 ,   0.5 ,   0.6 ]
+        ▲ 通道 0 是显著通道，比其余大 40 倍以上
+</code></pre></div>
+
+<p>量化设定：INT4 对称，一组 4 个共用一个 scale，<code>scale = max|w| / 7 = 0.40 / 7 = 0.0571429</code>。</p>
+<p><strong>基准（RTN，不做任何保护）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>i</th>
+<th>w[i]</th>
+<th>w/scale</th>
+<th>q</th>
+<th>反量化 ŵ</th>
+<th>误差 Δ</th>
+<th>加权输出误差 = |Δ| × |x[i]|</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0.20</td>
+<td>3.500</td>
+<td>4</td>
+<td>0.228571</td>
+<td>+0.028571</td>
+<td><strong>0.8571</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.31</td>
+<td>5.425</td>
+<td>5</td>
+<td>0.285714</td>
+<td>−0.024286</td>
+<td>0.0194</td>
+</tr>
+<tr>
+<td>2</td>
+<td>−0.24</td>
+<td>−4.200</td>
+<td>−4</td>
+<td>−0.228571</td>
+<td>+0.011429</td>
+<td>0.0057</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.40</td>
+<td>7.000</td>
+<td>7</td>
+<td>0.400000</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>合计</strong></td>
+<td><strong>0.8822</strong></td>
+</tr>
+</tbody>
+</table>
+<p>（<code>3.500</code> 是一个标准的"最坏情况"：正好卡在两个格点中间，按就近取偶进到 4，误差达到 scale/2 的上限。）</p>
+<p><strong>AWQ：把通道 0 放大 s = 1.75 倍</strong>（同时激活侧除以 1.75，和 SmoothQuant 一样是等价变换）：</p>
+<div class="codehilite"><pre><span></span><code>w′ = [ 0.20 × 1.75 , 0.31 , −0.24 , 0.40 ] = [ 0.35 , 0.31 , −0.24 , 0.40 ]
+
+关键检查：max|w′| = 0.40，没变！   ← 0.35 &lt; 0.40，所以 scale 保持 0.0571429
+                                      其余三个通道一点也没受影响
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>i</th>
+<th>w′[i]</th>
+<th>w′/scale</th>
+<th>q</th>
+<th>反量化</th>
+<th>除回 s 后的 ŵ</th>
+<th>误差 Δ</th>
+<th>加权输出误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0.35</td>
+<td>6.125</td>
+<td>6</td>
+<td>0.342857</td>
+<td>0.342857/1.75 = <strong>0.195918</strong></td>
+<td>−0.004082</td>
+<td><strong>0.1224</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.31</td>
+<td>5.425</td>
+<td>5</td>
+<td>0.285714</td>
+<td>0.285714</td>
+<td>−0.024286</td>
+<td>0.0194</td>
+</tr>
+<tr>
+<td>2</td>
+<td>−0.24</td>
+<td>−4.200</td>
+<td>−4</td>
+<td>−0.228571</td>
+<td>−0.228571</td>
+<td>+0.011429</td>
+<td>0.0057</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.40</td>
+<td>7.000</td>
+<td>7</td>
+<td>0.400000</td>
+<td>0.400000</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>合计</strong></td>
+<td><strong>0.1475</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>加权输出误差：  0.8822  →  0.1475        好了 6.0 倍
+而且：其余三个通道的误差一个字节都没变 —— 因为组内最大值没被顶上去
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>AWQ 的"免费午餐"是这么来的</strong>：把一个权重乘以 s，它在量化格子里占据的格数从 3.5 变成 6.125，<strong>舍入时丢掉的那个零头相对它自己就小了</strong>；反量化后再除以 s，误差也跟着缩小到 1/s 附近。<strong>只要放大后的值没有成为组内新的最大值，这件事就是纯赚的。</strong> 一旦顶上去了，整组的 scale 就变大，所有通道一起变差——这就是 s 不能随便取大的原因。</p>
+<p>⚠️ <strong>本例的 6 倍改善偏乐观</strong>，因为 <code>w[0] = 0.20</code> 恰好卡在最坏的半格点上。论文里的 s 是按 <code>s = (逐通道平均 |x|)^α</code> 生成、α 在 <code>[0, 1]</code> 上网格搜索、以<strong>真实的层输出误差</strong>为目标选出来的，典型改善没这么夸张。但<strong>方向和机理是对的</strong>：显著通道的误差降到约 1/s。</p>
+</blockquote>
+<h3 id="674-awq-vs-gptq">6.7.4 AWQ vs GPTQ：一张对照表</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GPTQ</th>
+<th>AWQ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用什么信息决策</td>
+<td>Hessian（XᵀX），<strong>二阶 + 通道间相关</strong></td>
+<td>逐通道 mean|x|，<strong>一阶 + 通道独立</strong></td>
+</tr>
+<tr>
+<td>怎么改权重</td>
+<td><strong>逐列误差补偿</strong>：改变权重的数值</td>
+<td><strong>等价缩放</strong>：数学上不改变这一层的函数</td>
+</tr>
+<tr>
+<td>是否需要重构/反传</td>
+<td>需要逐层最小化重构误差</td>
+<td><strong>不需要</strong>，只要一遍前向统计</td>
+</tr>
+<tr>
+<td>是否会过拟合校准集</td>
+<td><strong>会</strong>（在显式拟合校准集）</td>
+<td>不太会（论文强调跨域/跨模态泛化好）</td>
+</tr>
+<tr>
+<td>量化速度</td>
+<td>慢（要求 Hessian 的逆）</td>
+<td>快</td>
+</tr>
+<tr>
+<td>权重排布</td>
+<td>开 act_order 后不连续，kernel 要多一层索引</td>
+<td>保持连续，kernel 友好</td>
+</tr>
+<tr>
+<td>INT4 精度（同 group size）</td>
+<td>相当</td>
+<td>略好，小模型上更明显</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>一句话概括两者的分工</strong>：<strong>GPTQ 问的是"改动这个权重会让输出错多少，能不能用别的权重补回来"；AWQ 问的是"这个权重会被多大的激活放大，要不要事先把它放大保护起来"。</strong> 前者是修正，后者是预防。两者不冲突，工程上也有把 AWQ 的缩放和 GPTQ 的补偿叠在一起用的做法。</p>
+</blockquote>
+<hr />
+<h2 id="68-kernel">6.8 量化 kernel：工程上要处理的四件事</h2>
+<h3 id="681-w8a8-int8-gemmscale">6.8.1 W8A8 INT8 GEMM：scale 在哪一步乘</h3>
+<div class="codehilite"><pre><span></span><code>从 HBM 读进来
+  ├── X_int8   激活，已量化
+  ├── W_int8   权重，已量化（离线做好）
+  ├── s_X      每个 token 一个标量（per-token）
+  └── s_W      每个输出通道一个标量（per-channel）
+       │
+       ▼
+片上：① INT8 Tensor Core 做 MMA，累加器是 INT32
+       │
+       ▼
+片上：② Epilogue（收尾，见 05 章 §5.3.3）里做反量化
+       │     Y_fp16[i,j] = Y_int32[i,j] * s_X[i] * s_W[j]
+       │     s_X[i] 只跟行有关，s_W[j] 只跟列有关
+       │     → 这是一个外积形式，等累加全部结束之后乘一次就行，几乎免费
+       ▼
+写回 HBM：③ 转成 BF16/FP16 写出 Y
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>"per-token 激活 scale × per-channel 权重 scale"这个组合之所以是业界标配，是因为它在 Epilogue 里退化成一个外积。</strong> <code>s_X</code> 只跟行有关、<code>s_W</code> 只跟列有关，两者都在累加<strong>结束之后</strong>才参与，一次乘法搞定。这也回答了 §6.2.5 那个问题：为什么廉价的粒度偏偏是 per-token 和 per-channel。</p>
+<p>⚠️ <strong>INT32 累加器不会溢出，但要会算。</strong> 最坏情况：<code>|q| ≤ 127</code>，K = 4096，那么 <code>|Σ q_x·q_w| ≤ 127 × 127 × 4096 = 6.6e7</code>，而 INT32 的上限是 2.1e9 —— 有 32 倍余量，安全。但如果 K 达到 13 万以上就有风险了，这在超长序列的某些归约里真的会出现。</p>
+</blockquote>
+<h3 id="682-per-group-scale-k">6.8.2 per-group scale 的麻烦：它在 K 循环里面</h3>
+<div class="codehilite"><pre><span></span><code>per-tensor / per-channel scale：   scale 只跟输出位置有关
+      → 整个 K 循环跑完再乘一次       ✓ Epilogue 就够了
+
+per-group scale（沿 K 方向分组）：  scale 在 K 循环中途就变了
+      → for k_block in range(K // 128):
+            acc_partial = mma(X[:, k_block], W[k_block, :])   ← INT8/FP8 Tensor Core
+            acc += acc_partial × s_X[k_block] × s_W[k_block]  ← 每 128 步就要乘一次
+        ▲ 这一行必须在 CUDA Core 上做，Tensor Core 干不了
+</code></pre></div>
+
+<p>这正是 DeepSeek 的 FP8 方案（§6.5.3）要自己写 GEMM（DeepGEMM）的原因，也正好和它的"每 128 个元素提升到 FP32 累加一次"合并成同一次操作——<strong>两个需求撞在同一个位置，所以代价可以共享。</strong></p>
+<h3 id="683-w4a16-prologue">6.8.3 W4A16：反量化放在 Prologue</h3>
+<p>W4A16（GPTQ / AWQ 的标准部署形态）的计算图和 W8A8 完全不同：</p>
+<div class="codehilite"><pre><span></span><code>从 HBM 读进来
+  ├── W_int4   两个 INT4 挤在一个字节里（packed）
+  ├── scale    每 128 个权重一个
+  └── zp       每 128 个权重一个
+       │        ★ 全部收益都在这一步：读进来的字节少了 3.85 倍
+       ▼
+片上：② Prologue（前置）反量化
+       │     unpack 出 INT4 → 减 zp → 乘 scale → 转成 BF16
+       │     只涉及位运算和逐元素乘加，跑在 CUDA Core 上
+       ▼
+片上：③ BF16 Tensor Core 做 MMA（和普通 GEMM 一模一样）
+       │     激活全程是 BF16，从没量化过
+       ▼
+写回 HBM：④ 正常写出 Y_bf16
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这里和 <a href="05-算子融合.html">05 章 §5.4 反例 1</a> 表面矛盾，实际不矛盾，值得对照着看。</strong> 05 章说"Prologue 融合通常做不到"，因为 LayerNorm 需要<strong>看到完整的一行</strong>才能算均值，而 GEMM 是分块读数据的。但<strong>反量化是纯逐元素的</strong>——一个权重的反量化只需要它自己和它那一组的 scale，不需要看见任何别的元素。按 05 章判据①，它属于"一对一"那一类，<strong>最容易融的一类</strong>。</p>
+</blockquote>
+<p><strong>unpack 的位运算长这样</strong>（两个 INT4 挤在一个字节里）：</p>
+<div class="codehilite"><pre><span></span><code>  一个 uint8:   [ b7 b6 b5 b4 | b3 b2 b1 b0 ]
+                 ▲ 高 4 位      ▲ 低 4 位
+                 = 权重 2i+1     = 权重 2i
+
+  lo = (byte     ) &amp; 0x0F        取低 4 位
+  hi = (byte &gt;&gt; 4) &amp; 0x0F        取高 4 位
+  值 = (lo − zero_point) × scale
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>W4A16 的加速比取决于反量化能不能被藏起来。</strong> batch = 1 时 Tensor Core 几乎全空着，反量化在 CUDA Core 上跑完全不占用它，是免费的；batch 一大，反量化的工作量（正比于权重个数，和 batch 无关）被摊薄的同时 GEMM 的时间在涨，反而可能变成新瓶颈。<strong>Marlin、Machete 这类 W4A16 专用 kernel 的全部技巧，就是把 unpack 和反量化用最少的指令做完、并和 Tensor Core 流水重叠起来。</strong></p>
+</blockquote>
+<h3 id="684-int4-h100">6.8.4 INT4 在 H100 上没有硬件：一个会静默变慢的坑</h3>
+<div class="codehilite"><pre><span></span><code>Turing / Ampere（sm_75 / sm_80）：
+    有原生 INT4 MMA，PTX 的 mma.s4 会编译成真正的 IMMA.16832.S4.S4 指令
+
+Hopper（sm_90）：
+    ✅ 已在 CUDA 文档中弃用并移除 —— wmma 的 experimental::precision::s4 / u4 / b1
+    ⚠️ 但 PTX 的 mma.s4 为了前向兼容仍然能编译通过，
+       只是被翻译成一串 IMAD（跑在 CUDA Core 上）或用 INT8 MMA 模拟
+    ⚠️ wgmma 指令（Hopper 的主力矩阵指令）压根不支持 INT4
+
+Blackwell（sm_100）：
+    重新引入了低精度浮点 FP4 / FP6（NVFP4、MXFP4），走的是块缩放（block-scaled）路线，
+    不是回到 INT4
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这是一个静默性能坑</strong>：在 H100 上跑一个依赖 <code>mma.s4</code> 的 kernel，<strong>不会报错、不会拒绝编译</strong>，只会悄悄失去 Tensor Core 加速。所以在 Hopper 上，<strong>INT4 的价值 100% 在"权重存储和带宽"，0% 在"算力"</strong>——W4A16 的名字本身就说明了这一点：A 那一侧是 16 位，因为计算一定要回到 FP16/BF16。</p>
+</blockquote>
+<h3 id="685-kv-cache">6.8.5 KV Cache 量化：另一个战场</h3>
+<p>Decode 阶段除了权重，KV Cache 也在 HBM 里反复读。长上下文时它甚至会超过权重：</p>
+<div class="codehilite"><pre><span></span><code>LLaMA-3-70B（80 层，8 个 KV head，head_dim = 128），FP16 KV Cache：
+    每 token 每层 = 2（K 和 V）× 8 × 128 × 2 字节 = 4096 字节 = 4 KB
+    每 token 全模型 = 4 KB × 80 = 320 KB
+    32K 上下文、batch = 8：320 KB × 32768 × 8 = 84 GB       ← 比权重（138 GB FP16）同量级
+
+    量化成 INT8：42 GB，量化成 INT4：21 GB
+</code></pre></div>
+
+<p>KV Cache 量化和权重量化的关键差别：<strong>它是在线产生的，没有离线校准的机会。</strong> 所以通常用最简单的 per-token（甚至 per-head-per-token）对称量化，量化和反量化都融进 Attention kernel 里。细节见 <a href="09-推理侧算子.html">09 章 §9.2</a>。</p>
 <hr />
 <h2 id="69">6.9 量化方案选型速查</h2>
 <table>
 <thead>
 <tr>
 <th>方案</th>
-<th>权重精度</th>
-<th>激活精度</th>
-<th>适用场景</th>
+<th>权重</th>
+<th>激活</th>
+<th>带宽收益</th>
+<th>算力收益</th>
+<th>校准</th>
 <th>精度损失</th>
-<th>速度收益</th>
+<th>最适合的场景</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>BF16 基准</td>
-<td>BF16</td>
-<td>BF16</td>
-<td>训练、高精度推理</td>
+<td>16 bit</td>
+<td>16 bit</td>
+<td>1×</td>
+<td>1×</td>
+<td>不需要</td>
 <td>无</td>
-<td>基准</td>
+<td>训练、精度优先</td>
 </tr>
 <tr>
-<td>FP8 E4M3</td>
-<td>FP8</td>
-<td>FP8</td>
-<td>H100 训练/推理</td>
+<td><strong>FP8 E4M3</strong></td>
+<td>8 bit</td>
+<td>8 bit</td>
+<td>2×</td>
+<td><strong>2×</strong></td>
+<td>在线或少量</td>
 <td>极小</td>
-<td>1.5–2×</td>
+<td><strong>H100 训练</strong>、高吞吐推理</td>
 </tr>
 <tr>
-<td>W8A8 SmoothQuant</td>
+<td><strong>W8A8 + SmoothQuant</strong></td>
 <td>INT8</td>
 <td>INT8</td>
-<td>生产推理（A100/H100）</td>
+<td>2×</td>
+<td><strong>2×</strong></td>
+<td>需要（小量）</td>
 <td>小</td>
-<td>1.3–1.8×</td>
+<td>生产推理，大 batch，A100/H100</td>
 </tr>
 <tr>
-<td>W8A16</td>
+<td><strong>W8A16</strong></td>
 <td>INT8</td>
-<td>FP16</td>
-<td>显存受限部署</td>
+<td>16 bit</td>
+<td>权重 2×</td>
+<td>1×</td>
+<td><strong>不需要</strong></td>
 <td>极小</td>
-<td>1.1–1.3×</td>
+<td>显存受限、最保守、最快落地</td>
 </tr>
 <tr>
-<td>W4A16 GPTQ</td>
-<td>INT4</td>
-<td>FP16</td>
-<td>端侧/单卡部署</td>
+<td><strong>W4A16 GPTQ</strong></td>
+<td>INT4 g128</td>
+<td>16 bit</td>
+<td>权重 <strong>3.85×</strong></td>
+<td>1×</td>
+<td>需要</td>
 <td>中</td>
-<td>1.5–2.5×（带宽）</td>
+<td>端侧 / 单卡 / batch 小</td>
 </tr>
 <tr>
-<td>W4A16 AWQ</td>
-<td>INT4</td>
-<td>FP16</td>
-<td>端侧/单卡部署</td>
-<td>小→中</td>
-<td>同上</td>
+<td><strong>W4A16 AWQ</strong></td>
+<td>INT4 g128</td>
+<td>16 bit</td>
+<td>权重 <strong>3.85×</strong></td>
+<td>1×</td>
+<td>需要</td>
+<td>中（略优于 GPTQ）</td>
+<td>同上，尤其是小模型和多模态</td>
 </tr>
 </tbody>
 </table>
+<p><strong>决策流程</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 你的 batch 大不大？
+     batch ≲ 90（Decode / 端侧 / 单用户）
+         → 瓶颈是带宽，优先选位宽最低的：W4A16（AWQ 或 GPTQ）
+     batch ≳ 345（Prefill / 训练 / 高吞吐服务）
+         → 瓶颈是算力，只有 FP8 / W8A8 有用；W4A16 只剩显存收益
+     中间地带
+         → 两条都试，实测定夺
+     （90 和 345 的来历见 §6.1.3，是按 4096×4096 GEMM 算出来的，换形状要重算）
+
+② 有没有 FP8 硬件？
+     H100 / H200 / B200      → FP8 优先，尤其是训练
+     A100 / V100 / 昇腾 910B → 没有 FP8，走 INT8 路线（昇腾见 §6.10）
+
+③ 要不要量化激活？
+     不要（W8A16 / W4A16）   → 简单、无校准、风险低，拿走 Decode 大部分收益
+     要（W8A8 / FP8）        → 必须先处理离群值（SmoothQuant 或等价手段），
+                               且必须用业务相关的真实数据校准
+
+④ 精度掉了怎么办（按投入从低到高）
+     a. 把敏感层排除（lm_head、首尾各若干层）—— 最有效、最便宜的一招
+     b. 细化粒度：per-tensor → per-channel → per-group(128) → per-group(32)
+     c. 换算法：RTN → AWQ → GPTQ（或叠加）
+     d. 加 SmoothQuant / 提高 α
+     e. 上 QAT（要改训练流程，见 11 章 §11.2.2）
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>步骤 ④ 的 a 永远先试。</strong> <code>lm_head</code> 和头尾几层贡献了绝大部分的量化敏感度，把它们留在 BF16 只多占几百 MB，却常常能把掉下去的精度救回来大半。所有量化工具都提供这个开关（HuggingFace 系叫 <code>modules_to_not_convert</code>，昇腾 msModelSlim 叫 <code>disable_names</code>）。</p>
+</blockquote>
 <hr />
 <h2 id="610-fp8">6.10 在昇腾上：一条没有 FP8 的量化路线</h2>
 <blockquote>
@@ -577,12 +2209,13 @@ GPTQ：<strong>每量化一个权重，就把这个量化误差补偿到剩余�
 
 <p>这意味着 §6.5 的 FP8 方案在昇腾上<strong>不可直接迁移</strong>，要退回 §6.4 的 W8A8（SmoothQuant 路线）或 BF16。这是迁移时最先撞上的硬约束之一。</p>
 <h3 id="6101-w8a8">6.10.1 W8A8：昇腾推理量化的主力</h3>
-<p>工具是 <strong>msModelSlim</strong>（MindStudio ModelSlim）。它做的事和 §6.4 的 SmoothQuant + §6.6 的 PTQ 校准是同一套思路：</p>
+<p>工具是 <strong>msModelSlim</strong>（MindStudio ModelSlim，昇腾的模型压缩工具链）。它做的事和 §6.4 的 SmoothQuant + §6.6 的 PTQ 校准是同一套思路：</p>
 <div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">msmodelslim.pytorch.llm_ptq.anti_outlier</span><span class="w"> </span><span class="kn">import</span> <span class="n">AntiOutlierConfig</span><span class="p">,</span> <span class="n">AntiOutlier</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">msmodelslim.pytorch.llm_ptq.llm_ptq_tools</span><span class="w"> </span><span class="kn">import</span> <span class="n">Calibrator</span><span class="p">,</span> <span class="n">QuantConfig</span>
 
 <span class="c1"># ① 异常值抑制 —— 对应 §6.4 讲的 SmoothQuant</span>
-<span class="c1">#    激活里的离群值会把量化 scale 撑大，先把&quot;难度&quot;从激活搬到权重上</span>
+<span class="c1">#    激活里的离群值会把量化 scale 撑大（§6.3 算过：一个 100 倍的值能让误差恶化 26 倍），</span>
+<span class="c1">#    先把&quot;难度&quot;从激活等价地搬到权重上</span>
 <span class="n">anti_cfg</span> <span class="o">=</span> <span class="n">AntiOutlierConfig</span><span class="p">(</span><span class="n">anti_method</span><span class="o">=</span><span class="s2">&quot;m2&quot;</span><span class="p">)</span>      <span class="c1"># 工具提供 6 种算法</span>
 <span class="n">anti</span> <span class="o">=</span> <span class="n">AntiOutlier</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">calib_data</span><span class="o">=</span><span class="n">calib_data</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">anti_cfg</span><span class="p">)</span>
 <span class="n">anti</span><span class="o">.</span><span class="n">process</span><span class="p">()</span>
@@ -590,10 +2223,10 @@ GPTQ：<strong>每量化一个权重，就把这个量化误差补偿到剩余�
 <span class="c1"># ② 量化配置</span>
 <span class="n">quant_cfg</span> <span class="o">=</span> <span class="n">QuantConfig</span><span class="p">(</span>
     <span class="n">w_bit</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">a_bit</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
-    <span class="n">disable_names</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">],</span>      <span class="c1"># 敏感层排除，通常是 lm_head 和首尾若干层</span>
+    <span class="n">disable_names</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">],</span>      <span class="c1"># 敏感层排除，通常是 lm_head 和首尾若干层（§6.9 步骤 ④a）</span>
     <span class="n">dev_type</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span>
     <span class="n">act_method</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>             <span class="c1"># 激活量化的校准方法</span>
-    <span class="n">mm_tensor</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># False = per-channel（对应 §6.2 的粒度选择）</span>
+    <span class="n">mm_tensor</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># False = per-channel（对应 §6.2.4 的粒度选择）</span>
 <span class="p">)</span>
 
 <span class="c1"># ③ 校准并保存</span>
@@ -604,14 +2237,14 @@ GPTQ：<strong>每量化一个权重，就把这个量化误差补偿到剩余�
 
 <p>三个实践要点：</p>
 <ul>
-<li><strong>校准数据量极小（10～50 条），但必须是业务相关的真实数据。</strong> 用通用语料校准、上线跑专业领域，精度会掉。这一点和 §6.6 讲的 GPTQ 校准集选择是同一个道理，但昇腾工具链对数据量的要求更低。</li>
+<li><strong>校准数据量极小（10～50 条），但必须是业务相关的真实数据。</strong> 用通用语料校准、上线跑专业领域，精度会掉。这一点和 §6.6 讲的 GPTQ 校准集选择是同一个道理（GPTQ 会过拟合校准集），但昇腾工具链对数据量的要求更低。</li>
 <li><strong><code>disable_names</code> 是主要调参旋钮。</strong> 哪些层不量化，直接决定精度-性能的取舍。和 §6.9 的选型表配合使用。</li>
 <li><strong>CANN 版本决定安装方式</strong>：8.0.RC3 及之前，msModelSlim 内置在 CANN 包里；之后的版本要单独装开源版。用新 CANN 却按老文档调内置模块会找不到，这是高频踩坑点。</li>
 </ul>
-<p>除 W8A8 外，昇腾还提供 W8A8SC（稀疏量化）、KV Cache 量化（对应 <a href="09-推理侧算子.html">09 章 §9.2</a> 的 KV Cache 显存压力）、W8A16 / W4A8 等组合。</p>
+<p>除 W8A8 外，昇腾还提供 W8A8SC（稀疏量化）、KV Cache 量化（对应 §6.8.5 和 <a href="09-推理侧算子.html">09 章 §9.2</a> 的 KV Cache 显存压力）、W8A16 / W4A8 等组合。</p>
 <h3 id="6102-hifloat8">6.10.2 HiFloat8：一个值得关注的不同答案</h3>
-<p>§6.5 讲过 FP8 的核心矛盾：E4M3 精度高但动态范围小，E5M2 反之，所以必须配缩放因子（scale），而 scale 的管理本身就是工程负担——DeepSeek-V3 的 FP8 方案有相当一部分复杂度花在这上面。</p>
-<p>华为的 <strong>HiF8</strong>（HiFloat8）换了个思路（⚠️ 以下为华为技术材料口径）：</p>
+<p>§6.5.1 摆出过 FP8 的核心矛盾：E4M3 精度高但动态范围只有约 2¹⁵，E5M2 范围大到 2³⁰ 但每个数量级只剩 4 个刻度。二选一都不够用，所以必须配缩放因子（scale），而 scale 的管理本身就是工程负担——DeepSeek-V3 的 FP8 方案（§6.5.3）有相当一部分复杂度花在这上面。</p>
+<p>华为的 <strong>HiF8</strong>（HiFloat8，华为自研的 8 位浮点格式）换了个思路（⚠️ 以下为华为技术材料口径）：</p>
 <div class="codehilite"><pre><span></span><code>传统 FP8：指数位/尾数位的划分固定（E4M3 或 E5M2 二选一）
 
 HiF8：引入「点位域（Dot）」，用即时可译的变长前缀码编码
@@ -623,10 +2256,13 @@ HiF8：引入「点位域（Dot）」，用即时可译的变长前缀码编码
 
 <p><strong>但华为自己公布的精度对比值得注意</strong>（⚠️ 华为技术博客，openPangu-7B 权重量化的 SQNR 排序）：</p>
 <div class="codehilite"><pre><span></span><code>INT8 (per-channel) &gt; HiF8 (scaled) ≈ MXFP8 (E4M3) &gt; E4M3 &gt; E5M2 &gt; HiF8 (裸格式)
-                                                                   ↑ 垫底
+       ▲ 排第一                                                    ↑ 垫底
 </code></pre></div>
 
 <p>华为给出的解释是：HiF8 的设计初衷是捕捉<strong>训练中跨数量级波动的梯度</strong>，而静态权重呈类高斯的集中分布，HiF8 在密集区间可用的量化阶反而更少。</p>
+<blockquote>
+<p>★ <strong>这个排序正好印证了 §6.5.2 的那条 ⚠️：FP8 不是"总是比 INT8 准"。</strong> 权重是静态的、分布集中的、可以慢慢做 per-channel 校准的——这正是 INT8 的主场。FP8 的主场是<strong>动态范围跨数量级的量</strong>（梯度、某些激活），那里 INT8 无论怎么细粒度都救不回来。<strong>选格式看的是张量的分布形状，不是位宽数字谁更时髦。</strong></p>
+</blockquote>
 <p>这个坦率的自评很有参考价值：<strong>HiF8 的定位是训练侧（梯度），不是推理侧的权重量化</strong>。如果你的场景是推理部署，回到 §6.10.1 的 W8A8 per-channel 仍是昇腾上的稳妥选择。</p>
 <p>HiF8 算法已在 CANN 社区开源（AMCT 工具链），并提供跨平台伪量化仿真库——<strong>可以在 GPU 上先验证精度再上昇腾</strong>，这对评估阶段很实用。</p>
 <h3 id="6103-69">6.10.3 和 §6.9 选型表的对照</h3>
@@ -682,34 +2318,154 @@ HiF8：引入「点位域（Dot）」，用即时可译的变长前缀码编码
 </tbody>
 </table>
 <hr />
-<h2 id="611">6.11 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>量化的核心逻辑：
-  推理是 Memory Bound → 减少位宽 → 减少 HBM 带宽需求 → 速度提升
+<h2 id="611_1">6.11 本章小结</h2>
+<p><strong>一句话</strong>：量化减少的是<strong>字节</strong>，不是 FLOP。它买到的是显存和带宽；只有在硬件有对应低精度算力、且算子确实是 Compute Bound 的时候，才顺带买到算力。</p>
+<p><strong>核心账本（§6.1，全章骨架）</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>权重位宽</th>
+<th>LLaMA-3-8B 权重</th>
+<th>Decode 理论上界</th>
+<th>相对 BF16</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16</td>
+<td>16</td>
+<td>16.06 GB</td>
+<td>⚠️ 4.79 ms/token</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>INT8</td>
+<td>8</td>
+<td>8.03 GB</td>
+<td>⚠️ 2.40 ms/token</td>
+<td>2×</td>
+</tr>
+<tr>
+<td>INT4 g128</td>
+<td><strong>4.156</strong></td>
+<td>4.17 GB</td>
+<td>⚠️ 1.25 ms/token</td>
+<td><strong>3.85×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 量化把算术强度翻倍，但也把屋脊点翻倍 —— 算子在屋顶线上的相对位置不变，
+  只是搬的字节少了，所以时间变短。收益 100% 来自字节，0% 来自&quot;算得更快&quot;。
 
-精度损失来源：
-  1. 量化粒度（粒度越粗误差越大）
-  2. 激活值异常值（&quot;刺&quot;）
-  3. 反量化运算的舍入累积
-
-主要方案：
-  FP8 训练   → H100 原生硬件支持，精度几乎不损，DeepSeek-V3 标配
-  W8A8       → 算力+带宽双提升，需要 SmoothQuant 处理激活值
-  W8A16      → 最保守，精度高，只省带宽
-  W4A16 GPTQ/AWQ → 端侧部署，模型尺寸减 4×，精度有损失
-
-量化 kernel 的关键工程：
-  反量化融合进 GEMM Epilogue（CUTLASS）
-  INT4 需要 pack/unpack，无原生 INT4 Tensor Core（H100）
-
-下一章：Triton，用 Python 写 GPU kernel 的正确方式。
+★ 收益随 batch 消失：4096×4096 的 GEMM，M ≳ 90 时 INT4 触顶，
+  M ≳ 345 时连 BF16 都是 Compute Bound，量化只剩显存收益。
 </code></pre></div>
 
+<p><strong>误差的三个来源和它们的量级（§6.2–§6.3，那 8 个数的结论）</strong></p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>机理</th>
+<th>本章的数值证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>小数值的相对误差</strong></td>
+<td>绝对误差恒为 scale/2，数越小相对误差越大</td>
+<td>0.05 的相对误差 20%，3.81 的是 0%</td>
+</tr>
+<tr>
+<td><strong>离群值</strong></td>
+<td>scale 由单点 max 决定，它涨多少倍误差就涨多少倍</td>
+<td>一个 100 倍的值让其余元素 RMSE 恶化 <strong>26 倍</strong>，8 bit 退化成 2.6 bit</td>
+</tr>
+<tr>
+<td><strong>粒度太粗</strong></td>
+<td>一组里的最大值绑架整组</td>
+<td>per-tensor 0.0079 → per-channel 0.0068 → per-group(2) 0.0040</td>
+</tr>
+</tbody>
+</table>
+<p><strong>两个结构性事实（本章最该带走的）</strong></p>
+<div class="codehilite"><pre><span></span><code>① 激活的离群值沿【通道】分布，而 GEMM 里廉价的 scale 方向是【token】。
+   要的和能给的错开一个维度 —— 这是 SmoothQuant 存在的全部理由。
+
+② 权重的 per-channel 是廉价的（scale 提到 Epilogue 外面就行）。
+   所以&quot;把难度从激活搬到权重&quot;总是划算的。
+</code></pre></div>
+
+<p><strong>四种方案，各自用什么信息</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>用什么信息</th>
+<th>怎么用</th>
+<th>改不改函数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RTN</td>
+<td>什么都不用</td>
+<td>直接四舍五入</td>
+<td>改（有误差）</td>
+</tr>
+<tr>
+<td><strong>SmoothQuant</strong></td>
+<td>激活的逐通道 max</td>
+<td>等价缩放，把难度移给权重</td>
+<td><strong>不改（数学等价）</strong></td>
+</tr>
+<tr>
+<td><strong>GPTQ</strong></td>
+<td>校准数据的 Hessian（二阶）</td>
+<td>逐列量化 + 误差补偿给后面的列</td>
+<td>改（但输出更准）</td>
+</tr>
+<tr>
+<td><strong>AWQ</strong></td>
+<td>激活的逐通道平均幅度（一阶）</td>
+<td>等价缩放，放大显著通道</td>
+<td><strong>不改（数学等价）</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>工程要点（§6.8）</strong></p>
+<div class="codehilite"><pre><span></span><code>per-token × per-channel 的 scale = Epilogue 里一个外积，几乎免费
+per-group（沿 K）的 scale       = 必须进 K 循环，得自己写 GEMM（DeepGEMM）
+W4A16 的反量化                  = Prologue，逐元素，好融（和 05 章反例 1 不矛盾）
+INT4 在 Hopper 上没有 Tensor Core = 静默退化成 CUDA Core，别指望算力收益
+FP8 在 Hopper 上累加只有 14 bit  = K=4096 时误差可达 2%，必须周期性提升到 FP32
+</code></pre></div>
+
+<p><strong>自测三题</strong></p>
+<ol>
+<li>对 <code>x = [−1.20, 0.35, 2.54, −0.07]</code> 做 per-tensor 对称 INT8 量化（round 用"就近取偶"）。① 算出 scale、每个元素的 q、反量化值、绝对误差和相对误差。② 把 <code>2.54</code> 换成 <code>254.0</code>（其余不变）重算一遍，指出哪些元素被抹成了 0，以及正常元素的最大绝对误差变成了原来的多少倍。</li>
+<li>某模型 76.2 亿参数，权重用 INT4 / group = 128，scale 存 FP16、zero-point 存 INT4。① 实际平均位宽是多少？② 权重占多少 GB？③ 在 H100（HBM 3.35 TB/s）上，Decode 每步的理论下界是多少毫秒、对应多少 token/s？④ 相对 BF16 是几倍？</li>
+<li>某层的某个输入通道 j，校准后 <code>max|X[:, j]| = 128</code>，<code>max|W[j, :]| = 0.5</code>。① 取 α = 0.5，算出 SmoothQuant 的 <code>s_j</code>，以及迁移后激活和权重在该通道上的最大值各是多少。② 改成 α = 0.75 再算一遍。③ 用一句话说明 α 从 0.5 调到 0.75 意味着什么。</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li><strong>① 基准</strong>：<code>max|x| = 2.54</code>，<code>scale = 2.54 / 127 = 0.02</code>。<code>−1.20/0.02 = −60 → q = −60 → −1.20</code>，误差 0；<code>0.35/0.02 = 17.5</code>，就近取偶进到 <strong>18</strong> → <code>0.36</code>，误差 <strong>+0.01（相对 2.9%）</strong>；<code>2.54/0.02 = 127 → q = 127 → 2.54</code>，误差 0；<code>−0.07/0.02 = −3.5</code>，就近取偶到 <strong>−4</strong> → <code>−0.08</code>，误差 <strong>−0.01（相对 14.3%）</strong>。注意同样是 0.01 的绝对误差，在 0.07 上就是 14.3%，在 2.54 上是 0——这就是 §6.2.1 那条结论。<strong>② 加离群值</strong>：<code>max = 254</code>，<code>scale = 2.0</code>。<code>−1.20/2 = −0.6 → q = −1 → −2.00</code>，误差 <strong>−0.80</strong>；<code>0.35/2 = 0.175 → q = 0 → 0</code>，<strong>被抹成 0</strong>，误差 −0.35；<code>254 → 127 → 254</code>，误差 0；<code>−0.07/2 = −0.035 → q = 0 → 0</code>，<strong>被抹成 0</strong>，误差 +0.07。正常元素的最大绝对误差从 0.01 涨到 0.80，<strong>80 倍</strong>（scale 从 0.02 涨到 2.0 也正好是 100 倍的量级）。参见 §6.2.1、§6.3.1。</li>
+<li><strong>①</strong> 每 128 个权重存 <code>128 × 4 bit = 64 B</code> 权重 + <code>2 B</code> scale + <code>0.5 B</code> zero-point = <strong>66.5 B</strong>，平均 <code>66.5 × 8 ÷ 128 = **4.15625 bit**</code>。<strong>②</strong> <code>7.62e9 × 4.15625 ÷ 8 = 3.959e9 字节 = **3.96 GB**</code>。<strong>③</strong> <code>3.959e9 ÷ 3.35e12 = 1.182e−3 s = **1.18 ms/token**</code>，对应 <code>1 ÷ 0.001182 ≈ **846 token/s**</code>（⚠️ 理论上界，忽略 KV Cache、激活、反量化和带宽利用率）。<strong>④</strong> BF16 权重 <code>7.62e9 × 2 = 15.24 GB</code>，耗时 <code>4.55 ms</code>，比值 <code>4.55 ÷ 1.18 = **3.85 倍**</code>——也等于 <code>16 ÷ 4.15625</code>，和模型大小无关。参见 §6.1.1、§6.2.6。</li>
+<li><strong>① α = 0.5</strong>：<code>s_j = √128 ÷ √0.5 = 11.3137 ÷ 0.70711 = **16.0**</code>。迁移后激活最大值 <code>128 ÷ 16 = **8**</code>，权重最大值 <code>0.5 × 16 = **8**</code>——两者相等，等于几何平均数 <code>√(128 × 0.5) = √64 = 8</code> ✓。<strong>② α = 0.75</strong>：<code>s_j = 128^0.75 ÷ 0.5^0.25 = 2^5.25 ÷ 2^(−0.25) = 38.055 ÷ 0.8409 = **45.25**</code>。激活最大值 <code>128 ÷ 45.25 = **2.83**（= 2^1.5）</code>，权重最大值 <code>0.5 × 45.25 = **22.63**（= 2^4.5）</code>。<strong>③</strong> α 调大 = <strong>把更多量化难度推给权重</strong>：激活变得更好量化（8 → 2.83），代价是权重的动态范围被撑大 2.8 倍（8 → 22.63）。顺手验证一下守恒律：<code>8 × 8 = 64</code>，<code>2.83 × 22.63 = 64</code> ✓——难度只是在两边之间挪，总量不变。离群值特别凶的模型需要更大的 α；但推过头会把权重也搞崩，判据是端到端精度而不是任何一侧的最大值。参见 §6.4.3、§6.4.4。</li>
+</ol>
+<blockquote>
+<p><strong>下一章</strong>：本章的 kernel 都是"概念上写得出来、工程上很难写好"的——per-group scale 要塞进 K 循环、反量化要和 MMA 流水重叠、INT4 要 unpack。用 CUDA 写这些要几百行，用 Triton 写要几十行。见 <a href="07-Triton编程.html">07 · Triton 编程</a>。</p>
+<p><strong>昇腾对照</strong>：910B/910C 没有 FP8 硬件，整条低精度路线要退回 INT8 W8A8，工具是 msModelSlim；华为的 HiF8 是另一条思路但定位在训练侧。见本章 §6.10，以及 <a href="12-昇腾硬件基础.html">12 章</a>（硬件）、<a href="14-GPU到NPU迁移实战.html">14 章</a>（迁移 checklist：量化产物不能直接搬，必须在昇腾上重新校准）。</p>
+</blockquote>
 <p><strong>延伸资料</strong>：<br />
-- <a href="https://arxiv.org/abs/2211.10438">SmoothQuant 论文</a>（Xiao et al., 2022）<br />
-- <a href="https://arxiv.org/abs/2210.17323">GPTQ 论文</a>（Frantar et al., 2022）<br />
-- <a href="https://arxiv.org/abs/2306.00978">AWQ 论文</a>（Lin et al., 2023）<br />
-- <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a>（FP8 训练细节见 §3.3）<br />
-- <a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#fp8-math-support">FP8 格式规范</a>（NVIDIA 官方文档）</p>
+- <a href="https://arxiv.org/abs/2211.10438">SmoothQuant 论文</a>（Xiao et al., ICML 2023；§6.4 的迁移恒等式和 α 公式出处）<br />
+- <a href="https://arxiv.org/abs/2210.17323">GPTQ 论文</a>（Frantar et al., 2022；§6.6 的逐列误差补偿算法出处）<br />
+- <a href="https://arxiv.org/abs/2306.00978">AWQ 论文</a>（Lin et al., MLSys 2024 最佳论文；注意它<strong>否定</strong>了"保留 1% FP16"那条路，见 §6.7.1）<br />
+- <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a>（FP8 训练细节见 §3.3，Tensor Core 累加精度见 §3.5.2）<br />
+- <a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#fp8-math-support">FP8 格式规范</a>（NVIDIA 官方文档，E4M3/E5M2 的位布局与特殊值）<br />
+- <a href="https://arxiv.org/abs/2209.05433">FP8 Formats for Deep Learning</a>（Micikevicius et al., 2022；E4M3/E5M2 混合方案的原始提案，DeepSeek-V3 正是在和它对照）<br />
+- <a href="https://arxiv.org/abs/2208.07339">LLM.int8() 论文</a>（Dettmers et al., 2022；激活离群值逐通道分布这一现象的系统性报告，§6.3.2 的依据）</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

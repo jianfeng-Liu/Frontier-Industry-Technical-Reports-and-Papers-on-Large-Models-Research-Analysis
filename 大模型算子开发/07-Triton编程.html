@@ -248,354 +248,1661 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="07-triton-python-gpu-kernel">07 · Triton 编程：用 Python 写 GPU kernel 的正确方式</h1>
 <blockquote>
-<p><strong>前置</strong>：<a href="01-GPU硬件基础.html">01 章（GPU 硬件基础）</a>、<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a><br />
-<strong>目标</strong>：搞懂 Triton 的编程模型，能写出比 PyTorch 原生快的自定义 kernel，了解它和 CUDA 的本质区别以及 torch.compile 是如何用它的。</p>
+<p><strong>前置</strong>：<a href="01-GPU硬件基础.html">01 章（GPU 硬件基础）</a>、<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>。强烈建议先读 <a href="03-GEMM深度剖析.html">03 章（分块与双缓冲）</a>和 <a href="05-算子融合.html">05 章（融合账本）</a>，本章的 <code>num_stages</code>、<code>BLOCK_SIZE</code>、<code>GROUP_SIZE_M</code> 三个旋钮全部是那两章概念的 Triton 化身。<br />
+<strong>目标</strong>：在脑子里建立"<strong>我写的是一个 Block 的代码，不是一个 Thread 的代码</strong>"这一个心智模型，然后从 vector add 一路演进到 fused softmax 和 matmul，最后能判断什么时候该用 Triton、什么时候该退回 CUDA。<br />
+<strong>读法</strong>：本章每引入一个新概念，都会先说它<strong>对应硬件上的什么</strong>，再给一个能拿纸笔验算的小例子。§7.2.3（元素怎么摊到线程上）、§7.3.1（mask 的逐 lane 推演）、§7.6.4（GROUP_SIZE_M 的 90 vs 54）这三处请一定自己算一遍。<br />
+<strong>版本</strong>：Triton 的 API 随版本变动很大。本章按 <strong>Triton 3.3 及以上</strong>校对，写作时 PyPI 最新版是 <strong>3.8.0（2026-08）</strong>。凡是版本敏感的写法都单独标了 ⚠️。</p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
-<p><strong>Triton</strong> —— OpenAI 开源的 GPU 编程语言/编译器，用 Python 写 kernel，自动处理内存对齐、Warp 分组、bank conflict 等细节，比 CUDA 开发效率高得多。<br />
-<strong>Block 级并行</strong>（Block-level Programming）—— Triton 的核心抽象：程序员只写"一个 Block 做什么"，Triton 负责把无数 Block 分派到 GPU 上并行执行。<br />
-<strong>tl（Triton Language）</strong> —— Triton 的 Python API，<code>tl.load</code>、<code>tl.store</code>、<code>tl.dot</code> 是最核心的三个操作。<br />
-<strong>@triton.jit</strong> —— 把 Python 函数编译为 PTX（NVIDIA GPU 汇编）的装饰器，首次调用时触发 JIT 编译。<br />
-<strong>autotuner</strong> —— Triton 内置的超参数搜索工具，自动找到最优的 Block 大小、warp 数等配置。<br />
-<strong>TorchInductor</strong> —— torch.compile 的默认后端，负责把 PyTorch 图编译为 Triton kernel（CPU 则编译为 C++/OpenMP）。</p>
+<p><strong>Triton</strong> —— 一门嵌在 Python 里的 GPU kernel 语言 + 编译器，最早由 Philippe Tillet 在 OpenAI 发布（2021），现在由社区维护在 <code>triton-lang/triton</code>，OpenAI、Meta、AMD、Intel、NVIDIA 都在提交代码。<br />
+<strong>DSL</strong>（Domain-Specific Language，领域专用语言）—— 为某一类问题定制的小语言。Triton 是"写 GPU kernel 的 DSL"，它长得像 Python，但不是 Python。<br />
+<strong>Program（程序实例）</strong> —— Triton 里并行的最小调度单位，<strong>一个 program 就是 CUDA 里的一个 Block</strong>。全书里凡是说"一个 program"，都可以直接读成"一个 Block"。<br />
+<strong>Block 级编程模型</strong>（Block-level Programming）—— 本章唯一需要建立的心智模型：你写的每一行代码，描述的是<strong>一整个 Block 对一整块数据</strong>做什么，而不是一个线程对一个标量做什么。<br />
+<strong>tl</strong>（Triton Language）—— Triton 的算子库，<code>import triton.language as tl</code>。<code>tl.load</code> / <code>tl.store</code> / <code>tl.dot</code> 是三个最核心的操作。<br />
+<strong>JIT</strong>（Just-In-Time，即时编译）—— 第一次真正调用函数时才编译，而不是提前编好。<code>@triton.jit</code> 装饰的函数在首次以某组参数类型/常量调用时才会被编译。<br />
+<strong>constexpr</strong>（Compile-time Constant Expression，编译期常量表达式）—— 标注为 <code>tl.constexpr</code> 的参数会被"烤进"生成的机器码里，每换一个值就重新编译一份 kernel。<code>BLOCK_SIZE</code> 必须是它。<br />
+<strong>mask（掩码）</strong> —— <code>tl.load</code> / <code>tl.store</code> 的按元素开关，是 Triton 里 <a href="01-GPU硬件基础.html">01 章 §1.2.3</a> 那个 <code>if (i &lt; N)</code> 的替代品，<strong>不写就会越界</strong>。<br />
+<strong>IR</strong>（Intermediate Representation，中间表示）—— 编译器内部的程序形态，介于源码和机器码之间。Triton 有两层自己的 IR：<strong>TTIR</strong>（Triton IR，还不知道 GPU 长什么样）和 <strong>TTGIR</strong>（TritonGPU IR，已经决定了数据怎么摊到线程上）。<br />
+<strong>MLIR</strong>（Multi-Level Intermediate Representation，多层中间表示）—— LLVM 项目里的一套"造 IR 的框架"，Triton 的 TTIR / TTGIR 都是用它搭的。<br />
+<strong>LLVM IR</strong> —— 通用编译器中间表示，Triton 的后端把 TTGIR 降到这里，再交给厂商后端生成汇编。<br />
+<strong>PTX</strong>（Parallel Thread Execution，并行线程执行）—— NVIDIA 的虚拟汇编，跨代通用。<br />
+<strong>SASS</strong>（Streaming ASSembler）—— 真正的 GPU 机器码，由 CUDA 工具链里的 <code>ptxas</code> 从 PTX 编译得到，绑定具体架构。<br />
+<strong>num_warps</strong> —— 一个 program 用多少个 Warp（线程束）去执行。<code>num_warps=4</code> 就是 128 个线程。对应 CUDA 的 <code>blockDim</code>。<br />
+<strong>num_stages</strong> —— 编译器给循环做<strong>软件流水</strong>的级数。<code>num_stages=2</code> 就是 <a href="03-GEMM深度剖析.html">03 章 §3.5</a> 的<strong>双缓冲</strong>，更大的值就是多级流水。<br />
+<strong>autotune（自动调优）</strong> —— <code>@triton.autotune</code>，把一组候选配置在真机上各跑一遍，挑最快的那个记下来。<br />
+<strong>MMA</strong>（Matrix Multiply-Accumulate，矩阵乘累加）—— Tensor Core 的硬件指令。Triton 里 <code>tl.dot</code> 会被编译成 <code>mma.sync</code>（Ampere）或 <code>wgmma</code>（Hopper）。<br />
+<strong>TorchInductor</strong> —— <code>torch.compile</code> 的默认 GPU 后端，它生成的就是 Triton 代码（CPU 侧生成 C++/OpenMP）。</p>
 <hr />
-<h2 id="71-triton">7.1 为什么需要 Triton</h2>
-<p>CUDA 很强，但门槛高：<br />
-- 需要精通 C++，还要懂 GPU 架构细节（Warp 调度、Bank Conflict、异步内存）<br />
-- 一个高效的 GEMM kernel 动辄数千行 C++ 模板代码<br />
-- 调试困难，没有真正的 Python 调试器</p>
-<p>PyTorch 算子扩展（<code>torch.autograd.Function</code>）可以用 Python 写前向/反向，但底层还是要用 C++/CUDA 写真正的 kernel。</p>
-<p><strong>Triton 的定位</strong>：用 Python 写 GPU kernel，但性能接近手写 CUDA。</p>
-<div class="codehilite"><pre><span></span><code>不同层次的 GPU 编程：
-
-性能  ↑    纯 CUDA C++     最高性能，最难写
-      │    CUTLASS         次高性能，C++ 模板
-      │    Triton          80–95% CUDA 性能，Python 接口
-      │    Torch Inductor  自动生成 Triton，无需手动写 kernel
-      ↓    PyTorch         最易用，性能受算子融合限制
-开发效率 ↓
+<h2 id="71-cuda-triton">7.1 先并排看一眼：同一个算子，CUDA 和 Triton 各写一遍</h2>
+<p>不讲道理，先看东西。任务就是 <a href="01-GPU硬件基础.html">01 章 §1.2.3</a> 那个：<code>z[i] = x[i] + y[i]</code>，N = 1000。</p>
+<p><strong>CUDA 版</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">__global__</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="n">add_kernel</span><span class="p">(</span><span class="k">const</span><span class="w"> </span><span class="kt">float</span><span class="o">*</span><span class="w"> </span><span class="n">x</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">float</span><span class="o">*</span><span class="w"> </span><span class="n">y</span><span class="p">,</span><span class="w"> </span><span class="kt">float</span><span class="o">*</span><span class="w"> </span><span class="n">z</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">N</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">blockIdx</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">blockDim</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">threadIdx</span><span class="p">.</span><span class="n">x</span><span class="p">;</span><span class="w">   </span><span class="c1">// 我是第几个线程</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">N</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w">                                     </span><span class="c1">// 越界拦截</span>
+<span class="w">        </span><span class="n">z</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">x</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">y</span><span class="p">[</span><span class="n">i</span><span class="p">];</span><span class="w">                          </span><span class="c1">// 我负责 1 个元素</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+<span class="c1">// 启动：add_kernel&lt;&lt;&lt;4, 256&gt;&gt;&gt;(x, y, z, 1000);</span>
 </code></pre></div>
 
-<hr />
-<h2 id="72-triton">7.2 Triton 的编程模型</h2>
-<h3 id="block">核心抽象：Block 级并行</h3>
-<p>Triton kernel 里写的是"<strong>一个 Block</strong> 怎么处理数据"。不同的 Block 对应数据的不同分块，并行执行：</p>
+<p><strong>Triton 版</strong>：</p>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">triton</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">triton.language</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">tl</span>
 
 <span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">vector_add_kernel</span><span class="p">(</span>
-    <span class="n">x_ptr</span><span class="p">,</span> <span class="n">y_ptr</span><span class="p">,</span> <span class="n">z_ptr</span><span class="p">,</span>    <span class="c1"># 三个向量的内存指针</span>
-    <span class="n">n_elements</span><span class="p">,</span>              <span class="c1"># 向量长度</span>
-    <span class="n">BLOCK_SIZE</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span> <span class="c1"># Block 大小（编译期常量）</span>
-<span class="p">):</span>
-    <span class="c1"># 每个程序实例（即每个 Block）处理一段数据</span>
-    <span class="c1"># program_id(0) 是当前 Block 在第 0 个维度上的编号</span>
-    <span class="n">pid</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">add_kernel</span><span class="p">(</span><span class="n">x_ptr</span><span class="p">,</span> <span class="n">y_ptr</span><span class="p">,</span> <span class="n">z_ptr</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span> <span class="n">BLOCK</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">):</span>
+    <span class="n">pid</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>                  <span class="c1"># 我是第几个 Block</span>
+    <span class="n">offs</span> <span class="o">=</span> <span class="n">pid</span> <span class="o">*</span> <span class="n">BLOCK</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK</span><span class="p">)</span>     <span class="c1"># 我负责哪 BLOCK 个元素（一个向量）</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">offs</span> <span class="o">&lt;</span> <span class="n">N</span>                              <span class="c1"># 越界拦截（逐元素的开关）</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">offs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>         <span class="c1"># 一次读进 BLOCK 个</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">y_ptr</span> <span class="o">+</span> <span class="n">offs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">z_ptr</span> <span class="o">+</span> <span class="n">offs</span><span class="p">,</span> <span class="n">x</span> <span class="o">+</span> <span class="n">y</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>     <span class="c1"># 一次写出 BLOCK 个</span>
 
-    <span class="c1"># 这个 Block 负责处理的偏移量范围</span>
-    <span class="n">block_start</span> <span class="o">=</span> <span class="n">pid</span> <span class="o">*</span> <span class="n">BLOCK_SIZE</span>
-    <span class="n">offsets</span> <span class="o">=</span> <span class="n">block_start</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="p">)</span>
-
-    <span class="c1"># 边界检查（向量长度不一定是 BLOCK_SIZE 的倍数）</span>
-    <span class="n">mask</span> <span class="o">=</span> <span class="n">offsets</span> <span class="o">&lt;</span> <span class="n">n_elements</span>
-
-    <span class="c1"># 从 HBM 加载（mask 防止越界访问）</span>
-    <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
-    <span class="n">y</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">y_ptr</span> <span class="o">+</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
-
-    <span class="c1"># 计算</span>
-    <span class="n">z</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">y</span>
-
-    <span class="c1"># 写回 HBM</span>
-    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">z_ptr</span> <span class="o">+</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">z</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+<span class="c1"># 启动：add_kernel[(triton.cdiv(1000, 256),)](x, y, z, 1000, BLOCK=256)</span>
 </code></pre></div>
 
-<p><strong>调用方式</strong>：</p>
-<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_add</span><span class="p">(</span><span class="n">x</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">y</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
+<p>逐行对照：</p>
+<table>
+<thead>
+<tr>
+<th>CUDA</th>
+<th>Triton</th>
+<th>差在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>blockIdx.x</code></td>
+<td><code>tl.program_id(0)</code></td>
+<td><strong>一模一样</strong>，都是"第几个 Block"</td>
+</tr>
+<tr>
+<td><code>blockDim.x</code></td>
+<td>没有对应物（由 <code>BLOCK</code> 和 <code>num_warps</code> 间接决定）</td>
+<td>Triton 不让你看线程数</td>
+</tr>
+<tr>
+<td><code>threadIdx.x</code></td>
+<td><strong>不存在</strong></td>
+<td>这是全章最大的分水岭</td>
+</tr>
+<tr>
+<td><code>i</code>（一个标量下标）</td>
+<td><code>offs</code>（一个 BLOCK 长的<strong>向量</strong>下标）</td>
+<td>标量 → 向量</td>
+</tr>
+<tr>
+<td><code>if (i &lt; N)</code></td>
+<td><code>mask = offs &lt; N</code></td>
+<td>标量分支 → 逐元素掩码</td>
+</tr>
+<tr>
+<td><code>x[i]</code>（读 1 个 float）</td>
+<td><code>tl.load(x_ptr + offs, mask=mask)</code>（读 BLOCK 个）</td>
+<td>标量访存 → 块访存</td>
+</tr>
+<tr>
+<td><code>&lt;&lt;&lt;4, 256&gt;&gt;&gt;</code></td>
+<td><code>[(4,)]</code> + <code>BLOCK=256</code></td>
+<td>grid 照写，block 大小换了个位置</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>两段代码启动的 Block 数量完全一样（都是 4 个），做的事也完全一样。唯一的区别是：CUDA 里你站在"一个线程"的位置上写代码，Triton 里你站在"一个 Block"的位置上写代码。</strong> 这一句话就是整章的中心。下一节把它讲透。</p>
+</blockquote>
+<hr />
+<h2 id="72-block-thread">7.2 心智模型：你写的是一个 Block 的代码，不是一个 Thread 的代码</h2>
+<h3 id="721">7.2.1 两种视角，同一块硬件</h3>
+<p>硬件本身没变——还是 <a href="01-GPU硬件基础.html">01 章 §1.2.3</a> 那三级：Grid → Block → Warp → Thread。变的是<strong>你站在哪一级上写代码</strong>。</p>
+<div class="codehilite"><pre><span></span><code>硬件的实际层次                CUDA 让你站在哪         Triton 让你站在哪
+──────────────────────────────────────────────────────────────────────
+Grid（整块 GPU）
+  │
+  ├── Block  ← 一个 SM 上                            ★ 你在这里
+  │     │                                              一行代码 = 一整块数据的操作
+  │     ├── Warp（32 线程）
+  │     │     │
+  │     │     └── Thread   ★ 你在这里
+  │     │                    一行代码 = 一个标量的操作
+</code></pre></div>
+
+<p>同一个"加法"，两种视角下脑子里的画面完全不同：</p>
+<div class="codehilite"><pre><span></span><code>CUDA 视角（1024 个线程，每人捧着 1 个数）
+
+  线程0   线程1   线程2   ...  线程1023
+   [x0]    [x1]    [x2]         [x1023]
+    +       +       +             +
+   [y0]    [y1]    [y2]         [y1023]
+    ↓       ↓       ↓             ↓
+   [z0]    [z1]    [z2]         [z1023]
+
+  你写的一行 z[i] = x[i] + y[i] 描述的是【其中一个人】干了什么。
+
+
+Triton 视角（1 个 program，捧着一整条长度 1024 的向量）
+
+  program 0
+   [ x0 x1 x2 ............... x1023 ]     ← 一个 BLOCK 长的张量
+                  +
+   [ y0 y1 y2 ............... y1023 ]
+                  ↓
+   [ z0 z1 z2 ............... z1023 ]
+
+  你写的一行 x + y 描述的是【整条向量】的操作。
+  这条向量最后怎么摊到 32 / 128 / 256 个线程上去，是编译器的事，你看不到。
+</code></pre></div>
+
+<h3 id="722">7.2.2 名词对照表</h3>
+<table>
+<thead>
+<tr>
+<th>CUDA 概念</th>
+<th>Triton 里的对应</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Grid</td>
+<td>启动时的 <code>grid</code> 元组</td>
+<td><code>kernel[(1024,)](...)</code> 或 <code>kernel[(gm, gn)](...)</code>，最多三维</td>
+</tr>
+<tr>
+<td><code>gridDim.x/y/z</code></td>
+<td><code>tl.num_programs(0/1/2)</code></td>
+<td>一共有多少个 program</td>
+</tr>
+<tr>
+<td><code>blockIdx.x/y/z</code></td>
+<td><code>tl.program_id(0/1/2)</code></td>
+<td>我是第几个</td>
+</tr>
+<tr>
+<td>Block</td>
+<td><strong>program（程序实例）</strong></td>
+<td>名字换了，东西是同一个</td>
+</tr>
+<tr>
+<td><code>blockDim.x</code></td>
+<td><code>num_warps × 32</code>（启动参数，kernel 里看不到）</td>
+<td>默认 <code>num_warps=4</code> → 128 线程</td>
+</tr>
+<tr>
+<td><code>threadIdx.x</code></td>
+<td><strong>没有，也不该有</strong></td>
+<td>见 §7.2.3</td>
+</tr>
+<tr>
+<td><code>__shared__</code> 数组</td>
+<td><strong>没有直接对应物</strong></td>
+<td>编译器按需自己分配，见 §7.2.4</td>
+</tr>
+<tr>
+<td><code>__syncthreads()</code></td>
+<td><strong>没有，也不用写</strong></td>
+<td>编译器自动插屏障，见 §7.2.4</td>
+</tr>
+<tr>
+<td><code>warpSize</code> / shuffle</td>
+<td><strong>没有</strong></td>
+<td>归约用 <code>tl.sum</code> / <code>tl.max</code>，编译器决定用 shuffle 还是共享内存</td>
+</tr>
+<tr>
+<td><code>if (i &lt; N)</code></td>
+<td><code>mask=</code> 参数</td>
+<td>见 §7.3</td>
+</tr>
+<tr>
+<td><code>__launch_bounds__</code></td>
+<td><code>Config(..., maxnreg=...)</code></td>
+<td>⚠️ Triton 3.x 的 <code>Config</code> 有 <code>maxnreg</code>，不是所有后端都支持</td>
+</tr>
+</tbody>
+</table>
+<h3 id="723-threadidx-1024-128">7.2.3 为什么没有 <code>threadIdx</code>：把 1024 个元素摊到 128 个线程上</h3>
+<p>这是新手最想不通的地方：<strong><code>BLOCK = 1024</code>，但硬件上只有 128 个线程（<code>num_warps=4</code>），那 1024 个元素到底谁处理谁？</strong></p>
+<p>答案是<strong>编译器决定</strong>，而且它会挑一个能同时满足"合并访存"和"向量化指令"的摊法。以 <code>BLOCK=1024</code>、FP32、<code>num_warps=4</code>（128 线程）为例，编译器的典型选择是：<strong>每个线程一次拿 4 个连续的 float（正好 16 字节 = 128 位，一条向量访存指令的宽度），128 个线程一轮覆盖 512 个元素，跑两轮覆盖 1024 个。</strong></p>
+<table>
+<thead>
+<tr>
+<th>线程号</th>
+<th>第 1 轮拿的元素下标</th>
+<th>第 2 轮拿的元素下标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0 – 3</td>
+<td>512 – 515</td>
+</tr>
+<tr>
+<td>1</td>
+<td>4 – 7</td>
+<td>516 – 519</td>
+</tr>
+<tr>
+<td>2</td>
+<td>8 – 11</td>
+<td>520 – 523</td>
+</tr>
+<tr>
+<td>…</td>
+<td>…</td>
+<td>…</td>
+</tr>
+<tr>
+<td>31</td>
+<td>124 – 127</td>
+<td>636 – 639</td>
+</tr>
+<tr>
+<td>…</td>
+<td>…</td>
+<td>…</td>
+</tr>
+<tr>
+<td>127</td>
+<td>508 – 511</td>
+<td>1020 – 1023</td>
+</tr>
+</tbody>
+</table>
+<p><strong>核对一下合并访存</strong>（对照 <a href="01-GPU硬件基础.html">01 章 §1.4.1</a>）：第 0 个 Warp 的 32 个线程，第 1 轮覆盖元素 0–127，也就是字节 0–511，正好 <strong>16 个连续的 32 字节扇区，一个不多一个不少，效率 100%</strong> ✓。</p>
+<blockquote>
+<p>★ <strong>这就是"为什么不给你 <code>threadIdx</code>"的答案</strong>：元素到线程的映射是一件<strong>性能攸关但纯机械</strong>的事，人来做容易做错（<a href="01-GPU硬件基础.html">01 章 §1.4.3</a> 那个"换个下标位置慢 8 倍"的例子），编译器来做既不会错又能跟着硬件代际自动变。Triton 把这个自由度收走，换来的是你再也写不出未合并的访存。</p>
+<p>⚠️ 上面这张表是<strong>按 Triton 的 blocked layout 规则推出来的典型结果，不是保证</strong>。具体的 <code>sizePerThread</code>（每线程连续几个元素）由编译器根据 dtype、<code>num_warps</code>、访问模式和版本决定。要确认真实布局，用 <code>TRITON_KERNEL_DUMP=1</code> 把 TTGIR 打出来看 <code>#blocked</code> 属性（§7.9）。</p>
+</blockquote>
+<h3 id="724">7.2.4 编译器替你做了哪五件事</h3>
+<p>这五件事，正好是 01 章和 03 章里最折磨人的那几节：</p>
+<table>
+<thead>
+<tr>
+<th>编译器替你做的</th>
+<th>对应本书哪一节</th>
+<th>Triton 里怎么做到的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 合并访存</strong></td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.4</a></td>
+<td><code>tritongpu-coalesce</code> pass：分析每个 <code>tl.load</code> 的地址表达式，挑一个让相邻 lane 落在相邻地址的 layout</td>
+</tr>
+<tr>
+<td><strong>② bank conflict 规避</strong></td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.5</a>、<a href="03-GEMM深度剖析.html">03 章 §3.4.3</a></td>
+<td>需要经共享内存中转时（主要是 <code>tl.dot</code> 的操作数），编译器给它挑一个<strong>带 swizzle 的共享内存布局</strong>，不用你写 <code>[32][33]</code></td>
+</tr>
+<tr>
+<td><strong>③ 寄存器分配</strong></td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.3</a>（寄存器溢出）</td>
+<td>降到 LLVM IR 后由 NVIDIA 后端分配；<code>Config(maxnreg=...)</code> 可以给它设上限</td>
+</tr>
+<tr>
+<td><strong>④ 选 Tensor Core 指令</strong></td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.7</a>、<a href="03-GEMM深度剖析.html">03 章 §3.6</a></td>
+<td><code>tritongpu-accelerate-matmul</code> pass：把 <code>tl.dot</code> 换成带 MMA layout 的形式，后端发射 <code>mma.sync</code> 或 <code>wgmma</code></td>
+</tr>
+<tr>
+<td><strong>⑤ 插同步屏障</strong></td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.3</a>（<code>__syncthreads()</code> 的两个坑）</td>
+<td>membar pass：分析共享内存的读写依赖，在必须同步的地方自动插屏障。<a href="03-GEMM深度剖析.html">03 章 §3.3.4</a> 那两个"一个都不能省"的 <code>__syncthreads()</code>，在 Triton 里你根本不用想</td>
+</tr>
+</tbody>
+</table>
+<p>再加一件半自动的：</p>
+<p>| <strong>⑥ 软件流水（双缓冲）</strong> | <a href="03-GEMM深度剖析.html">03 章 §3.5</a> | 不是全自动——你给 <code>num_stages</code>，编译器负责把循环拆成"预取 + 计算"重叠的形式，并发出 <code>cp.async</code> / TMA |</p>
+<p>顺带说清楚<strong>共享内存在 Triton 里到底什么时候会被用上</strong>（原稿这里说得很含糊）：</p>
+<div class="codehilite"><pre><span></span><code>tl.load 到的数据默认放在【寄存器】里，不经过共享内存。
+
+编译器会动用共享内存的四种场合：
+  ① tl.dot 的操作数          —— MMA 指令要求特定的片上布局，必须中转
+  ② 跨 Warp 的归约            —— tl.sum / tl.max 跨越多个 Warp 时
+  ③ 布局转换（layout convert）—— 前后两个算子想要的数据摆法不同
+  ④ num_stages &gt; 1 的流水缓冲 —— 预取的下一块 tile 要有地方放
+
+前三种你控制不了，第四种由 num_stages 直接决定（§7.7.3）。
+标准 Triton 语言里没有 __shared__ 的对应物，你不能手动开一块共享内存。
+</code></pre></div>
+
+<h3 id="725">7.2.5 编译器<strong>不</strong>替你做的四件事</h3>
+<blockquote>
+<p>⚠️ <strong>"Triton 帮你管掉了硬件细节"不等于"Triton 帮你写出了好算法"。</strong> 下面四件事，全都得你自己来，而且它们决定了性能的上限：</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>你必须自己决定的</th>
+<th>为什么编译器做不了</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>BLOCK 怎么切、grid 怎么分</strong></td>
+<td>这是算法设计。一行一个 program？一块 128×128 一个 program？编译器不知道你的数据语义</td>
+</tr>
+<tr>
+<td><strong>算法本身</strong></td>
+<td>FlashAttention 的在线 softmax（<a href="04-FlashAttention全系.html">04 章 §4.2</a>）是数学改写，不是编译优化。编译器不会帮你想出来</td>
+</tr>
+<tr>
+<td><strong>mask</strong></td>
+<td>忘了写 <code>mask=</code>，编译器不会警告，直接越界（§7.3）</td>
+</tr>
+<tr>
+<td><strong>索引表达式本身是否连续</strong></td>
+<td>编译器能优化"元素→线程"的映射，<strong>但改不了你写的地址公式</strong>。你写 <code>tl.load(p + offs * 32)</code>，它照样是 <a href="01-GPU硬件基础.html">01 章 §1.4.2</a> 的情况 B，12.5% 效率，编译器无能为力</td>
+</tr>
+</tbody>
+</table>
+<p>最后一条特别容易被误解，单独强调一次：</p>
+<blockquote>
+<p>⚠️ <strong>Triton 不能把"跨步访问"变成"连续访问"。</strong> 它保证的是"在你给定的地址表达式下，线程与元素的对应关系是最优的"。数据本身在 HBM 里就是跨着摆的（比如你要按列读一个行优先矩阵），那还是跨步，还是慢。这种情况下的正确做法和 CUDA 里一样：改数据布局，或者借片上存储中转（<a href="01-GPU硬件基础.html">01 章 §1.4.4</a>）。</p>
+</blockquote>
+<hr />
+<h2 id="73-masktriton-if-i-n">7.3 <code>mask</code>：Triton 版的 <code>if (i &lt; N)</code></h2>
+<h3 id="731-n-block">7.3.1 一个 N 不整除 BLOCK 的完整推演</h3>
+<p>沿用 <a href="01-GPU硬件基础.html">01 章 §1.2.3</a> 的设定：<strong>N = 1000，BLOCK = 256</strong>，所以 <code>grid = ceil(1000/256) = 4</code> 个 program。</p>
+<p>先把四个 program 的 <code>offs</code> 范围列出来（<code>offs = pid * 256 + tl.arange(0, 256)</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>pid</th>
+<th><code>tl.arange(0, 256)</code></th>
+<th><code>offs</code> 范围</th>
+<th><code>mask = offs &lt; 1000</code></th>
+<th>情况</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>0 – 255</td>
+<td>0 – 255</td>
+<td>全 True</td>
+<td>全部有效</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0 – 255</td>
+<td>256 – 511</td>
+<td>全 True</td>
+<td>全部有效</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0 – 255</td>
+<td>512 – 767</td>
+<td>全 True</td>
+<td>全部有效</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0 – 255</td>
+<td>768 – 1023</td>
+<td><strong>前 232 个 True，后 24 个 False</strong></td>
+<td>后 24 个越界</td>
+</tr>
+</tbody>
+</table>
+<p>把 program 3 的尾巴放大看——<code>mask</code> 是一个长度 256 的<strong>布尔向量</strong>，不是一个标量条件：</p>
+<div class="codehilite"><pre><span></span><code>program 3 的 offs 向量（只画尾部 8 个位置）：
+
+  向量位置:  248   249   250   251   252   253   254   255
+  offs 值:   1016  1017  1018  1019  1020  1021  1022  1023
+  &lt; 1000?    False False False False False False False False
+                ↑ 这 8 个位置的 load 不会发出请求，store 不会写出去
+
+  向量位置:  230   231   232   233
+  offs 值:   998   999   1000  1001
+  &lt; 1000?    True  True  False False
+                          ↑ 分界线正好落在向量中间，不在 Warp 边界上
+</code></pre></div>
+
+<p><strong>注意最后一行</strong>：分界线落在向量的第 232 个位置。这个位置属于第 7 个 Warp（232 ÷ 32 = 7.25）的中间，也就是说<strong>同一个 Warp 里有些 lane 有效、有些无效</strong>。这不是问题——掩码本来就是逐 lane 的，硬件天生支持（<a href="01-GPU硬件基础.html">01 章 §1.2.5</a> 讲 Warp 分歧时说的"不该干活的线程用掩码屏蔽掉"，就是这个机制）。</p>
+<blockquote>
+<p>★ <strong><code>mask</code> 和 CUDA 的 <code>if (i &lt; N)</code> 是同一件事的两种写法</strong>，都翻译成硬件上的 lane 谓词（predicate）。区别只在于：CUDA 里它长得像一个分支，Triton 里它长得像一个参数。<strong>两者都不是可选的，漏了都会越界写显存</strong>——而且都不报错，只是安静地写坏别人的数据。</p>
+</blockquote>
+<h3 id="732-other">7.3.2 <code>other=</code> 怎么选：三个场景，选错就是静默错误</h3>
+<p>被 mask 屏蔽掉的位置，<code>tl.load</code> 不会真的去读内存，但那个位置在返回的向量里<strong>总得填点什么</strong>。填什么由 <code>other=</code> 决定，默认是 <code>0</code>。</p>
+<table>
+<thead>
+<tr>
+<th>后面要拿它做什么</th>
+<th><code>other=</code> 该填</th>
+<th>填错会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>求和 / 累加 / <code>tl.dot</code></td>
+<td><code>0.0</code></td>
+<td>填别的会把垃圾加进和里</td>
+</tr>
+<tr>
+<td>求最大值 <code>tl.max</code></td>
+<td><code>-float('inf')</code></td>
+<td><strong>填 0.0 时，如果整行都是负数，最大值会错成 0</strong></td>
+</tr>
+<tr>
+<td>求最小值 <code>tl.min</code></td>
+<td><code>float('inf')</code></td>
+<td>同理</td>
+</tr>
+<tr>
+<td>读一个权重向量，后面做乘法</td>
+<td><code>0.0</code>（配合 store 的 mask）</td>
+<td>一般无所谓，因为写出去的时候也被 mask 挡了</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>求最大值那一行是本节最值钱的一句。</strong> softmax 的第一步是 <code>x - max(x)</code>（<a href="04-FlashAttention全系.html">04 章 §4.2.5</a> 讲过为什么非减不可）。如果一行的有效长度是 781、BLOCK 是 1024，尾部 243 个位置用 <code>other=0.0</code> 填，而这一行的真实数据恰好全是负数，那么 <code>tl.max</code> 会返回 0 而不是真正的最大值——<strong>结果是错的，但不会报错，也不会 NaN，只是数值偏了</strong>。官方 softmax 教程里写 <code>other=-float('inf')</code> 就是为了这个。</p>
+</blockquote>
+<h3 id="733-mask-warp">7.3.3 一个反复被问的问题：<code>mask</code> 会不会导致 Warp 分歧</h3>
+<p>不会——至少不会以 <a href="01-GPU硬件基础.html">01 章 §1.2.5</a> 那种"两条路都走一遍"的方式。</p>
+<div class="codehilite"><pre><span></span><code>Warp 分歧（01 章 §1.2.5）：
+    if (cond) { A(); } else { B(); }
+    → 两段【不同的指令序列】，硬件必须各执行一遍，耗时相加
+
+mask：
+    tl.load(ptr + offs, mask=m)
+    → 只有【一条指令】，带一个 32 位的谓词寄存器
+    → 谓词为 0 的 lane 这一拍不发访存请求，仅此而已
+    → 不存在&quot;两条路&quot;，耗时不相加
+</code></pre></div>
+
+<p>代价只有一个：被屏蔽的 lane 这一拍白跑了（通道利用率下降）。N=1000/BLOCK=256 时，浪费 24/1024 = 2.3%，和 <a href="01-GPU硬件基础.html">01 章 §1.2.3</a> 算出来的完全一样。</p>
+<hr />
+<h2 id="74-vector-add">7.4 第一步：vector add —— 把骨架走通</h2>
+<h3 id="741-kernel">7.4.1 完整代码（kernel + 启动器）</h3>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">triton</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">triton.language</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">tl</span>
+
+
+<span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">add_kernel</span><span class="p">(</span>
+    <span class="n">x_ptr</span><span class="p">,</span> <span class="n">y_ptr</span><span class="p">,</span> <span class="n">z_ptr</span><span class="p">,</span>      <span class="c1"># 三个张量的首地址（Triton 收到的是裸指针）</span>
+    <span class="n">n_elements</span><span class="p">,</span>               <span class="c1"># 运行期参数：向量长度</span>
+    <span class="n">BLOCK</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>      <span class="c1"># 编译期常量：每个 program 处理多少个元素</span>
+<span class="p">):</span>
+    <span class="n">pid</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">offs</span> <span class="o">=</span> <span class="n">pid</span> <span class="o">*</span> <span class="n">BLOCK</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK</span><span class="p">)</span>     <span class="c1"># 长度为 BLOCK 的下标向量</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">offs</span> <span class="o">&lt;</span> <span class="n">n_elements</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">offs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">y_ptr</span> <span class="o">+</span> <span class="n">offs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">z_ptr</span> <span class="o">+</span> <span class="n">offs</span><span class="p">,</span> <span class="n">x</span> <span class="o">+</span> <span class="n">y</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">add</span><span class="p">(</span><span class="n">x</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">y</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
+    <span class="k">assert</span> <span class="n">x</span><span class="o">.</span><span class="n">is_cuda</span> <span class="ow">and</span> <span class="n">y</span><span class="o">.</span><span class="n">is_cuda</span> <span class="ow">and</span> <span class="n">x</span><span class="o">.</span><span class="n">is_contiguous</span><span class="p">()</span>
     <span class="n">z</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty_like</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">numel</span><span class="p">()</span>
-    <span class="n">BLOCK_SIZE</span> <span class="o">=</span> <span class="mi">1024</span>
-
-    <span class="c1"># 启动 ceil(n / BLOCK_SIZE) 个 Block</span>
-    <span class="n">grid</span> <span class="o">=</span> <span class="p">(</span><span class="n">triton</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="p">),)</span>
-
-    <span class="n">vector_add_kernel</span><span class="p">[</span><span class="n">grid</span><span class="p">](</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="o">=</span><span class="n">BLOCK_SIZE</span><span class="p">)</span>
+    <span class="n">grid</span> <span class="o">=</span> <span class="p">(</span><span class="n">triton</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="mi">1024</span><span class="p">),)</span>               <span class="c1"># cdiv = 向上取整除法</span>
+    <span class="n">add_kernel</span><span class="p">[</span><span class="n">grid</span><span class="p">](</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">z</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">BLOCK</span><span class="o">=</span><span class="mi">1024</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">z</span>
 </code></pre></div>
 
-<p><strong>和 CUDA 的对比</strong>：<br />
-- CUDA 需要写 <code>threadIdx</code>、<code>blockIdx</code>、手动处理 Warp 对齐<br />
-- Triton 只需要 <code>program_id</code>（Block 编号），线程层次对程序员<strong>完全透明</strong><br />
-- Triton 自动把 <code>tl.arange(0, BLOCK_SIZE)</code> 的操作向量化到合适的 Warp 执行</p>
+<p>四个语法点，都是后面两节要反复用的：</p>
+<table>
+<thead>
+<tr>
+<th>写法</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kernel[grid](...)</code></td>
+<td>方括号里是 grid（一个元组，1–3 维），圆括号里是参数。这是 Triton 的启动语法</td>
+</tr>
+<tr>
+<td>张量直接当指针传</td>
+<td>Triton 会自动取 <code>data_ptr()</code>。所以 kernel 里 <code>x_ptr + offs</code> 是<strong>按元素</strong>偏移，不是按字节</td>
+</tr>
+<tr>
+<td><code>BLOCK: tl.constexpr</code></td>
+<td>编译期常量。<strong>必须是 2 的幂</strong>（<code>tl.arange</code> 的硬性要求），每换一个值重编译一次</td>
+</tr>
+<tr>
+<td><code>num_warps=4</code></td>
+<td>启动参数，不是 kernel 的形参。决定这个 program 用多少线程（4×32 = 128）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong><code>tl.arange(0, BLOCK)</code> 要求 BLOCK 是 2 的幂</strong>，这是 Triton 从头到尾的硬约束。所以处理"一行 781 个元素"这种形状时，标准做法是 <code>BLOCK = triton.next_power_of_2(781) = 1024</code>，再用 mask 把尾巴挡掉——不是"BLOCK 取 781"。</p>
+</blockquote>
+<h3 id="742">7.4.2 这段代码在硬件上对应什么</h3>
+<table>
+<thead>
+<tr>
+<th>这一行</th>
+<th>硬件上发生了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tl.program_id(0)</code></td>
+<td>读 <code>%ctaid.x</code> 特殊寄存器，就是 CUDA 的 <code>blockIdx.x</code></td>
+</tr>
+<tr>
+<td><code>tl.arange(0, 1024)</code></td>
+<td><strong>不产生任何指令</strong>。它是编译期的形状信息，告诉编译器"接下来是一个长 1024 的张量"</td>
+</tr>
+<tr>
+<td><code>tl.load(x_ptr + offs, mask)</code></td>
+<td>编译成若干条带谓词的向量访存（典型是 <code>ld.global.v4.b32</code>，每线程一次取 128 位），全部合并</td>
+</tr>
+<tr>
+<td><code>x + y</code></td>
+<td>若干条 <code>add.f32</code>，每个线程对自己手里那 8 个元素各加一次</td>
+</tr>
+<tr>
+<td><code>tl.store(...)</code></td>
+<td>对称的 <code>st.global.v4.b32</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="743-kernel">7.4.3 算一笔账：这个 kernel 能跑多快</h3>
+<p><strong>任务</strong>：N = 1 亿个 FP32，H100 SXM5。</p>
+<div class="codehilite"><pre><span></span><code>搬运量 = 读 x (400 MB) + 读 y (400 MB) + 写 z (400 MB) = 1.2 GB
+计算量 = 1 亿次加法 = 0.1 GFLOP
+
+算术强度 = 0.1e9 ÷ 1.2e9 = 0.083 FLOP/Byte
+        ≪ 屋脊点 295（01 章 §1.3）→ 彻头彻尾的 Memory Bound
+
+理论耗时 = 1.2 GB ÷ 3350 GB/s = 358 µs
+理论算力占用 = (0.1e9 ÷ 358e-6) ÷ 67e12 = 279 GFLOPS ÷ 67 TFLOPS = 0.42%
+              （对照 01 章 §1.3 的 y = x*2 是 0.63%：那里每元素搬 8 字节，
+                这里搬 12 字节，算术强度低一些，占比也就低一些 ✓）
+</code></pre></div>
+
+<p><strong>再看波次</strong>（<a href="01-GPU硬件基础.html">01 章 §1.2.4</a>）：</p>
+<div class="codehilite"><pre><span></span><code>grid = ceil(1e8 / 1024) = 97,657 个 program
+假设每 SM 能同时驻留 8 个（num_warps=4 → 每 program 4 个 Warp，8×4 = 32 Warp，未超 64）
+一个波次 = 132 SM × 8 = 1056 个 program
+波次数 = ceil(97657 / 1056) = 93 个
+
+最后一波只有 97657 − 92×1056 = 505 个 program（装了 48%）
+机器利用率 = 97657 ÷ (93 × 1056) = 99.4%    ← 尾巴被 93 个波次摊薄了，可以忽略
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>写到这里这个 kernel 就完了——没有任何优化空间。</strong> 它已经是 100% 合并访存、100% 带宽受限、尾巴可以忽略。你能做的只剩"别再多读写一遍"，也就是 <a href="05-算子融合.html">05 章</a>的融合。<strong>这正好说明 Triton 的价值在哪：它不能让 Memory Bound 的算子超过屋顶线，它只是让你用十行 Python 就稳稳地贴到屋顶线上。</strong></p>
+</blockquote>
 <hr />
-<h2 id="73-triton">7.3 矩阵乘法：Triton 的核心用例</h2>
-<p>下面是一个简化的 FP16 GEMM kernel，展示 Triton 如何做分块矩阵乘：</p>
+<h2 id="75-fused-softmax-program">7.5 第二步：fused softmax —— 新增"行内归约"和"一个 program 一整行"</h2>
+<p>从 vector add 到 softmax，只加两个新概念：<strong>归约</strong>（<code>tl.max</code> / <code>tl.sum</code>）和<strong>一个 program 负责一整行</strong>。</p>
+<h3 id="751">7.5.1 先算账：为什么值得融</h3>
+<p>Softmax 按定义写是五步：求最大值 → 减最大值 → 取指数 → 求和 → 除。如果每步一个 PyTorch 算子，HBM 往返就是这样（记一份 <code>[M, N]</code> 张量为 <code>T</code>，<a href="05-算子融合.html">05 章</a>的记法）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>读</th>
+<th>写</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>m = x.max(dim=-1)</code></td>
+<td>1 T</td>
+<td>~0（结果只有 M 个数）</td>
+</tr>
+<tr>
+<td><code>t = x - m</code></td>
+<td>1 T</td>
+<td>1 T</td>
+</tr>
+<tr>
+<td><code>e = t.exp()</code></td>
+<td>1 T</td>
+<td>1 T</td>
+</tr>
+<tr>
+<td><code>s = e.sum(dim=-1)</code></td>
+<td>1 T</td>
+<td>~0</td>
+</tr>
+<tr>
+<td><code>out = e / s</code></td>
+<td>1 T</td>
+<td>1 T</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>5 T</strong></td>
+<td><strong>3 T</strong></td>
+</tr>
+</tbody>
+</table>
+<p>融合成一个 kernel 之后：<strong>读 1 T、写 1 T，合计 2 T</strong>。</p>
+<p>代进真实形状（M = 4096 行，N = 4096 列，BF16，<code>T = 4096 × 4096 × 2 B = 33.55 MB</code>）：</p>
+<div class="codehilite"><pre><span></span><code>不融合：8 T = 268.4 MB ÷ 3350 GB/s = 80.1 µs
+融  合：2 T =  67.1 MB ÷ 3350 GB/s = 20.0 µs
+                                     ────────
+                                     快 4.0 倍
+</code></pre></div>
+
+<p><strong>这 4 倍不来自任何算法技巧，只来自"中间结果不写出去"。</strong> 和 <a href="05-算子融合.html">05 章 §5.2</a> 那条 LayerNorm 链是同一个故事。</p>
+<h3 id="752-program">7.5.2 代码：最朴素的一行一 program 版本</h3>
 <div class="codehilite"><pre><span></span><code><span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">softmax_kernel</span><span class="p">(</span>
+    <span class="n">out_ptr</span><span class="p">,</span> <span class="n">in_ptr</span><span class="p">,</span>
+    <span class="n">in_row_stride</span><span class="p">,</span> <span class="n">out_row_stride</span><span class="p">,</span>   <span class="c1"># 相邻两行之间隔多少个【元素】</span>
+    <span class="n">n_cols</span><span class="p">,</span>
+    <span class="n">BLOCK</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>             <span class="c1"># 必须 &gt;= n_cols，且是 2 的幂</span>
+<span class="p">):</span>
+    <span class="n">row</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>                      <span class="c1"># 一个 program 负责一整行</span>
+    <span class="n">cols</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK</span><span class="p">)</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">&lt;</span> <span class="n">n_cols</span>
+
+    <span class="c1"># ① 唯一一次从 HBM 读这一行</span>
+    <span class="n">row_ptr</span> <span class="o">=</span> <span class="n">in_ptr</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">in_row_stride</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">row_ptr</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=-</span><span class="nb">float</span><span class="p">(</span><span class="s1">&#39;inf&#39;</span><span class="p">))</span>
+    <span class="c1">#                                      ↑ 见 §7.3.2：求 max 必须填 -inf</span>
+
+    <span class="c1"># ② 三步归约 + 逐元素运算，全程在片上，一个字节都不落 HBM</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">tl</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>                   <span class="c1"># 减最大值（04 章 §4.2.5）</span>
+    <span class="n">num</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="n">num</span> <span class="o">/</span> <span class="n">tl</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">num</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+
+    <span class="c1"># ③ 唯一一次写回 HBM</span>
+    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">out_ptr</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">out_row_stride</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">out</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">softmax</span><span class="p">(</span><span class="n">x</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
+    <span class="n">n_rows</span><span class="p">,</span> <span class="n">n_cols</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty_like</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="n">BLOCK</span> <span class="o">=</span> <span class="n">triton</span><span class="o">.</span><span class="n">next_power_of_2</span><span class="p">(</span><span class="n">n_cols</span><span class="p">)</span>
+    <span class="n">num_warps</span> <span class="o">=</span> <span class="mi">8</span> <span class="k">if</span> <span class="n">BLOCK</span> <span class="o">&gt;=</span> <span class="mi">2048</span> <span class="k">else</span> <span class="mi">4</span>        <span class="c1"># 行越长，多派点线程</span>
+    <span class="n">softmax_kernel</span><span class="p">[(</span><span class="n">n_rows</span><span class="p">,)](</span>                   <span class="c1"># grid = 行数，一行一个 program</span>
+        <span class="n">out</span><span class="p">,</span> <span class="n">x</span><span class="p">,</span> <span class="n">x</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">out</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">n_cols</span><span class="p">,</span>
+        <span class="n">BLOCK</span><span class="o">=</span><span class="n">BLOCK</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="n">num_warps</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">out</span>
+</code></pre></div>
+
+<h3 id="753">7.5.3 新概念：归约在硬件上是怎么做的</h3>
+<p><code>tl.max(x, axis=0)</code> 这一行在源码里只有 14 个字符，编译出来是一棵<strong>两级归约树</strong>：</p>
+<div class="codehilite"><pre><span></span><code>设 BLOCK = 1024，num_warps = 4（128 线程），每线程手里 8 个元素。
+
+第一级：线程内归约（纯寄存器，最便宜）
+    每个线程把自己手里 8 个元素两两比，得 1 个局部最大值
+    128 个线程 → 128 个局部值        代价：8 条 max 指令
+
+第二级 a：Warp 内归约（用 shuffle 指令，不经过内存）
+    一个 Warp 的 32 个局部值 → 1 个
+    用 __shfl_xor_sync 做 5 轮（log2(32) = 5）
+    4 个 Warp → 4 个值               代价：5 条 shuffle + 5 条 max
+
+第二级 b：跨 Warp 归约（这里才动用共享内存）
+    4 个 Warp 各把自己的结果写进共享内存（4 个 float = 16 字节）
+    插一个屏障
+    再读回来，4 个值归约成 1 个，广播给全部 128 个线程
+
+  ★ 这三步、那个屏障、那 16 字节共享内存，你一行都没写。
+    在 CUDA 里这是一个至少 30 行、且极容易写错的 blockReduce 模板。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这就是 Triton 最实在的省力之处</strong>：归约是 GPU 编程里最容易写错的一类代码（错一个屏障就是随机结果），而 Triton 把它压成了一个函数调用。<code>tl.sum</code> / <code>tl.max</code> / <code>tl.min</code> / <code>tl.argmax</code> / <code>tl.cumsum</code> 都是同一套机制。</p>
+<p>⚠️ 上面"5 轮 shuffle + 共享内存中转"是<strong>按归约树原理推出的典型形态</strong>，具体用几轮 shuffle、是否走共享内存，取决于 <code>num_warps</code> 和编译器版本。要确认请看 TTGIR / PTX（§7.9）。</p>
+</blockquote>
+<h3 id="754">7.5.4 这个写法的硬约束：一整行必须装进片上</h3>
+<p><code>BLOCK &gt;= n_cols</code> 意味着<strong>一整行必须同时活在一个 program 的寄存器里</strong>。算一下预算：</p>
+<div class="codehilite"><pre><span></span><code>N = 4096，BF16 输入，Triton 内部 exp 走 FP32：
+  一行转成 FP32 = 4096 × 4 B = 16 KB
+  同时活着的中间量 x / num / out 大约 2–3 份
+  → ⚠️ 约 32–48 KB / program（估算，编译器会复用，实际更少）
+
+寄存器文件 = 256 KB/SM（01 章 §1.2.2）
+→ 一个 SM 大概放得下 5–8 个这样的 program
+
+N = 32768 时：一行 FP32 就是 128 KB，加中间量直接爆掉 ✗
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>N 太大时这个写法会直接编译失败或性能塌方</strong>（症状是 <code>out of resource: shared memory</code>，或者编译通过但寄存器大量溢出，<a href="01-GPU硬件基础.html">01 章 §1.3</a> 的 spill）。出路是退回<strong>两趟扫描</strong>：第一趟只扫一遍求 max 和 sum，第二趟再扫一遍做除法。代价是 x 要读两遍，融合收益从 4× 降到约 2.7×（8 T → 3 T）。和 <a href="05-算子融合.html">05 章 §5.7</a> 末尾 LayerNorm 遇到的是同一个墙。<strong>更好的出路是在线算法</strong>——一趟就把 max 和 sum 同时算出来，那正是 <a href="04-FlashAttention全系.html">04 章 §4.2</a> 的在线 Softmax。</p>
+</blockquote>
+<h3 id="755-persistent-kernel-occupancy">7.5.5 进阶：persistent kernel，以及一次 Occupancy 手算</h3>
+<p>上面的写法是 <code>grid = (n_rows,)</code>——行数多的时候会启动几万个 program，每个只干一点点活，<a href="01-GPU硬件基础.html">01 章 §1.8.2</a> 说的<strong>下发成本</strong>开始显眼。官方教程用的是 <strong>persistent kernel（常驻 kernel）</strong>：只启动"刚好填满一个波次"的 program，每个 program 内部用循环去领活。</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">softmax_persistent</span><span class="p">(</span><span class="n">out_ptr</span><span class="p">,</span> <span class="n">in_ptr</span><span class="p">,</span> <span class="n">in_stride</span><span class="p">,</span> <span class="n">out_stride</span><span class="p">,</span> <span class="n">n_rows</span><span class="p">,</span> <span class="n">n_cols</span><span class="p">,</span>
+                       <span class="n">BLOCK</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">NUM_STAGES</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">):</span>
+    <span class="n">row_start</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">row_step</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">num_programs</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>                       <span class="c1"># 一共启动了多少个 program</span>
+    <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">tl</span><span class="o">.</span><span class="n">range</span><span class="p">(</span><span class="n">row_start</span><span class="p">,</span> <span class="n">n_rows</span><span class="p">,</span> <span class="n">row_step</span><span class="p">,</span> <span class="n">num_stages</span><span class="o">=</span><span class="n">NUM_STAGES</span><span class="p">):</span>
+        <span class="n">cols</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK</span><span class="p">)</span>
+        <span class="n">mask</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">&lt;</span> <span class="n">n_cols</span>
+        <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">in_ptr</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">in_stride</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=-</span><span class="nb">float</span><span class="p">(</span><span class="s1">&#39;inf&#39;</span><span class="p">))</span>
+        <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">-</span> <span class="n">tl</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+        <span class="n">num</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+        <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">out_ptr</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">out_stride</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span>
+                 <span class="n">num</span> <span class="o">/</span> <span class="n">tl</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">num</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+</code></pre></div>
+
+<p>这就是 <a href="01-GPU硬件基础.html">01 章 §1.2.4</a> 提到的 <strong>Grid-Stride Loop（网格跨步循环）</strong>。关键问题变成：<strong>应该启动多少个 program？</strong> 答案是"刚好填满一个波次"，而这要靠 Occupancy 反推。</p>
+<p><strong>手算一遍</strong>（H100，<code>num_warps=8</code>，假设编译后每线程 32 个寄存器、每 program 用 16 KB 共享内存）：</p>
+<div class="codehilite"><pre><span></span><code>① 寄存器能装几个 program
+   每 program 用的寄存器 = 32 × 32 × 8 = 8192 个
+                            ↑每线程 ↑每Warp ↑Warp数
+   65536 ÷ 8192 = 8 个 program/SM
+
+② 共享内存能装几个
+   228 KB ÷ 16 KB = 14 个 program/SM
+
+③ Warp 上限
+   64 ÷ 8 = 8 个 program/SM         ← 01 章 §1.2.2 的每 SM 64 Warp 上限
+
+取最小值：min(8, 14, 8) = 8 个 program/SM
+驻留 Warp = 8 × 8 = 64 → Occupancy = 100%
+
+一个波次 = 132 SM × 8 = 1056 个 program
+→ grid = min(1056, n_rows)
+</code></pre></div>
+
+<p>官方教程正是这么做的：先 <code>kernel.warmup(...)</code> 编译一遍，从编译产物里读出 <code>n_regs</code> 和 <code>metadata.shared</code>，再代入上面这个式子算 <code>num_programs</code>。</p>
+<blockquote>
+<p>⚠️ 官方教程用到的 <code>kernel.warmup()</code> / <code>kernel._init_handles()</code> / <code>kernel.n_regs</code> / <code>kernel.metadata.shared</code> 是<strong>偏内部的 API，带下划线的那个尤其不稳定</strong>，不同 Triton 版本改过。生产代码里建议把算出来的 grid 数写死或做成配置项，不要在运行时反射编译产物。</p>
+<p>⚠️ 官方教程的那个 occupancy 公式<strong>只除了寄存器和共享内存，没有对 64 Warp 上限做 min</strong>。<code>num_warps</code> 小的时候它可能算出超过硬件上限的值。自己用的时候记得补上第 ③ 条。</p>
+</blockquote>
+<hr />
+<h2 id="76-matmul-tldotk-l2">7.6 第三步：matmul —— 新增"二维指针"、<code>tl.dot</code>、K 循环、L2 分组</h2>
+<p>这一步一次加了四个概念，但每一个都在 <a href="03-GEMM深度剖析.html">03 章</a>见过原型。</p>
+<h3 id="761-none-none">7.6.1 二维指针：<code>[:, None]</code> 和 <code>[None, :]</code> 到底在干什么</h3>
+<p>这是 Triton 里唯一需要动一下脑筋的语法。<code>offs_m[:, None]</code> 把一个长度 BM 的向量变成 <code>BM × 1</code> 的矩阵，<code>offs_k[None, :]</code> 把长度 BK 的向量变成 <code>1 × BK</code>，两者相加触发<strong>广播</strong>，得到一个 <code>BM × BK</code> 的地址矩阵。</p>
+<p><strong>手算一遍。</strong> 设 A 是行优先的 <code>M × K</code> 矩阵，<code>stride_am = K = 4</code>，<code>stride_ak = 1</code>；取 <code>BM = 2</code>，<code>BK = 3</code>，<code>pid_m = 0</code>，<code>k = 0</code>：</p>
+<div class="codehilite"><pre><span></span><code>offs_m = tl.arange(0, 2)            = [0, 1]
+offs_k = tl.arange(0, 3)            = [0, 1, 2]
+
+offs_m[:, None] * stride_am  =  [[0],     * 4  =  [[0],
+                                 [1]]              [4]]
+
+offs_k[None, :] * stride_ak  =  [[0, 1, 2]] * 1 = [[0, 1, 2]]
+
+两者相加（广播）：
+                 [[0],        [[0, 1, 2]]      [[0, 1, 2],
+                  [4]]    +                =    [4, 5, 6]]
+
+a_ptrs = a_ptr + 上面这个 2×3 的偏移矩阵
+</code></pre></div>
+
+<p>对照一下 A 在内存里的实际摆法（<code>A[r][c]</code> 在第 <code>r*4 + c</code> 个元素），确认无误：<code>A[0][0..2]</code> 在 0,1,2；<code>A[1][0..2]</code> 在 4,5,6 ✓。</p>
+<blockquote>
+<p>★ <strong>一个记忆口诀</strong>：<code>[:, None]</code> 管"行走哪一维"，<code>[None, :]</code> 管"列走哪一维"，各自乘上对应的 stride。这个模式在本章、在所有 Triton GEMM/Attention 代码里会出现几十次，记熟它，剩下的都是体力活。</p>
+</blockquote>
+<h3 id="762-tldot-03">7.6.2 <code>tl.dot</code> 和 03 章三级分块的对应关系</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">acc</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">BLOCK_M</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">tl</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">K</span><span class="p">,</span> <span class="n">BLOCK_K</span><span class="p">)):</span>
+    <span class="n">a</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">a_ptrs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">offs_k</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">&lt;</span> <span class="n">K</span> <span class="o">-</span> <span class="n">k</span> <span class="o">*</span> <span class="n">BLOCK_K</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>
+    <span class="n">b</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">b_ptrs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">offs_k</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">K</span> <span class="o">-</span> <span class="n">k</span> <span class="o">*</span> <span class="n">BLOCK_K</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>
+    <span class="n">acc</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">acc</span><span class="p">)</span>                    <span class="c1"># 累加进 acc，不是 acc += tl.dot(a, b)</span>
+    <span class="n">a_ptrs</span> <span class="o">+=</span> <span class="n">BLOCK_K</span> <span class="o">*</span> <span class="n">stride_ak</span>
+    <span class="n">b_ptrs</span> <span class="o">+=</span> <span class="n">BLOCK_K</span> <span class="o">*</span> <span class="n">stride_bk</span>
+</code></pre></div>
+
+<p>这段循环就是 <a href="03-GEMM深度剖析.html">03 章 §3.3.4</a> 那段伪代码的实现。对照表：</p>
+<table>
+<thead>
+<tr>
+<th>03 章的概念</th>
+<th>Triton 里是谁</th>
+<th>谁决定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Block Tile</strong>（BM × BN × BK）</td>
+<td><code>BLOCK_M</code> / <code>BLOCK_N</code> / <code>BLOCK_K</code></td>
+<td><strong>你</strong>（或 autotune）</td>
+</tr>
+<tr>
+<td><strong>Warp Tile</strong>（WM × WN）</td>
+<td>无对应写法</td>
+<td><strong>编译器</strong>（由 <code>num_warps</code> 间接影响）</td>
+</tr>
+<tr>
+<td><strong>Thread Tile</strong>（TM × TN）</td>
+<td>无对应写法</td>
+<td><strong>编译器</strong></td>
+</tr>
+<tr>
+<td>搬进共享内存 + <code>__syncthreads()</code></td>
+<td>无对应写法</td>
+<td><strong>编译器</strong>（<code>tl.dot</code> 的操作数自动中转 + 自动插屏障）</td>
+</tr>
+<tr>
+<td>共享内存 swizzle（§3.4.3）</td>
+<td>无对应写法</td>
+<td><strong>编译器</strong></td>
+</tr>
+<tr>
+<td>双缓冲 / N 级流水（§3.5）</td>
+<td><code>num_stages</code></td>
+<td><strong>你</strong>（给个数字，编译器实现）</td>
+</tr>
+<tr>
+<td>Tensor Core 的 <code>mma</code> / <code>wgmma</code></td>
+<td><code>tl.dot</code></td>
+<td><strong>编译器</strong>选指令</td>
+</tr>
+<tr>
+<td>Threadblock Swizzle（§3.3.6）</td>
+<td><code>GROUP_SIZE_M</code> + 手写的 pid 重排</td>
+<td><strong>你</strong>（§7.6.3）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>三级分块里，Triton 只让你管第一级。</strong> 03 章里那个"Thread Tile 为什么正好是 8×8"的精妙推算（§3.4.2），在 Triton 里你既不用算也没法控制——这既是省力，也是天花板所在（§7.11）。</p>
+</blockquote>
+<p><strong>三个必须知道的 <code>tl.dot</code> 约束</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>约束</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M、N、K 三个维度都必须 ≥ 16</strong></td>
+<td>这是 Tensor Core MMA 指令形状决定的（<a href="01-GPU硬件基础.html">01 章 §1.7.2</a>）。<code>[16,8] × [8,16]</code> 会因为 K=8 报错</td>
+</tr>
+<tr>
+<td><strong>没有矩阵—向量路径</strong></td>
+<td><code>BLOCK_N = 1</code> 的 GEMV 用不了 <code>tl.dot</code>，得写成 <code>tl.sum(a * b[None, :], axis=1)</code></td>
+</tr>
+<tr>
+<td><strong>累加器用 FP32</strong></td>
+<td><code>tl.zeros(..., dtype=tl.float32)</code>。BF16 累加会掉精度，而 Tensor Core 本来就支持 FP32 累加，不花钱</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ FP8 输入在部分后端要求 K ≥ 32，不是 16。⚠️ <code>tl.dot</code> 的 <code>allow_tf32=True</code> 参数在新版本里<strong>已标记为废弃</strong>，等价写法是 <code>input_precision="tf32"</code>（NVIDIA 后端的默认值就是 <code>"tf32"</code>；要严格 FP32 精度得显式写 <code>input_precision="ieee"</code>）。</p>
+</blockquote>
+<h3 id="763-group_size_m03-336-l2-triton">7.6.3 <code>GROUP_SIZE_M</code>：03 章 §3.3.6 那个 L2 优化的 Triton 版</h3>
+<p><a href="03-GEMM深度剖析.html">03 章 §3.3.6</a> 说过：<strong>Block 的执行顺序会显著影响 L2 命中率</strong>，按行扫描是最差的选择。Triton 官方 GEMM 教程把这件事交给你手写，参数叫 <code>GROUP_SIZE_M</code>。</p>
+<p><strong>把账算出来。</strong> 设 C 被切成 9 × 9 = 81 个块，一个波次能同时跑 9 个 program。问：这 9 个 program 一共要从 HBM 读进多少个 A/B 的小块？</p>
+<div class="codehilite"><pre><span></span><code>方案一：按行扫描（pid_m = pid // 9, pid_n = pid % 9）
+  这 9 个 program 覆盖 C 的第 0 行，一整行 9 个块
+
+  要的 A 块：C 第 0 行只用到 A 的第 0 条横条 → 1 行 × 9 个 K 块 =  9 块
+  要的 B 块：用到 B 的全部 9 条竖条        → 9 列 × 9 个 K 块 = 81 块
+                                                              ───────
+                                                        合计   90 块
+
+方案二：按 3×3 分组扫描（GROUP_SIZE_M = 3）
+  这 9 个 program 挤在 C 的一个 3×3 方块里
+
+  要的 A 块：3 条横条 × 9 个 K 块 = 27 块
+  要的 B 块：3 条竖条 × 9 个 K 块 = 27 块
+                                    ───────
+                              合计   54 块
+
+  90 ÷ 54 = 1.67 倍的 HBM 读量差距
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>同样的 9 个输出块，换个遍历顺序，要读的输入少了 40%。</strong> 一行算法都没改，纯粹是让同时在跑的那批 Block 挤在一个方块里，互相蹭 L2。官方教程报告在某些架构上这一招带来 <strong>10% 以上</strong>的端到端提速。这就是 <a href="03-GEMM深度剖析.html">03 章 §3.3.6</a> 那张"按行扫描 vs 4×2 分组扫描"图的可执行版本。</p>
+</blockquote>
+<p>实现（这段是模板，照抄就行，但要看懂它在算什么）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">pid</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>                    <span class="c1"># 注意：grid 是一维的</span>
+<span class="n">num_pid_m</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">M</span><span class="p">,</span> <span class="n">BLOCK_M</span><span class="p">)</span>
+<span class="n">num_pid_n</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">N</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">)</span>
+<span class="n">num_pid_in_group</span> <span class="o">=</span> <span class="n">GROUP_SIZE_M</span> <span class="o">*</span> <span class="n">num_pid_n</span>    <span class="c1"># 一个&quot;组&quot;里有多少个 program</span>
+<span class="n">group_id</span> <span class="o">=</span> <span class="n">pid</span> <span class="o">//</span> <span class="n">num_pid_in_group</span>             <span class="c1"># 我在第几组</span>
+<span class="n">first_pid_m</span> <span class="o">=</span> <span class="n">group_id</span> <span class="o">*</span> <span class="n">GROUP_SIZE_M</span>          <span class="c1"># 本组从 C 的第几行块开始</span>
+<span class="n">group_size_m</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">num_pid_m</span> <span class="o">-</span> <span class="n">first_pid_m</span><span class="p">,</span> <span class="n">GROUP_SIZE_M</span><span class="p">)</span>   <span class="c1"># 最后一组可能不满</span>
+<span class="n">pid_m</span> <span class="o">=</span> <span class="n">first_pid_m</span> <span class="o">+</span> <span class="p">((</span><span class="n">pid</span> <span class="o">%</span> <span class="n">num_pid_in_group</span><span class="p">)</span> <span class="o">%</span> <span class="n">group_size_m</span><span class="p">)</span>
+<span class="n">pid_n</span> <span class="o">=</span> <span class="p">(</span><span class="n">pid</span> <span class="o">%</span> <span class="n">num_pid_in_group</span><span class="p">)</span> <span class="o">//</span> <span class="n">group_size_m</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <code>group_size_m</code> 那一行的 <code>min</code> 不能省：<code>num_pid_m</code> 不是 <code>GROUP_SIZE_M</code> 的整数倍时，最后一组会短一截，不处理就会算出越界的 <code>pid_m</code>。</p>
+</blockquote>
+<h3 id="764-matmul-kernel">7.6.4 完整的 matmul kernel</h3>
+<div class="codehilite"><pre><span></span><code><span class="nd">@triton</span><span class="o">.</span><span class="n">autotune</span><span class="p">(</span>
+    <span class="n">configs</span><span class="o">=</span><span class="p">[</span>
+        <span class="c1"># 注意：num_stages / num_warps 是 Config 的【独立关键字参数】，</span>
+        <span class="c1">#       不能塞进第一个字典里（§7.8.1 讲这个坑）</span>
+        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;GROUP_SIZE_M&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+                      <span class="n">num_stages</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">8</span><span class="p">),</span>
+        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;GROUP_SIZE_M&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+                      <span class="n">num_stages</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">4</span><span class="p">),</span>
+        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span>  <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;GROUP_SIZE_M&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+                      <span class="n">num_stages</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">4</span><span class="p">),</span>
+        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span>  <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span>  <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;GROUP_SIZE_M&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+                      <span class="n">num_stages</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">2</span><span class="p">),</span>
+    <span class="p">],</span>
+    <span class="n">key</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;M&#39;</span><span class="p">,</span> <span class="s1">&#39;N&#39;</span><span class="p">,</span> <span class="s1">&#39;K&#39;</span><span class="p">],</span>          <span class="c1"># 这三个值一变就重新调优（§7.8.2）</span>
+<span class="p">)</span>
+<span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">matmul_kernel</span><span class="p">(</span>
     <span class="n">a_ptr</span><span class="p">,</span> <span class="n">b_ptr</span><span class="p">,</span> <span class="n">c_ptr</span><span class="p">,</span>
     <span class="n">M</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span> <span class="n">K</span><span class="p">,</span>
-    <span class="n">stride_am</span><span class="p">,</span> <span class="n">stride_ak</span><span class="p">,</span>   <span class="c1"># A 的步长（行步长, 列步长）</span>
-    <span class="n">stride_bk</span><span class="p">,</span> <span class="n">stride_bn</span><span class="p">,</span>   <span class="c1"># B 的步长</span>
-    <span class="n">stride_cm</span><span class="p">,</span> <span class="n">stride_cn</span><span class="p">,</span>   <span class="c1"># C 的步长</span>
+    <span class="n">stride_am</span><span class="p">,</span> <span class="n">stride_ak</span><span class="p">,</span>
+    <span class="n">stride_bk</span><span class="p">,</span> <span class="n">stride_bn</span><span class="p">,</span>
+    <span class="n">stride_cm</span><span class="p">,</span> <span class="n">stride_cn</span><span class="p">,</span>
     <span class="n">BLOCK_M</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">BLOCK_K</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>
+    <span class="n">GROUP_SIZE_M</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>
 <span class="p">):</span>
-    <span class="c1"># 哪个 Block 处理 C 的哪个分块</span>
-    <span class="n">pid_m</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>   <span class="c1"># C 的行方向 Block 编号</span>
-    <span class="n">pid_n</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>   <span class="c1"># C 的列方向 Block 编号</span>
+    <span class="c1"># ── ① 分组重排 pid，为了 L2 命中率（§7.6.3）</span>
+    <span class="n">pid</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">num_pid_m</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">M</span><span class="p">,</span> <span class="n">BLOCK_M</span><span class="p">)</span>
+    <span class="n">num_pid_n</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">N</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">)</span>
+    <span class="n">num_pid_in_group</span> <span class="o">=</span> <span class="n">GROUP_SIZE_M</span> <span class="o">*</span> <span class="n">num_pid_n</span>
+    <span class="n">group_id</span> <span class="o">=</span> <span class="n">pid</span> <span class="o">//</span> <span class="n">num_pid_in_group</span>
+    <span class="n">first_pid_m</span> <span class="o">=</span> <span class="n">group_id</span> <span class="o">*</span> <span class="n">GROUP_SIZE_M</span>
+    <span class="n">group_size_m</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">num_pid_m</span> <span class="o">-</span> <span class="n">first_pid_m</span><span class="p">,</span> <span class="n">GROUP_SIZE_M</span><span class="p">)</span>
+    <span class="n">pid_m</span> <span class="o">=</span> <span class="n">first_pid_m</span> <span class="o">+</span> <span class="p">((</span><span class="n">pid</span> <span class="o">%</span> <span class="n">num_pid_in_group</span><span class="p">)</span> <span class="o">%</span> <span class="n">group_size_m</span><span class="p">)</span>
+    <span class="n">pid_n</span> <span class="o">=</span> <span class="p">(</span><span class="n">pid</span> <span class="o">%</span> <span class="n">num_pid_in_group</span><span class="p">)</span> <span class="o">//</span> <span class="n">group_size_m</span>
 
-    <span class="c1"># C[pid_m * BM : (pid_m+1) * BM, pid_n * BN : (pid_n+1) * BN]</span>
-    <span class="n">offs_m</span> <span class="o">=</span> <span class="n">pid_m</span> <span class="o">*</span> <span class="n">BLOCK_M</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_M</span><span class="p">)</span>
-    <span class="n">offs_n</span> <span class="o">=</span> <span class="n">pid_n</span> <span class="o">*</span> <span class="n">BLOCK_N</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">)</span>
-
-    <span class="c1"># 用于 K 方向的指针偏移量</span>
+    <span class="c1"># ── ② 构造 A / B 的二维指针（§7.6.1）</span>
+    <span class="c1">#    这里用 % M 和 % N 把越界行列绕回有效范围，避免读到映射外的地址；</span>
+    <span class="c1">#    读进来的是&quot;无所谓的值&quot;，最后 store 时再用 c_mask 挡掉不写。</span>
+    <span class="n">offs_am</span> <span class="o">=</span> <span class="p">(</span><span class="n">pid_m</span> <span class="o">*</span> <span class="n">BLOCK_M</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_M</span><span class="p">))</span> <span class="o">%</span> <span class="n">M</span>
+    <span class="n">offs_bn</span> <span class="o">=</span> <span class="p">(</span><span class="n">pid_n</span> <span class="o">*</span> <span class="n">BLOCK_N</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">))</span> <span class="o">%</span> <span class="n">N</span>
     <span class="n">offs_k</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_K</span><span class="p">)</span>
+    <span class="n">a_ptrs</span> <span class="o">=</span> <span class="n">a_ptr</span> <span class="o">+</span> <span class="n">offs_am</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">stride_am</span> <span class="o">+</span> <span class="n">offs_k</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">*</span> <span class="n">stride_ak</span>
+    <span class="n">b_ptrs</span> <span class="o">=</span> <span class="n">b_ptr</span> <span class="o">+</span> <span class="n">offs_k</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">stride_bk</span> <span class="o">+</span> <span class="n">offs_bn</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">*</span> <span class="n">stride_bn</span>
 
-    <span class="c1"># 构造 A 和 B 的指针（二维指针运算）</span>
-    <span class="n">a_ptrs</span> <span class="o">=</span> <span class="n">a_ptr</span> <span class="o">+</span> <span class="n">offs_m</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">stride_am</span> <span class="o">+</span> <span class="n">offs_k</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">*</span> <span class="n">stride_ak</span>
-    <span class="n">b_ptrs</span> <span class="o">=</span> <span class="n">b_ptr</span> <span class="o">+</span> <span class="n">offs_k</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">stride_bk</span> <span class="o">+</span> <span class="n">offs_n</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">*</span> <span class="n">stride_bn</span>
-
-    <span class="c1"># 累加寄存器，初始化为 0</span>
+    <span class="c1"># ── ③ K 方向主循环（03 章 §3.3.4），编译器按 num_stages 给它做软件流水</span>
     <span class="n">acc</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">BLOCK_M</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-
-    <span class="c1"># K 方向分块循环</span>
     <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">tl</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">K</span><span class="p">,</span> <span class="n">BLOCK_K</span><span class="p">)):</span>
-        <span class="c1"># 加载 A 和 B 的分块（边界 mask）</span>
         <span class="n">a</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">a_ptrs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">offs_k</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">&lt;</span> <span class="n">K</span> <span class="o">-</span> <span class="n">k</span> <span class="o">*</span> <span class="n">BLOCK_K</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>
         <span class="n">b</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">b_ptrs</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">offs_k</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">K</span> <span class="o">-</span> <span class="n">k</span> <span class="o">*</span> <span class="n">BLOCK_K</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>
-
-        <span class="c1"># 矩阵乘累加（Triton 会自动调用 Tensor Core 的 MMA 指令）</span>
-        <span class="n">acc</span> <span class="o">+=</span> <span class="n">tl</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">)</span>
-
-        <span class="c1"># 更新指针到下一个 K 块</span>
+        <span class="n">acc</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">acc</span><span class="p">)</span>                  <span class="c1"># 累加器传进去，省一次加法</span>
         <span class="n">a_ptrs</span> <span class="o">+=</span> <span class="n">BLOCK_K</span> <span class="o">*</span> <span class="n">stride_ak</span>
         <span class="n">b_ptrs</span> <span class="o">+=</span> <span class="n">BLOCK_K</span> <span class="o">*</span> <span class="n">stride_bk</span>
 
-    <span class="c1"># 转换精度并写回</span>
+    <span class="c1"># ── ④ Epilogue：累加器还在寄存器里，这里可以顺手做激活/加 bias/量化（03 章 §3.7.1）</span>
     <span class="n">c</span> <span class="o">=</span> <span class="n">acc</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float16</span><span class="p">)</span>
-    <span class="n">c_ptrs</span> <span class="o">=</span> <span class="n">c_ptr</span> <span class="o">+</span> <span class="n">offs_m</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">stride_cm</span> <span class="o">+</span> <span class="n">offs_n</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">*</span> <span class="n">stride_cn</span>
-    <span class="n">c_mask</span> <span class="o">=</span> <span class="p">(</span><span class="n">offs_m</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">M</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">offs_n</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">&lt;</span> <span class="n">N</span><span class="p">)</span>
-    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">c_ptrs</span><span class="p">,</span> <span class="n">c</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">c_mask</span><span class="p">)</span>
+
+    <span class="c1"># ── ⑤ 写回，这里才是真正需要边界 mask 的地方</span>
+    <span class="n">offs_cm</span> <span class="o">=</span> <span class="n">pid_m</span> <span class="o">*</span> <span class="n">BLOCK_M</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_M</span><span class="p">)</span>
+    <span class="n">offs_cn</span> <span class="o">=</span> <span class="n">pid_n</span> <span class="o">*</span> <span class="n">BLOCK_N</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">)</span>
+    <span class="n">c_ptrs</span> <span class="o">=</span> <span class="n">c_ptr</span> <span class="o">+</span> <span class="n">offs_cm</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">stride_cm</span> <span class="o">+</span> <span class="n">offs_cn</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">*</span> <span class="n">stride_cn</span>
+    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">c_ptrs</span><span class="p">,</span> <span class="n">c</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="p">(</span><span class="n">offs_cm</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">M</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">offs_cn</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">&lt;</span> <span class="n">N</span><span class="p">))</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">matmul</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">):</span>
+    <span class="n">M</span><span class="p">,</span> <span class="n">K</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">K2</span><span class="p">,</span> <span class="n">N</span> <span class="o">=</span> <span class="n">b</span><span class="o">.</span><span class="n">shape</span>
+    <span class="k">assert</span> <span class="n">K</span> <span class="o">==</span> <span class="n">K2</span>
+    <span class="n">c</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">M</span><span class="p">,</span> <span class="n">N</span><span class="p">),</span> <span class="n">device</span><span class="o">=</span><span class="n">a</span><span class="o">.</span><span class="n">device</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">float16</span><span class="p">)</span>
+    <span class="c1"># autotune 会改 BLOCK_M/BLOCK_N，所以 grid 必须写成接收 META 的 lambda</span>
+    <span class="n">grid</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">META</span><span class="p">:</span> <span class="p">(</span><span class="n">triton</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">M</span><span class="p">,</span> <span class="n">META</span><span class="p">[</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">])</span> <span class="o">*</span> <span class="n">triton</span><span class="o">.</span><span class="n">cdiv</span><span class="p">(</span><span class="n">N</span><span class="p">,</span> <span class="n">META</span><span class="p">[</span><span class="s1">&#39;BLOCK_N&#39;</span><span class="p">]),)</span>
+    <span class="n">matmul_kernel</span><span class="p">[</span><span class="n">grid</span><span class="p">](</span>
+        <span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">c</span><span class="p">,</span> <span class="n">M</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span> <span class="n">K</span><span class="p">,</span>
+        <span class="n">a</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">a</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span> <span class="n">b</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">b</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span> <span class="n">c</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">c</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">c</span>
 </code></pre></div>
 
-<p><strong>关键细节</strong>：<br />
-- <code>tl.dot(a, b)</code> —— Triton 自动分析形状，在支持的 GPU 上调用 <code>wmma</code>/<code>mma</code> PTX 指令（即 Tensor Core）<br />
-- 无需手写 Warp Tile 和 Thread Tile，Triton 编译器处理<br />
-- 没有显式共享内存管理，Triton 自动把 tile 放入 SRAM（通过 <code>tl.load</code> 的 cache 策略）</p>
+<blockquote>
+<p>⚠️ <strong>第 ② 步那两个 <code>% M</code> / <code>% N</code> 不是可有可无的。</strong> 如果直接写 <code>offs_am = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)</code>，而 K 方向的 mask 又只检查了 K（这是最常见的写法），那么最后一个 M 块里超出 M 的那些行会用<strong>越界的地址</strong>去 <code>tl.load</code>——mask 没挡住这一维。<strong>这是越界读，属于未定义行为</strong>，多数时候读到相邻内存不崩溃，所以极难发现。用 <code>% M</code> 把它们折回有效行，读到的值虽然是错的，但 ⑤ 步的 <code>c_mask</code> 保证它们不会被写出去。</p>
+<p>⚠️ <strong>grid 必须写成 <code>lambda META: ...</code>。</strong> 配了 autotune 之后 <code>BLOCK_M</code> 不再是固定值，写死的 grid 元组会和实际选中的配置对不上，结果是算漏或算重。这是 autotune 最高频的踩坑点。</p>
+</blockquote>
+<h3 id="765-triton-gemm">7.6.5 该不该用 Triton 写 GEMM</h3>
+<p>官方 GEMM 教程在方阵上能跑到和 cuBLAS 几乎持平的水平（教程自己的 benchmark 里 4096³ 是 Triton 217 TFLOPS vs cuBLAS 219 TFLOPS）。</p>
+<blockquote>
+<p>⚠️ <strong>这个数字不能直接拿来用</strong>：官方教程页面没有明确标注跑这组数据的卡型（同页另一处提到的 220–245 TFLOPS 是 A100 上的结果），而 H100 的 BF16 稠密峰值是 989 TFLOPS，<a href="03-GEMM深度剖析.html">03 章 §3.8.2</a> 里 cuBLAS 在 4096³ 上的量级是 ~875 TFLOPS。<strong>217 这个数和 H100 对不上，多半是 A100 或者非 Hopper 优化路径的结果。</strong> 引用性能数字之前先确认硬件——这是本系列反复强调的纪律。</p>
+</blockquote>
+<p>本系列的一贯建议不变（<a href="03-GEMM深度剖析.html">03 章 §3.8.3</a>）：</p>
+<ul>
+<li><strong>标准形状的 GEMM 用 cuBLAS</strong>，Triton 重写通常打不过，维护成本还高。</li>
+<li><strong>需要非标准 Epilogue 或非标准形状</strong>（分组 GEMM、稀疏、自定义量化 scale、fused MoE 路由）时用 Triton——这时候 cuBLAS 根本没有对应的 kernel，"慢 10%"和"没有"之间没得比。</li>
+<li>上面这段 matmul 代码的真正用途是<strong>当模板</strong>：把 ④ 步换成你要的 Epilogue，就是一个新算子。</li>
+</ul>
 <hr />
-<h2 id="74-autotuner">7.4 autotuner：自动找最优配置</h2>
-<p>手动选 BLOCK_M/BLOCK_N/BLOCK_K 很费力。Triton 提供了 <code>@triton.autotune</code> 装饰器：</p>
+<h2 id="77-block_-num_warps-num_stages">7.7 三个旋钮：<code>BLOCK_*</code> / <code>num_warps</code> / <code>num_stages</code> 各在调什么</h2>
+<p>这三个参数经常被一起写在 Config 里，但它们调的是<strong>三件完全不同的事</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>旋钮</th>
+<th>调的是什么</th>
+<th>对应本书哪一节</th>
+<th>调大的好处</th>
+<th>调大的代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BLOCK_M/N/K</code></td>
+<td>一个 program 干多少活</td>
+<td><a href="03-GEMM深度剖析.html">03 章 §3.3</a> 分块</td>
+<td>算术强度上升，HBM 流量下降</td>
+<td>寄存器 + 共享内存吃紧；program 数变少，可能填不满 SM</td>
+</tr>
+<tr>
+<td><code>num_warps</code></td>
+<td>这些活派多少线程去干</td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.6</a> Occupancy</td>
+<td>每线程分到的元素少、寄存器压力小</td>
+<td>跨 Warp 归约变贵；program 数一定时驻留数下降</td>
+</tr>
+<tr>
+<td><code>num_stages</code></td>
+<td>搬运和计算重叠几级</td>
+<td><a href="03-GEMM深度剖析.html">03 章 §3.5</a> 双缓冲</td>
+<td>HBM 延迟被藏住</td>
+<td>共享内存 <strong>× num_stages</strong>，很容易爆</td>
+</tr>
+</tbody>
+</table>
+<h3 id="771-block_-03">7.7.1 <code>BLOCK_*</code>：直接照搬 03 章的公式</h3>
+<p><a href="03-GEMM深度剖析.html">03 章 §3.3.2</a> 那条公式在 Triton 里一字不改地成立：</p>
+<div class="codehilite"><pre><span></span><code>算术强度 = 调和平均(BLOCK_M, BLOCK_N) ÷ 每元素字节数
+
+BLOCK_M = BLOCK_N = 128，BF16（2 B）：
+    调和平均 = 2 ÷ (1/128 + 1/128) = 128
+    算术强度 = 128 ÷ 2 = 64 FLOP/Byte
+    对比屋脊点 295 → 还差 4.6 倍，靠 L2 和 GROUP_SIZE_M 补（§7.6.3）
+</code></pre></div>
+
+<p>注意 <code>BLOCK_K</code> <strong>不影响 HBM 总流量</strong>（<a href="03-GEMM深度剖析.html">03 章 §3.3.5</a> 的反直觉结论），它只影响共享内存占用和流水线粒度——这也是为什么官方配置表里 <code>BLOCK_K</code> 在 32/64/128 之间变来变去。</p>
+<h3 id="772-num_warps">7.7.2 <code>num_warps</code>：同样的活，派多少人</h3>
+<p>固定 <code>BLOCK = 1024</code>、FP32，看 <code>num_warps</code> 变化时每个线程的负担：</p>
+<table>
+<thead>
+<tr>
+<th><code>num_warps</code></th>
+<th>线程数</th>
+<th>每线程元素数</th>
+<th>光装数据就要的寄存器</th>
+<th>仅按 64 Warp 上限算，每 SM 能驻留几个 program</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>32</td>
+<td>32</td>
+<td>32 个</td>
+<td>64</td>
+</tr>
+<tr>
+<td>2</td>
+<td>64</td>
+<td>16</td>
+<td>16 个</td>
+<td>32</td>
+</tr>
+<tr>
+<td><strong>4（默认）</strong></td>
+<td><strong>128</strong></td>
+<td><strong>8</strong></td>
+<td><strong>8 个</strong></td>
+<td><strong>16</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>256</td>
+<td>4</td>
+<td>4 个</td>
+<td>8</td>
+</tr>
+<tr>
+<td>16</td>
+<td>512</td>
+<td>2</td>
+<td>2 个</td>
+<td>4</td>
+</tr>
+<tr>
+<td>32</td>
+<td>1024</td>
+<td>1</td>
+<td>1 个</td>
+<td>2</td>
+</tr>
+</tbody>
+</table>
+<p>两头都有毛病：</p>
+<div class="codehilite"><pre><span></span><code>num_warps 太小（1–2）：
+  每线程要扛几十个元素 → 寄存器压力大 → 可能寄存器溢出（01 章 §1.3）
+  好处：归约几乎不用跨 Warp，共享内存和屏障都省了
+
+num_warps 太大（16–32）：
+  每线程只有一两个元素 → 指令级并行不足，循环/地址开销摊不薄
+  跨 Warp 归约要走共享内存 + 屏障，代价随 Warp 数上升
+  一个 Block 最多 1024 线程（01 章 §1.2.2），所以 num_warps ≤ 32 是硬上限
+</code></pre></div>
+
+<p>经验起点：<strong>逐元素算子用默认的 4；行内归约且行很长（BLOCK ≥ 2048）用 8；GEMM 类大 tile 用 8</strong>。但真正的答案是交给 autotune（§7.8）。</p>
+<h3 id="773-num_stages-03">7.7.3 <code>num_stages</code>：就是 03 章的双缓冲，而且共享内存按它翻倍</h3>
+<p><code>num_stages</code> 直接对应 <a href="03-GEMM深度剖析.html">03 章 §3.5</a>：</p>
+<div class="codehilite"><pre><span></span><code>num_stages = 1   单缓冲：搬 → 算 → 搬 → 算，一半时间在等         （03 章 §3.5.1）
+num_stages = 2   双缓冲：搬下一块的同时算这一块                   （03 章 §3.5.2 那张时间线）
+num_stages = 3+  多级流水：同时有好几块在路上，抖动也能吸收       （03 章 §3.5.3 的 CUTLASS Stages）
+
+底层靠的是同一套硬件机制：Ampere 的 cp.async、Hopper 的 TMA。
+你不用写 __pipeline_memcpy_async，编译器按 num_stages 展开循环并插指令。
+</code></pre></div>
+
+<p><strong>代价是共享内存乘以 stages 数，这是最容易爆的地方。</strong> 算一笔账（H100，每 Block 最大共享内存 228 KB）：</p>
+<div class="codehilite"><pre><span></span><code>配置：BLOCK_M = 128, BLOCK_N = 256, BLOCK_K = 64，BF16（2 字节）
+
+每一级流水要缓存的 tile：
+    A 块 = 128 × 64 × 2 B = 16,384 B
+    B 块 =  64 × 256 × 2 B = 32,768 B
+                             ─────────
+    一级合计               = 49,152 B = 48 KB
+
+num_stages = 2  →  96 KB   ✓
+num_stages = 3  → 144 KB   ✓   ← 官方这组配置用的就是 3
+num_stages = 4  → 192 KB   ✓   勉强
+num_stages = 5  → 240 KB   ✗   超过 228 KB，编译报错
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>超了会得到一个运行期错误</strong>，形如 <code>triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 245760, Hardware limit: 232448</code>。看到它就是 <code>num_stages</code> 或 <code>BLOCK_*</code> 开大了。注意报的是<strong>字节</strong>：232448 B = 227 KB，就是 H100 单 Block 共享内存上限（本系列表里的 228 KB 是这个数的取整说法）。</p>
+<p>★ <strong>一句话分工</strong>：<code>BLOCK_*</code> 决定"要搬多少"（带宽问题），<code>num_stages</code> 决定"搬的时候在不在干活"（延迟问题），<code>num_warps</code> 决定"干活的人手"（并行度问题）。<a href="03-GEMM深度剖析.html">03 章 §3.5.4</a> 那句"双缓冲藏延迟，藏不掉带宽不够"在 Triton 里同样成立——<code>num_stages</code> 调到 8 也救不了一个 <code>BLOCK</code> 开太小的 kernel。</p>
+</blockquote>
+<hr />
+<h2 id="78-autotune">7.8 autotune：怎么用，以及三个必踩的坑</h2>
+<h3 id="781">7.8.1 正确的写法（原稿这里是错的）</h3>
 <div class="codehilite"><pre><span></span><code><span class="nd">@triton</span><span class="o">.</span><span class="n">autotune</span><span class="p">(</span>
     <span class="n">configs</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;num_warps&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">}),</span>
-        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span>  <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;num_warps&#39;</span><span class="p">:</span> <span class="mi">4</span><span class="p">}),</span>
-        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;num_warps&#39;</span><span class="p">:</span> <span class="mi">4</span><span class="p">}),</span>
-        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span>  <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span> <span class="s1">&#39;num_warps&#39;</span><span class="p">:</span> <span class="mi">4</span><span class="p">}),</span>
-        <span class="c1"># ... 更多配置</span>
+        <span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_M&#39;</span><span class="p">:</span> <span class="mi">128</span><span class="p">,</span> <span class="s1">&#39;BLOCK_N&#39;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span> <span class="s1">&#39;BLOCK_K&#39;</span><span class="p">:</span> <span class="mi">64</span><span class="p">,</span> <span class="s1">&#39;GROUP_SIZE_M&#39;</span><span class="p">:</span> <span class="mi">8</span><span class="p">},</span>
+                      <span class="n">num_stages</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">8</span><span class="p">),</span>
+        <span class="c1">#             └── 第一个参数：传给 kernel 的 constexpr 元参数（字典）</span>
+        <span class="c1">#                                       └── 这两个是 Config 自己的关键字参数</span>
     <span class="p">],</span>
-    <span class="n">key</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;M&#39;</span><span class="p">,</span> <span class="s1">&#39;N&#39;</span><span class="p">,</span> <span class="s1">&#39;K&#39;</span><span class="p">],</span>  <span class="c1"># 按这些维度分开缓存调优结果</span>
+    <span class="n">key</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;M&#39;</span><span class="p">,</span> <span class="s1">&#39;N&#39;</span><span class="p">,</span> <span class="s1">&#39;K&#39;</span><span class="p">],</span>
 <span class="p">)</span>
 <span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">matmul_kernel</span><span class="p">(</span><span class="o">...</span><span class="p">):</span>
     <span class="o">...</span>
 </code></pre></div>
 
-<p>第一次以特定 <code>(M, N, K)</code> 调用时，Triton 会把所有配置都跑一遍，选出最快的，并把结果缓存到磁盘（<code>~/.triton/autotune_cache</code>）。后续相同形状的调用直接用缓存。</p>
-<hr />
-<h2 id="75-triton">7.5 Triton 生成的代码路径</h2>
-<div class="codehilite"><pre><span></span><code>@triton.jit Python 函数
-        ↓
-Triton 编译器（LLVM IR 中间层）
-        ↓
-PTX（NVIDIA GPU 汇编）
-        ↓
-SASS（GPU 的机器码，由 nvcc 的 ptxas 编译）
-        ↓
-H100 Tensor Core / CUDA Core 执行
+<blockquote>
+<p>⚠️ <strong><code>num_warps</code> 和 <code>num_stages</code> 绝对不能写进第一个字典里。</strong> <code>triton.Config</code> 的签名是 <code>Config(kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None)</code>——字典只装"传给 kernel 的 constexpr 参数"。把 <code>'num_warps': 8</code> 塞进字典，它要么被当成 kernel 不认识的形参，要么被 Config 自己的默认值 4 覆盖掉；无论哪种，<strong>你以为调了 8 个 Warp，实际跑的是 4 个</strong>，而且不报错。本章原稿就是这么写的，是一个静默失效的配置错误。</p>
+<p>⚠️ 装饰器顺序固定：<code>@triton.autotune</code> 在<strong>外</strong>，<code>@triton.jit</code> 在<strong>内</strong>。反了不生效。</p>
+</blockquote>
+<h3 id="782-key">7.8.2 <code>key=</code> 的语义：什么时候重新调优</h3>
+<p><code>key</code> 是一个<strong>参数名列表</strong>。autotuner 把这些参数的当前取值组成一个元组当缓存键——<strong>键没见过就把所有 config 跑一遍挑最快的，见过就直接用记下来的那个</strong>。</p>
+<div class="codehilite"><pre><span></span><code>key=[&#39;M&#39;, &#39;N&#39;, &#39;K&#39;] 时：
+
+  第 1 次 matmul(4096×4096, 4096×4096)
+      → 键 (4096, 4096, 4096) 没见过
+      → 把 4 个 config 各编译 + benchmark 一遍，挑最快的记下
+      → 这次调用很慢（编译 + 试跑，⚠️ 量级通常是几百毫秒到几秒，随 config 数和形状而定）
+
+  第 2 次 同样形状
+      → 命中缓存，直接跑，零额外开销
+
+  第 3 次 matmul(4096×4096, 4096×8192)
+      → 键 (4096, 8192, 4096) 是新的 → 又要全跑一遍
 </code></pre></div>
 
-<p>Triton 编译器做的主要工作：<br />
-1. 把 <code>tl.arange</code> 和向量运算展开为 SIMT 线程执行<br />
-2. 把 <code>tl.load</code>/<code>tl.store</code> 转为带 cache 策略的 <code>ld.global.cs</code>/<code>st.global.cs</code> PTX 指令<br />
-3. 把 <code>tl.dot</code> 转为 <code>mma.sync</code> 或 <code>wgmma</code> PTX 指令（视目标架构）<br />
-4. 自动插入 <code>__syncthreads()</code> 式同步（通过 LLVM Pass 分析）</p>
-<hr />
-<h2 id="76-torchcompile-torchinductor">7.6 torch.compile 与 TorchInductor</h2>
-<p><code>torch.compile</code> 是 PyTorch 2.0 引入的编译栈，把 Python 的 PyTorch 代码编译为更快的等价实现：</p>
-<div class="codehilite"><pre><span></span><code>torch.compile 内部管道：
+<h3 id="783">7.8.3 三个坑</h3>
+<p><strong>坑一：<code>key</code> 选太细，变成每次调用都在调优。</strong></p>
+<blockquote>
+<p>⚠️ 变长序列（<a href="04-FlashAttention全系.html">04 章 §4.8.1</a> 的 varlen）场景下，如果 <code>key=['seq_len']</code> 而 <code>seq_len</code> 每个 batch 都不同，那就是<strong>每个 batch 都重新 benchmark 一遍全部 config</strong>，比不调优还慢几个数量级。解法：要么把 <code>seq_len</code> 从 key 里拿掉（用一个对长度不敏感的配置），要么先把长度分桶（比如向上取整到 512 的倍数）再传进去。</p>
+</blockquote>
+<p><strong>坑二：以为结果自动存盘了。</strong></p>
+<blockquote>
+<p>⚠️ <strong>默认情况下 autotune 的结果只活在进程内存里，进程一退就没了。</strong> 原稿说的 <code>~/.triton/autotune_cache</code> 这个路径<strong>不存在</strong>——<code>~/.triton/cache</code> 是编译产物（PTX/cubin）的缓存，和 autotune 的计时结果是两回事。Triton 3.3 起 <code>triton.autotune</code> 有一个 <code>cache_results=True</code> 参数可以把计时写到磁盘，但<strong>默认是 <code>False</code></strong>。所以：服务每次重启，第一批请求都会付一遍调优的钱。生产做法是服务启动时用代表性形状预热一遍，或者干脆跳过 autotune、把实测最优的配置硬编码进 <code>@triton.jit</code> 的调用参数里。</p>
+</blockquote>
+<p><strong>坑三：config 列表太长。</strong></p>
+<div class="codehilite"><pre><span></span><code>config 数 × 不同形状数 = 要跑的 benchmark 次数
 
-Python 代码（model.forward()）
-    ↓
-Torch Dynamo（FX Graph 捕获，追踪 Python 字节码）
-    ↓
-AOTAutograd（提前生成 forward + backward 的 FX 图）
-    ↓
-TorchInductor（后端，把 FX 图编译为 Triton kernel）
-    ↓
-Triton PTX + CUDA kernel
-    ↓
-H100 执行
+4 个 config × 3 种形状  = 12 次   ✓ 可以接受
+30 个 config × 50 种形状 = 1500 次 ✗ 启动阶段能卡上几分钟
 </code></pre></div>
 
-<p><strong>Inductor 做了什么</strong>：<br />
-- 把多个 element-wise 操作融合为一个 Triton kernel（消灭算子间的带宽税）<br />
-- 把 Reduction 和前序操作融合<br />
-- 对 GEMM 插入 cuBLAS 调用（不用 Triton 重写 GEMM，cuBLAS 更优化）<br />
-- 生成 CUDA Graph 以减少 kernel launch 开销</p>
-<p><strong>实际效果</strong>（典型 LLaMA 前向）：</p>
+<p>实用做法是先用大列表离线扫一遍，看清楚哪几个配置在你的形状区间里真的领先，再把线上的列表砍到 3–5 个。<code>prune_configs_by={'early_config_prune': ...}</code> 可以按共享内存预算之类的规则提前剪掉必然失败的配置。</p>
+<blockquote>
+<p>★ 调试时打开 <code>TRITON_PRINT_AUTOTUNING=1</code>，它会在每个 kernel 调优结束后打印<strong>胜出的配置和总耗时</strong>。这是确认"autotune 到底选了什么"的唯一可靠手段——不要靠猜。</p>
+</blockquote>
+<hr />
+<h2 id="79">7.9 编译流水线与调试：怎么看见编译器干了什么</h2>
+<h3 id="791">7.9.1 五级降级路径</h3>
+<p>原稿这里只画了三级且跳过了 MLIR，补全如下：</p>
+<div class="codehilite"><pre><span></span><code>@triton.jit 装饰的 Python 函数
+        │  遍历 Python AST（抽象语法树），不是解释执行
+        ▼
+TTIR   (Triton IR)          —— 还是&quot;块&quot;的世界：张量有形状，但不知道有几个线程
+        │  tritongpu-coalesce / accelerate-matmul / pipeline / membar ... 一串 MLIR pass
+        ▼
+TTGIR  (TritonGPU IR)       —— 已经决定了 layout：谁拿哪些元素、共享内存怎么 swizzle
+        │
+        ▼
+LLVM IR                     —— 通用中间表示，已经是&quot;线程&quot;的世界了
+        │
+        ▼
+PTX    (虚拟汇编)            —— 这里能 grep 到 mma / wgmma / cp.async
+        │  ptxas（CUDA 工具链自带，Triton 直接调用，不经过 nvcc）
+        ▼
+cubin / SASS (机器码)        —— 绑定具体架构，最终执行的东西
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong><code>tl.arange</code>、<code>tl.load</code>、<code>mask</code>、layout 这些概念全部活在 TTIR / TTGIR 这两层。</strong> 想知道"编译器到底把我的 1024 个元素怎么分的"，就去看 TTGIR 里的 <code>#blocked</code> / <code>#shared</code> / <code>#mma</code> 属性；想知道"有没有用上 Tensor Core"，就去 PTX 里 grep。</p>
+</blockquote>
+<h3 id="792-readme">7.9.2 环境变量（全部出自官方 README）</h3>
 <table>
 <thead>
 <tr>
-<th>模式</th>
-<th>吞吐（tokens/s）</th>
-<th>备注</th>
+<th>环境变量</th>
+<th>作用</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>PyTorch eager</td>
-<td>基准 1×</td>
-<td>无融合</td>
+<td><code>TRITON_KERNEL_DUMP=1</code></td>
+<td>把每一级 IR 和最终的 PTX 全部导出（配合 <code>TRITON_DUMP_DIR=某个目录</code>）</td>
 </tr>
 <tr>
-<td>torch.compile</td>
-<td>1.3–1.5×</td>
-<td>自动融合 element-wise</td>
+<td><code>MLIR_ENABLE_DUMP=1</code></td>
+<td>每个 MLIR pass 前都 dump 一次 IR，看 pass 之间的变化（配合 <code>MLIR_DUMP_PATH</code>）</td>
 </tr>
 <tr>
-<td>+ FlashAttention</td>
-<td>1.5–2.0×</td>
-<td>手写 Triton/CUDA kernel</td>
+<td><code>LLVM_IR_ENABLE_DUMP=1</code></td>
+<td>每个 LLVM pass 前 dump 一次 LLVM IR</td>
 </tr>
 <tr>
-<td>+ 量化（INT8）</td>
-<td>2.0–3.5×</td>
-<td>视 batch size</td>
+<td><code>TRITON_INTERPRET=1</code></td>
+<td>走<strong>解释器</strong>而不是 GPU，可以在 kernel 里下 Python 断点、<code>print</code></td>
+</tr>
+<tr>
+<td><code>TRITON_PRINT_AUTOTUNING=1</code></td>
+<td>打印每个 kernel 调优的胜出配置和总耗时</td>
+</tr>
+<tr>
+<td><code>TRITON_ALWAYS_COMPILE=1</code></td>
+<td>绕过缓存强制重编译——<strong>dump 类的变量看不到输出时，八成就是命中缓存了</strong></td>
+</tr>
+<tr>
+<td><code>TRITON_HOME=某个目录</code></td>
+<td>改 <code>.triton</code> 目录的位置（缓存和下载都在里面）</td>
+</tr>
+<tr>
+<td><code>PTXAS_OPTIONS=...</code></td>
+<td>透传选项给 <code>ptxas</code>，比如 <code>-v</code> 看寄存器用量和 spill</td>
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="77-triton-kernel">7.7 实际开发一个 Triton kernel 的流程</h2>
-<p>以实现 RMSNorm 为例（一个典型的 Memory Bound 算子，融合进 GEMM 后有明显收益）：</p>
-<div class="codehilite"><pre><span></span><code><span class="nd">@triton</span><span class="o">.</span><span class="n">autotune</span><span class="p">(</span>
-    <span class="n">configs</span><span class="o">=</span><span class="p">[</span><span class="n">triton</span><span class="o">.</span><span class="n">Config</span><span class="p">({</span><span class="s1">&#39;BLOCK_SIZE&#39;</span><span class="p">:</span> <span class="n">bs</span><span class="p">})</span> <span class="k">for</span> <span class="n">bs</span> <span class="ow">in</span> <span class="p">[</span><span class="mi">256</span><span class="p">,</span> <span class="mi">512</span><span class="p">,</span> <span class="mi">1024</span><span class="p">,</span> <span class="mi">2048</span><span class="p">]],</span>
-    <span class="n">key</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;N&#39;</span><span class="p">],</span>
-<span class="p">)</span>
-<span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">rmsnorm_kernel</span><span class="p">(</span>
-    <span class="n">x_ptr</span><span class="p">,</span> <span class="n">weight_ptr</span><span class="p">,</span> <span class="n">out_ptr</span><span class="p">,</span>
-    <span class="n">M</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span>               <span class="c1"># M = batch * seq_len, N = hidden_dim</span>
-    <span class="n">eps</span><span class="p">,</span>
-    <span class="n">BLOCK_SIZE</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>
-<span class="p">):</span>
-    <span class="c1"># 每个 Block 处理 x 的一行（一个 token）</span>
-    <span class="n">row_idx</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-    <span class="n">row_start</span> <span class="o">=</span> <span class="n">row_idx</span> <span class="o">*</span> <span class="n">N</span>
-
-    <span class="c1"># 分块计算平方和</span>
-    <span class="n">sq_sum</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">zeros</span><span class="p">((),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-    <span class="k">for</span> <span class="n">block_start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="p">):</span>
-        <span class="n">cols</span> <span class="o">=</span> <span class="n">block_start</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="p">)</span>
-        <span class="n">mask</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">&lt;</span> <span class="n">N</span>
-        <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">row_start</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-        <span class="n">sq_sum</span> <span class="o">+=</span> <span class="n">tl</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">x</span> <span class="o">*</span> <span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-
-    <span class="c1"># RMS 归一化因子</span>
-    <span class="n">rms</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">sq_sum</span> <span class="o">/</span> <span class="n">N</span> <span class="o">+</span> <span class="n">eps</span><span class="p">)</span>
-
-    <span class="c1"># 归一化并写出</span>
-    <span class="k">for</span> <span class="n">block_start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="p">):</span>
-        <span class="n">cols</span> <span class="o">=</span> <span class="n">block_start</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_SIZE</span><span class="p">)</span>
-        <span class="n">mask</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">&lt;</span> <span class="n">N</span>
-        <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">row_start</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-        <span class="n">w</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">weight_ptr</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
-        <span class="n">out</span> <span class="o">=</span> <span class="p">(</span><span class="n">x</span> <span class="o">/</span> <span class="n">rms</span><span class="p">)</span> <span class="o">*</span> <span class="n">w</span>
-        <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">out_ptr</span> <span class="o">+</span> <span class="n">row_start</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">out</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float16</span><span class="p">),</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+<blockquote>
+<p>⚠️ <code>MLIR_ENABLE_DUMP</code> 和 <code>TRITON_KERNEL_DUMP</code> 最常见的"不生效"原因是<strong>编译缓存命中了</strong>——kernel 没重新编译，自然没有 dump。清掉 <code>~/.triton/cache/*</code> 或者加上 <code>TRITON_ALWAYS_COMPILE=1</code>。</p>
+<p>⚠️ 关于 <code>TRITON_INTERPRET</code>：官方 README 的原话是"运行 Triton 解释器而不是在 GPU 上运行，可以在 kernel 代码里插 Python 断点"。<strong>它并不承诺"完全不需要 GPU 环境"</strong>——不同版本对 CPU 张量的支持程度不一样，而且解释器只验证<strong>逻辑正确性</strong>，不反映任何性能行为。原稿说的"在 CPU 上模拟执行（无需真实 GPU）"是过度承诺。</p>
+</blockquote>
+<h3 id="793">7.9.3 三个最常做的确认动作</h3>
+<p><strong>动作一：确认 Tensor Core 真的用上了</strong>（<a href="03-GEMM深度剖析.html">03 章 §3.6.3</a> 说的静默退化）</p>
+<div class="codehilite"><pre><span></span><code><span class="nv">TRITON_KERNEL_DUMP</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">TRITON_DUMP_DIR</span><span class="o">=</span>/tmp/tdump<span class="w"> </span><span class="nv">TRITON_ALWAYS_COMPILE</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>python<span class="w"> </span>run.py
+grep<span class="w"> </span>-E<span class="w"> </span><span class="s2">&quot;mma|wgmma&quot;</span><span class="w"> </span>/tmp/tdump/**/*.ptx<span class="w"> </span><span class="p">|</span><span class="w"> </span>head
 </code></pre></div>
 
-<p><strong>调试技巧</strong>：<br />
-- 先用 <code>TRITON_INTERPRET=1</code> 环境变量在 CPU 上模拟执行（无需真实 GPU，便于 print 调试）<br />
-- <code>triton.testing.perf_report</code> 生成性能对比图<br />
-- <code>triton.compiler.compile</code> 查看生成的 PTX，确认 Tensor Core 指令被发射</p>
+<p>看到 <code>mma.sync.aligned.m16n8k16</code> 就是走了 Ampere 路径的 Tensor Core；看到 <code>wgmma.mma_async</code> 就是走了 Hopper 的 Warpgroup MMA（<a href="03-GEMM深度剖析.html">03 章 §3.6.2</a>）。<strong>什么都没看到，说明 <code>tl.dot</code> 退回了普通 CUDA Core 的循环</strong>，多半是形状没对齐到 16 或者 dtype 不支持。</p>
+<blockquote>
+<p>⚠️ Triton 在 Hopper 上什么时候发 <code>wgmma</code>、什么时候仍然发 <code>mma.sync</code>，随版本、dtype、tile 形状而变，<strong>没有"用了 Triton 就一定用上 wgmma"这回事</strong>。唯一可靠的确认方式就是 grep PTX。</p>
+</blockquote>
+<p><strong>动作二：确认寄存器和共享内存用量</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">compiled</span> <span class="o">=</span> <span class="n">matmul_kernel</span><span class="p">[</span><span class="n">grid</span><span class="p">](</span><span class="o">...</span><span class="p">)</span>      <span class="c1"># 启动返回编译产物句柄</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">compiled</span><span class="o">.</span><span class="n">n_regs</span><span class="p">)</span>                    <span class="c1"># 每线程寄存器数</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">compiled</span><span class="o">.</span><span class="n">metadata</span><span class="o">.</span><span class="n">shared</span><span class="p">)</span>           <span class="c1"># 每 program 共享内存字节数</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">compiled</span><span class="o">.</span><span class="n">asm</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>                <span class="c1"># dict_keys([&#39;ttir&#39;,&#39;ttgir&#39;,&#39;llir&#39;,&#39;ptx&#39;,&#39;cubin&#39;])</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">compiled</span><span class="o">.</span><span class="n">asm</span><span class="p">[</span><span class="s1">&#39;ptx&#39;</span><span class="p">][:</span><span class="mi">2000</span><span class="p">])</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <code>.asm</code> / <code>.n_regs</code> / <code>.metadata</code> 这几个属性在 Triton 3.x 上可用，但<strong>跨大版本改过名字</strong>（2.x 时代的结构不同）。生产代码里不要依赖它们，只在调试时用。</p>
+</blockquote>
+<p><strong>动作三：性能对比</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">ms</span> <span class="o">=</span> <span class="n">triton</span><span class="o">.</span><span class="n">testing</span><span class="o">.</span><span class="n">do_bench</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">matmul</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">))</span>          <span class="c1"># 返回毫秒（默认取中位数）</span>
+<span class="n">ms_ref</span> <span class="o">=</span> <span class="n">triton</span><span class="o">.</span><span class="n">testing</span><span class="o">.</span><span class="n">do_bench</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;triton </span><span class="si">{</span><span class="n">ms</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> ms, torch </span><span class="si">{</span><span class="n">ms_ref</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> ms&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p><code>triton.testing.do_bench</code> 会自己做预热和多次重复，比手写 <code>torch.cuda.synchronize()</code> + <code>time.time()</code> 可靠（<a href="01-GPU硬件基础.html">01 章 §1.8.1</a> 讲过异步启动的计时陷阱）。要出对比曲线图用 <code>@triton.testing.perf_report</code> + <code>triton.testing.Benchmark</code>。</p>
+<blockquote>
+<p>★ <strong>完整的性能排查还是要回 <a href="02-屋顶线与性能剖析.html">02 章 §2.7</a> 的 Nsight 三步漏斗。</strong> Triton 生成的 kernel 在 <code>ncu</code> 里和手写 CUDA kernel 没有任何区别，所有指标都能正常采集，kernel 名字就是你的 Python 函数名。</p>
+</blockquote>
 <hr />
-<h2 id="78-triton-vs-cuda">7.8 Triton vs CUDA：选哪个</h2>
+<h2 id="710-torchcompile-torchinductor-triton">7.10 torch.compile 与 TorchInductor：自动生成的 Triton</h2>
+<h3 id="7101">7.10.1 管线</h3>
+<div class="codehilite"><pre><span></span><code>Python 模型代码
+    │  TorchDynamo：改写 Python 字节码，抽出张量操作
+    ▼
+FX Graph（计算图）
+    │  AOTAutograd（Ahead-Of-Time Autograd，提前微分）：把反向也展开成图
+    ▼
+前向图 + 反向图
+    │  TorchInductor：后端代码生成
+    ├──→ Triton kernel（GPU）    ← 本章讲的东西，就是它生成的
+    └──→ C++ / OpenMP（CPU）
+</code></pre></div>
+
+<p>细节和"怎么确认真的融了"（看 kernel 名字里的 <code>triton_poi_fused_...</code>）见 <a href="05-算子融合.html">05 章 §5.6</a>，这里不重复。</p>
+<h3 id="7102">7.10.2 两处需要修正的常见说法</h3>
+<blockquote>
+<p>⚠️ <strong>"Inductor 遇到 GEMM 一定调 cuBLAS"——不准确。</strong> 默认模式下 Inductor 确实把 <code>matmul</code> 交给 ATen（也就是 cuBLAS）。但在 <code>torch.compile(model, mode="max-autotune")</code> 下，Inductor 会把 <strong>cuBLAS、Triton 模板 GEMM、（视版本）CUTLASS 模板</strong>都 benchmark 一遍，挑最快的；Triton 模板赢的情况并不罕见，尤其是需要把 Epilogue 融进去的时候。代价是编译时间大幅拉长。</p>
+<p>⚠️ <strong>"Inductor 会生成 CUDA Graph"——只在 <code>mode="reduce-overhead"</code> 下才会</strong>，不是默认行为。见 <a href="05-算子融合.html">05 章 §5.6.3</a>。</p>
+</blockquote>
+<h3 id="7103-inductor">7.10.3 一个很实用的用法：让 Inductor 帮你写初稿</h3>
+<div class="codehilite"><pre><span></span><code><span class="nv">TORCH_LOGS</span><span class="o">=</span><span class="s2">&quot;output_code&quot;</span><span class="w"> </span>python<span class="w"> </span>your_script.py
+</code></pre></div>
+
+<p>这会把 Inductor 生成的<strong>完整 Triton 源码</strong>打印出来。它可读性一般（变量名是 <code>tmp0</code>、<code>tmp1</code>），但<strong>结构是对的、mask 是对的、grid 是对的</strong>，非常适合当手写 kernel 的起点：先让 <code>torch.compile</code> 融一版，把代码捞出来，再手工改进它的分块和 Epilogue。这比从空白文件开始快得多。</p>
+<blockquote>
+<p>⚠️ 原稿那张"典型 LLaMA 前向：torch.compile 1.3–1.5×、+FlashAttention 1.5–2.0×、+INT8 量化 2.0–3.5×"的表格<strong>没有给出模型版本、序列长度、batch size、硬件和 PyTorch 版本，也没有来源</strong>，本次改写移除。<code>torch.compile</code> 的收益区间和它的适用条件见 <a href="05-算子融合.html">05 章 §5.6.4</a>，那里的数字同样标了"社区量级"。</p>
+</blockquote>
+<hr />
+<h2 id="711-triton-cuda">7.11 什么时候用 Triton，什么时候退回 CUDA</h2>
+<h3 id="7111">7.11.1 决策树</h3>
+<div class="codehilite"><pre><span></span><code>你要写的是什么？
+│
+├─ 现成算子能拼出来，只是嫌 kernel 太多太碎
+│    └─→ 先试 torch.compile（默认模式）
+│          └─ 还不够 → mode=&quot;max-autotune&quot; 或 &quot;reduce-overhead&quot;
+│                └─ 还不够 → 往下走
+│
+├─ 标准 GEMM / 标准 Attention / 标准 Conv
+│    └─→ 用现成库：cuBLAS / FlashAttention / cuDNN
+│          自己写几乎一定更慢（03 章 §3.8.3、04 章 §4.8.4）
+│
+├─ 逐元素链的融合、归一化、自定义 Attention 变体、
+│  自定义量化 scale、MoE 路由、RL 的 logprob / KL 计算
+│    └─→ ★ 这是 Triton 的主场，写它
+│
+└─ 需要精确控制片上布局 / 需要 wgmma + TMA + Warp Specialization /
+   需要跨 Block 的复杂同步 / 要榨最后 10–20%
+     └─→ 退回 CUTLASS 或手写 CUDA
+</code></pre></div>
+
+<h3 id="7112-cudacutlass">7.11.2 六条"该退回 CUDA/CUTLASS"的具体信号</h3>
+<table>
+<thead>
+<tr>
+<th>信号</th>
+<th>为什么 Triton 不行</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>grep PTX 发现没发 <code>wgmma</code>，而你确实需要它</strong></td>
+<td>Triton 选哪条 MMA 指令你控制不了（§7.9.3）。<a href="03-GEMM深度剖析.html">03 章 §3.6.2</a>：H100 上只用 <code>mma.sync</code> 的天花板明显低于 cuBLAS</td>
+</tr>
+<tr>
+<td><strong>需要手工设计共享内存布局</strong></td>
+<td>标准 Triton 语言里没有 <code>__shared__</code>，swizzle 由编译器定（§7.2.4）。<a href="03-GEMM深度剖析.html">03 章 §3.4.3</a> 那种精确的布局控制做不了</td>
+</tr>
+<tr>
+<td><strong>需要 Warp Specialization（生产者/消费者分工）</strong></td>
+<td>这要求你能指名道姓地控制"哪几个 Warp 只搬数、哪几个只算"。⚠️ 新版 Triton 在部分后端有实验性支持，但接口不稳定，别在生产上赌</td>
+</tr>
+<tr>
+<td><strong>需要跨 Block 的同步或原子协议</strong></td>
+<td>Triton 有 <code>tl.atomic_add</code> 等，但复杂的 grid 级协作（比如 Stream-K 的跨 SM 归约，<a href="03-GEMM深度剖析.html">03 章 §3.7.5</a>）写起来很别扭</td>
+</tr>
+<tr>
+<td><strong>autotune 扫完所有配置还是差现成库 30% 以上</strong></td>
+<td>说明瓶颈在 Triton 抽象层管不到的地方（Warp Tile、指令调度、寄存器分配），继续调旋钮是浪费时间</td>
+</tr>
+<tr>
+<td><strong>要交付一个跨多个 CUDA 版本的稳定二进制</strong></td>
+<td>Triton 是 JIT，首次运行要编译，且行为随版本变动大（本章标了十几个 ⚠️ 就是证据）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="7113-triton">7.11.3 三条"该用 Triton"的正面理由</h3>
+<ul>
+<li><strong>算子在库里不存在。</strong> 这是最强的理由。自定义 mask 的 Attention、带 per-group scale 的 W4A8 GEMM（<a href="06-量化算子.html">06 章</a>）、MoE 的 Grouped GEMM（<a href="08-MoE算子与通信.html">08 章</a>）——这些形状 cuBLAS 里没有，"Triton 慢 15%"和"根本没有"之间没得选。</li>
+<li><strong>迭代速度。</strong> 改一个 Epilogue，Triton 是改三行 Python 重跑；CUTLASS 是改模板参数重编译几分钟；手写 CUDA 是重写一遍。做实验时这个差距是决定性的。</li>
+<li><strong>跟着硬件走。</strong> 新一代 GPU 出来，Triton 升个版本就可能自动用上新指令；手写的 PTX 要你自己改。</li>
+</ul>
+<h3 id="7114">7.11.4 和其他方案的横向对照</h3>
 <table>
 <thead>
 <tr>
 <th>维度</th>
+<th>PyTorch eager</th>
+<th>torch.compile</th>
 <th>Triton</th>
-<th>CUDA</th>
+<th>CUTLASS</th>
+<th>手写 CUDA</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>开发效率</td>
-<td>高（Python，不用管 Warp/Bank）</td>
-<td>低（C++，需要精细调控）</td>
+<td>写一个融合算子</td>
+<td>不可能</td>
+<td>零代码</td>
+<td>~30 行 Python</td>
+<td>~200 行 C++ 模板</td>
+<td>~300 行 C++</td>
+</tr>
+<tr>
+<td>你要懂什么</td>
+<td>无</td>
+<td>无</td>
+<td>分块 + 屋顶线（01–03 章）</td>
+<td>全套 GPU 架构</td>
+<td>全套 + PTX</td>
+</tr>
+<tr>
+<td>谁管合并访存 / bank conflict</td>
+<td>—</td>
+<td>编译器</td>
+<td><strong>编译器</strong></td>
+<td>你（用库封装好的 swizzle）</td>
+<td><strong>你</strong></td>
+</tr>
+<tr>
+<td>谁管 Warp/Thread Tile</td>
+<td>—</td>
+<td>编译器</td>
+<td><strong>编译器</strong></td>
+<td>模板参数</td>
+<td><strong>你</strong></td>
+</tr>
+<tr>
+<td>谁管流水重叠</td>
+<td>—</td>
+<td>编译器</td>
+<td>你给 <code>num_stages</code></td>
+<td>模板参数 <code>Stages</code></td>
+<td><strong>你</strong></td>
+</tr>
+<tr>
+<td>能用上 wgmma + TMA 吗</td>
+<td>—</td>
+<td>看 Triton</td>
+<td>⚠️ 看版本和形状，不可控</td>
+<td>✓ 完全可控</td>
+<td>✓ 完全可控</td>
 </tr>
 <tr>
 <td>可达性能</td>
-<td>~80–95% 手写 CUDA</td>
-<td>100%（可以精调每个细节）</td>
+<td>低</td>
+<td>中</td>
+<td>⚠️ 通常 cuBLAS 的 80–90%（<a href="03-GEMM深度剖析.html">03 章 §3.8.3</a>）</td>
+<td>接近 cuBLAS</td>
+<td>上限最高</td>
 </tr>
 <tr>
-<td>调试体验</td>
-<td>较好（TRITON_INTERPRET 模式）</td>
-<td>较差（需要 cuda-gdb/Nsight）</td>
-</tr>
-<tr>
-<td>新硬件适配</td>
-<td>快（Triton 自动适配 wgmma 等新指令）</td>
-<td>慢（需手动更新代码用新 PTX 指令）</td>
-</tr>
-<tr>
-<td>适用场景</td>
-<td>Element-wise 融合、自定义 Attention、RMSNorm</td>
-<td>极致性能 GEMM、需要精确控制 SRAM 布局的场景</td>
-</tr>
-<tr>
-<td>典型用户</td>
-<td>AI 研究员、ML 工程师</td>
-<td>GPU 内核工程师</td>
+<td>调试手段</td>
+<td>Python</td>
+<td><code>TORCH_LOGS</code></td>
+<td><code>TRITON_INTERPRET</code> + ncu</td>
+<td>cuda-gdb + ncu</td>
+<td>cuda-gdb + ncu</td>
 </tr>
 </tbody>
 </table>
-<p><strong>实用建议</strong>：<br />
-- 大多数算子融合（RMSNorm + dropout + residual、自定义 Attention 变体）用 Triton，够用且快<br />
-- GEMM 用 cuBLAS / CUTLASS，不要在 Triton 里重写（即使 Triton 版本只差 5–10%，维护成本不值得）<br />
-- 完全不懂 GPU 但想加速自定义操作：先试 <code>torch.compile</code>，不满足再写 Triton</p>
 <hr />
-<h2 id="79">7.9 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>Triton 的核心价值：
-  写 Block 级别的逻辑，Triton 处理 Warp/Bank/对齐，生成 PTX
-  性能 ~80–95% 手写 CUDA，开发效率远高于 CUDA
+<h2 id="712">7.12 本章小结</h2>
+<p><strong>一个心智模型</strong></p>
+<div class="codehilite"><pre><span></span><code>你写的是一个 Block 的代码，不是一个 Thread 的代码。
 
-三个核心 API：
-  tl.load(ptr + offsets, mask=mask)   从 HBM 加载
-  tl.store(ptr + offsets, val, mask)  写入 HBM
-  tl.dot(a, b)                        触发 Tensor Core MMA
+  tl.program_id(0)  =  blockIdx.x         （一模一样）
+  threadIdx.x       =  不存在             （元素→线程的映射交给编译器）
+  if (i &lt; N)        =  mask=              （逐 lane 谓词，不是分支）
+  一个标量          =  一条长 BLOCK 的向量
 
-torch.compile 管道：
-  Dynamo 捕获 FX 图 → AOTAutograd 生成 forward/backward
-  → Inductor 生成 Triton kernel → JIT 编译 → GPU 执行
-
-autotuner：对每种矩阵形状自动搜索最优 BLOCK 配置，结果磁盘缓存
-
-不要用 Triton 重写 GEMM（用 cuBLAS），
-用 Triton 做算子融合、自定义 Attention、归一化层。
-
-下一章：MoE 的通信和算子挑战——All-to-All 和 Grouped GEMM。
+★ 这个交换的本质：你放弃&quot;元素摊到哪个线程&quot;的控制权，
+  换来编译器包办合并访存、bank conflict、屏障、MMA 选指令。
 </code></pre></div>
 
+<p><strong>编译器管什么，你管什么</strong></p>
+<table>
+<thead>
+<tr>
+<th>归编译器</th>
+<th>归你</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>合并访存（<a href="01-GPU硬件基础.html">01 章 §1.4</a>）</td>
+<td>BLOCK 怎么切、grid 怎么分</td>
+</tr>
+<tr>
+<td>bank conflict / swizzle（<a href="01-GPU硬件基础.html">01 章 §1.5</a>、<a href="03-GEMM深度剖析.html">03 章 §3.4.3</a>）</td>
+<td><strong>mask</strong>（忘了就越界）</td>
+</tr>
+<tr>
+<td>同步屏障（<a href="03-GEMM深度剖析.html">03 章 §3.3.4</a> 那两个 <code>__syncthreads()</code>）</td>
+<td>算法本身（在线 softmax 这类数学改写）</td>
+</tr>
+<tr>
+<td>Warp Tile / Thread Tile（<a href="03-GEMM深度剖析.html">03 章 §3.4</a>）</td>
+<td>地址表达式本身连不连续</td>
+</tr>
+<tr>
+<td>选 <code>mma</code> / <code>wgmma</code>（<a href="03-GEMM深度剖析.html">03 章 §3.6</a>）</td>
+<td>三个旋钮 <code>BLOCK_*</code> / <code>num_warps</code> / <code>num_stages</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>三个旋钮，三件不同的事</strong></p>
+<table>
+<thead>
+<tr>
+<th>旋钮</th>
+<th>调什么</th>
+<th>对应</th>
+<th>爆掉的症状</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BLOCK_M/N/K</code></td>
+<td>算术强度（带宽问题）</td>
+<td><a href="03-GEMM深度剖析.html">03 章 §3.3</a></td>
+<td>寄存器溢出 / program 太少填不满 SM</td>
+</tr>
+<tr>
+<td><code>num_warps</code></td>
+<td>并行度与寄存器压力</td>
+<td><a href="01-GPU硬件基础.html">01 章 §1.6</a></td>
+<td>太小溢出，太大归约变贵（上限 32）</td>
+</tr>
+<tr>
+<td><code>num_stages</code></td>
+<td>搬运与计算重叠（延迟问题）</td>
+<td><a href="03-GEMM深度剖析.html">03 章 §3.5</a></td>
+<td><code>out of resource: shared memory</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>五个静默错误（都不报错，只是结果错或性能塌）</strong></p>
+<table>
+<thead>
+<tr>
+<th>错误</th>
+<th>症状</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>漏写 <code>mask=</code></td>
+<td>越界读写，随机污染别的数据</td>
+<td>§7.3.1</td>
+</tr>
+<tr>
+<td>求 max 时 <code>other=0.0</code></td>
+<td>整行为负时最大值错成 0</td>
+<td>§7.3.2</td>
+</tr>
+<tr>
+<td><code>num_warps</code> 塞进 <code>Config</code> 的字典里</td>
+<td>静默用回默认的 4</td>
+<td>§7.8.1</td>
+</tr>
+<tr>
+<td>配了 autotune 却写死 grid</td>
+<td>算漏或算重</td>
+<td>§7.6.4</td>
+</tr>
+<tr>
+<td>M/N 维不 <code>% M</code> 就用裸 offs 构造指针</td>
+<td>最后一块越界读</td>
+<td>§7.6.4</td>
+</tr>
+</tbody>
+</table>
+<p><strong>三级演进，每步只加一个概念</strong></p>
+<table>
+<thead>
+<tr>
+<th>算子</th>
+<th>新增的概念</th>
+<th>对应硬件上的什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>vector add</td>
+<td><code>program_id</code> / <code>arange</code> / <code>mask</code> / <code>load</code> / <code>store</code></td>
+<td>合并访存、lane 谓词</td>
+</tr>
+<tr>
+<td>fused softmax</td>
+<td><code>tl.max</code> / <code>tl.sum</code> 归约、一个 program 一整行</td>
+<td>两级归约树（shuffle + 共享内存 + 屏障）</td>
+</tr>
+<tr>
+<td>matmul</td>
+<td>二维指针广播、<code>tl.dot</code>、K 循环、<code>GROUP_SIZE_M</code></td>
+<td>Tensor Core MMA、软件流水、L2 命中率</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自测三题</strong></p>
+<ol>
+<li>一个 Triton kernel 用 <code>BLOCK = 2048</code>、<code>num_warps = 8</code>、FP32。每个线程分到多少个元素？如果编译器让每个线程一次取 4 个连续的 float，一个 Warp 一轮覆盖多少字节、多少个 32 字节扇区？合并效率是多少？</li>
+<li>某 matmul 用 <code>BLOCK_M = 256</code>、<code>BLOCK_N = 128</code>、<code>BLOCK_K = 64</code>、BF16。每一级流水要多少共享内存？在 H100（单 Block 上限约 227 KB）上 <code>num_stages</code> 最大能开到几？如果想开到 5 级，<code>BLOCK_K</code> 最大只能取多少（仍是 2 的幂）？</li>
+<li>C 被切成 12 × 12 = 144 个输出块，一个波次能同时跑 16 个 program。按行扫描时，这 16 个 program 一共要读进多少个 A/B 小块？改成 <code>GROUP_SIZE_M = 4</code> 的分组扫描呢？省了百分之几？</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li>线程数 = 8 × 32 = <strong>256 个</strong>，每线程 2048 ÷ 256 = <strong>8 个元素</strong>。一个 Warp 一轮 = 32 线程 × 4 个 float × 4 字节 = <strong>512 字节</strong> = <strong>16 个扇区</strong>，全部字节都被用到，<strong>效率 100%</strong>。参见 §7.2.3 和 <a href="01-GPU硬件基础.html">01 章 §1.4.1</a>。</li>
+<li>每级 = <code>(256 × 64 + 64 × 128) × 2 B</code> = <code>(16384 + 8192) × 2</code> = <strong>49,152 B = 48 KB</strong>。<code>227 ÷ 48 = 4.7</code> → <code>num_stages</code> 最大 <strong>4</strong>（192 KB ✓，5 级 240 KB ✗）。要开 5 级，每级预算 = 227 ÷ 5 = 45.4 KB；<code>BLOCK_K = 32</code> 时每级 = <code>(256 × 32 + 32 × 128) × 2</code> = 24,576 B = <strong>24 KB</strong>，5 级共 120 KB ✓，所以 <code>BLOCK_K</code> 最大取 <strong>32</strong>。参见 §7.7.3。</li>
+<li>按行扫描：16 个 program 覆盖 C 第 0 行的 12 个块 + 第 1 行的前 4 个块。要的 A 块 = 2 条横条 × 12 个 K 块 = 24；B 块 = 12 条竖条 × 12 个 K 块 = 144；<strong>合计 168 块</strong>。分组扫描（<code>GROUP_SIZE_M = 4</code>）：16 个 program 挤在 C 的一个 4 × 4 方块里，A 块 = 4 × 12 = 48，B 块 = 4 × 12 = 48，<strong>合计 96 块</strong>。省了 <code>(168 − 96) ÷ 168</code> = <strong>43%</strong>。参见 §7.6.3 和 <a href="03-GEMM深度剖析.html">03 章 §3.3.6</a>。</li>
+</ol>
 <blockquote>
-<p><strong>昇腾对照</strong>：昇腾<strong>没有 Triton 的等价物</strong>，kernel 要用 Ascend C 写，抽象层级介于 CUDA C++ 和 Triton 之间。同一个逐元素算子 Triton 七行、Ascend C 七十行，三者的完整对照见 <a href="13-AscendC编程.html">13 章 §13.9</a>。根本原因（编译器能不能替你排流水）见 <a href="00-总纲.html">00 章 §0.3</a>。</p>
+<p><strong>下一章</strong>：MoE（Mixture of Experts，混合专家）把一次大 GEMM 拆成几十个形状不齐的小 GEMM，还要在卡之间做 All-to-All 通信——这正是"库里没有现成 kernel、必须自己写 Triton"的典型场景。见 <a href="08-MoE算子与通信.html">08 · MoE 算子与通信</a>。</p>
+<p><strong>昇腾对照</strong>：⚠️ 本章原稿说"昇腾没有 Triton 的等价物"，这一条<strong>已经过时</strong>。<code>triton-lang/triton-ascend</code>（面向昇腾 NPU 的 Triton 语言与编译器）已开源，<strong>项目文档口径是「支持 85% 以上的 Triton Python API」</strong>（⚠️ 该比例出自项目自述，未见独立复现），覆盖 MatMul、FlashAttention、LayerNorm 等核心大模型算子，并已适配 vLLM 等开源仓里的 Triton 算子。⚠️ 但它的成熟度、API 覆盖度和性能水平都还在快速变动中（本章写作时的预发布版本是 3.2.0rc4），<strong>昇腾上的生产算子目前仍以 Ascend C 为主</strong>。Ascend C 的抽象层级介于 CUDA C++ 和 Triton 之间：它像 Triton 一样以"块"为单位思考，但片上内存、搬运、流水都要你自己写。同一个逐元素算子 Triton 约 7 行、Ascend C 约 70 行，三者的完整对照见 <a href="13-AscendC编程.html">13 章 §13.9</a>。根本原因（编译器能不能替你排流水）见 <a href="00-总纲.html">00 章 §0.3</a>。</p>
 </blockquote>
 <p><strong>延伸资料</strong>：<br />
-- <a href="https://triton-lang.org/main/getting-started/tutorials/index.html">Triton 官方教程</a>（Vector Add、GEMM、Softmax 三个 tutorial 必看）<br />
-- <a href="https://github.com/openai/triton">Triton GitHub</a><br />
+- <a href="https://triton-lang.org/main/getting-started/tutorials/index.html">Triton 官方教程</a>（01-vector-add、02-fused-softmax、03-matrix-multiplication 对应本章 §7.4–§7.6，必看；06-fused-attention 是 FlashAttention 的官方 Triton 实现，配合 <a href="04-FlashAttention全系.html">04 章</a>读）<br />
+- <a href="https://triton-lang.org/main/python-api/triton.language.html">Triton Python API 参考</a>（<code>tl.*</code> 的权威签名。<strong>本章所有 API 细节以这里为准，不要相信任何博客上的旧写法</strong>）<br />
+- <a href="https://github.com/triton-lang/triton">Triton GitHub</a>（注意：仓库已从 <code>openai/triton</code> 迁到 <code>triton-lang/triton</code>。README 末尾的 "Tips for Hacking" 一节是 §7.9.2 那张环境变量表的一手来源）<br />
 - <a href="https://dev-discuss.pytorch.org/t/torchinductor-a-pytorch-native-compiler-with-define-by-run-ir-and-symbolic-shapes/747">TorchInductor 设计文档</a><br />
-- <a href="https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/flash_attn_triton.py">FlashAttention 的 Triton 实现</a>（学习 Triton 写复杂 kernel 的最佳范本）</p>
+- <a href="https://github.com/triton-lang/triton-ascend">triton-ascend</a>（昇腾 NPU 的 Triton 后端）<br />
+- ⚠️ <a href="https://github.com/Dao-AILab/flash-attention">FlashAttention 仓库</a>里的 Triton 实现路径随版本变动（历史上在 <code>flash_attn/flash_attn_triton.py</code>），要学复杂 kernel 优先看上面官方教程的 06-fused-attention</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

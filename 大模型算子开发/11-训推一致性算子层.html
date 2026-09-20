@@ -259,6 +259,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <strong>STE</strong>（Straight-Through Estimator，直通估计器）—— QAT 中量化操作的梯度近似：前向做量化，反向当量化不存在，梯度直通。<br />
 <strong>Absorptive MLA</strong>（吸收式多头潜在注意力）—— MLA 在 Decode 阶段把低秩 KV 压缩矩阵吸收进 W_Q/W_K/W_V，等价于 MQA，改变了算子计算路径。<br />
 <strong>Keep Routing / R3</strong>（路由重放）—— MoE 推理时记录每个 token 的 Expert 路由决策，训练时按原路由重放，避免训练和推理的 Expert 累加顺序不同。<br />
+<strong>路由跳变</strong>（Routing Flip）—— MoE 的 top-k 专家选择是离散决策，微小数值扰动可能让 token 换一批专家，把连续的小误差整流成 O(1) 量级的输出差异，是 MoE 独有的误差放大机制。<br />
+<strong>EP</strong>（Expert Parallel，专家并行）—— MoE 的并行方式，把不同专家放到不同卡上，卡间用 all-to-all 通信收发 token。训推 EP 度不同会改变累加与通信顺序。<br />
+<strong>capacity factor</strong>（专家容量因子）—— 单个专家在一个批次里最多接收多少 token，超额的被丢弃（drop）。训练常设上限、推理常用 dropless（不丢），这是 MoE 的 A 类失配。<br />
 <strong>bitwise reproducibility</strong>（逐位可复现）—— 训练和推理对同一输入产生完全相同的二进制结果，是最严格的一致性标准，实现代价极高。<br />
 <strong>TITO</strong>（Token-In-Token-Out，令牌级输入输出）—— 推理引擎直接把 token 序列传给训练引擎，不经过 detokenize → retokenize，消除分词边界引入的差异。</p>
 <hr />
@@ -483,7 +486,113 @@ FlashAttention（fused kernel）：
 </code></pre></div>
 
 <hr />
-<h2 id="116">11.6 分层解法汇总</h2>
+<h2 id="116-moe">11.6 MoE 为什么特殊：离散路由把误差整流成跳变</h2>
+<p>前面五节讲的 A / B / C 三类差异，对 dense（稠密）模型和 MoE（Mixture of Experts，混合专家）模型都成立。但 MoE 多了一个 dense 没有的结构，它会把上面所有的小误差放大成大差异。</p>
+<h3 id="1161-top-k">11.6.1 误差放大器：top-k 是一个离散决策</h3>
+<p>dense 模型里误差是连续传播的：输入扰动 1e-3，输出扰动也在 1e-3 量级，可控、可估。</p>
+<p>MoE 在每一层多了一步 router（路由器）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">scores</span>  <span class="o">=</span> <span class="n">softmax</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">W_router</span><span class="p">)</span>                       <span class="c1"># 对 E 个专家打分</span>
+<span class="n">experts</span> <span class="o">=</span> <span class="n">topk</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">k</span><span class="p">)</span>                             <span class="c1"># ← 离散决策：选出 k 个</span>
+<span class="n">output</span>  <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">scores</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">*</span> <span class="n">expert_i</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">experts</span><span class="p">)</span>
+</code></pre></div>
+
+<p><code>topk</code> 是不连续的。当两个专家的分数接近时，1e-4 的扰动就足以让排序翻转：</p>
+<div class="codehilite"><pre><span></span><code>推理侧：scores[17] = 0.1032,  scores[21] = 0.1029   → top-2 选中 {3, 17}
+训练侧：scores[17] = 0.1030,  scores[21] = 0.1031   → top-2 选中 {3, 21}
+        ↑ 分数差异只有 2e-4，但选出的专家换了一个
+
+输出差异不是 2e-4，而是 |expert_17(x) - expert_21(x)|  → O(1) 量级
+</code></pre></div>
+
+<p><strong>这就是 MoE 的特殊之处：它把连续的数值噪声整流（rectify）成了离散的跳变。</strong>同样一份 kernel 噪声，dense 模型能忍，MoE 忍不了。</p>
+<p>三个会放大这个效应的因素：</p>
+<ul>
+<li><strong>专家数 E 越大，分数分布越密集</strong>，相邻专家的分数间隔越小，翻转概率越高。E=256（DeepSeek-V3）比 E=8（Mixtral）敏感得多</li>
+<li><strong>层数越深，前面层的跳变会改变隐状态</strong>，下一层的输入差异更大，跳变概率进一步升高——误差沿深度自我放大</li>
+<li><strong>序列越长</strong>，逐 token 推进时同理累积</li>
+</ul>
+<p>这一项是可以直接测的：统计训练侧与推理侧 top-k 专家集合的<strong>重合度</strong>。它比 PCC（Pearson Correlation Coefficient，皮尔逊相关系数）更早暴露问题——重合度已经在掉的时候，PCC 可能还很好看。</p>
+<h3 id="1162-moe">11.6.2 MoE 独有的失配源清单</h3>
+<p>除 11.3.2 讲过的 Expert 累加顺序外，MoE 还有三个 dense 不存在的来源：</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>类别</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Expert 累加顺序</strong></td>
+<td>B 类</td>
+<td>见 11.3.2：训练按 Expert-ID 升序累加，推理按 gate 分数降序累加</td>
+</tr>
+<tr>
+<td><strong>EP 度不同</strong></td>
+<td>B 类</td>
+<td>训练 EP=8、推理 EP=64，all-to-all 的分组、通信顺序、累加顺序全部改变</td>
+</tr>
+<tr>
+<td><strong>capacity factor</strong></td>
+<td><strong>A 类</strong></td>
+<td>训练设专家容量上限、超额 token 被丢弃；推理多用 dropless。<strong>数学上就不等价</strong>，不是数值误差</td>
+</tr>
+<tr>
+<td><strong>路由跳变</strong></td>
+<td>B 类的放大</td>
+<td>见 11.6.1。本身不产生误差，是把已有误差放大的机制</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>capacity factor 这条最容易被漏掉</strong>：它是 A 类（定义失配），靠任何 kernel 对齐都修不掉，必须改配置——训练侧也用 dropless，或者推理侧也设同样的容量上限。改配置的代价很小，收益却是消掉一整类失配，性价比排在很前面。</p>
+<p>⚠️ <strong>EP 度对齐的代价远大于 TP 度对齐</strong>：大 EP 正是 MoE 推理部署的核心优化（每张卡只放少量专家，显存才装得下）。要求训推同 EP，等于放弃这条优化，对大规模 MoE 基本不可行。</p>
+<h3 id="1163-r3-keep-routing">11.6.3 R3 / Keep Routing 的天花板</h3>
+<p>针对路由跳变，openPangu 的 <strong>R3</strong>（Rollout Routing Replay，回放推理侧路由）和 DeepSeek 的 <strong>Keep Routing</strong> 是同一个思路：推理时把每个 token 选中的专家记下来，训练时强制走同一套。</p>
+<p>这确实消掉了跳变，但方案本身有天花板。openPangu 的 <strong>Masked R3</strong> 记录了这个坑：</p>
+<div class="codehilite"><pre><span></span><code>现象：隐状态随 MoE 层加深而累积发散
+     此时在深层强制全量重放推理侧路由
+       → logits 被严重扭曲
+       → PCC 骤降
+       → 可能梯度爆炸
+
+原因：训练侧这一层的输入 x_train 已经和推理侧的 x_infer 不一样了
+     强行让 x_train 走 x_infer 选的专家
+     = 用错的专家算错的输入，比不对齐更糟
+
+解法：自适应阈值——只有训练侧自己算出的 top-k 与录制值重合度超过阈值时，
+     才对该 token 重放
+</code></pre></div>
+
+<p>⚠️ <strong>这是「一致性」和「正确性」的一次直接冲突，不是实现粗糙。</strong>全量重放不是越多越好。Masked R3 把这个矛盾挪到了一个可接受的位置，但没有消除它——这是 R3 路线不能称为「根治」的根本原因。</p>
+<p>R3 的另一重成本在接口层。推理引擎交给训练引擎的契约要扩展：</p>
+<div class="codehilite"><pre><span></span><code>(token_ids, logprobs, finish_reason)
+    → (token_ids, logprobs, finish_reason, routing_records, sampling_mask, ...)
+</code></pre></div>
+
+<p>所有推理引擎要吐出路由、所有传输层要传路由、所有训练引擎要吃路由。这是生态成本，比技术成本更难推动。系统架构层的展开见 <a href="../强化学习训练框架/04-训推一致性.html">强化学习训练框架 04-训推一致性 §4.4</a>。</p>
+<h3 id="1164">11.6.4 一条边界：不该被「修掉」的那一半差异</h3>
+<p>在异步 RL（Reinforcement Learning，强化学习）里，rollout 用的是 N 步之前的旧权重，训练用的是当前权重。<strong>此时 ratio ≠ 1 是设计使然，不是数值 bug</strong>——这叫 off-policy（离策略）偏移。</p>
+<div class="codehilite"><pre><span></span><code>ratio 的偏离 = 数值失配（A / B / C 三类，该修）
+             + off-policy 偏移（异步设计的固有属性，只能用 IS 修正，不该修）
+</code></pre></div>
+
+<p>把 kernel 做到 bitwise 一致，只能消掉第一项。所以「训推一致性」这个词其实混装了两件事——判断一个方案有没有「根治」之前，先要分清在谈哪一半。</p>
+<h3 id="1165-moe">11.6.5 所以 MoE 训推一致性能不能根治</h3>
+<p>能，但代价是放弃推理侧的全部性能优化。这里有一条近似守恒律：</p>
+<blockquote>
+<p><strong>差异的来源，恰恰就是推理侧的优化本身。</strong></p>
+</blockquote>
+<p>Absorptive MLA、量化、SplitK、批次相关的 kernel 选择、大 EP 部署——每一项都是拿「改变计算路径」换吞吐。要求 bitwise 一致，等价于要求推理引擎按训练引擎的方式算，rollout 就慢回去了。所以「不根治」在工程上是主动取舍，不是能力不足。</p>
+<p>现实的验收标准不是「差异为零」，而是「差异已经小到不伤训练」：</p>
+<div class="codehilite"><pre><span></span><code>可接受区间：
+  PCC(log_prob_train, log_prob_rollout) &gt; 0.99
+  ratio 标准差 &lt; 0.1
+  top-k 专家重合度 &gt; 95%        ← MoE 特有，要单独看，不要只看前两项
+</code></pre></div>
+
+<hr />
+<h2 id="117">11.7 分层解法汇总</h2>
 <p>不同层次的解法有不同的代价和效果：</p>
 <div class="codehilite"><pre><span></span><code>算法层（最便宜，但不根治）
   ↓
@@ -494,7 +603,7 @@ FlashAttention（fused kernel）：
 Kernel 层（最昂贵，但可以做到 bitwise 一致）
 </code></pre></div>
 
-<h3 id="1161-is">11.6.1 算法层：IS 修正（兜底）</h3>
+<h3 id="1171-is">11.7.1 算法层：IS 修正（兜底）</h3>
 <p>承认 ratio ≠ 1，用重要性采样（Importance Sampling）修正：</p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># PPO with IS correction</span>
 <span class="n">ratio</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">log_prob_new</span> <span class="o">-</span> <span class="n">log_prob_old</span><span class="p">)</span>
@@ -509,7 +618,7 @@ Kernel 层（最昂贵，但可以做到 bitwise 一致）
 </code></pre></div>
 
 <p>IS 修正能兜住数值差异带来的梯度放大问题，但不消除差异本身。当差异系统性地偏向一个方向时（比如 MLA 的 Absorptive 路径始终让 ratio &lt; 1），IS 会系统性地降低某类 token 的学习信号。</p>
-<h3 id="1162-tito">11.6.2 接口层：TITO</h3>
+<h3 id="1172-tito">11.7.2 接口层：TITO</h3>
 <p>把 tokenize/detokenize 从训推接口里去掉，直接传 token ID 序列：</p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># 错误做法（Text-In-Text-Out）</span>
 <span class="n">response_text</span> <span class="o">=</span> <span class="n">inference_engine</span><span class="o">.</span><span class="n">generate</span><span class="p">(</span><span class="n">prompt_text</span><span class="p">)</span>
@@ -522,9 +631,9 @@ Kernel 层（最昂贵，但可以做到 bitwise 一致）
 </code></pre></div>
 
 <p>TITO 不需要修改任何 kernel，是最便宜的一条改进，消除了分词边界引入的序列差异。</p>
-<h3 id="1163-fp8-qat">11.6.3 数值格式层：FP8 端到端 / QAT</h3>
+<h3 id="1173-fp8-qat">11.7.3 数值格式层：FP8 端到端 / QAT</h3>
 <p>见 11.2 节，FP8 训练是最彻底的格式对齐方式。</p>
-<h3 id="1164-kernel-kernel">11.6.4 Kernel 层：确定性 kernel 库</h3>
+<h3 id="1174-kernel-kernel">11.7.4 Kernel 层：确定性 kernel 库</h3>
 <p>DeepSeek 的解法：构建一套 <strong>批次不变（batch-invariant）且确定性的 kernel 库</strong>，保证：<br />
 - 同一个输入，批次大小改变，结果不变（不用 SplitK 这类依赖批次的优化）<br />
 - 同一个输入，两次运行结果完全相同（不用 AtomicAdd）</p>
@@ -544,7 +653,7 @@ Kernel 层（最昂贵，但可以做到 bitwise 一致）
 </code></pre></div>
 
 <hr />
-<h2 id="117">11.7 三个维度的算子差异汇总</h2>
+<h2 id="118">11.8 三个维度的算子差异汇总</h2>
 <p>把前两章和本章的内容整合成一张完整的横切面图：</p>
 <table>
 <thead>
@@ -605,8 +714,29 @@ Kernel 层（最昂贵，但可以做到 bitwise 一致）
 <td>MoE Expert 累加顺序</td>
 <td>B 类</td>
 <td>&lt; 1e-3</td>
-<td>Keep Routing / R3 路由重放</td>
-<td>接口契约改造</td>
+<td>训推统一累加顺序（按 Expert-ID 规范排序）</td>
+<td>推理侧微小精度损失</td>
+</tr>
+<tr>
+<td>MoE 路由跳变（top-k 翻转）</td>
+<td>B 类的放大</td>
+<td><strong>O(1)</strong>，跳变而非渐变</td>
+<td>Masked R3 / Keep Routing</td>
+<td>接口契约改造 + 阈值调参</td>
+</tr>
+<tr>
+<td>MoE EP 度不同</td>
+<td>B 类</td>
+<td>&lt; 1e-3/层</td>
+<td>训推用相同 EP 度</td>
+<td>推理显存与部署代价大，通常不可行</td>
+</tr>
+<tr>
+<td>MoE capacity factor</td>
+<td><strong>A 类</strong></td>
+<td>丢 token，差异巨大</td>
+<td>训推都用 dropless</td>
+<td>训练吞吐略降，性价比高</td>
 </tr>
 <tr>
 <td>并行切分（TP 不同）</td>
@@ -653,7 +783,7 @@ Kernel 层（最昂贵，但可以做到 bitwise 一致）
 </tbody>
 </table>
 <hr />
-<h2 id="118">11.8 实践中的优先级</h2>
+<h2 id="119">11.9 实践中的优先级</h2>
 <p>不是所有不一致都值得修，按实际收益排序：</p>
 <p><strong>第一优先级（几乎总是值得做）</strong>：<br />
 - TITO —— 零代价，消除分词差异</p>
@@ -663,11 +793,14 @@ Kernel 层（最昂贵，但可以做到 bitwise 一致）
 <p><strong>第三优先级（有精度要求时）</strong>：<br />
 - QAT —— 如果推理用 INT8/FP4，训练时加 FakeQuantize<br />
 - FP8 端到端训练 —— 如果训练本身就在 FP8 下进行（DeepSeek 路线）</p>
+<p><strong>模型是 MoE 时，额外的两条（见 11.6）</strong>：<br />
+- 对齐 capacity factor（训推都用 dropless）—— 改配置即可，消掉一整类 A 类失配<br />
+- 先测 top-k 专家重合度，再决定上不上 Masked R3 —— 专家数多、层数深时几乎是必做项；注意用带阈值的 Masked R3，不要全量重放</p>
 <p><strong>只在极端场景需要</strong>：<br />
-- Keep Routing / R3 —— 如果 MoE 规模大，且实测到路由顺序差异影响训练<br />
-- 全量 bitwise 确定性 kernel 库 —— 性能代价大，只有超大规模 MoE + 异步 RL 才值得</p>
+- 全量 bitwise 确定性 kernel 库 —— 性能代价大，只有超大规模 MoE + 异步 RL 才值得<br />
+- 训推对齐 EP 度 —— 等于放弃大 EP 部署，一般不可行</p>
 <hr />
-<h2 id="119">11.9 本章小结</h2>
+<h2 id="1110">11.10 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>训推数值差异的三层根源：
 
 A 类（定义失配）：精度格式不同
@@ -678,6 +811,12 @@ B 类（计算图重排）：浮点非结合性
   → MoE：Keep Routing 重放累加顺序
   → 融合策略：torch.compile 统一代码路径
 
+MoE 独有的放大机制（11.6）：
+  top-k 路由是离散决策 → 把连续小误差整流成 O(1) 跳变
+  capacity factor 属 A 类，靠 kernel 对齐修不掉，改配置即可
+  R3 重放有天花板：深层强制重放 = 用错的专家算错的输入
+  → 用带阈值的 Masked R3，不要全量重放
+
 C 类（硬件非确定性）：AtomicAdd 顺序随机
   → deterministic GEMM + FA deterministic=True
   → 固定 NCCL_ALGO=Ring
@@ -685,6 +824,11 @@ C 类（硬件非确定性）：AtomicAdd 顺序随机
 接口层快赢：
   TITO：零代价，消除分词边界引起的序列差异
   IS 修正：算法层兜底，不消除差异，但限制梯度放大
+
+一条守恒律：
+  差异的来源，恰恰就是推理侧的优化本身
+  要 bitwise 一致 = 要放弃推理优化 → 是取舍，不是能力问题
+  另外 ratio 的偏离里还混着 off-policy 偏移，那一半不该修，只能 IS 修正
 
 严格性层次：
   IS 修正 &lt; TITO &lt; QAT &lt; deterministic kernel &lt; FP8 端到端
@@ -694,8 +838,12 @@ C 类（硬件非确定性）：AtomicAdd 顺序随机
   先上 TITO + IS 修正，观察 ratio 分布
   ratio 标准差 &gt; 0.1 时考虑下一层解法
   PCC(log_prob_train, log_prob_rollout) &gt; 0.99 时已经足够
+  MoE 额外看一项：top-k 专家重合度 &gt; 95%
 </code></pre></div>
 
+<blockquote>
+<p><strong>昇腾对照</strong>：本章的逐层比对方法论在 GPU→NPU 迁移中直接适用 —— 只不过比的是「GPU vs NPU」而非「训练 vs 推理」，见 <a href="14-GPU到NPU迁移实战.html">14 章 §14.4</a>。TorchAir 的精度 dump 是昇腾侧的主力比对工具，见 <a href="14-GPU到NPU迁移实战.html">14 章 §14.5</a>。</p>
+</blockquote>
 <p><strong>延伸资料</strong>：<br />
 - <a href="https://arxiv.org/abs/2505.09439">openPangu-2.0-Pro 技术报告 §10.3</a>（训推一致性三分类框架）<br />
 - <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a>（FP8 训练策略、Keep Routing、batch-invariant kernel）<br />

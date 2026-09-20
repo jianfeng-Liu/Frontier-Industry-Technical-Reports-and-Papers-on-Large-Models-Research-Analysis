@@ -298,7 +298,110 @@ cu_seqlens = [0, 3, 8, 10]
 
 ---
 
-## 4.9 本章小结
+## 4.9 在昇腾上：同一个算法，三个算子
+
+> 本节需要 [12 章](12-昇腾硬件基础.md) 的硬件背景。只关心 GPU 可以跳过。
+
+**算法是同一个**——分块、在线 Softmax、反向重计算，前面八节讲的数学在昇腾上一字不改。变的是两件事：**实现路径**和**接口形态**。
+
+### 4.9.1 为什么昇腾的优化文章在讲别的事
+
+回顾 §4.3：GPU 上 FA 的核心收益来自"把 S = QKᵀ 和中间的 Softmax 结果留在 SRAM 里，不写回 HBM"。
+
+昇腾 910B 上这个前提部分失效。原因在 [12 章 §12.2.3](12-昇腾硬件基础.md)：Cube 和 Vector 是**两个独立的核**（AIC / AIV），中间没有直连通道。而 FlashAttention 恰恰是 Cube 和 Vector 高频交替的算子：
+
+```
+Flash Attention = Matmul(Cube) → Scale(Vector) → Mask(Vector)
+                → SoftMax(Vector) → flash update(Vector) → Matmul(Cube)
+                  ↑ 每一次箭头，都是一次 AIC↔AIV 的交接
+
+GPU：中间结果留在 SRAM，交接是免费的
+910B：AIC 和 AIV 之间必须绕 Global Memory（经 L2）
+      → "不落盘"这个收益来源被削弱
+```
+
+所以昇腾的解法换成了**流水重叠**（[00 章](00-总纲.md) 的手段三）而不是**消灭搬运**（手段二）：既然交接躲不掉，那就让它和计算重叠。官方给出的 FlashAttention 反向算子优化手段（✅ 官方技术文章）：
+
+```
+① tiling 基本块大小调整
+② 核间负载均衡        ← 变长序列场景的主要矛盾
+③ CV 流水并行          ← AIC 算第 k+1 块时，AIV 处理第 k 块的 Softmax
+④ MTE2 流水优化
+⑤ FixPipe 流水优化
+效果：约 4× 性能提升（Atlas A2 训练系列 / Atlas 800I A2 推理产品验证平台）
+```
+
+> ⚠️ 这个 "4×" 是相对**优化前的自身基线**，不是相对 GPU。
+
+**这是本系列反复出现的一个模式**：同一个算法，在不同硬件上最优的手段组合不同。读昇腾的优化文章时，先问它在用四个手段里的哪几个。
+
+### 4.9.2 三个算子，别用错
+
+GPU 侧 `flash_attn` 一个库通吃训练和推理。昇腾按场景拆成了三个，理由和 [09 章 §9.4](09-推理侧算子.md) 讲的 Prefill/Decode 分野完全一致：
+
+| 算子 | 场景 | query 的 S 轴 | PyTorch 接口 | GPU 侧对应 |
+|---|---|---|---|---|
+| **FlashAttentionScore** | 训练（正向+反向） | 变长 | `torch_npu.npu_fusion_attention` | `flash_attn_func` |
+| **PromptFlashAttention**（PFA） | 推理 Prefill | 变长 | `torch_npu.npu_prompt_flash_attention` | `flash_attn_varlen_func` |
+| **IncreFlashAttention**（IFA） | 推理 Decode | **固定为 1** | `torch_npu.npu_incre_flash_attention` | PagedAttention decode kernel |
+| **FusedInferAttentionScore** | 推理，两者统一 | 变长 | 经 vLLM-Ascend / MindIE 调用 | 统一 kernel |
+
+IFA 的参数表直接暴露了它的定位：`block_table`（[09 章](09-推理侧算子.md) 讲的 PagedAttention 页表）、`antiquant_scale` / `antiquant_offset`（KV Cache 量化的反量化参数）、`kv_padding_size`、`block_size`。**这是一个为分页 KV Cache 量身定做的 decode 算子**，不是通用 Attention。
+
+源码可读：这些算子都在开源的 [cann-ops-adv](https://gitee.com/ascend/cann-ops-adv) 仓库里，比读 cuDNN 闭源二进制友好得多。
+
+### 4.9.3 四个迁移坑，前两个是静默错误
+
+**坑 1：`atten_mask` 语义相反。**
+
+```python
+# GPU（PyTorch SDPA）：attn_mask 为 True 表示「参与计算」
+out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+
+# NPU：bool 型 atten_mask 为 True 表示「屏蔽掉」—— 必须取反
+atten_mask_npu = torch.logical_not(mask)
+out = torch_npu.npu_fusion_attention(
+    q, k, v, head_num,
+    input_layout="BNSD",
+    pse=None,
+    atten_mask=atten_mask_npu,      # ← 取反后的
+    scale=1.0 / math.sqrt(head_dim),
+    pre_tockens=2147483647,         # 注意：官方 API 就是拼成 "tockens"
+    next_tockens=2147483647,
+    keep_prob=1.0,
+)[0]                                 # ← 返回元组，第 0 个才是 attention 输出
+```
+
+**坑 2：`sparse_mode` 要按 flash-attn 版本选。**
+
+```
+替换 flash-attn ≤ 2.0 → sparse_mode = 2
+替换 flash-attn ≥ 2.1 → sparse_mode = 3
+```
+
+原因是 flash-attn 2.1 改过因果掩码在非方阵（S_q ≠ S_kv）时的对齐方式。
+
+> **坑 1 和坑 2 都不报错，只是结果不对**，而且短序列小 batch 上 loss 曲线可能看着还正常。迁移后第一件事是拿 GPU 结果做逐元素比对，不要靠看 loss 判断。
+
+**坑 3：定长 kernel 的 128 对齐要求会打死混合批。**
+
+SGLang 社区踩过的真实问题：`torch_npu._npu_flash_attention_qlens` 要求序列长度是 **128 的倍数**。而 Decode 请求的 `q_len = 1`，[09 章 §9.8](09-推理侧算子.md) 讲的 chunked prefill + decode 混合批直接触发 kernel 错误。
+
+```
+解法：换成变长布局
+
+  BNSD 布局：[Batch, Num_heads, Seq, Dim]   定长，要 padding 到 128 倍数
+  TND  布局：[Total_tokens, Num_heads, Dim] 变长，不 padding
+             配 actual_seq_qlen / actual_seq_kvlen 传每条的真实长度
+```
+
+**TND 是昇腾上做变长场景的正确布局**，相当于 GPU 侧 `flash_attn_varlen_func` 的 `cu_seqlens` 机制。做连续批处理（[09 章 §9.5](09-推理侧算子.md)）必须用它。
+
+**坑 4：head_dim 对齐要求比 GPU 严。** [12 章 §12.3.3](12-昇腾硬件基础.md) 讲的 FRACTAL_NZ 分形格式对维度有硬要求，非标准 head_dim 可能落不到快路径。[11 章](11-训推一致性算子层.md) 讲的 MLA Absorptive 变换在昇腾上要单独验证是否真的走到了融合算子。
+
+---
+
+## 4.10 本章小结
 
 ```
 三代 FlashAttention 的核心演进：

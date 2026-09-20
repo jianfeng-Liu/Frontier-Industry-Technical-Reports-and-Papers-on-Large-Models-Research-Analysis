@@ -562,7 +562,127 @@ GPTQ：<strong>每量化一个权重，就把这个量化误差补偿到剩余�
 </tbody>
 </table>
 <hr />
-<h2 id="610">6.10 本章小结</h2>
+<h2 id="610-fp8">6.10 在昇腾上：一条没有 FP8 的量化路线</h2>
+<blockquote>
+<p>本节需要 <a href="12-昇腾硬件基础.html">12 章</a> 的硬件背景。只关心 GPU 可以跳过。</p>
+</blockquote>
+<p>§6.5 讲的 FP8 是 H100 时代的主流答案：Hopper 的 Tensor Core 原生支持 E4M3/E5M2，DeepSeek-V3 用它做了 FP8 训练。<strong>昇腾 910B/910C 这一代没有 FP8 硬件支持</strong>（✅），于是整条技术路线不同：</p>
+<div class="codehilite"><pre><span></span><code>NVIDIA 路线：BF16 训练 → FP8 训练/推理 → 更低比特
+             硬件原生支持，配 per-tensor / per-block scale
+
+昇腾 910B/C： BF16 训练（不变）
+             推理走 INT8（W8A8）  ← 主力
+             FP8 要等下一代硬件（HiF8）
+</code></pre></div>
+
+<p>这意味着 §6.5 的 FP8 方案在昇腾上<strong>不可直接迁移</strong>，要退回 §6.4 的 W8A8（SmoothQuant 路线）或 BF16。这是迁移时最先撞上的硬约束之一。</p>
+<h3 id="6101-w8a8">6.10.1 W8A8：昇腾推理量化的主力</h3>
+<p>工具是 <strong>msModelSlim</strong>（MindStudio ModelSlim）。它做的事和 §6.4 的 SmoothQuant + §6.6 的 PTQ 校准是同一套思路：</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">msmodelslim.pytorch.llm_ptq.anti_outlier</span><span class="w"> </span><span class="kn">import</span> <span class="n">AntiOutlierConfig</span><span class="p">,</span> <span class="n">AntiOutlier</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">msmodelslim.pytorch.llm_ptq.llm_ptq_tools</span><span class="w"> </span><span class="kn">import</span> <span class="n">Calibrator</span><span class="p">,</span> <span class="n">QuantConfig</span>
+
+<span class="c1"># ① 异常值抑制 —— 对应 §6.4 讲的 SmoothQuant</span>
+<span class="c1">#    激活里的离群值会把量化 scale 撑大，先把&quot;难度&quot;从激活搬到权重上</span>
+<span class="n">anti_cfg</span> <span class="o">=</span> <span class="n">AntiOutlierConfig</span><span class="p">(</span><span class="n">anti_method</span><span class="o">=</span><span class="s2">&quot;m2&quot;</span><span class="p">)</span>      <span class="c1"># 工具提供 6 种算法</span>
+<span class="n">anti</span> <span class="o">=</span> <span class="n">AntiOutlier</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">calib_data</span><span class="o">=</span><span class="n">calib_data</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">anti_cfg</span><span class="p">)</span>
+<span class="n">anti</span><span class="o">.</span><span class="n">process</span><span class="p">()</span>
+
+<span class="c1"># ② 量化配置</span>
+<span class="n">quant_cfg</span> <span class="o">=</span> <span class="n">QuantConfig</span><span class="p">(</span>
+    <span class="n">w_bit</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">a_bit</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+    <span class="n">disable_names</span><span class="o">=</span><span class="p">[</span><span class="o">...</span><span class="p">],</span>      <span class="c1"># 敏感层排除，通常是 lm_head 和首尾若干层</span>
+    <span class="n">dev_type</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">,</span>
+    <span class="n">act_method</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span>             <span class="c1"># 激活量化的校准方法</span>
+    <span class="n">mm_tensor</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># False = per-channel（对应 §6.2 的粒度选择）</span>
+<span class="p">)</span>
+
+<span class="c1"># ③ 校准并保存</span>
+<span class="n">calibrator</span> <span class="o">=</span> <span class="n">Calibrator</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">quant_cfg</span><span class="p">,</span> <span class="n">disable_level</span><span class="o">=</span><span class="s2">&quot;L0&quot;</span><span class="p">)</span>
+<span class="n">calibrator</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="n">calibrator</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">save_path</span><span class="p">)</span>
+</code></pre></div>
+
+<p>三个实践要点：</p>
+<ul>
+<li><strong>校准数据量极小（10～50 条），但必须是业务相关的真实数据。</strong> 用通用语料校准、上线跑专业领域，精度会掉。这一点和 §6.6 讲的 GPTQ 校准集选择是同一个道理，但昇腾工具链对数据量的要求更低。</li>
+<li><strong><code>disable_names</code> 是主要调参旋钮。</strong> 哪些层不量化，直接决定精度-性能的取舍。和 §6.9 的选型表配合使用。</li>
+<li><strong>CANN 版本决定安装方式</strong>：8.0.RC3 及之前，msModelSlim 内置在 CANN 包里；之后的版本要单独装开源版。用新 CANN 却按老文档调内置模块会找不到，这是高频踩坑点。</li>
+</ul>
+<p>除 W8A8 外，昇腾还提供 W8A8SC（稀疏量化）、KV Cache 量化（对应 <a href="09-推理侧算子.html">09 章 §9.2</a> 的 KV Cache 显存压力）、W8A16 / W4A8 等组合。</p>
+<h3 id="6102-hifloat8">6.10.2 HiFloat8：一个值得关注的不同答案</h3>
+<p>§6.5 讲过 FP8 的核心矛盾：E4M3 精度高但动态范围小，E5M2 反之，所以必须配缩放因子（scale），而 scale 的管理本身就是工程负担——DeepSeek-V3 的 FP8 方案有相当一部分复杂度花在这上面。</p>
+<p>华为的 <strong>HiF8</strong>（HiFloat8）换了个思路（⚠️ 以下为华为技术材料口径）：</p>
+<div class="codehilite"><pre><span></span><code>传统 FP8：指数位/尾数位的划分固定（E4M3 或 E5M2 二选一）
+
+HiF8：引入「点位域（Dot）」，用即时可译的变长前缀码编码
+  → 同一种格式内，不同数量级的数自动采用不同的指数/尾数划分
+  → 单一格式覆盖更宽的动态范围
+  → 推理时可用 Per-Tensor 甚至 Scale-Free 的粗粒度量化
+  → 省掉 Per-Token / Per-Channel / Per-Block 的 scale 管理开销
+</code></pre></div>
+
+<p><strong>但华为自己公布的精度对比值得注意</strong>（⚠️ 华为技术博客，openPangu-7B 权重量化的 SQNR 排序）：</p>
+<div class="codehilite"><pre><span></span><code>INT8 (per-channel) &gt; HiF8 (scaled) ≈ MXFP8 (E4M3) &gt; E4M3 &gt; E5M2 &gt; HiF8 (裸格式)
+                                                                   ↑ 垫底
+</code></pre></div>
+
+<p>华为给出的解释是：HiF8 的设计初衷是捕捉<strong>训练中跨数量级波动的梯度</strong>，而静态权重呈类高斯的集中分布，HiF8 在密集区间可用的量化阶反而更少。</p>
+<p>这个坦率的自评很有参考价值：<strong>HiF8 的定位是训练侧（梯度），不是推理侧的权重量化</strong>。如果你的场景是推理部署，回到 §6.10.1 的 W8A8 per-channel 仍是昇腾上的稳妥选择。</p>
+<p>HiF8 算法已在 CANN 社区开源（AMCT 工具链），并提供跨平台伪量化仿真库——<strong>可以在 GPU 上先验证精度再上昇腾</strong>，这对评估阶段很实用。</p>
+<h3 id="6103-69">6.10.3 和 §6.9 选型表的对照</h3>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>NVIDIA</th>
+<th>昇腾 910B/C</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16 基线</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>FP8（E4M3/E5M2）</td>
+<td>✅ 硬件原生</td>
+<td>❌ <strong>无硬件支持</strong></td>
+</tr>
+<tr>
+<td>W8A8（SmoothQuant 类）</td>
+<td>✅</td>
+<td>✅ <strong>主力方案</strong>（msModelSlim）</td>
+</tr>
+<tr>
+<td>W8A16</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>W4A16（GPTQ/AWQ）</td>
+<td>✅</td>
+<td>✅（msModelSlim 支持 GPTQ/HQQ 校准）</td>
+</tr>
+<tr>
+<td>稀疏量化</td>
+<td>部分</td>
+<td>✅ W8A8SC</td>
+</tr>
+<tr>
+<td>KV Cache 量化</td>
+<td>✅</td>
+<td>✅（IFA 算子原生带反量化参数）</td>
+</tr>
+<tr>
+<td>HiF8</td>
+<td>❌</td>
+<td>⚠️ 需下一代硬件</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="611">6.11 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>量化的核心逻辑：
   推理是 Memory Bound → 减少位宽 → 减少 HBM 带宽需求 → 速度提升
 

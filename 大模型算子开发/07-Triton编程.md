@@ -332,6 +332,8 @@ autotuner：对每种矩阵形状自动搜索最优 BLOCK 配置，结果磁盘�
 下一章：MoE 的通信和算子挑战——All-to-All 和 Grouped GEMM。
 ```
 
+> **昇腾对照**：昇腾**没有 Triton 的等价物**，kernel 要用 Ascend C 写，抽象层级介于 CUDA C++ 和 Triton 之间。同一个逐元素算子 Triton 七行、Ascend C 七十行，三者的完整对照见 [13 章 §13.9](13-AscendC编程.md)。根本原因（编译器能不能替你排流水）见 [00 章 §0.3](00-总纲.md)。
+
 **延伸资料**：
 - [Triton 官方教程](https://triton-lang.org/main/getting-started/tutorials/index.html)（Vector Add、GEMM、Softmax 三个 tutorial 必看）
 - [Triton GitHub](https://github.com/openai/triton)

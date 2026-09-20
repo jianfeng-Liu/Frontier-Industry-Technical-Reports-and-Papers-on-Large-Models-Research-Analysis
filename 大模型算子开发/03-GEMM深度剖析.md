@@ -335,6 +335,8 @@ batch=1 推理时 GEMM 算术强度约 1，是推理性能的根本瓶颈
 下一章：注意力机制的 GEMM 有特殊性，FlashAttention 怎么把它优化到极致。
 ```
 
+> **昇腾对照**：Cube 单元与 Tensor Core 的接口差异（核级 vs warp 级）、以及 GPU 上没有的 L0A/L0B/L0C 三级缓冲，见 [12 章 §12.2](12-昇腾硬件基础.md)。本章的三级分块在昇腾上要自己在 Host 侧写 Tiling 函数，见 [13 章 §13.5](13-AscendC编程.md)；双缓冲对应 `BUFFER_NUM=2`，见 [13 章 §13.4](13-AscendC编程.md)。
+
 **延伸资料**：
 - [CUTLASS 官方文档与示例](https://github.com/NVIDIA/cutlass)
 - [Making Deep Learning Go Brrrr From First Principles](https://horace.io/brrr_intro.html)（强烈推荐，通俗版屋顶线 + GEMM 分析）

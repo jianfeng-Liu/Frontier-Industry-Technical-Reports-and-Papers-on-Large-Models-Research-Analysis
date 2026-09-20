@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>00 · 总纲：所有算子优化都在解同一个问题</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<h1 id="00">00 · 总纲：所有算子优化都在解同一个问题</h1>
+<blockquote>
+<p><strong>前置</strong>：无。这是全系列的入口，建议在读任何一章之前先读完。<br />
+<strong>目标</strong>：给你一个平台无关的骨架——算子优化到底在优化什么、有哪几种手段、两类硬件为什么长得不一样。有了这个骨架，后面每一章都是在往上挂具体技术。</p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>算子</strong>（Operator / Kernel）—— 在加速卡上执行的一个计算单元，如矩阵乘、Softmax、LayerNorm。PyTorch 里一行 <code>torch.matmul</code> 对应底层一个或多个算子。<br />
+<strong>带宽墙</strong>（Memory Wall）—— 算力增长长期快于内存带宽增长，导致越来越多的计算被"喂数据"的速度卡住。<br />
+<strong>算术强度</strong>（Arithmetic Intensity）—— 每搬运 1 字节数据能做多少次浮点运算，单位 FLOP/Byte。判断算子瓶颈的核心指标。<br />
+<strong>屋脊点</strong>（Ridge Point）—— 屋顶线模型上算力与带宽两条限制线的交点，是"算力受限"和"带宽受限"的分界算术强度。<br />
+<strong>SIMT</strong>（Single Instruction Multiple Threads，单指令多线程）—— NVIDIA GPU 的并行模型。<br />
+<strong>DSA</strong>（Domain Specific Architecture，特定域架构）—— 为特定领域定制的芯片架构，华为昇腾属于此类。<br />
+<strong>片上存储</strong>（On-chip Memory）—— SRAM 级的高速存储，容量以 KB 计，速度比片外 HBM 快两个数量级。<br />
+<strong>Cache vs Scratchpad</strong> —— 片上存储的两种管理方式：Cache 由硬件自动填充，Scratchpad 由软件显式搬运。这是 GPU 和 NPU 最根本的分歧之一。</p>
+<hr />
+<h2 id="01">0.1 一个根本事实：算力涨得比带宽快</h2>
+<p>整个系列要解决的问题，可以压缩成一张表（✅ 均为厂商公开规格）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>发布</th>
+<th>FP16 算力</th>
+<th>HBM 带宽</th>
+<th>屋脊点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V100</td>
+<td>2017</td>
+<td>125 TFLOPS</td>
+<td>900 GB/s</td>
+<td>139 FLOP/Byte</td>
+</tr>
+<tr>
+<td>A100</td>
+<td>2020</td>
+<td>312 TFLOPS</td>
+<td>2039 GB/s</td>
+<td>153 FLOP/Byte</td>
+</tr>
+<tr>
+<td>H100</td>
+<td>2022</td>
+<td>989 TFLOPS</td>
+<td>3350 GB/s</td>
+<td><strong>295 FLOP/Byte</strong></td>
+</tr>
+<tr>
+<td>昇腾 910B3</td>
+<td>2023</td>
+<td>~320 TFLOPS ⚠️</td>
+<td>~1.6 TB/s ⚠️</td>
+<td>~200 FLOP/Byte ⚠️</td>
+</tr>
+</tbody>
+</table>
+<p>五年里<strong>算力涨了 7.9 倍，带宽只涨了 3.7 倍</strong>。</p>
+<p>屋脊点从 139 涨到 295 的含义是：<strong>同一个算子，什么都不改，在新卡上更容易变成带宽受限</strong>。你买了算力 8 倍的卡，但如果算子的算术强度没跟上，实际只能吃到带宽那 3.7 倍的红利。</p>
+<div class="codehilite"><pre><span></span><code>算术强度 I = FLOPs / Bytes
+
+I &gt; 屋脊点  →  Compute Bound（算力受限），硬件在满负荷算
+I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
+
+大模型里的真实情况：
+  训练时的大 GEMM        I ≈ 数百～上千   → Compute Bound ✅
+  推理 Decode 的矩阵向量乘 I ≈ 1          → Memory Bound ❌❌
+  LayerNorm / Softmax    I ≈ 2～5         → Memory Bound ❌❌
+  逐元素加法              I ≈ 0.25        → Memory Bound ❌❌
+</code></pre></div>
+
+<p><strong>所以这个系列从头到尾只在做一件事：想办法让数据少搬、或者搬的时候别让算力闲着。</strong> 后面所有的技术——分块、融合、双缓冲、量化、FlashAttention、PagedAttention——全都是这一件事的不同侧面。</p>
+<blockquote>
+<p>⚠️ 趋势不是单调的。H200（4.8 TB/s）和 B200 把带宽拉了上来，屋脊点回落。但"算力和带宽赛跑"这个结构性矛盾没有消失，只是快慢交替。</p>
+</blockquote>
+<hr />
+<h2 id="02">0.2 四个通用手段</h2>
+<p>不管在什么硬件上，减少"搬运税"的办法就这么四种。<strong>这四个手段是平台无关的，变的只是实现方式</strong>。</p>
+<h3 id="tiling">手段一：分块（Tiling）—— 用片上容量换搬运次数</h3>
+<div class="codehilite"><pre><span></span><code>朴素做法：每算一个结果元素，就去 HBM 取一次数据
+          → 同一份数据被反复搬运 N 次
+
+分块做法：把数据切成片上放得下的小块，搬一次，在片上反复用
+          → 搬运次数降到 1/N
+
+代价：要自己算块多大、怎么切、边界怎么处理
+</code></pre></div>
+
+<p>这是<strong>收益最大、也最费脑子</strong>的手段。GEMM 的三级分块（<a href="03-GEMM深度剖析.html">03 章</a>）、FlashAttention 的 KV 分块（<a href="04-FlashAttention全系.html">04 章</a>）、Ascend C 的 Tiling 函数（<a href="13-AscendC编程.html">13 章</a>）本质是同一件事。</p>
+<h3 id="fusion">手段二：融合（Fusion）—— 消灭中间结果的落盘</h3>
+<div class="codehilite"><pre><span></span><code>不融合：  GEMM → 写回 HBM → 读出 → Bias → 写回 → 读出 → GeLU → 写回
+          三个算子，六次 HBM 往返
+
+融合：    GEMM → (片上) Bias → (片上) GeLU → 写回
+          一个算子，两次 HBM 往返
+</code></pre></div>
+
+<p>细节见 <a href="05-算子融合.html">05 章</a>。这里要先埋一个伏笔：<strong>融合的收益依赖于"中间结果真的能留在片上"</strong>。这个前提在 GPU 上基本成立，在昇腾 910B 上因为 Cube 和 Vector 是两个独立的核，<strong>并不总是成立</strong>（<a href="12-昇腾硬件基础.html">12 章 §12.2.3</a>）。同一个手段，在两个平台上收益来源不同——这正是本系列要讲清楚的那类差异。</p>
+<h3 id="pipelining">手段三：流水重叠（Pipelining）—— 让搬运和计算同时发生</h3>
+<div class="codehilite"><pre><span></span><code>串行：  [搬块0][算块0][搬块1][算块1][搬块2][算块2]
+        总耗时 = (T搬 + T算) × N
+
+流水：  [搬块0][搬块1][搬块2][搬块3]
+              [算块0][算块1][算块2]
+        总耗时 ≈ max(T搬, T算) × N
+</code></pre></div>
+
+<p>前提是硬件上<strong>搬运和计算有独立的执行单元</strong>。GPU 上靠 <code>cp.async</code> 异步拷贝指令加双缓冲，昇腾上靠独立的 MTE（存储转换引擎）硬件流水线。见 <a href="03-GEMM深度剖析.html">03 章 §3.5</a> 和 <a href="13-AscendC编程.html">13 章 §13.4</a>。</p>
+<h3 id="quantization">手段四：降精度（Quantization）—— 直接减少要搬的字节</h3>
+<div class="codehilite"><pre><span></span><code>BF16 → INT8：要搬的字节直接减半 → 带宽受限的算子直接快一倍
+              同时 INT8 算力通常是 BF16 的 2 倍
+</code></pre></div>
+
+<p>见 <a href="06-量化算子.html">06 章</a>。代价是精度，所以整章都在讲怎么在精度和速度之间取舍。</p>
+<h3 id="_1">四个手段的全局索引</h3>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>本质</th>
+<th>GPU 上怎么做</th>
+<th>昇腾上怎么做</th>
+<th>章节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>分块</strong></td>
+<td>片上容量换搬运次数</td>
+<td>共享内存三级分块；FA 的 KV 分块</td>
+<td>L1/L0/UB 分块 + <strong>Host 侧 Tiling 函数</strong></td>
+<td><a href="03-GEMM深度剖析.html">03</a> <a href="04-FlashAttention全系.html">04</a> · <a href="13-AscendC编程.html">13</a></td>
+</tr>
+<tr>
+<td><strong>融合</strong></td>
+<td>消灭中间结果落盘</td>
+<td>手写融合 kernel；<code>torch.compile</code></td>
+<td><code>cann-ops-adv</code> 现成算子；<strong>CV 流水并行</strong></td>
+<td><a href="05-算子融合.html">05</a> · <a href="13-AscendC编程.html">13</a> <a href="14-GPU到NPU迁移实战.html">14</a></td>
+</tr>
+<tr>
+<td><strong>流水重叠</strong></td>
+<td>搬运与计算并行</td>
+<td><code>cp.async</code> + 双缓冲；Warp Specialization</td>
+<td><strong><code>BUFFER_NUM=2</code> + MTE 独立流水</strong></td>
+<td><a href="03-GEMM深度剖析.html">03</a> · <a href="13-AscendC编程.html">13</a></td>
+</tr>
+<tr>
+<td><strong>降精度</strong></td>
+<td>减少字节数</td>
+<td>FP8 / INT8 / GPTQ / AWQ</td>
+<td><strong>INT8 W8A8</strong>（无 FP8）；HiF8</td>
+<td><a href="06-量化算子.html">06</a></td>
+</tr>
+<tr>
+<td>（通信层）</td>
+<td>减少或重叠传输</td>
+<td>NCCL + 计算通信重叠；DeepEP</td>
+<td>HCCL + <strong>通算融合</strong>；超节点</td>
+<td><a href="08-MoE算子与通信.html">08</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>读法建议</strong>：遇到任何一个新技术，先问它属于这四类中的哪一类。绝大多数"新算子"都是这四种手段的重新组合。FlashAttention = 分块 + 融合 + 重计算；PagedAttention = 分块（针对显存碎片）；投机采样 = 把 Memory Bound 的 Decode 变成 Compute Bound 的批量验证。</p>
+<hr />
+<h2 id="03">0.3 两种硬件哲学：延迟怎么掩盖</h2>
+<p>这是理解 GPU 和 NPU 一切差异的总开关。</p>
+<p><strong>共同的问题</strong>：访存很慢。从 HBM 取一次数据要 ~400 个时钟周期，这期间计算单元干等着就是浪费。</p>
+<p><strong>两种截然不同的答案</strong>：</p>
+<div class="codehilite"><pre><span></span><code>━━━ SIMT（NVIDIA GPU）：超额订阅 ━━━
+
+  一个 SM 上同时挂 64 个 Warp。
+  Warp A 等内存 → 硬件立刻切到 Warp B → B 也等 → 切到 C……
+  只要挂的 Warp 足够多，总有一个能跑。
+
+  ┌─ 由此推出 ─────────────────────────────────┐
+  │ · 需要 occupancy（占用率）这个概念          │
+  │ · 切换由硬件调度，程序员写单线程代码即可    │
+  │ · 片上存储可以是 Cache（硬件自动填充）      │
+  │ · 编译器能自动做很多优化 → Triton 可行      │
+  └─────────────────────────────────────────────┘
+
+━━━ DSA（华为昇腾）：流水重叠 ━━━
+
+  搬运交给独立的硬件单元（MTE），它和计算单元真正并行。
+  MTE 搬第 k+1 块的同时，Cube 在算第 k 块。
+  没有&quot;切换到别的任务&quot;，只有&quot;把自己的流水排满&quot;。
+
+  ┌─ 由此推出 ─────────────────────────────────┐
+  │ · 没有 occupancy 这个概念                   │
+  │ · 流水靠软件排，程序员必须显式写搬运        │
+  │ · 片上存储是 Scratchpad（软件显式搬运）     │
+  │ · 编译器帮不上忙 → Ascend C 代码量必然大    │
+  └─────────────────────────────────────────────┘
+</code></pre></div>
+
+<p><strong>这一张图解释了后面所有的"为什么"</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>为什么 GPU 有 occupancy、bank conflict，昇腾没有</td>
+<td>超额订阅 vs 流水重叠</td>
+</tr>
+<tr>
+<td>为什么昇腾要手写 <code>DataCopy</code>，GPU 不用</td>
+<td>Scratchpad vs Cache</td>
+</tr>
+<tr>
+<td>为什么 Triton 七行能写完的算子，Ascend C 要七十行</td>
+<td>编译器能不能替你排流水</td>
+</tr>
+<tr>
+<td>为什么昇腾上双缓冲是"基本功"而非"优化"</td>
+<td>流水重叠是唯一的延迟掩盖手段</td>
+</tr>
+<tr>
+<td>为什么昇腾多一类 MTE Bound 瓶颈</td>
+<td>搬运有独立硬件单元，它自己会成为瓶颈</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>不要把这理解成"谁更好"</strong>。超额订阅的代价是大量寄存器和调度硬件（面积、功耗）；流水重叠的代价是软件复杂度。两者是在不同约束下的合理选择。</p>
+</blockquote>
+<hr />
+<h2 id="04">0.4 性能诊断的通用漏斗</h2>
+<p>不管什么平台，定位性能问题都按这个顺序，<strong>从外往里剥</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① Host 下发够快吗？
+   现象：Device 利用率低，但每个算子本身都不慢
+   查：时间线视图里 kernel 之间有大片空隙
+   解：CUDA Graph（GPU）/ ACLGraph 或图模式（昇腾）；合并小算子
+   ↓ 排除后
+
+② 通信是瓶颈吗？
+   现象：多卡时慢，单卡时不慢
+   查：通信算子耗时占比
+   解：计算通信重叠、换通信算法、调并行策略  → 08 章
+   ↓ 排除后
+
+③ 算力受限还是带宽受限？
+   查：算术强度 vs 屋脊点  → 屋顶线模型，02 章
+   解：Memory Bound → 分块/融合/量化
+       Compute Bound → 已接近上界，换更好的 kernel 或更低精度
+   ↓ 定位后
+
+④ 平台特有的瓶颈
+   GPU：occupancy 不足、bank conflict、寄存器溢出   → 01/02 章
+   昇腾：MTE Bound、CV 流水不均衡、核间负载不均     → 12/13 章
+</code></pre></div>
+
+<p><strong>第 ① 步最容易被跳过，也最容易中招</strong>。尤其在推理 Decode 阶段：每步只算一个 token，算子多而小，Host 侧一个一个发，Device 算得比发得快。这类问题在昇腾上格外突出（<a href="13-AscendC编程.html">13 章 §13.8</a>），但 GPU 上同样存在——这也是 CUDA Graph 存在的理由（<a href="05-算子融合.html">05 章 §5.5</a>）。</p>
+<p>屋顶线模型（第 ③ 步）是<strong>跨平台通用的</strong>，只是屋脊点要换成对应硬件的。昇腾多了第 ④ 步里的 MTE Bound，是因为它把搬运做成了独立硬件单元——屋顶线模型不覆盖这一类。</p>
+<hr />
+<h2 id="05">0.5 本系列的结构</h2>
+<p>按"原理 → 平台 → 专题 → 迁移"分五卷。<strong>编号沿用历史顺序，实际阅读顺序看卷</strong>。</p>
+<h3 id="_2">卷零 · 方法论（平台无关）</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>00 · 总纲</strong>（本章）</td>
+<td>四个通用手段、两种硬件哲学、诊断漏斗</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_3">卷一 · 硬件与性能模型</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>平台</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="01-GPU硬件基础.html">01 · GPU 硬件基础</a></td>
+<td>NVIDIA</td>
+<td>SM、Warp、内存层级、合并访存、bank conflict、occupancy、Tensor Core</td>
+</tr>
+<tr>
+<td><a href="12-昇腾硬件基础.html">12 · 昇腾硬件基础</a></td>
+<td>华为</td>
+<td>达芬奇架构、Cube/Vector/Scalar、AIC-AIV 分离、UB/L0/L1、910B/910C 规格</td>
+</tr>
+<tr>
+<td><a href="02-屋顶线与性能剖析.html">02 · 屋顶线与性能剖析</a></td>
+<td>通用</td>
+<td>算术强度、屋顶线、MFU、Nsight 工作流（昇腾侧屋脊点见 12 章）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="gpu">卷二 · 核心算子专题（每章含 GPU 与昇腾两侧）</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="03-GEMM深度剖析.html">03 · GEMM 深度剖析</a></td>
+<td>三级分块、Tensor Core、CUTLASS</td>
+</tr>
+<tr>
+<td><a href="04-FlashAttention全系.html">04 · FlashAttention 全系</a></td>
+<td>FA1/2/3、在线 Softmax、反向重计算 · <strong>末节：昇腾的三个 Attention 算子</strong></td>
+</tr>
+<tr>
+<td><a href="05-算子融合.html">05 · 算子融合</a></td>
+<td>融合模式、CUDA Graph、torch.compile</td>
+</tr>
+<tr>
+<td><a href="06-量化算子.html">06 · 量化算子</a></td>
+<td>INT8/FP8/GPTQ/AWQ · <strong>末节：昇腾的 W8A8 与 HiF8</strong></td>
+</tr>
+<tr>
+<td><a href="08-MoE算子与通信.html">08 · MoE 算子与通信</a></td>
+<td>Grouped GEMM、All-to-All、EP · <strong>末节：HCCL 与超节点改变的设计空间</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="kernel">卷三 · kernel 编程语言</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>平台</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="07-Triton编程.html">07 · Triton 编程</a></td>
+<td>NVIDIA</td>
+<td>编程模型、autotune、与 CUDA 对比</td>
+</tr>
+<tr>
+<td><a href="13-AscendC编程.html">13 · Ascend C 编程</a></td>
+<td>华为</td>
+<td>三段式流水、TPipe/TQue、双缓冲、Host 侧 Tiling、msprof</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">卷四 · 场景专题</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="09-推理侧算子.html">09 · 推理侧算子</a></td>
+<td>PagedAttention、连续批处理、投机采样、RadixAttention</td>
+</tr>
+<tr>
+<td><a href="10-RL算子.html">10 · RL 算子</a></td>
+<td>Rollout 算子图、GAE、PPO clip、GRPO、多模型显存争用</td>
+</tr>
+<tr>
+<td><a href="11-训推一致性算子层.html">11 · 训推一致性：算子层</a></td>
+<td>精度失配、计算图重排、硬件非确定性、MoE 路由跳变</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_5">卷五 · 迁移实战</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="14-GPU到NPU迁移实战.html">14 · GPU→NPU 迁移实战</a></td>
+<td>图模式选型、四轮迁移 checklist、静默错误清单、诚实的现状评估</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">附录</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="附-速查表.html">附 · 速查表</a></td>
+<td>硬件参数、关键公式、工具链对照、GPU↔昇腾术语对照</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="06">0.6 怎么读</h2>
+<div class="codehilite"><pre><span></span><code>从零入门（只关心 GPU）
+  00 → 01 → 02 → 03 → 04 → 05
+
+要写自定义 kernel（GPU）
+  00 → 01 → 02 → 03 → 07
+
+转昇腾平台
+  00 → 01 → 02 → 12 → 13 → 14
+       └─ 01/02 不能跳：12 章通篇在和它们对照
+
+把已有模型从 GPU 迁到昇腾（最常见的实际任务）
+  00 → 12 → 14（先看 §14.3 的 checklist）
+     → 只有需要自己写算子时才读 13
+
+关注推理部署
+  00 → 02 → 04 → 06 → 09
+
+做 MoE
+  00 → 03 → 08
+
+做 RL 训练
+  00 → 09 → 10 → 11
+
+排查训推数值差异
+  00 → 06 → 11
+</code></pre></div>
+
+<hr />
+<h2 id="07">0.7 关于数字的可信度约定</h2>
+<p>NVIDIA 侧的规格有完整白皮书，本系列直接引用。</p>
+<p><strong>华为昇腾侧没有公开的完整数据手册</strong>，公开数字彼此矛盾的地方很多（同一款 910B 的 FP16 算力，公开资料里有 256 和 320 两种说法；HBM 带宽从 400 GB/s 到 2.4 TB/s 都有人写）。凡涉及昇腾规格，本系列标注：</p>
+<ul>
+<li><strong>✅ 披露</strong> —— 华为官方产品页 / CANN 官方文档明确写出</li>
+<li><strong>⚠️ 推断</strong> —— 第三方分析、芯片拆解、学术论文或社区实测，仅供量级参考</li>
+</ul>
+<p><strong>任何要写进方案、用于容量规划的数字，请在自己的卡上实测</strong>（<code>npu-smi info</code> + CANN 的 <code>platform_config/*.ini</code>，方法见 <a href="12-昇腾硬件基础.html">12 章 §12.4.3</a>），不要引用本系列。</p>
+<hr />
+<h2 id="08">0.8 小结</h2>
+<div class="codehilite"><pre><span></span><code>一个根本事实
+  算力五年涨 7.9×，带宽只涨 3.7× → 屋脊点从 139 升到 295
+  → 数据搬运是根本瓶颈，整个系列都在绕这一件事
+
+四个通用手段（平台无关，变的只是实现）
+  分块 Tiling      用片上容量换搬运次数
+  融合 Fusion      消灭中间结果落盘
+  流水重叠         让搬运和计算同时发生
+  降精度           直接减少要搬的字节
+  （通信层：减少或重叠传输）
+  遇到新技术先归类，绝大多数是这四种的重新组合
+
+两种硬件哲学（解释后面一切差异的总开关）
+  SIMT  超额订阅掩盖延迟 → occupancy / Cache / 编译器能帮忙
+  DSA   流水重叠掩盖延迟 → 双缓冲 / Scratchpad / 必须手写搬运
+
+诊断漏斗（从外往里剥，别跳第一步）
+  ① Host 下发 → ② 通信 → ③ 屋顶线定算力/带宽 → ④ 平台特有瓶颈
+
+下一章：从 NVIDIA GPU 的硬件结构开始。
+</code></pre></div>
+
+<hr />
+<p><strong>延伸资料</strong>：<br />
+- <a href="https://dl.acm.org/doi/10.1145/1498765.1498785">Roofline: An Insightful Visual Performance Model</a>（屋顶线模型原始论文，2009）<br />
+- <a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-gpu-background/index.html">GPU Performance Background</a>（NVIDIA 官方性能文档）<br />
+- <a href="https://www.elsevier.com/books/computer-architecture/hennessy/978-0-12-811905-1">Computer Architecture: A Quantitative Approach</a>（第 7 章讲 DSA，理解昇腾这类架构的背景读物）</p>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

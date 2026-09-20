@@ -248,93 +248,216 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="_1">大模型算子开发</h1>
 <blockquote>
-<p><strong>系列定位</strong>：从零讲清"一行 <code>torch.matmul</code> 到底在 GPU 里发生了什么"，以及业界为什么能把同一个矩阵乘法优化到快 50 倍。<br />
+<p><strong>系列定位</strong>：从零讲清"一行 <code>torch.matmul</code> 到底在加速卡里发生了什么"，以及业界为什么能把同一个矩阵乘法优化到快 50 倍。<br />
 目标读者：看懂了大模型架构（注意力、MoE、量化）但不清楚它们是怎么跑在硬件上的工程师。<br />
 风格：通俗 + 彻底。每章先讲"为什么"，再讲"怎么做"，再给出实测数字。</p>
+<p><strong>⚠️ 先读 <a href="00-总纲.html">00 · 总纲</a></strong>。它给出平台无关的骨架——算子优化的<strong>四个通用手段</strong>、GPU 与 NPU 的<strong>两种硬件哲学</strong>、性能诊断的<strong>通用漏斗</strong>。后面每一章都是往这个骨架上挂具体技术；跳过它，各章会显得零散。</p>
 </blockquote>
 <hr />
-<h2 id="_2">章节地图</h2>
+<h2 id="_2">全系列地图</h2>
+<p>按"原理 → 平台 → 专题 → 迁移"分五卷。<strong>文件编号沿用历史顺序，实际阅读顺序看卷。</strong></p>
+<h3 id="_3">卷零 · 方法论（平台无关）</h3>
 <table>
 <thead>
 <tr>
 <th>章节</th>
-<th>主题</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="00-总纲.html"><strong>00 · 总纲</strong></a></td>
+<td>带宽墙这个根本事实、四个通用手段（分块/融合/流水重叠/降精度）、SIMT vs DSA 两种硬件哲学、诊断漏斗</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">卷一 · 硬件与性能模型</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>平台</th>
 <th>关键词</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><a href="01-GPU硬件基础.html">01 · GPU 硬件基础</a></td>
-<td>SM、Warp、内存层级、bank conflict、occupancy</td>
-<td>不懂硬件就看不懂后面所有章节</td>
+<td>NVIDIA</td>
+<td>SM、Warp、内存层级、合并访存、bank conflict、occupancy、Tensor Core</td>
+</tr>
+<tr>
+<td><a href="12-昇腾硬件基础.html">12 · 昇腾硬件基础</a></td>
+<td>华为昇腾</td>
+<td>达芬奇架构、Cube/Vector/Scalar、<strong>AIC-AIV 分离</strong>、UB/L0/L1 层级、910B/910C 规格、HCCS 与超节点</td>
 </tr>
 <tr>
 <td><a href="02-屋顶线与性能剖析.html">02 · 屋顶线与性能剖析</a></td>
-<td>算术强度、Memory/Compute Bound、Nsight 工作流</td>
-<td>诊断算子瓶颈的唯一正确姿势</td>
+<td>通用</td>
+<td>算术强度、Memory/Compute Bound、MFU、Nsight 工作流</td>
 </tr>
+</tbody>
+</table>
+<h3 id="gpu">卷二 · 核心算子专题（每章含 GPU 与昇腾两侧）</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>关键词</th>
+<th>昇腾小节</th>
+</tr>
+</thead>
+<tbody>
 <tr>
 <td><a href="03-GEMM深度剖析.html">03 · GEMM 深度剖析</a></td>
 <td>分块三级、Tensor Core、CUTLASS 模板架构</td>
-<td>大模型 90% 算力的来源</td>
+<td>对照见 12/13 章</td>
 </tr>
 <tr>
 <td><a href="04-FlashAttention全系.html">04 · FlashAttention 全系</a></td>
-<td>FA1/2/3 算法推导、在线 Softmax、反向传播重计算</td>
-<td>序列长度从 4K→128K 的关键</td>
+<td>FA1/2/3 推导、在线 Softmax、反向重计算</td>
+<td><strong>§4.9 三个算子与四个迁移坑</strong></td>
 </tr>
 <tr>
 <td><a href="05-算子融合.html">05 · 算子融合</a></td>
-<td>融合模式分类、CUDA Graph、torch.compile/Inductor</td>
-<td>消灭算子间的"搬运税"</td>
+<td>融合模式、CUDA Graph、torch.compile/Inductor</td>
+<td>对照见 12/14 章</td>
 </tr>
 <tr>
 <td><a href="06-量化算子.html">06 · 量化算子</a></td>
-<td>INT8/FP8/GPTQ、SmoothQuant、DeepSeek FP8 实践</td>
-<td>带宽减半 = 速度翻倍</td>
-</tr>
-<tr>
-<td><a href="07-Triton编程.html">07 · Triton 编程</a></td>
-<td>编程模型、写 kernel、调优、与 CUDA 对比</td>
-<td>用 Python 写 GPU kernel 的正确方式</td>
+<td>INT8/FP8/GPTQ/AWQ、SmoothQuant、DeepSeek FP8</td>
+<td><strong>§6.10 没有 FP8 的量化路线、HiF8</strong></td>
 </tr>
 <tr>
 <td><a href="08-MoE算子与通信.html">08 · MoE 算子与通信</a></td>
 <td>All-to-All、Expert Parallel、Grouped GEMM</td>
-<td>MoE 为什么难、难在哪</td>
+<td><strong>§8.9 HCCL 与超节点改变的设计空间</strong></td>
 </tr>
+</tbody>
+</table>
+<h3 id="kernel">卷三 · kernel 编程语言</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>平台</th>
+<th>关键词</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="07-Triton编程.html">07 · Triton 编程</a></td>
+<td>NVIDIA</td>
+<td>编程模型、写 kernel、autotune、与 CUDA 对比</td>
+</tr>
+<tr>
+<td><a href="13-AscendC编程.html">13 · Ascend C 编程</a></td>
+<td>华为昇腾</td>
+<td>CANN 栈、三段式流水、TPipe/TQue、双缓冲、Host 侧 Tiling、msprof 四类瓶颈</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_5">卷四 · 场景专题</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>关键词</th>
+</tr>
+</thead>
+<tbody>
 <tr>
 <td><a href="09-推理侧算子.html">09 · 推理侧算子</a></td>
 <td>PagedAttention、连续批处理、投机采样、RadixAttention</td>
-<td>从训练到服务，问题完全不同</td>
 </tr>
 <tr>
 <td><a href="10-RL算子.html">10 · RL 算子</a></td>
-<td>Rollout 算子、GAE、PPO clip、GRPO、多模型内存争用</td>
-<td>RL 训练和推理算子的差异在哪</td>
+<td>Rollout 算子图、GAE、PPO clip、GRPO、多模型显存争用</td>
 </tr>
 <tr>
 <td><a href="11-训推一致性算子层.html">11 · 训推一致性：算子层</a></td>
-<td>QAT/FP8 端到端、MLA Absorptive、MoE 路由重放、确定性 kernel</td>
-<td>同一份权重为什么算出不同的数</td>
+<td>精度失配、计算图重排、硬件非确定性、MoE 路由跳变</td>
 </tr>
+</tbody>
+</table>
+<h3 id="_6">卷五 · 迁移实战</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>关键词</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="14-GPU到NPU迁移实战.html">14 · GPU→NPU 迁移实战</a></td>
+<td>工作量预估、算子选用阶梯、<strong>四轮 checklist</strong>、静默错误清单、图模式选型、映射总表、现状评估</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_7">附录</h3>
+<table>
+<thead>
+<tr>
+<th>章节</th>
+<th>关键词</th>
+</tr>
+</thead>
+<tbody>
 <tr>
 <td><a href="附-速查表.html">附 · 速查表</a></td>
-<td>硬件参数、关键公式、工具链对照</td>
-<td>随时翻查</td>
+<td>硬件参数、关键公式、工具链对照、<strong>GPU↔昇腾术语对照</strong></td>
 </tr>
 </tbody>
 </table>
 <hr />
-<h2 id="_3">阅读顺序</h2>
-<p><strong>从零入门</strong>：01 → 02 → 03 → 04 → 05<br />
-<strong>关注推理部署</strong>：02 → 04 → 06 → 09<br />
-<strong>要写自定义 kernel</strong>：01 → 02 → 03 → 07<br />
-<strong>做 MoE 训练</strong>：03 → 08<br />
-<strong>做 RL 训练</strong>：09 → 10 → 11<br />
-<strong>排查训推数值差异</strong>：06 → 11  </p>
+<h2 id="_8">阅读路线</h2>
+<div class="codehilite"><pre><span></span><code>从零入门（只关心 GPU）
+  00 → 01 → 02 → 03 → 04 → 05
+
+要写自定义 kernel（GPU）
+  00 → 01 → 02 → 03 → 07
+
+转昇腾平台
+  00 → 01 → 02 → 12 → 13 → 14
+       └─ 01/02 不能跳：12 章通篇在和它们对照
+
+把已有模型从 GPU 迁到昇腾（最常见的实际任务）
+  00 → 12 → 14（先看 §14.3 的四轮 checklist）
+     → 需要自己写算子时才读 13
+
+关注推理部署
+  00 → 02 → 04 → 06 → 09
+
+做 MoE
+  00 → 03 → 08
+
+做 RL 训练
+  00 → 09 → 10 → 11
+
+排查训推数值差异
+  00 → 06 → 11
+</code></pre></div>
+
 <hr />
-<h2 id="_4">和其他系列的关系</h2>
+<h2 id="_9">两条硬件路线怎么组织的</h2>
+<p>昇腾内容<strong>不是单独一卷</strong>，而是按性质分流：</p>
+<ul>
+<li><strong>硬件与编程语言</strong>是平台专属的，独立成章（12、13），和 GPU 侧的 01、07 并列在同一卷里；</li>
+<li><strong>算子原理</strong>是平台共享的，所以 FlashAttention、量化、MoE 都在原章节末尾加「在昇腾上」小节（§4.9、§6.10、§8.9），读到哪一章就能看到那一章的两个平台实现；</li>
+<li><strong>迁移</strong>是独立任务，单独成章（14）。</li>
+</ul>
+<p>反向指引也是通的：01、02、03、05、07、09、11 各章末尾都有「昇腾对照」一行，指向对应的昇腾内容。</p>
+<hr />
+<h2 id="_10">关于昇腾数字的可信度</h2>
+<p>华为未发布昇腾 910B/910C 的完整数据手册，公开数字彼此矛盾的地方很多（同一款 910B 的 FP16 算力有 256 和 320 两种说法，HBM 带宽从 400 GB/s 到 2.4 TB/s 都有人写）。凡涉及昇腾规格，本系列标注：</p>
+<ul>
+<li><strong>✅ 披露</strong> —— 华为官方产品页 / CANN 官方文档明确写出</li>
+<li><strong>⚠️ 推断</strong> —— 第三方分析、芯片拆解、学术论文或社区实测，仅供量级参考</li>
+</ul>
+<p>任何要写进方案、用于容量规划的数字，请按 <a href="12-昇腾硬件基础.html">12 章 §12.4.3</a> 的方法在自己的卡上实测（<code>npu-smi info</code> + CANN 的 <code>platform_config/*.ini</code>），不要引用本系列。</p>
+<hr />
+<h2 id="_11">和其他系列的关系</h2>
 <ul>
 <li><strong><a href="../业界模型技术报告/大模型架构入门/">大模型架构入门</a></strong>：讲"是什么"，本系列讲"怎么跑"</li>
 <li><strong><a href="../训练框架/">训练框架</a></strong>：框架层用到的算子优化，本系列给出底层解释</li>

@@ -1272,17 +1272,32 @@ Block 限制：32 个 Block
 </code></pre></div>
 
 <p><strong>第五步：和启动开销比一比 —— 本章最后一个反直觉结论</strong></p>
-<div class="codehilite"><pre><span></span><code>kernel 执行时间 ≈ 2.39 µs
-kernel 启动开销 ≈ 3–10 µs
-                  ────────────
-启动开销比 kernel 本身还长！
+<div class="codehilite"><pre><span></span><code>kernel 执行时间   ≈ 2.39 µs
+kernel 启动延迟   ≈ 3–10 µs
+                    ────────────
+单独发这一个 kernel，等它启动的时间比它干活的时间还长
 </code></pre></div>
 
-<p><strong>这个 kernel 一半以上的时间花在"启动"上，而不是"计算"上。</strong> 而真实模型里这种小算子（激活、缩放、加偏置、归一化）动辄几百个，每个都要付一遍启动开销。</p>
-<p>于是两条优化路线自然浮现：</p>
+<p><strong>但这里要小心一个常见的误读</strong>，先说清楚，否则后面会算错账：</p>
+<div class="codehilite"><pre><span></span><code>3–10 µs 是启动【延迟】（latency）：
+  从 CPU 调用 cudaLaunchKernel，到 GPU 上第一个线程真正开跑，隔了这么久。
+
+它【不是】每个 kernel 都要串行付一遍的成本。
+  连续启动时，CPU 发第 2 个 kernel 和 GPU 执行第 1 个 kernel 是同时进行的
+  —— 启动是流水化的。
+
+所以一串 kernel 的实际耗时不是简单相加，而是：
+    耗时 ≈ max( CPU 下发总时间 , GPU 执行总时间 )
+              ↑                    ↑
+       kernel 数 × 单个下发成本    真正干活的时间
+       （⚠️ 单个下发成本约 2 µs）
+</code></pre></div>
+
+<p>代进我们这个 kernel：<strong>GPU 执行 2.39 µs，CPU 下发约 2 µs，两边几乎一样重</strong>。一个这样的 kernel 还看不出问题，但真实模型每一步要发几百个这种小算子（激活、缩放、加偏置、归一化），CPU 那一侧随时可能变成瓶颈——GPU 算完了在饿着等下一条命令。这种状态叫 <strong>Host Bound</strong>（下发受限）。</p>
+<p>于是两条优化路线自然浮现，<strong>它们治的是不同的病</strong>：</p>
 <ul>
-<li><strong>算子融合</strong>（<a href="05-算子融合.html">第 05 章</a>）：把 10 个小 kernel 合成 1 个，省掉 9 次启动开销，顺带省掉 9 趟 HBM 往返。</li>
-<li><strong>CUDA Graph</strong>（<a href="09-推理侧算子.html">第 09 章</a>）：把整串 kernel 启动命令预先录制成一张图，一次提交，把每次 3–10 µs 的开销压到接近零。</li>
+<li><strong>算子融合</strong>（<a href="05-算子融合.html">第 05 章</a>）：把 10 个小 kernel 合成 1 个。既减少了 kernel 数量（缓解下发压力），又省掉 9 趟 HBM 往返（缓解带宽压力）。主要攻<strong>带宽</strong>。</li>
+<li><strong>CUDA Graph</strong>（<a href="09-推理侧算子.html">第 09 章</a>）：把整串 kernel 的启动命令预先录制成一张图，之后一次提交、整图重放，把每个 kernel 的下发成本压到接近零。只攻<strong>下发</strong>——如果本来就不是 Host Bound，它的收益是零。</li>
 </ul>
 <blockquote>
 <p>★ 到这里，本章所有概念都在同一个例子上用过一遍了。<strong>如果你能自己把这五步重算一遍（换成 N = 1000 万，或者换成 BF16），这一章就算过了。</strong></p>

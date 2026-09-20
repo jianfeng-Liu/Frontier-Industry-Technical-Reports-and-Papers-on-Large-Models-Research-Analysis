@@ -248,300 +248,1384 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="05">05 · 算子融合：消灭算子间的"搬运税"</h1>
 <blockquote>
-<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM）</a><br />
-<strong>目标</strong>：搞懂算子融合的分类、实现路径、以及 CUDA Graph 和 torch.compile 怎么自动帮你做这件事。</p>
+<p><strong>前置</strong>：<a href="01-GPU硬件基础.html">01 章（GPU 硬件基础）</a>、<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM）</a><br />
+<strong>目标</strong>：把"融合能省多少"从一句口号变成一笔你自己能算出来的账；搞清楚哪些算子能融、哪些不能融、判据是什么；知道 CUDA Graph 和 <code>torch.compile</code> 各自解决的是哪一半问题。<br />
+<strong>读法</strong>：本章的骨架是一条真实的小算子链，从 §5.2 开始一路算到章末。<strong>建议拿纸笔跟着算</strong>，所有数字都能自己验算。</p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
-<p><strong>算子融合</strong>（Operator Fusion / Kernel Fusion）—— 把多个算子合并成一个 kernel，消除中间结果写入 HBM 再读出的往返开销。<br />
-<strong>搬运税</strong>（Memory Traffic Tax）—— 两个算子串联时，中间激活值必须经过 HBM 的写入和读出，这部分带宽消耗是纯粹的浪费。<br />
-<strong>CUDA Graph</strong> —— 把一批 kernel 调用录制成静态图，一次提交给 GPU，消除逐 kernel 的 CPU 启动延迟。<br />
-<strong>torch.compile</strong> —— PyTorch 2.0 引入的编译接口，后端 TorchInductor 自动发现融合机会并生成 Triton kernel。<br />
-<strong>Epilogue Fusion</strong>（收尾融合）—— GEMM 完成后，把 bias 加法、激活函数等 element-wise 操作在 GEMM 的写出阶段顺带完成，不增加额外的内存往返。<br />
-<strong>水平融合</strong>（Horizontal Fusion）—— 把多个形状相同的独立 kernel 合并成一个，减少 kernel 启动次数。<br />
-<strong>垂直融合</strong>（Vertical Fusion）—— 把前后依赖的多个 kernel 串联成一个，消除中间数据落盘。</p>
+<p><strong>算子融合</strong>（Operator Fusion / Kernel Fusion）—— 把多个算子合并成一个 kernel（核函数），让中间结果留在片上，不写回显存再读出来。<br />
+<strong>搬运税</strong>（Memory Traffic Tax）—— 两个算子串联时，中间结果必须经过一次"写显存 + 读显存"的往返，这部分带宽消耗不产生任何新信息，是纯浪费。<br />
+<strong>HBM</strong>（High Bandwidth Memory，高带宽显存）—— GPU 的主内存，H100 SXM5 是 80 GB / 3.35 TB/s。本章所有"落地""往返"说的都是它。<br />
+<strong>SRAM</strong>（Static Random-Access Memory，静态随机存储器）—— 片上存储的统称，在 CUDA 里表现为<strong>共享内存</strong>（Shared Memory，每个 SM 最多 228 KB）和<strong>寄存器</strong>（Register，每个 SM 256 KB）。<br />
+<strong>SM</strong>（Streaming Multiprocessor，流式多处理器）—— GPU 的基本计算单元，H100 有 132 个。<br />
+<strong>垂直融合</strong>（Vertical Fusion）—— 把<strong>前后有依赖</strong>的算子串成一个 kernel，消除中间结果落地。收益最大的一类。<br />
+<strong>水平融合</strong>（Horizontal Fusion）—— 把<strong>彼此独立、形状相同</strong>的算子合并成一个 kernel，减少启动次数、增大计算规模。<br />
+<strong>Epilogue 融合</strong>（Epilogue Fusion，收尾融合）—— 在 GEMM 把结果写回 HBM <strong>之前</strong>，顺手把加偏置、激活函数等逐元素操作做完。<br />
+<strong>Prologue 融合</strong>（Prologue Fusion，前置融合）—— 在 GEMM 从 HBM <strong>读入</strong>数据的那一刻顺手做预处理（如反量化）。比 Epilogue 难得多，原因见 §5.4。<br />
+<strong>GEMM</strong>（General Matrix Multiply，通用矩阵乘）—— <code>C = A × B</code>，深度学习里算力消耗的绝对主体。<br />
+<strong>算术强度</strong>（Arithmetic Intensity，记作 I）—— 每搬运 1 字节能做多少次浮点运算，单位 FLOP/Byte。屋顶线模型的横轴，见 <a href="02-屋顶线与性能剖析.html">02 章</a>。<br />
+<strong>kernel 启动开销</strong>（Kernel Launch Overhead）—— CPU 发起一次 kernel 调用到 GPU 真正开跑之间的代价，约 3–10 µs。<br />
+<strong>Host Bound</strong>（下发受限）—— GPU 算得比 CPU 发得快，硬件在饿着等命令。<strong>这是小算子场景真正的敌人，融合只能解决一半，另一半靠 CUDA Graph。</strong><br />
+<strong>CUDA Graph</strong> —— 把一整串 kernel 调用录成一张静态图，之后每次只用一次 API 调用整体重放。<br />
+<strong>torch.compile / TorchInductor</strong> —— PyTorch 2.0 的编译接口和它的 GPU 后端，自动发现融合机会并生成 Triton kernel。</p>
 <hr />
-<h2 id="51">5.1 搬运税：为什么相邻算子之间存在浪费</h2>
-<p>以最简单的例子说明：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 两步操作</span>
-<span class="n">x</span> <span class="o">=</span> <span class="n">layer_norm</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>   <span class="c1"># kernel 1</span>
-<span class="n">x</span> <span class="o">=</span> <span class="n">linear</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>       <span class="c1"># kernel 2</span>
+<h2 id="51-kernel">5.1 接住上一章的结尾：一个 kernel 的成本由三部分组成</h2>
+<p><a href="01-GPU硬件基础.html">01 章 §1.8.2</a> 最后算了一笔账，结论很扎心：<code>y[i] = x[i] * 2</code>，N = 100 万，在 H100 上——</p>
+<div class="codehilite"><pre><span></span><code>kernel 真正执行时间  ≈ 2.39 µs   （8 MB ÷ 3.35 TB/s）
+kernel 启动开销      ≈ 3–10 µs   （CPU 打包参数 + 提交驱动 + GPU 命令队列解析）
+
+启动开销比 kernel 本身还长。
 </code></pre></div>
 
-<p>不融合时的数据路径：</p>
-<div class="codehilite"><pre><span></span><code>HBM                SRAM/寄存器
-  x_input  ──读──→  [ LayerNorm 计算 ]  ──写──→  x_normed（HBM）
-  x_normed ──读──→  [ Linear 计算    ]  ──写──→  x_output（HBM）
-</code></pre></div>
-
-<p>每个 kernel 都要把输入从 HBM 读进来，把输出写回 HBM。中间的 <code>x_normed</code> 经历了一次写 + 一次读，而这份数据只被下一步用了一次——这就是搬运税。</p>
-<p>对于 Hidden Size = 8192，Batch=64，一次 LayerNorm 的输出是 64 × 8192 × 2 Bytes = 1 MB。<br />
-这 1 MB 写进 HBM 再读出来，浪费了 2 MB 的带宽。H100 带宽 3.35 TB/s，乍看不多，但模型有几百个这样的点，累积起来占比可达 20–40%。</p>
-<hr />
-<h2 id="52">5.2 融合的三种模式</h2>
-<h3 id="_1">模式一：垂直融合（最常见，效果最好）</h3>
-<p>把前后依赖的 kernel 串联，中间结果留在寄存器 / SRAM，不落 HBM。</p>
-<div class="codehilite"><pre><span></span><code>例1：LayerNorm + Linear（GEMM 的 Epilogue 融合）
-  未融合：HBM→LayerNorm→HBM→Linear→HBM
-  融合后：HBM→[LayerNorm→Linear]→HBM   中间结果从不离开 SRAM
-
-例2：Linear + Activation（SiLU、GeLU）
-  未融合：HBM→Linear→HBM→SiLU→HBM
-  融合后：HBM→[Linear→SiLU]→HBM
-
-例3：FlashAttention（QK^T → Softmax → ×V）
-  未融合：三步各写一次 HBM，中间 N×N 矩阵占 GB 级别
-  融合后：一个 kernel，N×N 矩阵从未写进 HBM
-</code></pre></div>
-
-<h3 id="_2">模式二：水平融合</h3>
-<p>把多个形状相同、逻辑独立的 kernel 合并，减少 kernel 启动次数和调度开销。</p>
-<div class="codehilite"><pre><span></span><code>例：MHA 里三个 QKV 投影矩阵
-  未融合：linear(x, W_Q), linear(x, W_K), linear(x, W_V)  → 3 次 GEMM，3 次 kernel 启动
-
-  融合后：把 W_Q, W_K, W_V 按列拼成 [W_Q|W_K|W_V]（shape: H × 3H）
-          linear(x, W_QKV)  → 1 次 GEMM，一次性算出 Q、K、V
-
-  收益：kernel 启动次数 3→1，同时 GEMM 形状更大，Tensor Core 利用率更高
-</code></pre></div>
-
-<h3 id="epilogue-gemm">模式三：Epilogue 融合（GEMM 收尾融合）</h3>
-<p>GEMM 的最后一步是把结果写回 HBM。在写之前插入额外操作，不增加额外的内存读写：</p>
-<div class="codehilite"><pre><span></span><code>标准 GEMM：  C = A × B → [写 HBM]
-Epilogue 融合：C = activation(A × B + bias) → [写 HBM]
-              └── bias 加法和激活函数在寄存器里完成，不多一次 HBM 来回 ──┘
-</code></pre></div>
-
-<p>CUTLASS 的 Epilogue Visitor Tree（EVT）支持把任意 element-wise 操作链接在 GEMM 后面，第 03 章已介绍。</p>
-<hr />
-<h2 id="53">5.3 融合的收益量化</h2>
-<p>以 H100 + LLaMA-70B 规模的 FFN 层为例：</p>
-<div class="codehilite"><pre><span></span><code>FFN 结构（SwiGLU）：
-  gate = linear(x, W_gate)   # (B×S, H) → (B×S, 4H)
-  up   = linear(x, W_up)     # (B×S, H) → (B×S, 4H)
-  h    = silu(gate) * up     # element-wise
-  out  = linear(h, W_down)   # (B×S, 4H) → (B×S, H)
-
-B=4, S=2048, H=8192, 4H=28672（FFN 扩展比）
-
-未融合：
-  W_gate 结果：4 × 2048 × 28672 × 2 = 470 MB → 写 HBM
-  W_up 结果：  470 MB → 写 HBM
-  silu(gate) * up：470 MB → 读写 HBM
-  合计额外 HBM 流量 ≈ 1.4 GB
-
-融合后（gate 和 up 并成 W_gate_up，结果直接在 Epilogue 里做 SiLU + 乘法）：
-  额外 HBM 流量 ≈ 0
-
-时间节省（H100 3.35 TB/s）：1.4 GB / 3350 GB/s ≈ 0.42 ms / FFN 层
-32 层模型：32 × 0.42 = 13.4 ms（仅 FFN 部分，batch=4, seq=2048）
-</code></pre></div>
-
-<hr />
-<h2 id="54-kernel">5.4 手动融合：直接写融合 kernel</h2>
-<p>对于高频、形状固定的算子组合，直接写一个融合的 CUDA/Triton kernel 是最直接的方式。</p>
-<h3 id="triton-rmsnorm-linear-kernel">用 Triton 写 RMSNorm + Linear 融合 kernel（示意）</h3>
-<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">triton</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">triton.language</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">tl</span>
-
-<span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">rms_norm_linear_kernel</span><span class="p">(</span>
-    <span class="n">x_ptr</span><span class="p">,</span> <span class="n">w_ptr</span><span class="p">,</span> <span class="n">weight_ptr</span><span class="p">,</span> <span class="n">bias_ptr</span><span class="p">,</span> <span class="n">out_ptr</span><span class="p">,</span>
-    <span class="n">M</span><span class="p">,</span> <span class="n">K</span><span class="p">,</span> <span class="n">N</span><span class="p">,</span>
-    <span class="n">stride_xm</span><span class="p">,</span> <span class="n">stride_xk</span><span class="p">,</span>
-    <span class="n">stride_wk</span><span class="p">,</span> <span class="n">stride_wn</span><span class="p">,</span>
-    <span class="n">eps</span><span class="p">,</span>
-    <span class="n">BLOCK_M</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">BLOCK_K</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span> <span class="n">BLOCK_N</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>
-<span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
-<span class="sd">    融合 kernel：RMSNorm(x) 然后乘以 W（Linear）</span>
-<span class="sd">    x: (M, K), W: (K, N), out: (M, N)</span>
-<span class="sd">    &quot;&quot;&quot;</span>
-    <span class="n">pid_m</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
-    <span class="n">pid_n</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
-
-    <span class="c1"># --- RMSNorm 阶段（在 SRAM 里完成）---</span>
-    <span class="n">row_start</span> <span class="o">=</span> <span class="n">pid_m</span> <span class="o">*</span> <span class="n">BLOCK_M</span>
-    <span class="n">row_offsets</span> <span class="o">=</span> <span class="n">row_start</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_M</span><span class="p">)</span>
-
-    <span class="c1"># 计算每行的 RMS</span>
-    <span class="c1"># ... （实际实现需要分 K 方向累加，这里省略）</span>
-
-    <span class="c1"># --- Linear 阶段（直接用 norm 后的值做矩阵乘）---</span>
-    <span class="c1"># ... GEMM 分块逻辑</span>
-    <span class="k">pass</span>
-</code></pre></div>
-
-<p>实际生产代码中，Flash-Linear-Attention 库、unsloth、xformers 都提供了大量预写的融合 kernel。</p>
-<hr />
-<h2 id="55-cuda-graph-kernel">5.5 CUDA Graph：消除 kernel 启动开销</h2>
-<h3 id="kernel">问题：kernel 启动延迟累积</h3>
-<p>每次通过 CUDA API 启动一个 kernel，CPU 需要：<br />
-1. 打包参数（~1 µs）<br />
-2. 提交给 GPU 驱动（~2–5 µs）<br />
-3. GPU 的 Command Queue 解析并调度（~1–2 µs）</p>
-<p>合计约 5–10 µs / kernel。</p>
-<p>一个 32 层 Transformer，每层约 20 个 kernel，共 640 个 kernel：</p>
-<div class="codehilite"><pre><span></span><code>640 × 7 µs = 4.5 ms 仅用于 kernel 启动
-</code></pre></div>
-
-<p>对于推理延迟 10–30 ms 的场景，这是 15–45% 的额外开销。</p>
-<h3 id="cuda-graph">CUDA Graph 的解决方式</h3>
-<p><strong>录制阶段</strong>（一次性，通常在第一次推理时）：</p>
-<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-
-<span class="c1"># 准备固定形状的输入</span>
-<span class="n">x</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">hidden</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cuda&#39;</span><span class="p">)</span>
-
-<span class="c1"># 录制图</span>
-<span class="n">g</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">CUDAGraph</span><span class="p">()</span>
-<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">graph</span><span class="p">(</span><span class="n">g</span><span class="p">):</span>
-    <span class="n">y</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>   <span class="c1"># 所有 kernel 调用都被录制下来</span>
-
-<span class="c1"># 之后每次推理只需：</span>
-<span class="n">g</span><span class="o">.</span><span class="n">replay</span><span class="p">()</span>         <span class="c1"># 一次 GPU 命令提交，所有 kernel 按图执行</span>
-</code></pre></div>
-
-<p><strong>限制</strong>：<br />
-- 输入形状必须固定（动态 shape 不支持，或需要多套图）<br />
-- 不支持 Python 控制流（if/for 内部不能动态决定 kernel）<br />
-- KV Cache 增长时指针会变，需要特殊处理（vLLM 用 CUDA Graph + 固定最大长度的 KV buffer）</p>
-<p><strong>典型收益</strong>：推理延迟减少 10–25%，对短序列、小 batch 效果更明显（因为 kernel 启动开销占比更高）。</p>
-<hr />
-<h2 id="56-torchcompile">5.6 torch.compile：自动算子融合</h2>
-<p>PyTorch 2.0 引入 <code>torch.compile</code>，让你用一行代码获得自动算子融合：</p>
-<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-
-<span class="n">model</span> <span class="o">=</span> <span class="n">MyModel</span><span class="p">()</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
-<span class="n">model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>   <span class="c1"># ← 一行搞定</span>
-
-<span class="c1"># 第一次调用时编译（约 10–60 秒），之后都用编译版</span>
-<span class="n">output</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="nb">input</span><span class="p">)</span>
-</code></pre></div>
-
-<h3 id="torchcompile">torch.compile 的内部流程</h3>
-<div class="codehilite"><pre><span></span><code>Python 模型代码
-      ↓  TorchDynamo（Python 字节码捕获）
-计算图（FX Graph）
-      ↓  AOTAutograd（提前展开 Autograd）
-前向 + 反向的联合图
-      ↓  TorchInductor（后端代码生成）
-      ├─→ Triton kernel（GPU，自动融合）
-      └─→ C++ kernel（CPU）
-</code></pre></div>
-
-<p><strong>TorchInductor 的融合策略</strong>：</p>
-<ol>
-<li><strong>Pointwise 融合</strong>：连续的 element-wise 算子（加法、乘法、激活函数）自动融合成一个 Triton kernel</li>
-<li><strong>Reduction 融合</strong>：连续的 reduction（sum、mean、LayerNorm 内部）合并</li>
-<li><strong>GEMM + Epilogue</strong>：线性层后面跟着 element-wise 操作，自动融合进 GEMM 的 Epilogue</li>
-</ol>
-<h3 id="llama-h100">实测收益（LLaMA 系列，H100）</h3>
+<p>把这个观察推广一下：<strong>跑一个算子的总成本 = 启动开销 + 搬数据的时间 + 真正算的时间</strong>。对深度学习里那一大堆逐元素算子（激活函数、归一化、残差加、缩放、类型转换），这三项的量级是：</p>
 <table>
 <thead>
 <tr>
-<th>场景</th>
-<th>原生 PyTorch</th>
-<th>torch.compile</th>
-<th>提升</th>
+<th>成本项</th>
+<th>典型量级</th>
+<th>由什么决定</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>训练前向+反向，batch=8</td>
-<td>100%</td>
-<td>115–130%</td>
-<td>15–30%</td>
+<td>启动开销</td>
+<td>3–10 µs</td>
+<td>和数据量完全无关，每次都要付</td>
 </tr>
 <tr>
-<td>推理，batch=1</td>
-<td>100%</td>
-<td>120–140%</td>
-<td>20–40%</td>
+<td>搬数据</td>
+<td>张量字节数 ÷ 3.35 TB/s</td>
+<td>和数据量成正比</td>
 </tr>
 <tr>
-<td>推理，batch=32</td>
-<td>100%</td>
-<td>110–120%</td>
-<td>10–20%</td>
+<td>真正算</td>
+<td>几乎为零</td>
+<td>算术强度只有 1–3 FLOP/Byte，离屋脊点 295 差两个数量级</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第三项基本可以忽略</strong>——<a href="附-速查表.html">附-速查表 §C</a> 里那些算子的算术强度全在个位数，意思是算力利用率不到 1%，GPU 的绝大部分时间在等数据。</p>
+<p>于是优化方向只剩两个，而且它们对应两种不同的武器：</p>
+<div class="codehilite"><pre><span></span><code>敌人 ①：中间结果反复进出 HBM        →  武器：算子融合   （§5.2 – §5.4、§5.6、§5.7）
+敌人 ②：kernel 太多，每个都要付启动费 →  武器：CUDA Graph（§5.5）
+
+这两件事是正交的：
+  融合    减少 kernel 数量 和 HBM 流量，但剩下的每个 kernel 还是要启动
+  CUDA Graph 不减少 kernel 数量、不减少一个字节的 HBM 流量，只把每次启动的代价压到接近零
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>本章最容易被混淆的一点，先在这里说清楚</strong>：很多材料把"融合"和"CUDA Graph"当成同一件事的两种说法，其实它们解决的是完全不同的瓶颈。融合攻的是<strong>带宽</strong>，CUDA Graph 攻的是<strong>下发</strong>。判断你该用哪个，看 §5.5 末尾那条判据。生产环境里通常两个都要开。</p>
+</blockquote>
+<hr />
+<h2 id="52-x-layernorm-gelu">5.2 把账算出来：<code>x → LayerNorm → GELU → 残差加</code></h2>
+<p>这一节是全章的骨架。后面所有结论，都是这笔账的推论。</p>
+<h3 id="521">5.2.1 设定：一条真实的残差支路</h3>
+<p>Transformer 的每一层里都有这样一段（这里用最朴素的写法，先不管它在 PyTorch 里长什么样）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">n</span> <span class="o">=</span> <span class="n">layer_norm</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>      <span class="c1"># 归一化</span>
+<span class="n">g</span> <span class="o">=</span> <span class="n">gelu</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>            <span class="c1"># 激活函数</span>
+<span class="n">y</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">g</span>              <span class="c1"># 残差加（注意：这里第二次用到了 x）</span>
+</code></pre></div>
+
+<p>给定形状（取 LLaMA-3-8B 的配置，batch = 4、序列长 2048）：</p>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>token 数 M</td>
+<td>8192</td>
+<td>= batch 4 × 序列长 2048</td>
+</tr>
+<tr>
+<td>隐藏维度 H</td>
+<td>4096</td>
+<td>LLaMA-3-8B 的 <code>hidden_size</code></td>
+</tr>
+<tr>
+<td>数据类型</td>
+<td>BF16</td>
+<td>2 字节/元素</td>
+</tr>
+<tr>
+<td>一个张量的大小 T</td>
+<td><strong>67,108,864 字节 = 64 MiB</strong></td>
+<td>= 8192 × 4096 × 2</td>
+</tr>
+</tbody>
+</table>
+<p>后面所有账都用 <strong>T = 64 MiB</strong> 这一个单位来数，这样不用反复乘除。硬件按 <a href="附-速查表.html">附-速查表 §A</a>：H100 SXM5，HBM3 带宽 3.35 TB/s。</p>
+<h3 id="522-hbm">5.2.2 融合前：数据在 HBM 和片上之间弹三个来回</h3>
+<div class="codehilite"><pre><span></span><code>融合前：3 个 kernel，中间结果两次落地 HBM
+
+  HBM: x
+    │  读 T
+    ▼
+  片上: LayerNorm 计算
+    │  写 T   ← 中间结果 n 落地。这次写是纯浪费：n 只有下一个 kernel 会用
+    ▼
+  HBM: n
+    │  读 T   ← 又得原样读回来。这次读同样是纯浪费
+    ▼
+  片上: GELU 计算
+    │  写 T   ← 中间结果 g 落地，同样浪费
+    ▼
+  HBM: g
+    │  读 T + 再读一遍 x（共 2T）
+    ▼
+  片上: 残差加
+    │  写 T
+    ▼
+  HBM: y
+</code></pre></div>
+
+<p>逐个 kernel 把字节数列出来：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>kernel</th>
+<th>从 HBM 读</th>
+<th>写回 HBM</th>
+<th>小计</th>
+<th>时间（÷ 3.35 TB/s）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>LayerNorm</td>
+<td>x（1 T）</td>
+<td>n（1 T）</td>
+<td>2 T = 128 MiB</td>
+<td>40.1 µs</td>
+</tr>
+<tr>
+<td>②</td>
+<td>GELU</td>
+<td>n（1 T）</td>
+<td>g（1 T）</td>
+<td>2 T = 128 MiB</td>
+<td>40.1 µs</td>
+</tr>
+<tr>
+<td>③</td>
+<td>残差加</td>
+<td>g（1 T）+ x（1 T）</td>
+<td>y（1 T）</td>
+<td>3 T = 192 MiB</td>
+<td>60.1 µs</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>合计</strong></td>
+<td><strong>5 T</strong></td>
+<td><strong>2 T</strong></td>
+<td><strong>7 T = 448 MiB</strong></td>
+<td><strong>140.2 µs</strong></td>
+</tr>
+</tbody>
+</table>
+<p>（LayerNorm 还要读 <code>gamma</code>、<code>beta</code> 两个长度 4096 的向量，共 16 KB，占总量的 0.003%，忽略。）</p>
+<p><strong>kernel 启动次数：3 次。</strong></p>
+<h3 id="523">5.2.3 融合后：只进出一次</h3>
+<div class="codehilite"><pre><span></span><code>融合后：1 个 kernel，中间结果从不出片
+
+  HBM: x
+    │  读 T   ← 全流程唯一一次读
+    ▼
+  片上: LayerNorm ─→ GELU ─→ 残差加
+        n 和 g 全程活在寄存器里，一个字节都没进过 HBM
+        x 读进来之后也一直留在寄存器里，残差加直接取用，不需要第二次读
+    │  写 T   ← 全流程唯一一次写
+    ▼
+  HBM: y
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>从 HBM 读</th>
+<th>写回 HBM</th>
+<th>合计</th>
+<th>时间</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>融合 kernel</td>
+<td>x（1 T）</td>
+<td>y（1 T）</td>
+<td><strong>2 T = 128 MiB</strong></td>
+<td><strong>40.1 µs</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>kernel 启动次数：1 次。</strong></p>
+<h3 id="524">5.2.4 对比</h3>
+<div class="codehilite"><pre><span></span><code>HBM 流量：  448 MiB  →  128 MiB      省掉 320 MiB（71%）
+理论耗时：  140.2 µs →  40.1 µs      加速比 7 / 2 = 3.5 倍
+启动次数：      3    →      1
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>加速比 3.5 倍是怎么来的，值得盯着看一眼</strong>：融合前后<strong>做的浮点运算一模一样</strong>，一个 FLOP 都没省。省下来的全部是"往返字节数"——从 7 T 降到 2 T。而这类算子的耗时完全由字节数决定，所以字节数降到 2/7，时间就降到 2/7。<strong>融合的收益 = 字节数的比值</strong>，这个公式贯穿全章。</p>
+<p>★ 顺便注意：<strong>这个 3.5 倍和形状无关</strong>。换成 M = 4096、H = 8192，或者换成 FP16，7 T / 2 T 的比值不变，加速比还是 3.5 倍。决定加速比的是<strong>链的结构</strong>（几个算子、每个读写几份），不是张量多大。张量大小只决定省下来的<strong>绝对时间</strong>是多少微秒。</p>
+</blockquote>
+<h3 id="525">5.2.5 在屋顶线上看这件事</h3>
+<p>按 <a href="02-屋顶线与性能剖析.html">02 章</a> 的框架再看一遍。这条链的浮点运算量：LayerNorm 每元素约 7 FLOP，GELU（tanh 近似）每元素约 18 FLOP，残差加 1 FLOP，合计 <strong>⚠️ 约 25 FLOP/元素</strong>（估算值，依据是把每条算式的乘加逐个数出来，<code>tanh</code> 按 10 FLOP 计）。</p>
+<div class="codehilite"><pre><span></span><code>元素总数 = 8192 × 4096 = 33,554,432
+总 FLOP  = 33,554,432 × 25 ≈ 8.39 × 10⁸ = 0.84 GFLOP
+
+融合前算术强度 I = 8.39e8 FLOP ÷ 4.698e8 Byte = 1.79 FLOP/Byte
+融合后算术强度 I = 8.39e8 FLOP ÷ 1.342e8 Byte = 6.25 FLOP/Byte
+
+H100 屋脊点 = 295 FLOP/Byte（BF16 稠密 989 TFLOPS ÷ 3.35 TB/s）
+→ 融合前后都远在屋脊点左边，都是彻底的 Memory Bound（内存受限）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>性能（TFLOPS，纵轴）
+                                          ┌─────────  BF16 稠密峰值 989
+   989 ┤                                 ╱
+       │                               ╱
+       │                             ╱
+       │                           ╱      斜边上的点：性能 = 3350 GB/s × I
+  20.9 ┤              B          ╱
+   6.0 ┤      A                ╱
+       └──────┴───────┴──────────────────────────→  算术强度 I（FLOP/Byte）
+            1.79    6.25              295
+
+   A = 融合前（6.0 TFLOPS，占峰值 0.6%）
+   B = 融合后（20.9 TFLOPS，占峰值 2.1%）
+   295 = 屋脊点，两个点都远在它左边
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>融合是在屋顶线上"向右平移"，不是"向上抬升"。</strong> 融合后算力利用率从 0.6% 涨到 2.1%，依然惨不忍睹——但这不重要，因为时间确实降到了 2/7。对 Memory Bound 的算子，<strong>唯一有意义的优化目标是减少字节，不是提高算力利用率</strong>。反过来说，如果你把两个已经 Compute Bound（算力受限）的算子融在一起，它们本来就在屋顶的水平段上，向右平移毫无意义——这正是 §5.4 判据④要讲的事。</p>
+</blockquote>
+<h3 id="526-decode">5.2.6 换个场景，结论会翻过来：Decode 的小形状</h3>
+<p>同一条链，换成推理的 Decode（逐 token 生成）阶段：batch = 32 个序列，每步每个序列只算 1 个 token，所以 <strong>M = 32</strong>（而不是 8192），H 还是 4096。</p>
+<div class="codehilite"><pre><span></span><code>T = 32 × 4096 × 2 = 262,144 字节 = 256 KiB
+
+融合前 HBM 时间 = 7 T = 1.75 MiB ÷ 3.35 TB/s = 0.55 µs
+融合后 HBM 时间 = 2 T = 0.50 MiB ÷ 3.35 TB/s = 0.16 µs
+省下的搬运时间  = 0.39 µs
+
+融合前启动开销 = 3 × (3–10 µs) = 9–30 µs
+融合后启动开销 = 1 × (3–10 µs) = 3–10 µs
+省下的启动开销 = 6–20 µs
+</code></pre></div>
+
+<p><strong>省下的启动开销是省下的搬运时间的 15–50 倍。</strong> 场景一换，同一个融合动作的收益来源完全变了：训练的大形状下，融合省的是带宽；Decode 的小形状下，融合省的是启动次数。</p>
+<p>更要命的是最后那一行：融合完之后，这个 kernel <strong>执行 0.16 µs，启动却要 3–10 µs</strong>——启动开销是 kernel 本身的 20–60 倍。融合已经把 kernel 数从 3 压到 1，没法再压了，但每个 kernel 的固定启动费还在。<strong>这就是 CUDA Graph（§5.5）存在的全部理由。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练（M = 8192）</th>
+<th>Decode（M = 32）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>融合前耗时主体</td>
+<td>HBM 搬运 140 µs</td>
+<td>kernel 启动 9–30 µs</td>
+</tr>
+<tr>
+<td>融合的主要收益</td>
+<td>带宽：140 → 40 µs</td>
+<td>启动次数：3 → 1</td>
+</tr>
+<tr>
+<td>融合后还剩什么问题</td>
+<td>基本解决了</td>
+<td><strong>启动开销仍是执行时间的几十倍</strong></td>
+</tr>
+<tr>
+<td>下一步该上什么</td>
+<td>继续找别的融合点</td>
+<td><strong>CUDA Graph</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="527">5.2.7 摊到整个模型：别高估，也别低估</h3>
+<p>把上面的方法套到 LLaMA-3-8B 一整层（H = 4096，FFN 中间维度 I = 14336，M = 8192 token，BF16）。逐元素算子的 HBM 流量（T = 64 MiB，T_I = M × I × 2 = 234.9 MB）：</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>流量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Attention 前的 RMSNorm</td>
+<td>2 T</td>
+</tr>
+<tr>
+<td>Attention 后的残差加</td>
+<td>3 T</td>
+</tr>
+<tr>
+<td>FFN 前的 RMSNorm</td>
+<td>2 T</td>
+</tr>
+<tr>
+<td>SwiGLU 的 <code>silu(gate) * up</code></td>
+<td>3 T_I（读 gate、读 up、写 h）</td>
+</tr>
+<tr>
+<td>FFN 后的残差加</td>
+<td>3 T</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>10 T + 3 T_I = 671 MB + 705 MB = 1376 MB</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>逐元素部分理论耗时 = 1.376 GB ÷ 3.35 TB/s = 411 µs / 层
+
+同一层的 GEMM 算力消耗（QKVO 投影 + FFN 三个矩阵）：
+  ≈ 29 × M × H² = 29 × 8192 × 4096² ≈ 3.99 TFLOP
+  ⚠️ 按实测可达 600 TFLOPS 估算（约为 989 峰值的 60%）→ 6.64 ms / 层
+
+逐元素部分占比 = 411 µs ÷ (6640 + 411) µs ≈ 5.8%
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>本章旧版这里写的是"累积起来占比可达 20–40%"，这个数字对大 batch 训练是明显高估的，已改正。</strong> 按上面的推演，大 batch 训练前向里逐元素算子约占 <strong>6% 量级</strong>；把它们全部融掉，整体加速约 <strong>3–4%</strong>（因为融合只能消掉其中一部分，不是全部）。听起来不多，但这是<strong>几乎零风险、零精度损失</strong>的 3–4%，而且 <code>torch.compile</code> 一行代码就能拿到大半。</p>
+</blockquote>
+<p><strong>真正的大头在另外两个地方</strong>，它们才是"融合"这件事的高光时刻：</p>
+<ul>
+<li><strong>FlashAttention</strong>：把 <code>QK^T → Softmax → ×V</code> 融成一个 kernel，避免 N×N 的中间矩阵落地。按 <a href="附-速查表.html">附-速查表 §B.4</a>，N = 8192、32 个 head 时这个矩阵就有 4 GB，N = 32768 时 64 GB——<strong>超过 H100 的 80 GB 显存</strong>。这里融合不是提速手段，是<strong>可行性前提</strong>。见 <a href="04-FlashAttention全系.html">04 章</a>。</li>
+<li><strong>Decode / 小 batch 推理</strong>：如 §5.2.6，逐元素算子和启动开销加起来能占到大半。这里融合 + CUDA Graph 通常能拿到 <strong>20–40%</strong> 的延迟下降（⚠️ 量级，随模型大小和并行策略浮动）。原文那个 20–40% 放在这个场景才成立。</li>
+</ul>
+<hr />
+<h2 id="53">5.3 三种融合模式，每种算一笔账</h2>
+<h3 id="531">5.3.1 垂直融合：串联的算子合并（收益最大）</h3>
+<p>就是 §5.2 讲的那件事：把<strong>前后有数据依赖</strong>的算子串成一个 kernel，中间结果留在寄存器 / 共享内存。</p>
+<table>
+<thead>
+<tr>
+<th>例子</th>
+<th>融合前</th>
+<th>融合后</th>
+<th>收益来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LayerNorm → GELU → 残差加</td>
+<td>7 T</td>
+<td>2 T</td>
+<td>3.5×，见 §5.2</td>
+</tr>
+<tr>
+<td>Linear → SiLU</td>
+<td>GEMM 写出 + SiLU 读写</td>
+<td>GEMM 的 Epilogue 里做 SiLU</td>
+<td>省 2 次 T 的往返</td>
+</tr>
+<tr>
+<td>QK^T → Softmax → ×V</td>
+<td>中间矩阵 N×N 落地（GB 级）</td>
+<td>从不落地</td>
+<td><strong>从"跑不动"变成"跑得动"</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>垂直融合的判断口诀</strong>：如果算子 B 的输入<strong>就是</strong>算子 A 的输出，而且这份中间结果除了 B 没人用，那它进出 HBM 的那一趟就是纯浪费，值得融。</p>
+<h3 id="532">5.3.2 水平融合：独立的同形算子合并</h3>
+<p>把<strong>彼此没有依赖、形状相同</strong>的多个算子合并成一个更大的 kernel。最经典的例子是 Attention 的 Q、K、V 三个投影矩阵：</p>
+<div class="codehilite"><pre><span></span><code>融合前（MHA，32 个 head × head_dim 128，所以 Q/K/V 各是 4096 × 4096）：
+    Q = x @ W_Q      ← GEMM 1，读 x
+    K = x @ W_K      ← GEMM 2，又读一遍 x
+    V = x @ W_V      ← GEMM 3，再读一遍 x
+
+融合后：把三个权重按列拼成一个 4096 × 12288 的大矩阵
+    QKV = x @ [W_Q | W_K | W_V]     ← 1 个 GEMM，x 只读一遍
+    再把结果沿列切三刀，拿到 Q、K、V
+</code></pre></div>
+
+<p><strong>训练形状（M = 8192）下算账</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>读 x</th>
+<th>读权重</th>
+<th>写输出</th>
+<th>合计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>三个独立 GEMM</td>
+<td>3 × 67.1 MB</td>
+<td>3 × 33.6 MB</td>
+<td>3 × 67.1 MB</td>
+<td>503.3 MB</td>
+</tr>
+<tr>
+<td>合并成一个 GEMM</td>
+<td>1 × 67.1 MB</td>
+<td>100.7 MB</td>
+<td>201.3 MB</td>
+<td>369.1 MB</td>
+</tr>
+<tr>
+<td>省下</td>
+<td><strong>134.2 MB（27%）</strong></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>但是这 27% 换不来时间</strong>。算一下这个 GEMM 的算术强度：</p>
+<div class="codehilite"><pre><span></span><code>FLOP  = 2 × 8192 × 4096 × 12288 = 8.25 × 10¹¹
+Byte  = 3.69 × 10⁸
+I     = 8.25e11 ÷ 3.69e8 ≈ 2234 FLOP/Byte  ≫ 295（屋脊点）
+→ 这是彻底的 Compute Bound，时间由算力决定，和字节数无关
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>省字节只在 Memory Bound 的一侧才能兑现成时间。</strong> 这条判断在整章反复出现：同一个融合动作，放在 Memory Bound 的算子上是赚的，放在 Compute Bound 的算子上是白忙。</p>
+</blockquote>
+<p><strong>那 QKV 水平融合到底赚在哪？赚在 Decode。</strong> 同样的三个 GEMM，M 从 8192 降到 32：</p>
+<div class="codehilite"><pre><span></span><code>GEMM 常见的分块是 BLOCK_M × BLOCK_N = 64 × 128（一个 Block 算输出的一小块）
+
+单个 QKV GEMM（M=32, N=4096）：
+  M 方向只需要 1 个行块（32 &lt; 64，一个块就吃下了）
+  N 方向 4096 ÷ 128 = 32 个列块
+  → 总共只有 32 个 Block！而 H100 有 132 个 SM
+  → 100 个 SM 完全空转，机器利用率 24%     ← 01 章 §1.2.4 的尾巴效应
+
+合并后（M=32, N=12288）：
+  N 方向 12288 ÷ 128 = 96 个列块 → 96 个 Block
+  → 机器利用率 73%，比之前好 3 倍
+  → 启动次数也从 3 降到 1
+</code></pre></div>
+
+<p>所以水平融合的三条收益，在不同场景下权重完全不同：</p>
+<table>
+<thead>
+<tr>
+<th>收益</th>
+<th>训练大 batch</th>
+<th>Decode 小 batch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入只读一遍</td>
+<td>省 27% 字节，但 Compute Bound，白省</td>
+<td>字节本来就少，可忽略</td>
+</tr>
+<tr>
+<td>kernel 启动次数 3 → 1</td>
+<td>占比极小</td>
+<td><strong>显著</strong></td>
+</tr>
+<tr>
+<td>GEMM 规模变大、SM 利用率提高</td>
+<td>本来就够大，提升有限</td>
+<td><strong>24% → 73%，最主要的收益</strong></td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ 第一次调用会触发编译，有 30–120 秒延迟。生产环境需要提前 warm-up 或使用 <code>torch.compile</code> 的 AOT（Ahead-of-Time）导出模式。</p>
+<p>⚠️ <strong>一个常见的错误说法要纠正</strong>：很多材料（包括本章旧版）说"QKV 拼成 H × 3H"。这<strong>只在 MHA（Multi-Head Attention，多头注意力）下成立</strong>。现在主流模型用的是 <strong>GQA</strong>（Grouped-Query Attention，分组查询注意力），K 和 V 的 head 数远少于 Q。LLaMA-3-8B 是 32 个 Q head、<strong>8 个 KV head</strong>，head_dim = 128，所以合并后的矩阵是 <code>4096 × (4096 + 2×8×128) = 4096 × 6144</code>，不是 <code>4096 × 12288</code>。拼错了会静默产生错误结果——切分偏移量全乱，但不报错。</p>
 </blockquote>
-<hr />
-<h2 id="57">5.7 哪些融合值得做，哪些不值得</h2>
+<h3 id="533-epilogue-gemm">5.3.3 Epilogue 融合：GEMM 写出前顺手做完</h3>
+<p>GEMM 算完一个输出块之后，这个块<strong>正躺在寄存器里</strong>，马上要写回 HBM。在写之前插进去一段逐元素运算，是完全免费的——数据本来就在手上。</p>
+<div class="codehilite"><pre><span></span><code>标准 GEMM：
+    寄存器里的 C 块  ──写──→  HBM
+    然后另起一个 kernel：HBM ──读──→ 加 bias、算激活 ──写──→ HBM
+
+Epilogue 融合：
+    寄存器里的 C 块 ──→ 加 bias ──→ 算激活 ──→ 写 HBM
+                      └── 这一段全程在寄存器里，一次 HBM 往返都不多
+</code></pre></div>
+
+<p><strong>用 LLaMA-3-8B 的 FFN（SwiGLU）算一笔完整的账</strong>。结构是：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">gate</span> <span class="o">=</span> <span class="n">x</span> <span class="o">@</span> <span class="n">W_gate</span>        <span class="c1"># (8192, 4096) → (8192, 14336)</span>
+<span class="n">up</span>   <span class="o">=</span> <span class="n">x</span> <span class="o">@</span> <span class="n">W_up</span>          <span class="c1"># (8192, 4096) → (8192, 14336)</span>
+<span class="n">h</span>    <span class="o">=</span> <span class="n">silu</span><span class="p">(</span><span class="n">gate</span><span class="p">)</span> <span class="o">*</span> <span class="n">up</span>   <span class="c1"># 逐元素</span>
+<span class="n">out</span>  <span class="o">=</span> <span class="n">h</span> <span class="o">@</span> <span class="n">W_down</span>        <span class="c1"># (8192, 14336) → (8192, 4096)</span>
+</code></pre></div>
+
+<p>记 <strong>T_I = 8192 × 14336 × 2 = 234,881,024 字节 ≈ 234.9 MB</strong>（中间张量的大小）。只数"从 gate/up 算出来"到"被 W_down 读走"这段的流量：</p>
 <table>
 <thead>
 <tr>
-<th>融合目标</th>
-<th>值得做</th>
+<th>步骤</th>
+<th>未融合</th>
+<th>Epilogue 融合后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>写出 gate</td>
+<td>1 T_I</td>
+<td>—</td>
+</tr>
+<tr>
+<td>写出 up</td>
+<td>1 T_I</td>
+<td>—</td>
+</tr>
+<tr>
+<td>SiLU-乘法 kernel 读 gate</td>
+<td>1 T_I</td>
+<td>—</td>
+</tr>
+<tr>
+<td>SiLU-乘法 kernel 读 up</td>
+<td>1 T_I</td>
+<td>—</td>
+</tr>
+<tr>
+<td>写出 h</td>
+<td>1 T_I</td>
+<td>1 T_I</td>
+</tr>
+<tr>
+<td>W_down 的 GEMM 读 h</td>
+<td>1 T_I</td>
+<td>1 T_I</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>6 T_I = 1.41 GB</strong></td>
+<td><strong>2 T_I = 470 MB</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>省下 4 T_I = 939.5 MB
+时间收益 = 939.5 MB ÷ 3.35 TB/s = 280 µs / 层
+32 层    = 9.0 ms（对照：整个前向 ⚠️ 约 213 ms，即约 4.2%）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>本章旧版这里有三处错误，逐条改正</strong>：① 旧版写"B=4, S=2048, H=8192, 4H=28672"——<code>4 × 8192 = 32768</code>，28672 根本不是 4H，它是 LLaMA-70B 的 <code>intermediate_size</code>，比值是 3.5 不是 4（SwiGLU 有三个矩阵，所以中间维度按 <code>8/3 × H</code> 再向上取整对齐，不是 4H）。② 旧版只数了 3 份流量（1.4 GB），漏掉了 gate 和 up 的读回，实际是 6 份。③ 旧版说"融合后额外 HBM 流量 ≈ 0"，这是<strong>错的</strong>——<code>h</code> 必须落地，因为下一步 <code>W_down</code> 要沿着 14336 这一维做归约，而一个 Block 拿不到完整的一行 <code>h</code>（原因见 §5.4 反例 2）。④ 旧版说"32 层模型"却用的是 LLaMA-70B 的维度，70B 是 <strong>80 层</strong>。本节改用 LLaMA-3-8B 全套自洽的配置。</p>
+</blockquote>
+<p>CUTLASS 的 <strong>EVT</strong>（Epilogue Visitor Tree，收尾访问者树）可以把任意一串逐元素操作挂在 GEMM 后面，细节见 <a href="03-GEMM深度剖析.html">03 章</a>。</p>
+<h3 id="534">5.3.4 三种模式对照</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>合并的对象</th>
+<th>省掉的是</th>
+<th>典型收益</th>
+<th>难度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>垂直融合</td>
+<td>前后有依赖的算子</td>
+<td>中间结果的 HBM 往返</td>
+<td>3–5× （对 Memory Bound 链）</td>
+<td>中</td>
+</tr>
+<tr>
+<td>水平融合</td>
+<td>彼此独立的同形算子</td>
+<td>启动次数 + 输入重复读 + SM 空转</td>
+<td>Decode 下 2–3×</td>
+<td>低</td>
+</tr>
+<tr>
+<td>Epilogue 融合</td>
+<td>GEMM + 它后面的逐元素算子</td>
+<td>中间结果的 HBM 往返</td>
+<td>省 2/3 的中间流量</td>
+<td>低（库已支持）</td>
+</tr>
+<tr>
+<td>Prologue 融合</td>
+<td>GEMM + 它前面的逐元素算子</td>
+<td>同上</td>
+<td>通常做不到，见 §5.4 反例 1</td>
+<td>高</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="54">5.4 能不能融：五条判据和四个反例</h2>
+<p>到这里为止都在讲"融合有多好"。这一节讲反面：<strong>什么时候融不了，什么时候融了反而更慢</strong>。这比记住一张"可融算子清单"有用得多——清单会过时，判据不会。</p>
+<h3 id="541">5.4.1 五条判据</h3>
+<p><strong>判据①：消费者的每个输出，依赖生产者输出的哪些元素？</strong></p>
+<p>这是最根本的一条。三种情况，难度天差地别：</p>
+<div class="codehilite"><pre><span></span><code>一对一（逐元素）      消费者的第 i 个输出只依赖生产者的第 i 个输出
+                      例：GELU 之后接残差加
+                      → 随便融，中间值放寄存器就行            【最容易】
+
+行内归约              消费者的一个输出依赖生产者的一整行
+                      例：LayerNorm、Softmax（要整行求和）
+                      → 能融，但要求&quot;一整行装得进片上&quot;，见判据②
+
+跨块归约 / 转置       消费者要的元素由别的 Block 产出
+                      例：矩阵转置、沿 batch 维的归约
+                      → 一个 kernel 里做不到（Block 之间不能同步，
+                        原因见 01 章 §1.2.3：Block 终身绑定在一个 SM 上，
+                        没有共同的片上存储）                  【基本不能融】
+</code></pre></div>
+
+<p><strong>判据②：需要同时留在片上的中间结果，装得下吗？</strong></p>
+<div class="codehilite"><pre><span></span><code>片上预算（H100，每个 SM）：
+    共享内存  最多 228 KB
+    寄存器    256 KB
+
+但这是一个 SM 的总量，要分给同时驻留的多个 Block。
+实际给一个 Block 的预算 ⚠️ 通常按 100 KB 上下估（留出双缓冲和 Occupancy 的余地）。
+预算超了会发生什么：Occupancy 掉（01 章 §1.6）或寄存器溢出到 HBM（01 章 §1.3），
+两种都可能让&quot;融合版&quot;比&quot;不融版&quot;还慢。
+</code></pre></div>
+
+<p><strong>判据③：这份中间结果被几个消费者用？</strong></p>
+<p>被 k 个消费者用，融进每个消费者就要<strong>重算 k 遍</strong>。划算的条件是：<code>(k−1) × 重算成本 &lt; (k−1) × 一次 HBM 往返</code>，也就是<strong>重算比搬运便宜</strong>。对逐元素算子，重算几乎免费，所以通常划算；对一个大 GEMM，重算贵得离谱，绝不能这么干。</p>
+<blockquote>
+<p>★ FlashAttention 的<strong>反向传播</strong>用的正是这一招：不保存前向的 N×N 注意力矩阵，反向时重新算一遍。因为"重算一个 GEMM"比"从 HBM 读 4 GB"还快。这是判据③的极端应用，见 <a href="04-FlashAttention全系.html">04 章</a>。</p>
+</blockquote>
+<p><strong>判据④：两边各自的瓶颈类型是什么？</strong></p>
+<table>
+<thead>
+<tr>
+<th>生产者</th>
+<th>消费者</th>
+<th>融合是否值得</th>
 <th>原因</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>LayerNorm / RMSNorm + 后续 Linear</td>
-<td>✅ 非常值得</td>
-<td>LN 是强 Memory Bound，融合节省 100% 的中间 HBM 流量</td>
+<td>Memory Bound</td>
+<td>Memory Bound</td>
+<td>✅ 几乎必赚</td>
+<td>两边都靠减字节提速，字节减了时间就减</td>
 </tr>
 <tr>
-<td>激活函数（SiLU、GeLU）融合进 Linear</td>
-<td>✅ 非常值得</td>
-<td>激活函数算术强度 ~1，单独跑是纯浪费</td>
+<td>Compute Bound</td>
+<td>Memory Bound</td>
+<td>✅ 赚</td>
+<td>把小的"藏"进大的执行时间里，相当于白送</td>
 </tr>
 <tr>
-<td>QKV 投影合并</td>
-<td>✅ 值得</td>
-<td>三合一 GEMM 更大，Tensor Core 利用率更高</td>
+<td>Memory Bound</td>
+<td>Compute Bound</td>
+<td>✅ 赚</td>
+<td>同上</td>
 </tr>
 <tr>
-<td>FlashAttention（QK^T + Softmax + ×V）</td>
-<td>✅ 必须做</td>
-<td>中间 N×N 矩阵不能存 HBM</td>
-</tr>
-<tr>
-<td>两个 Compute Bound 的大 GEMM 融合</td>
-<td>⚠️ 谨慎</td>
-<td>两个都打满算力，融合后可能因 SRAM 不够反而更慢</td>
-</tr>
-<tr>
-<td>带控制流的算子（条件路由、动态 shape）</td>
-<td>❌ 难做</td>
-<td>CUDA Graph 不支持，torch.compile 降级为图模式</td>
+<td>Compute Bound</td>
+<td>Compute Bound</td>
+<td>⚠️ 通常不赚，可能亏</td>
+<td>两边本来就在屋顶的水平段，减字节不改变时间；而融合会同时占用两份寄存器和共享内存，把 Occupancy 压下去，反而变慢</td>
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="58">5.8 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>算子融合的本质：减少 HBM 往返次数
+<p><strong>判据⑤：形状和控制流稳定吗？</strong></p>
+<p>融合 kernel 是针对特定形状编译出来的。如果形状每步都变（变长序列、动态 batch）、或者中间有依赖数据的分支（MoE 的专家路由、早退），融合 kernel 要么退化成一堆特化版本，要么根本编不出来。</p>
+<h3 id="542">5.4.2 四个反例（都带数字）</h3>
+<p><strong>反例 1：把 LayerNorm 融进后面 Linear 的输入端（Prologue）——做不到</strong></p>
+<p>直觉上"LayerNorm 之后马上是 Linear，应该能融"。算一下就知道为什么不行：</p>
+<div class="codehilite"><pre><span></span><code>Linear 就是 GEMM：out = LayerNorm(x) @ W，x 是 (M, K)，K = 4096
 
-三种模式：
-  垂直融合：串联算子合并，中间结果留在 SRAM/寄存器
-  水平融合：同形状独立算子合并，减少 kernel 启动
-  Epilogue 融合：GEMM 写出阶段顺带做 element-wise 操作
+GEMM 的一个 Block 负责算 out 的一个 128 × 128 块。
+它的做法是沿 K 方向分块，一次只读 x 的 128 × 32 一小片（01 章说的分块复用）。
 
-实现路径（优先级从高到低）：
-  1. torch.compile  ← 零代码，自动融合 pointwise 和 reduction
-  2. CUDA Graph     ← 消除启动延迟，推理场景标配
-  3. 已有融合库（flash-attn, xformers）← 高频 pattern 直接用
-  4. Triton 自定义  ← 需要定制逻辑
-  5. CUDA + CUTLASS ← 极致性能，开发成本高
+但 LayerNorm 要算一整行（K = 4096 个元素）的均值和方差，才能归一化任何一个元素。
+一个 Block 要缓存 128 行 × 4096 列 × 2 字节 = 1,048,576 字节 = 1 MiB
+                                              ▲
+                              共享内存上限 228 KB，超了 4.6 倍   ✗ 判据② 不过
+</code></pre></div>
 
-Memory Bound 的算子融合收益最大；
-两个 Compute Bound 的 GEMM 融合不一定更快。
+<p><strong>实践中的做法</strong>：LayerNorm 单独跑一个 kernel（它本来就便宜，2 T 而已），或者——更聪明的办法——把它融到<strong>前一个</strong>算子的 <strong>Epilogue</strong> 里。在 Transformer 里，LayerNorm 前面正好是残差加，两者融成一个 <code>AddRMSNorm</code> kernel 是标准操作。</p>
+<blockquote>
+<p>⚠️ <strong>本章旧版把"LayerNorm + Linear"叫做"GEMM 的 Epilogue 融合"，这是错的。</strong> Epilogue 是"收尾"，指 GEMM <strong>算完之后</strong>的位置；LayerNorm 在 Linear <strong>之前</strong>，那是 <strong>Prologue（前置）</strong> 位置。这两个位置的难度完全不对称：Epilogue 时结果已经在寄存器里，随便加东西；Prologue 时数据是分块读进来的，任何需要"看到完整一行"的操作都做不了。<strong>记住这个不对称，比记住术语重要。</strong></p>
+</blockquote>
+<p><strong>反例 2：两个大 GEMM 串联——一般不能融</strong></p>
+<div class="codehilite"><pre><span></span><code>要算 out = (A @ B) @ D
+    A: M × K，B: K × N，C = A@B 是 M × N，D: N × P
 
-下一章：还有一种从根本上减少 HBM 流量的手段——量化，用更少的位宽存同样的数。
+第二个 GEMM 要沿 N 做归约：out[i][p] = Σ_n C[i][n] × D[n][p]
+也就是说，算 out 的任何一个元素，都需要 C 的一整行（N 个元素）。
+
+而第一个 GEMM 的一个 Block 只算出 C 的一个 128 × 128 小块，
+只覆盖 N 方向的 128/N。要凑齐一整行，得等别的 Block —— 跨 Block，
+一个 kernel 里没法同步。                          ✗ 判据① 第三类
+</code></pre></div>
+
+<p><strong>那 FlashAttention 为什么能融？它明明也是"GEMM → Softmax → GEMM"。</strong> 因为它同时满足两个特殊条件：</p>
+<div class="codehilite"><pre><span></span><code>① 累加器足够小
+   FA 的第二个 GEMM 输出的是 O，形状是 (BLOCK_M, head_dim) = (128, 128)
+   FP32 累加器 = 128 × 128 × 4 = 65,536 字节 = 64 KiB   ✓ 放得进寄存器
+
+   对比：如果 head_dim 是 1024，累加器 = 128 × 1024 × 4 = 512 KiB
+         → 片上放不下，FlashAttention 这条路就走不通了。
+         这就是为什么主流模型的 head_dim 一直卡在 64 / 128，很少更大。
+
+② 归约可以&quot;增量&quot;做
+   普通 Softmax 要先扫完一整行找最大值和总和，才能归一化 —— 属于判据①第二类。
+   FlashAttention 用&quot;在线 Softmax&quot;（Online Softmax）：每处理一块 K/V，
+   就更新一次运行中的最大值 m 和求和值 l，同时把已经累加好的 O 按比例修正。
+   这样就把&quot;整行归约&quot;降级成了&quot;可以边走边做的归约&quot;。
+
+FA 一个 Block 的片上占用（BLOCK_M = BLOCK_N = 128，head_dim = 128）：
+    Q 块  128 × 128 × 2 (BF16) =  32 KiB
+    K 块  128 × 128 × 2        =  32 KiB
+    V 块  128 × 128 × 2        =  32 KiB
+    S 块  128 × 128 × 4 (FP32) =  64 KiB
+    O 累加器 128 × 128 × 4     =  64 KiB
+                              ───────────
+                               约 224 KiB   ← 顶到 H100 片上预算的天花板
 </code></pre></div>
 
 <blockquote>
-<p><strong>昇腾对照</strong>：910B 起 Cube 和 Vector 是两个独立的核，中间结果必须绕 Global Memory —— 本章「消灭中间结果落盘」这个收益来源在昇腾上部分失效，融合要改用 CV 流水并行，见 <a href="12-昇腾硬件基础.html">12 章 §12.2.3</a> 与 <a href="04-FlashAttention全系.html">04 章 §4.9.1</a>。CUDA Graph 在昇腾上的对应物是 ACLGraph，见 <a href="14-GPU到NPU迁移实战.html">14 章 §14.5</a>。</p>
+<p>★ <strong>FlashAttention 不是"发现了一个能融的地方"，而是"改造了算法，让它变得能融"</strong>（在线 Softmax 就是那个改造）。这是融合的最高形态：判据不满足时，改算法去满足它。详见 <a href="04-FlashAttention全系.html">04 章</a>。</p>
+</blockquote>
+<p><strong>反例 3：中间结果被多个消费者用——要先做水平融合</strong></p>
+<div class="codehilite"><pre><span></span><code>Transformer 里：
+    n = RMSNorm(x)
+    Q = n @ W_Q
+    K = n @ W_K
+    V = n @ W_V        ← n 被 3 个消费者用
+
+如果硬把 RMSNorm 垂直融进三个 GEMM，那就要算 3 遍 RMSNorm，x 也要读 3 遍。
+                                                  ✗ 判据③ k=3，不划算
+
+正确做法：先水平融合（QKV 合成一个 GEMM，把 3 个消费者变成 1 个），
+          再考虑垂直融合。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>两种融合模式是配合使用的，不是二选一。</strong> 水平融合常常是垂直融合的前置步骤——它把"一对多"的依赖图压成"一对一"，判据③就通过了。</p>
+</blockquote>
+<p><strong>反例 4：转置 / reshape 打断了融合</strong></p>
+<div class="codehilite"><pre><span></span><code>Attention 输出的布局是 (B, n_heads, S, head_dim)，
+下一步 O 投影需要的是 (B, S, n_heads × head_dim)。
+中间隔着一次转置。
+
+转置的特点：消费者要的元素 (j, i) 由拥有 (i, j) 的那个 Block 产出。
+            → 跨 Block                            ✗ 判据① 第三类
+
+两种解法（都是 01 章 §1.4.4 那一招的变体）：
+  ① 借共享内存中转：在一个 Block 内部完成局部转置（注意 Bank Conflict，01 章 §1.5）
+  ② 让生产者直接按目标布局写出：FlashAttention 就是这么做的，
+     它的 kernel 直接把 O 写成下一步要的形状，转置消失了
+</code></pre></div>
+
+<h3 id="543">5.4.3 判据速查</h3>
+<p>写融合 kernel 之前，按顺序过一遍这五问：</p>
+<div class="codehilite"><pre><span></span><code>① 消费者依赖生产者的哪些元素？  一对一 → 继续；行内归约 → 看 ②；跨块 → 放弃或改算法
+② 中间结果片上装得下吗？        &gt; 100 KB / Block 就危险
+③ 中间结果被几个消费者用？      k &gt; 1 时先考虑水平融合把 k 压到 1
+④ 两边的瓶颈类型？              都是 Compute Bound → 别融
+⑤ 形状和控制流稳定吗？          不稳定 → 融合 kernel 会爆炸成一堆特化版本
+</code></pre></div>
+
+<hr />
+<h2 id="55-cuda-graph-kernel">5.5 CUDA Graph：消除 kernel 启动开销</h2>
+<p>§5.2.6 留了一个尾巴：融合已经把 kernel 数压到最少，但<strong>剩下的每个 kernel 还是要付 3–10 µs 的启动费</strong>，而 Decode 场景下这笔费用是 kernel 执行时间的几十倍。CUDA Graph 就是来收这一刀的。</p>
+<h3 id="551">5.5.1 先把"启动开销"这件事说准确</h3>
+<p>先纠正一个几乎所有材料都含糊带过、本章旧版也算错了的地方。</p>
+<div class="codehilite"><pre><span></span><code>旧版的算法：32 层 × 每层 20 个 kernel = 640 个 kernel
+           640 × 7 µs = 4.5 ms，&quot;全是启动开销&quot;
+
+这个算法把两个不同的东西混成了一个。
+</code></pre></div>
+
+<p><code>3–10 µs</code> 是启动<strong>延迟</strong>（latency）：从 CPU 调用 <code>cudaLaunchKernel</code> 到 GPU 上第一个线程开始跑，中间隔了这么久。但连续启动时，<strong>CPU 发第 2 个 kernel 和 GPU 执行第 1 个 kernel 是并行发生的</strong>——启动是流水化的，不是串行相加的。</p>
+<p>真正决定成败的是另一个量：<strong>CPU 端每提交一个 kernel 要占用多少 CPU 时间</strong>（吞吐成本，⚠️ 实测量级 <strong>1.5–3 µs/kernel</strong>，取决于参数个数、是否走 PyTorch 的 Python 层、驱动版本）。于是：</p>
+<div class="codehilite"><pre><span></span><code>每一步的实际耗时 ≈ max( CPU 下发总时间 , GPU 执行总时间 )
+                    ▲                      ▲
+            kernel 数 × 单个下发成本      真正干活的时间
+
+  CPU 侧 &lt; GPU 侧  →  正常，GPU 是瓶颈，启动开销被完全掩盖，不用管
+  CPU 侧 &gt; GPU 侧  →  Host Bound（下发受限），GPU 在饿着等命令   ← CUDA Graph 的战场
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>时间线示意（每格 1 µs，K = kernel）
+
+正常情况（GPU 慢，CPU 快）：
+  CPU: [发K1][发K2][发K3]........................（发完就闲着）
+  GPU: ....[====== K1 ======][===== K2 =====][===== K3 =====]
+       └ GPU 一直有活干，启动开销完全被掩盖
+
+Host Bound（GPU 快，CPU 慢）：
+  CPU: [--发K1--][--发K2--][--发K3--][--发K4--]
+  GPU: ....[K1]......[K2]......[K3]......[K4]
+              ▲空闲     ▲空闲     ▲空闲
+       └ GPU 每次都要等 CPU，总时间由 CPU 决定
+</code></pre></div>
+
+<p><strong>一个具体场景</strong>：LLaMA-3-8B，BF16，8 卡张量并行（TP = 8，Tensor Parallel），Decode 阶段。</p>
+<div class="codehilite"><pre><span></span><code>GPU 侧每步执行时间 ≈ 每卡权重量 ÷ 带宽
+                   = (16 GB ÷ 8) ÷ 3.35 TB/s = 2 GB ÷ 3.35 TB/s ≈ 0.6 ms
+                   （Decode 是 Memory Bound，时间几乎等于&quot;把权重读一遍&quot;）
+
+CPU 侧每步下发成本 ≈ kernel 数 × 单个下发成本
+                   ⚠️ 约 500 个 kernel × 2 µs ≈ 1.0 ms
+
+每步耗时 = max(1.0, 0.6) = 1.0 ms     ← CPU 是瓶颈，GPU 有 40% 时间在空转
+</code></pre></div>
+
+<p>注意这里的关键：<strong>切了 TP 之后，GPU 侧的活变少了（权重被 8 张卡分摊），但 kernel 数量一点没少</strong>——每张卡还是要发那 500 个 kernel。并行度越高、模型越小、batch 越小，就越容易滑进 Host Bound。这也是为什么 vLLM、SGLang、TensorRT-LLM 这些推理框架把 CUDA Graph 当成<strong>默认必开项</strong>。</p>
+<h3 id="552-cuda-graph">5.5.2 录制—重放：CUDA Graph 怎么工作</h3>
+<p>CUDA Graph 的思路很直白：既然每一步要发的 kernel 序列都一模一样，那就<strong>录一次，以后重放</strong>。</p>
+<div class="codehilite"><pre><span></span><code>① 录制阶段（一次性，在 warm-up 时做，通常跑 1–3 次预热后录）
+
+   CPU:  cudaStreamBeginCapture(stream)     ← 打开&quot;录音&quot;
+           │
+           │   照常调用 kernel_1、kernel_2、……、kernel_500
+           │   但这些调用不会真的送到 GPU 执行，
+           │   而是被记录成图里的节点
+           ▼
+         kernel_1   ──→  节点 1
+         kernel_2   ──→  节点 2（依赖节点 1）
+           ……
+         kernel_500 ──→  节点 500
+           │
+           ▼
+         cudaStreamEndCapture     ──→  得到一张 Graph（有向无环图，
+           │                            节点是 kernel，边是依赖关系）
+           ▼
+         cudaGraphInstantiate     ──→  得到 GraphExec（可执行实例）
+                                        此时参数地址、grid/block 配置
+                                        全部固化进去，不能再改
+
+② 重放阶段（之后每一步都走这条路）
+
+   CPU:  把这一步的新数据拷进&quot;录制时用的那几块固定 buffer&quot;
+           │
+           ▼
+         cudaGraphLaunch(graphExec)     ← 全程只有这一次 API 调用
+           │
+           ▼
+   GPU:  硬件按图的依赖顺序依次调度 500 个节点
+         中间不再回头问 CPU 要命令
+</code></pre></div>
+
+<p>在 PyTorch 里长这样：</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="c1"># ① 准备固定形状、固定地址的输入输出 buffer</span>
+<span class="n">static_input</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">hidden</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cuda&#39;</span><span class="p">)</span>
+
+<span class="c1"># ② 预热：必须先正常跑几次，让 cuBLAS 选好算法、内存池稳定下来</span>
+<span class="n">s</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">Stream</span><span class="p">()</span>
+<span class="n">s</span><span class="o">.</span><span class="n">wait_stream</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_stream</span><span class="p">())</span>
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">stream</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">):</span>
+        <span class="n">_</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">static_input</span><span class="p">)</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_stream</span><span class="p">()</span><span class="o">.</span><span class="n">wait_stream</span><span class="p">(</span><span class="n">s</span><span class="p">)</span>
+
+<span class="c1"># ③ 录制</span>
+<span class="n">g</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">CUDAGraph</span><span class="p">()</span>
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">graph</span><span class="p">(</span><span class="n">g</span><span class="p">):</span>
+    <span class="n">static_output</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">static_input</span><span class="p">)</span>   <span class="c1"># 所有 kernel 调用被录进 g</span>
+
+<span class="c1"># ④ 之后每一步：把新数据写进同一块 buffer，然后重放</span>
+<span class="n">static_input</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">new_data</span><span class="p">)</span>   <span class="c1"># 必须是 copy_，不能是重新赋值！地址不能变</span>
+<span class="n">g</span><span class="o">.</span><span class="n">replay</span><span class="p">()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">static_output</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span> <span class="c1"># static_output 会被下次 replay 覆盖，要用就先拷走</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>第 ④ 步那行 <code>copy_</code> 是最高频的坑</strong>。写成 <code>static_input = new_data</code> 会让变量指向一块新显存，而图里固化的还是老地址——<strong>不报错，结果是用旧数据算出来的</strong>。这是典型的静默错误。同理，<code>static_output</code> 必须在下一次 <code>replay()</code> 之前拷走。</p>
+</blockquote>
+<h3 id="553">5.5.3 省下多少：把两笔账并排放</h3>
+<p>沿用 §5.5.1 那个场景（500 个 kernel，GPU 侧 0.6 ms）：</p>
+<table>
+<thead>
+<tr>
+<th>每步开销</th>
+<th>Eager（逐个下发）</th>
+<th>CUDA Graph 重放</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU 侧 API 调用次数</td>
+<td>500 次</td>
+<td><strong>1 次</strong></td>
+</tr>
+<tr>
+<td>CPU 侧总耗时</td>
+<td>⚠️ 500 × 2 µs ≈ 1.0 ms</td>
+<td>⚠️ 约 5–10 µs</td>
+</tr>
+<tr>
+<td>GPU 侧节点间调度</td>
+<td>每个节点都有间隙</td>
+<td>硬件直连，⚠️ 亚微秒级</td>
+</tr>
+<tr>
+<td>HBM 流量</td>
+<td>1×</td>
+<td><strong>完全不变</strong></td>
+</tr>
+<tr>
+<td>kernel 数量</td>
+<td>500</td>
+<td><strong>完全不变</strong></td>
+</tr>
+<tr>
+<td><strong>每步实际耗时</strong></td>
+<td>max(1.0, 0.6) = <strong>1.0 ms</strong></td>
+<td>max(0.01, 0.6) = <strong>0.6 ms</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>加速比 = 1.0 ÷ 0.6 ≈ 1.67 倍
+延迟下降 = (1.0 − 0.6) ÷ 1.0 = 40%
+</code></pre></div>
+
+<p><strong>注意加速的上限在哪</strong>：CUDA Graph 最多只能把耗时从 <code>CPU 侧</code> 拉回到 <code>GPU 侧</code>。上面这个例子的天花板就是 0.6 ms，再开十张图也快不了。<strong>如果本来就不是 Host Bound，CUDA Graph 的收益是零。</strong></p>
+<blockquote>
+<p>★ <strong>判断该不该开 CUDA Graph，一条不等式就够</strong>：</p>
+<p><code>kernel 数 × 单个下发成本（⚠️ 约 2 µs）  &gt;  GPU 侧执行时间   →  开，收益 = 两者之差
+kernel 数 × 单个下发成本                ≤  GPU 侧执行时间   →  不开也一样</code></p>
+<p>怎么量：用 Nsight Systems 看时间线，如果 GPU 那条泳道上 kernel 之间有肉眼可见的密集空隙、而 CPU 那条泳道是满的，就是 Host Bound。<a href="02-屋顶线与性能剖析.html">02 章</a> 有具体操作。</p>
+</blockquote>
+<h3 id="554">5.5.4 限制与代价</h3>
+<table>
+<thead>
+<tr>
+<th>限制</th>
+<th>为什么</th>
+<th>实践对策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入形状必须固定</td>
+<td>图里固化了 grid 配置和参数地址</td>
+<td>预先录制多套图（如 batch = 1/2/4/8/16/32），运行时选最接近的那张并 padding</td>
+</tr>
+<tr>
+<td>显存地址必须固定</td>
+<td>同上</td>
+<td>用静态 buffer + <code>copy_</code>；PyTorch 的 CUDA 内存池在图捕获期间会切到专用池</td>
+</tr>
+<tr>
+<td>不支持依赖数据的控制流</td>
+<td>图是静态的，录的时候走哪条分支就永远走哪条</td>
+<td>把分支拆到图外面，或分别录多张图</td>
+</tr>
+<tr>
+<td>KV Cache 长度在增长</td>
+<td>Cache 的有效长度每步变化</td>
+<td>按最大长度分配固定 buffer，用 mask 或 <code>seq_len</code> 张量控制有效范围（vLLM 的做法）</td>
+</tr>
+<tr>
+<td>CPU 端同步会破坏捕获</td>
+<td>捕获期间不能有 <code>.item()</code>、<code>.cpu()</code>、<code>print()</code> 等同步操作</td>
+<td>把所有 host 侧逻辑挪出捕获区</td>
+</tr>
+<tr>
+<td>录制本身要花时间和显存</td>
+<td>每张图要预留自己的中间 buffer</td>
+<td>图的套数别开太多；⚠️ 一套图的额外显存通常在几百 MB 量级</td>
+</tr>
+</tbody>
+</table>
+<p><strong>典型收益</strong>：⚠️ 推理延迟下降 10–25%（一般情况），Host Bound 严重时（小模型、高 TP、小 batch）可达 40% 以上。batch 越大、序列越长，GPU 侧的活越多，CUDA Graph 的收益越小。</p>
+<hr />
+<h2 id="56-torchcompile">5.6 torch.compile：让编译器替你做融合</h2>
+<p>手写融合 kernel 成本高。<code>torch.compile</code> 能自动吃掉其中最简单也最琐碎的那一大类——逐元素算子链。</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">MyModel</span><span class="p">()</span><span class="o">.</span><span class="n">cuda</span><span class="p">()</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>   <span class="c1"># ← 一行</span>
+
+<span class="n">output</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>              <span class="c1"># 第一次调用触发编译</span>
+</code></pre></div>
+
+<h3 id="561">5.6.1 内部流程</h3>
+<div class="codehilite"><pre><span></span><code>Python 模型代码
+      │  TorchDynamo：改写 Python 字节码，把张量操作抽出来
+      ▼
+FX Graph（计算图）
+      │  AOTAutograd：提前把反向传播也展开成图
+      ▼
+前向图 + 反向图
+      │  TorchInductor：后端代码生成
+      ├──→  Triton kernel（GPU）   ← 融合发生在这里
+      └──→  C++ / OpenMP（CPU）
+</code></pre></div>
+
+<p><strong>TorchInductor 的三类融合</strong>，正好对应 §5.3 的三种模式：</p>
+<table>
+<thead>
+<tr>
+<th>Inductor 的叫法</th>
+<th>对应本章</th>
+<th>做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pointwise 融合</td>
+<td>垂直融合</td>
+<td>连续的逐元素算子（加、乘、激活、类型转换）合成一个 kernel</td>
+</tr>
+<tr>
+<td>Reduction 融合</td>
+<td>垂直融合（行内归约）</td>
+<td>归约算子和它前后的逐元素算子合并，如 LayerNorm 的内部三步</td>
+</tr>
+<tr>
+<td>模板 + Epilogue</td>
+<td>Epilogue 融合</td>
+<td>用 GEMM 模板，把后面的逐元素算子挂进 Epilogue</td>
+</tr>
+</tbody>
+</table>
+<h3 id="562">5.6.2 怎么确认它真的融了</h3>
+<p>这是最实用的一招：<strong>看生成的 kernel 名字</strong>。</p>
+<div class="codehilite"><pre><span></span><code><span class="nv">TORCH_LOGS</span><span class="o">=</span><span class="s2">&quot;output_code&quot;</span><span class="w"> </span>python<span class="w"> </span>your_script.py
+</code></pre></div>
+
+<p>Inductor 生成的 Triton kernel 会被命名成这样：</p>
+<div class="codehilite"><pre><span></span><code>triton_poi_fused_add_gelu_native_layer_norm_0
+        │   │     └─ 融进去的算子列表：add、gelu、layer_norm
+        │   └─ fused：确实发生了融合
+        └─ poi = pointwise（另有 red = reduction，per = persistent reduction）
+</code></pre></div>
+
+<p>看到 <code>add_gelu_native_layer_norm</code> 三个算子出现在同一个 kernel 名字里，就说明 §5.2 那条链被完整融成了一个 kernel。<strong>如果它们分散在三个 kernel 里，融合就没发生</strong>，通常是被"图断裂"（Graph Break）打断了。</p>
+<p>查图断裂：</p>
+<div class="codehilite"><pre><span></span><code><span class="nv">TORCH_LOGS</span><span class="o">=</span><span class="s2">&quot;graph_breaks&quot;</span><span class="w"> </span>python<span class="w"> </span>your_script.py
+</code></pre></div>
+
+<p>常见的断裂原因：<code>print()</code>、<code>.item()</code>、<code>tensor.cpu()</code>、依赖张量值的 <code>if</code>、调用了 Dynamo 看不懂的第三方库。<strong>每断一次，两侧的算子就不可能融在一起。</strong></p>
+<h3 id="563-cuda-graph">5.6.3 和 CUDA Graph 的关系</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">model</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="s2">&quot;reduce-overhead&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p><code>mode="reduce-overhead"</code> 会在编译之后<strong>自动套一层 CUDA Graph</strong>。也就是说这一个参数同时用上了本章的两把武器：Inductor 负责减少 kernel 数和 HBM 流量，CUDA Graph 负责压掉剩下那些 kernel 的下发成本。Decode 场景优先试这个模式。</p>
+<h3 id="564">5.6.4 收益与代价</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>⚠️ 典型加速（社区量级，随模型/版本浮动大）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训练前向 + 反向，大 batch</td>
+<td>1.1–1.3×</td>
+</tr>
+<tr>
+<td>推理，batch = 1</td>
+<td>1.2–1.4×</td>
+</tr>
+<tr>
+<td>推理，batch = 32</td>
+<td>1.1–1.2×</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 上表原文标的是"实测收益"但没有给出测试条件和来源，已改标为<strong>社区量级参考</strong>。真实数字对模型结构、PyTorch 版本、是否已经用了 FlashAttention 极其敏感，<strong>必须在自己的模型上测</strong>。一个反直觉但常见的结果：如果模型里最耗时的部分已经是手写的融合 kernel（FlashAttention、Apex 的 FusedLayerNorm），<code>torch.compile</code> 的额外收益可能不到 5%。</p>
+<p>⚠️ <strong>编译耗时</strong>：首次调用会触发编译，⚠️ 典型 30–120 秒（大模型可能更久），而且<strong>每遇到一个新形状就要重编一次</strong>。生产环境必须在服务起来之前用代表性形状 warm-up 完；或者用 <code>torch.export</code> / AOTInductor 做提前编译。（旧版这里前后写了"10–60 秒"和"30–120 秒"两个互相矛盾的数字，已统一。）</p>
+</blockquote>
+<hr />
+<h2 id="57-kernel-52">5.7 手写融合 kernel：把 §5.2 那条链真的写出来</h2>
+<p><code>torch.compile</code> 覆盖不到的场合（需要定制归约逻辑、需要特殊的片上布局、需要极致性能），就得自己写。这里用 Triton 把 §5.2 那条 <code>LayerNorm → GELU → 残差加</code> 完整实现一遍——<strong>这段代码的每一行都对应前面账本里的一行</strong>。</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">triton</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">triton.language</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">tl</span>
+
+
+<span class="nd">@triton</span><span class="o">.</span><span class="n">jit</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">fused_ln_gelu_res_kernel</span><span class="p">(</span>
+    <span class="n">x_ptr</span><span class="p">,</span> <span class="n">gamma_ptr</span><span class="p">,</span> <span class="n">beta_ptr</span><span class="p">,</span> <span class="n">y_ptr</span><span class="p">,</span>
+    <span class="n">stride_row</span><span class="p">,</span>               <span class="c1"># 相邻两行之间隔多少个元素（这里就是 H）</span>
+    <span class="n">H</span><span class="p">,</span>                        <span class="c1"># 隐藏维度</span>
+    <span class="n">eps</span><span class="p">,</span>
+    <span class="n">BLOCK_H</span><span class="p">:</span> <span class="n">tl</span><span class="o">.</span><span class="n">constexpr</span><span class="p">,</span>    <span class="c1"># 必须 &gt;= H：一整行要一次装进片上</span>
+<span class="p">):</span>
+    <span class="n">row</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">program_id</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>              <span class="c1"># 一个 Block 负责一整行（一个 token）</span>
+    <span class="n">cols</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">BLOCK_H</span><span class="p">)</span>
+    <span class="n">mask</span> <span class="o">=</span> <span class="n">cols</span> <span class="o">&lt;</span> <span class="n">H</span>                     <span class="c1"># H 不是 2 的幂时，尾部用 mask 屏蔽</span>
+
+    <span class="c1"># ① 全流程唯一一次从 HBM 读 x —— 对应账本里的那 1 个 T</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">x_ptr</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">stride_row</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+
+    <span class="c1"># ② LayerNorm：整行归约，全部在寄存器里完成</span>
+    <span class="n">mean</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">/</span> <span class="n">H</span>
+    <span class="n">xc</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">mask</span><span class="p">,</span> <span class="n">x</span> <span class="o">-</span> <span class="n">mean</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>              <span class="c1"># 被 mask 掉的位置必须清零</span>
+    <span class="n">var</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">xc</span> <span class="o">*</span> <span class="n">xc</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">/</span> <span class="n">H</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="n">xc</span> <span class="o">/</span> <span class="n">tl</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">var</span> <span class="o">+</span> <span class="n">eps</span><span class="p">)</span>
+    <span class="n">gamma</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">gamma_ptr</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="n">beta</span> <span class="o">=</span> <span class="n">tl</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">beta_ptr</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">,</span> <span class="n">other</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="n">n</span> <span class="o">*</span> <span class="n">gamma</span> <span class="o">+</span> <span class="n">beta</span>
+    <span class="c1"># ↑ n 到此为止只存在于寄存器里。未融合版本会在这里写 1 个 T 到 HBM。</span>
+
+    <span class="c1"># ③ GELU（tanh 近似版，和 PyTorch 的 approximate=&#39;tanh&#39; 一致）</span>
+    <span class="n">inner</span> <span class="o">=</span> <span class="mf">0.7978845608</span> <span class="o">*</span> <span class="p">(</span><span class="n">n</span> <span class="o">+</span> <span class="mf">0.044715</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="n">n</span><span class="p">)</span>   <span class="c1"># sqrt(2/pi) ≈ 0.7978845608</span>
+    <span class="n">g</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">+</span> <span class="n">tl</span><span class="o">.</span><span class="n">math</span><span class="o">.</span><span class="n">tanh</span><span class="p">(</span><span class="n">inner</span><span class="p">))</span>
+    <span class="c1"># ↑ g 同样只在寄存器里。未融合版本会在这里再写 1 个 T。</span>
+
+    <span class="c1"># ④ 残差加：x 从第 ① 行起就一直在寄存器里，不需要第二次读 HBM</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">g</span>
+
+    <span class="c1"># ⑤ 全流程唯一一次写 HBM —— 对应账本里的那 1 个 T</span>
+    <span class="n">tl</span><span class="o">.</span><span class="n">store</span><span class="p">(</span><span class="n">y_ptr</span> <span class="o">+</span> <span class="n">row</span> <span class="o">*</span> <span class="n">stride_row</span> <span class="o">+</span> <span class="n">cols</span><span class="p">,</span> <span class="n">y</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">tl</span><span class="o">.</span><span class="n">bfloat16</span><span class="p">),</span> <span class="n">mask</span><span class="o">=</span><span class="n">mask</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">fused_ln_gelu_res</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">gamma</span><span class="p">,</span> <span class="n">beta</span><span class="p">,</span> <span class="n">eps</span><span class="o">=</span><span class="mf">1e-5</span><span class="p">):</span>
+    <span class="k">assert</span> <span class="n">x</span><span class="o">.</span><span class="n">is_contiguous</span><span class="p">()</span>
+    <span class="n">M</span><span class="p">,</span> <span class="n">H</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">shape</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty_like</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+    <span class="n">BLOCK_H</span> <span class="o">=</span> <span class="n">triton</span><span class="o">.</span><span class="n">next_power_of_2</span><span class="p">(</span><span class="n">H</span><span class="p">)</span>        <span class="c1"># 4096 -&gt; 4096</span>
+    <span class="n">fused_ln_gelu_res_kernel</span><span class="p">[(</span><span class="n">M</span><span class="p">,)](</span>            <span class="c1"># Grid = M，一行一个 Block</span>
+        <span class="n">x</span><span class="p">,</span> <span class="n">gamma</span><span class="p">,</span> <span class="n">beta</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span>
+        <span class="n">x</span><span class="o">.</span><span class="n">stride</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">H</span><span class="p">,</span> <span class="n">eps</span><span class="p">,</span>
+        <span class="n">BLOCK_H</span><span class="o">=</span><span class="n">BLOCK_H</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">y</span>
+</code></pre></div>
+
+<p><strong>对着账本读这段代码</strong>：整个 kernel 里只有一次 <code>tl.load(x_ptr...)</code> 和一次 <code>tl.store(y_ptr...)</code>。<code>n</code> 和 <code>g</code> 从头到尾没有任何一条指令把它们写向 HBM。这就是"7 T 变 2 T"在源码层面的样子——<strong>融合不是什么高深技巧，就是"别把中间变量写出去"</strong>。</p>
+<p><strong>片上占用核对（判据②）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>H = 4096，读进来转成 FP32 = 4096 × 4 = 16 KB
+同时活着的 FP32 中间量：x、xc、n、g、gamma、beta 大约 5–6 份
+→ ⚠️ 约 80–96 KB / Block（估算，编译器会复用寄存器，实际更少）
+
+寄存器文件 256 KB/SM，所以一个 SM 大概只能驻留 2–3 个这样的 Block。
+Occupancy 不高，但这类 kernel 本来就是纯带宽受限，
+只要能把 HBM 打满就够了（01 章 §1.6.3：Occupancy 不是越高越好）。
+</code></pre></div>
+
+<p><strong>H 再大会怎样</strong>：H = 32768 时，一行 FP32 就是 128 KB，加上中间量直接爆掉片上预算——<strong>判据②不过</strong>。这时只能退回两趟方案：第一趟扫一遍算出 <code>mean</code> 和 <code>var</code>（或用 Welford 在线算法），第二趟再扫一遍做归一化。代价是 x 要读两遍，融合收益从 3.5× 降到约 2.3×（7 T → 3 T）。</p>
+<blockquote>
+<p>★ 生产环境里<strong>不要什么都自己写</strong>。Flash-Linear-Attention、unsloth、xformers、Apex 已经提供了大量调好的融合 kernel（<code>FusedRMSNorm</code>、<code>AddRMSNorm</code>、<code>SwiGLU</code>、各种 Fused Optimizer）。自己写的场合是：① 你的算子链是独有的；② 现成库的形状约束不满足；③ 你要在 Epilogue 里塞进量化、通信之类的非标准操作。Triton 的完整写法见 <a href="07-Triton编程.html">07 章</a>。</p>
+</blockquote>
+<hr />
+<h2 id="58">5.8 决策表：先做什么，后做什么</h2>
+<h3 id="581">5.8.1 哪些融合值得做</h3>
+<table>
+<thead>
+<tr>
+<th>融合目标</th>
+<th>判断</th>
+<th>理由（对照 §5.4 的判据）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>残差加 + RMSNorm（<code>AddRMSNorm</code>）</td>
+<td>✅ 必做</td>
+<td>判据① 一对一 + 行内归约，一行 8 KB 装得下；两边都 Memory Bound（判据④）；现成库有</td>
+</tr>
+<tr>
+<td>激活函数融进前面的 GEMM（Epilogue）</td>
+<td>✅ 必做</td>
+<td>判据① 一对一，结果就在寄存器里；省 2/3 中间流量（§5.3.3 算过）</td>
+</tr>
+<tr>
+<td>逐元素链（cast / scale / add / mul / 激活）</td>
+<td>✅ 必做</td>
+<td>全是判据① 一对一，<code>torch.compile</code> 自动搞定，零成本</td>
+</tr>
+<tr>
+<td>QKV / gate-up 投影合并</td>
+<td>✅ 值得</td>
+<td>水平融合；Decode 下 SM 利用率 24% → 73%（§5.3.2）。<strong>注意 GQA 下不是 3H</strong></td>
+</tr>
+<tr>
+<td>QK^T + Softmax + ×V（FlashAttention）</td>
+<td>✅ 必须</td>
+<td>不是提速，是可行性前提：中间矩阵 4–64 GB（§5.2.7）</td>
+</tr>
+<tr>
+<td>LayerNorm 融进后面 Linear 的 Prologue</td>
+<td>❌ 做不到</td>
+<td>判据② 不过：一个 Block 要 1 MiB，上限 228 KB（§5.4 反例 1）</td>
+</tr>
+<tr>
+<td>两个大 GEMM 串联</td>
+<td>❌ 一般不行</td>
+<td>判据① 第三类：第二个 GEMM 要沿第一个的 N 维归约，跨 Block（§5.4 反例 2）</td>
+</tr>
+<tr>
+<td>两个都 Compute Bound 的算子</td>
+<td>⚠️ 通常亏</td>
+<td>判据④：减字节不改变时间，还会挤压 Occupancy</td>
+</tr>
+<tr>
+<td>带数据依赖控制流的算子（MoE 路由、早退）</td>
+<td>⚠️ 难</td>
+<td>判据⑤：形状不稳定；CUDA Graph 也用不了，只能录多套图</td>
+</tr>
+</tbody>
+</table>
+<h3 id="582">5.8.2 实施顺序（投入产出比从高到低）</h3>
+<div class="codehilite"><pre><span></span><code>① torch.compile（必要时加 mode=&quot;reduce-overhead&quot;）
+     零代码。先跑一遍，用 TORCH_LOGS=&quot;output_code&quot; 看融了哪些。
+     这一步通常能拿到全部收益的 50–70%。
+
+② CUDA Graph
+     只在 Host Bound 时有用。先用 Nsight Systems 确认 GPU 泳道有空隙，
+     再按 §5.5.3 那条不等式估一下能省多少。推理场景基本是标配。
+
+③ 换用现成的融合库
+     FlashAttention、Apex FusedLayerNorm、xformers、unsloth。
+     成熟、正确性有保障，比自己写快得多。
+
+④ Triton 自定义融合 kernel
+     前三步覆盖不到的定制逻辑。开发 + 调试 ⚠️ 通常按天计。
+
+⑤ CUDA / CUTLASS 手写
+     极致性能或需要定制 Epilogue（量化、通信重叠）。⚠️ 按周计。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>每一步之后都要实测，不要连着做完再测。</strong> 融合有可能变慢（判据②③④任意一条不过就可能），而且慢下来的原因往往藏在 Occupancy 和寄存器溢出里，源码上看不出来——必须用 Nsight Compute 看（<a href="01-GPU硬件基础.html">01 章 §1.6.3</a>、<a href="02-屋顶线与性能剖析.html">02 章</a>）。</p>
+</blockquote>
+<hr />
+<h2 id="59">5.9 本章小结</h2>
+<p><strong>一句话</strong>：融合减少的是<strong>字节</strong>和<strong>kernel 数量</strong>，CUDA Graph 减少的是<strong>每个 kernel 的下发成本</strong>。两个瓶颈，两把武器，都要配。</p>
+<p><strong>核心账本（§5.2，全章骨架）</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>HBM 流量</th>
+<th>时间</th>
+<th>启动次数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>x → LayerNorm → GELU → 残差加</code> 融合前</td>
+<td>7 T = 448 MiB</td>
+<td>140.2 µs</td>
+<td>3</td>
+</tr>
+<tr>
+<td>融合后</td>
+<td>2 T = 128 MiB</td>
+<td>40.1 µs</td>
+<td>1</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>省 71%</strong></td>
+<td><strong>3.5×</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 加速比 = 融合前字节数 ÷ 融合后字节数。
+  只取决于链的结构（几个算子、每个读写几份），和张量大小、数据类型都无关。
+</code></pre></div>
+
+<p><strong>三种模式</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>合并谁</th>
+<th>省什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>垂直融合</td>
+<td>前后有依赖的算子</td>
+<td>中间结果的 HBM 往返</td>
+</tr>
+<tr>
+<td>水平融合</td>
+<td>彼此独立的同形算子</td>
+<td>启动次数 + 输入重复读 + SM 空转</td>
+</tr>
+<tr>
+<td>Epilogue 融合</td>
+<td>GEMM + 它后面的逐元素算子</td>
+<td>中间结果的 HBM 往返（FFN 里省 2/3）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>五条判据（§5.4）</strong></p>
+<div class="codehilite"><pre><span></span><code>① 依赖粒度：一对一 → 随便融；行内归约 → 看 ②；跨块/转置 → 融不了
+② 片上容量：中间结果 &gt; ⚠️100 KB/Block 就危险（H100 共享内存 228 KB）
+③ 消费者个数：k &gt; 1 要重算 k 遍，先用水平融合把 k 压到 1
+④ 瓶颈类型：都是 Compute Bound → 别融，省字节换不来时间
+⑤ 形状稳定性：形状/控制流一变，融合 kernel 就失效
+</code></pre></div>
+
+<p><strong>CUDA Graph 的判据（§5.5）</strong></p>
+<div class="codehilite"><pre><span></span><code>每步耗时 ≈ max( kernel 数 × 单个下发成本(⚠️约 2 µs) , GPU 执行时间 )
+
+CPU 侧 &gt; GPU 侧  →  Host Bound，开图，收益 = 两者之差
+CPU 侧 ≤ GPU 侧  →  开了也白开，收益为零
+
+上限：CUDA Graph 最多把耗时从 CPU 侧拉回到 GPU 侧，一点也不会更快。
+</code></pre></div>
+
+<p><strong>收益的真实量级（别被夸大的数字骗了）</strong></p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>融合的收益</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>大 batch 训练前向</td>
+<td>逐元素算子约占 6%，全融掉整体提速 ⚠️ 3–4%</td>
+</tr>
+<tr>
+<td>FlashAttention</td>
+<td>不是提速，是<strong>可行性</strong>——不融就放不下（4–64 GB 中间矩阵）</td>
+</tr>
+<tr>
+<td>Decode / 小 batch 推理</td>
+<td>⚠️ 20–40%，且其中大半来自 CUDA Graph 而非融合本身</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自测三题</strong></p>
+<ol>
+<li>形状换成 M = 4096 个 token、H = 8192、FP16，算子链换成 <code>x → RMSNorm → SiLU → 残差加</code>。融合前后各搬多少字节？加速比是多少？和 §5.2 的 3.5× 一样吗，为什么？</li>
+<li>某 Decode 场景，每卡每步要发 420 个 kernel，GPU 侧总执行时间 0.35 ms，CPU 端单个 kernel 下发成本按 2 µs 算。这一步是不是 Host Bound？开 CUDA Graph 后每步耗时变成多少，延迟下降几个百分点？</li>
+<li>想把 Softmax 融进它前面的 GEMM。行长 N = 65536（长上下文），中间值用 FP32。一个 Block 要缓存一整行需要多少片上空间？按判据②能不能融？如果不能，有什么办法绕过去？</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li><code>T = 4096 × 8192 × 2 = 67,108,864 字节 = 64 MiB</code>（和 §5.2 的 T 恰好相同）。RMSNorm 读写 2 T，SiLU 读写 2 T，残差加读 g 和 x、写 y 共 3 T，<strong>融合前 7 T = 448 MiB（140.2 µs）</strong>；融合后只读 x、只写 y，<strong>2 T = 128 MiB（40.1 µs）</strong>。加速比 7 ÷ 2 = <strong>3.5×，和 §5.2 完全一样</strong>——因为加速比只由链的结构决定（三个算子、读写份数相同），与形状和数据类型无关。形状只决定省下来的绝对时间。参见 §5.2.4。</li>
+<li>CPU 侧 = 420 × 2 µs = <strong>0.84 ms</strong> &gt; GPU 侧 0.35 ms → <strong>是 Host Bound</strong>，眼下每步耗时 0.84 ms，GPU 有 (0.84−0.35)/0.84 ≈ 58% 的时间在空转。开图后 CPU 侧降到约 0.01 ms，每步耗时 = max(0.01, 0.35) = <strong>0.35 ms</strong>，加速 0.84 ÷ 0.35 = <strong>2.4 倍，延迟下降 58%</strong>。参见 §5.5.1、§5.5.3。</li>
+<li>一行 = 65536 × 4 字节 = <strong>262,144 字节 = 256 KiB</strong>，已经超过 H100 每 SM 228 KB 的共享内存上限（更别说还要留给 Q/K/V 分块和双缓冲）→ <strong>判据② 不过，按朴素写法融不了</strong>。绕过去的办法是<strong>改算法</strong>：用在线 Softmax（Online Softmax）把"必须先扫完整行"的归约改成"边走边更新最大值 m 和求和值 l"的增量归约，这样片上只需要留一个 tile 加两个标量，判据①也从"行内归约"降级成"可增量归约"。<strong>这正是 FlashAttention 的做法</strong>。参见 §5.4 反例 2 与 <a href="04-FlashAttention全系.html">04 章</a>。</li>
+</ol>
+<blockquote>
+<p><strong>下一章</strong>：融合是"让同样的字节被多用几次"。还有一条更直接的路——<strong>让字节本身变少</strong>：同样一个数，用 8 位甚至 4 位来存。见 <a href="06-量化算子.html">06 · 量化算子</a>。</p>
+<p><strong>昇腾对照</strong>：910B 起 Cube 和 Vector 是两个独立的核，中间结果必须绕 Global Memory —— 本章「消灭中间结果落盘」这个收益来源在昇腾上部分失效，融合要改用 CV 流水并行，见 <a href="12-昇腾硬件基础.html">12 章 §12.2.3</a> 与 <a href="04-FlashAttention全系.html">04 章 §4.9.1</a>。CUDA Graph 在昇腾上的对应物是 ACLGraph，见 <a href="14-GPU到NPU迁移实战.html">14 章 §14.5</a>；昇腾单算子下发路径比 GPU 更长，§5.5 那条 Host Bound 判据在昇腾上更容易成立。</p>
 </blockquote>
 <p><strong>延伸资料</strong>：<br />
 - <a href="https://pytorch.org/docs/stable/torch.compiler.html">torch.compile 文档</a><br />
 - <a href="https://dev-discuss.pytorch.org/t/torchinductor-a-pytorch-native-compiler-with-define-by-run-ir-and-symbolic-shapes/747">TorchInductor 设计文档</a><br />
-- <a href="https://developer.nvidia.com/blog/cuda-graphs/">CUDA Graph 最佳实践</a><br />
+- <a href="https://developer.nvidia.com/blog/cuda-graphs/">CUDA Graph 最佳实践</a>（§5.5 录制—重放流程的官方版本）<br />
+- <a href="https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/">PyTorch: Accelerating with CUDA Graphs</a>（<code>torch.cuda.graph</code> 的用法和坑）<br />
+- <a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/#cuda-graphs">CUDA C++ Programming Guide · CUDA Graphs</a>（捕获规则、节点类型的权威说明）<br />
 - xformers 库的融合 op：<a href="https://github.com/facebookresearch/xformers">github.com/facebookresearch/xformers</a></p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

@@ -248,265 +248,1285 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="04-flashattention-4k-128k">04 · FlashAttention 全系：序列长度从 4K 到 128K 的关键</h1>
 <blockquote>
-<p><strong>前置</strong>：<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM 分块）</a><br />
-<strong>目标</strong>：彻底搞懂 FlashAttention 三代的算法原理和工程实现，以及为什么它让长序列训练变得可行。</p>
+<p><strong>前置</strong>：<a href="01-GPU硬件基础.html">01 章（GPU 硬件）</a>、<a href="02-屋顶线与性能剖析.html">02 章（屋顶线）</a>、<a href="03-GEMM深度剖析.html">03 章（GEMM 分块）</a><br />
+<strong>目标</strong>：彻底搞懂 FlashAttention 三代的算法原理和工程实现，以及为什么它让长序列训练变得可行。<br />
+<strong>读法</strong>：本章的核心是 §4.2 那个 6 个元素的在线 Softmax 手算例子。<strong>那张表请拿计算器跟着按一遍</strong>——按完之后，FA1/FA2/FA3 三代的差别就只剩"哪一步搬到哪个硬件单元上去做"这一件事了。本章所有性能数字都给了算式，也建议自己验算。</p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
-<p><strong>在线 Softmax</strong>（Online Softmax）—— 边扫描输入边维护最大值和归一化分母，不需要提前看到全部数据就能计算 Softmax，是 FlashAttention 的数学基础。<br />
-<strong>KV 分块</strong>（KV Tiling）—— 把 K、V 矩阵切成小块逐块放进 SRAM，避免把 N×N 的注意力矩阵写入 HBM。<br />
-<strong>Softmax 重缩放</strong>（Softmax Rescaling）—— 每次处理新的 KV 块时，用更新后的统计量修正之前的输出累加值，保证最终结果等价于一次性计算全量 Softmax。<br />
-<strong>Warpgroup MMA</strong>（Warp 组矩阵乘累加）—— H100 Hopper 架构引入的 4 个 Warp 协作做一次 MMA 的机制，Tensor Core 吞吐翻倍。<br />
-<strong>GQA</strong>（Grouped Query Attention，分组查询注意力）—— 多个 Query head 共享一组 K/V head，减少 KV Cache 大小，FA2 原生支持。<br />
-<strong>重计算</strong>（Recomputation）—— 反向传播时不保存注意力矩阵，而是重新计算，用计算换显存，使训练显存从 O(N²) 降至 O(N)。</p>
+<p><strong>Attention</strong>（注意力）—— 本章的主角算子，<code>O = softmax(QKᵀ/√d)·V</code>，Transformer 里唯一一个计算量随序列长度<strong>平方</strong>增长的部分。<br />
+<strong>FA</strong>（FlashAttention，闪电注意力）—— 一族<strong>精确</strong>（不是近似）的注意力算子实现，靠分块把 N×N 中间矩阵从显存里彻底消掉。<br />
+<strong>在线 Softmax</strong>（Online Softmax）—— 边扫描输入边维护最大值和归一化分母，不需要提前看到全部数据就能算 Softmax，是 FA 的数学基础。<br />
+<strong>KV 分块</strong>（KV Tiling）—— 把 K、V 矩阵切成小块逐块放进片上存储，避免把 N×N 的注意力矩阵写进显存。<br />
+<strong>Softmax 重缩放</strong>（Softmax Rescaling）—— 每次处理新的 KV 块时，用更新后的统计量修正之前的输出累加值，保证最终结果和一次性算完全等价。<br />
+<strong>SRAM</strong>（Static Random-Access Memory，静态随机存储器）—— 片上存储的物理实现，在 CUDA 里就是共享内存（Shared Memory），H100 每个 SM 最多 228 KB（见 <a href="01-GPU硬件基础.html">01 章 §1.3</a>）。<br />
+<strong>HBM</strong>（High Bandwidth Memory，高带宽显存）—— GPU 的主存，H100 SXM5 是 80 GB / 3.35 TB/s。本章说"显存"都指它。<br />
+<strong>SM</strong>（Streaming Multiprocessor，流式多处理器）—— GPU 的基本计算单元，H100 有 132 个。<br />
+<strong>SFU</strong>（Special Function Unit，特殊函数单元）—— SM 里算 <code>exp</code>、<code>rsqrt</code> 这类超越函数的小单元，吞吐只有 Tensor Core 的 1/254，是 §4.5 的主角。<br />
+<strong>MMA</strong>（Matrix Multiply-Accumulate，矩阵乘累加）—— Tensor Core 执行的指令，<code>D = A×B + C</code>。<br />
+<strong>wgmma</strong>（Warpgroup MMA，线程束组矩阵乘累加）—— H100 Hopper 架构新增的异步 MMA 指令，由 4 个 Warp（128 线程，合称一个 Warpgroup）协同发射，是在 Hopper 上摸到 Tensor Core 峰值的<strong>唯一</strong>途径。<br />
+<strong>TMA</strong>（Tensor Memory Accelerator，张量内存加速器）—— H100 新增的异步搬运硬件，负责 HBM ↔ SRAM，不占用计算线程的寄存器和指令槽。<br />
+<strong>split-Q / split-K</strong>（按 Q 切 / 按 K 切）—— 一个线程块内部 4 个 Warp 的两种分工方式，FA1 用后者、FA2 换成前者，是 FA2 提速的三分之一来源。<br />
+<strong>GQA</strong>（Grouped Query Attention，分组查询注意力）—— 多个 Query 头共享一组 K/V 头，减少 KV Cache 大小。<br />
+<strong>MQA</strong>（Multi-Query Attention，多查询注意力）—— GQA 的极端情况，所有 Query 头共享同一组 K/V 头。<br />
+<strong>重计算</strong>（Recomputation）—— 反向传播时不保存注意力矩阵而是重新算一遍，用算力换显存。本章会算出来：它<strong>连时间都省</strong>。<br />
+<strong>varlen</strong>（Variable Length，变长批处理）—— 把一批长短不一的序列首尾拼成一条，用 <code>cu_seqlens</code> 记边界，不做 padding。</p>
 <hr />
-<h2 id="41-attention">4.1 朴素 Attention 的内存问题</h2>
-<p>标准 Scaled Dot-Product Attention 的计算公式：</p>
-<div class="codehilite"><pre><span></span><code>O = softmax(Q K^T / √d) · V
+<h2 id="41-nn">4.1 先算一笔账：N×N 矩阵到底有多大</h2>
+<h3 id="411">4.1.1 公式和形状</h3>
+<p>标准的缩放点积注意力（Scaled Dot-Product Attention）：</p>
+<div class="codehilite"><pre><span></span><code>O = softmax(Q Kᵀ / √d) · V
 
-Q: (B, H, N, d)   ← N 是序列长度，d 是 head dimension
-K: (B, H, N, d)
-V: (B, H, N, d)
-O: (B, H, N, d)   ← 输出
+Q: (B, H, N, d)     B = batch（一批几条序列）
+K: (B, H, N, d)     H = head 数（注意力头数）
+V: (B, H, N, d)     N = 序列长度（几个 token）
+O: (B, H, N, d)     d = head_dim（每个头的向量维度，典型值 64 或 128）
 </code></pre></div>
 
-<p>朴素实现的内存开销：</p>
-<div class="codehilite"><pre><span></span><code>中间矩阵 S = Q K^T / √d：形状 (B, H, N, N)
-  N=8192, H=32, B=1, FP16：
-  8192 × 8192 × 32 × 2 Bytes = 4 GB
-
-  N=32768（32K 上下文）：
-  32768² × 32 × 2 ≈ 64 GB   ← 超过 H100 的 80 GB 显存！
+<p>中间要产生两个 <strong>(B, H, N, N)</strong> 形状的东西：分数矩阵 <code>S = QKᵀ/√d</code>，和它过完 Softmax 的 <code>P = softmax(S)</code>。<strong>注意 N 出现了两次</strong>——这两个矩阵的大小和序列长度的<strong>平方</strong>成正比，而 Q、K、V、O 只和 N 的一次方成正比。</p>
+<p>先看比值有多大。<code>S</code> 的元素个数是 <code>B·H·N²</code>，<code>Q</code> 是 <code>B·H·N·d</code>，比值就是 <strong>N / d</strong>。</p>
+<div class="codehilite"><pre><span></span><code>N = 8192, d = 128  →  S 比 Q 大 8192 / 128 = 64 倍
+N = 32768, d = 128 →  S 比 Q 大 256 倍
 </code></pre></div>
 
-<p>这是长序列训练/推理的根本障碍。</p>
-<hr />
-<h2 id="42-softmax">4.2 在线 Softmax：分块的数学基础</h2>
-<p>标准 Softmax 需要两轮扫描：第一轮求最大值 m，第二轮求 <code>exp(x - m)</code> 的和 ℓ，然后才能算每个元素的值。这迫使朴素实现把整个 N×N 矩阵写进 HBM。</p>
-<p><strong>在线 Softmax</strong> 用一轮扫描同时维护 m 和 ℓ：</p>
-<div class="codehilite"><pre><span></span><code>初始状态：m = -∞, ℓ = 0, O = 0
-
-处理第 j 个块 S_j（大小 Bq × Bkv）：
-  1. 计算这个块里的局部最大值：m_j = max(S_j)
-  2. 更新全局最大值：m_new = max(m, m_j)
-  3. 更新归一化分母：
-     ℓ_new = ℓ × exp(m - m_new) + sum(exp(S_j - m_new))
-              ↑                    ↑
-         旧统计量的修正项      新块的贡献
-  4. 更新输出累加值：
-     O_new = O × (ℓ × exp(m - m_new) / ℓ_new) + exp(S_j - m_new) × V_j / ℓ_new
-              ↑ 对之前累加的结果做重缩放            ↑ 加入新块的贡献
-
-  m ← m_new, ℓ ← ℓ_new, O ← O_new
-
-最终 O 就是正确的 softmax(QK^T)V
-</code></pre></div>
-
-<p><strong>关键洞察</strong>：每次引入新块时，用 <code>exp(m_old - m_new)</code> 因子修正之前的 O，这等价于对之前的 Softmax 结果做了"重新归一化"。数学上可以证明最终结果与一次性计算整个序列的 Softmax 完全等价。</p>
-<hr />
-<h2 id="43-flashattention-1fa12022">4.3 FlashAttention-1（FA1，2022）</h2>
-<p><strong>论文</strong>：Dao et al., "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"</p>
-<h3 id="_1">算法框架</h3>
-<div class="codehilite"><pre><span></span><code>FlashAttention Forward Pass：
-
-输入：Q, K, V ∈ (N, d)（省略 batch 和 head 维）
-输出：O ∈ (N, d)
-
-按行分块 Q：每块大小 Br = min(ceil(M/4d), d)   （M = SRAM 大小）
-按列分块 K, V：每块大小 Bc = min(ceil(M/4d), d)
-
-for i = 1 to ceil(N/Br):         # 外循环：Q 的块
-    加载 Q_i ∈ (Br, d) 到 SRAM
-    初始化 O_i = 0, ℓ_i = 0, m_i = -∞
-
-    for j = 1 to ceil(N/Bc):     # 内循环：KV 的块
-        加载 K_j, V_j ∈ (Bc, d) 到 SRAM
-        S_ij = Q_i K_j^T / √d     # (Br, Bc)，留在 SRAM
-
-        # 在线 Softmax 更新（如上节所述）
-        m_ij = rowmax(S_ij)
-        P_ij = exp(S_ij - m_ij)
-        ℓ_ij = rowsum(P_ij)
-
-        m_i_new = max(m_i, m_ij)
-        ℓ_i_new = exp(m_i - m_i_new) × ℓ_i + exp(m_ij - m_i_new) × ℓ_ij
-        O_i ← (exp(m_i - m_i_new) × ℓ_i × O_i + exp(m_ij - m_i_new) × P_ij V_j) / ℓ_i_new
-
-        更新 m_i ← m_i_new, ℓ_i ← ℓ_i_new
-
-    写回 O_i 到 HBM（每个 Q 块只写一次）
-</code></pre></div>
-
-<h3 id="fa1-io">FA1 的 IO 复杂度</h3>
-<div class="codehilite"><pre><span></span><code>朴素 Attention：
-  读 Q, K, V：3 × N × d × 2 Bytes
-  写读 S (N×N)：2 × N² × 2 Bytes   ← 主要开销
-  总计 ≈ O(N²d)
-
-FlashAttention-1：
-  每次内循环读 K_j, V_j，外循环 ceil(N/Br) 次，共读 O(N²d/M) 次 K,V
-  但 SRAM 足够大时，实际 HBM 访问 ≈ O(Nd²/M) × ... 
-  简化：HBM IO 从 O(N²) 降到 O(N²d/√M)
-
-  N=8192, d=128, M=50MB（SRAM）：HBM IO 减少约 9×
-</code></pre></div>
-
-<h3 id="fa1">FA1 的实现特点</h3>
-<ul>
-<li>用 CUDA 手写，利用共享内存精细控制数据布局</li>
-<li>前向传播：不保存 Softmax 中间结果（N×N 的注意力矩阵）</li>
-<li>反向传播：需要重新计算注意力矩阵（Recomputation），显存换算力</li>
-<li>支持 causal mask（自回归掩码）</li>
-</ul>
-<hr />
-<h2 id="44-flashattention-2fa22023">4.4 FlashAttention-2（FA2，2023）</h2>
-<p><strong>论文</strong>：Dao, "FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning"</p>
-<p>FA1 已经解决了内存问题，但 GPU 利用率还不够高。FA2 针对以下三个点做了优化：</p>
-<h3 id="_2">优化一：减少非矩阵乘运算量</h3>
-<p>FA1 中在线 Softmax 的更新公式包含多个逐元素操作（exp、除法、缩放），这些都是 CUDA Core 操作，Tensor Core 发挥不了作用。</p>
-<p>FA2 重新推导了更新公式，把中间步骤的浮点运算量减少了约 2 倍。具体地，把对 O 的反复缩放合并到最后统一做一次除法，减少了每个 inner loop 里的操作数。</p>
-<h3 id="_3">优化二：改变并行化策略</h3>
-<p>FA1：外循环（Q 块）并行，内循环（KV 块）串行。<br />
-问题：对于短序列，Q 块数量少，无法占满所有 SM。</p>
-<p>FA2：在 head 维度 + Q 块 + KV 块 三个维度上都并行。不同 Warp 处理不同的 KV 块，用 reduction 汇总。</p>
-<div class="codehilite"><pre><span></span><code>FA1 并行：每个 Block 独立处理一个 (batch, head, Q_tile) 三元组
-FA2 并行：在此基础上，Block 内部的 Warp 进一步分工处理不同 KV 块
-</code></pre></div>
-
-<p>结果：GPU 利用率提升，序列越短收益越明显。</p>
-<h3 id="gqa-mqa">优化三：原生支持 GQA / MQA</h3>
-<p><strong>GQA</strong>（Grouped Query Attention，分组查询注意力）：多个 Q head 共享一组 K/V head。<br />
-<strong>MQA</strong>（Multi-Query Attention）：所有 Q head 共享同一个 K/V head。</p>
-<p>FA2 在内核里直接处理了 head 数不匹配的情况，不需要在调用前做显式的 K/V 广播（broadcast），节省了显存和带宽。</p>
-<h3 id="fa2-h100bf16">FA2 实测效果（H100，BF16）</h3>
+<blockquote>
+<p>★ <strong>这一行是整章的起点</strong>：注意力算子里真正占地方的不是输入输出，是那个中间产物。而它大 N/d 倍，序列越长，倍数越大。</p>
+</blockquote>
+<h3 id="412">4.1.2 显存账：一层就能吃掉整块卡</h3>
+<p>代入真实数字。BF16（Brain Float 16，脑浮点 16 位）每个元素 2 字节：</p>
 <table>
 <thead>
 <tr>
-<th>配置</th>
-<th>FA2</th>
-<th>朴素 Attention</th>
-<th>提升</th>
+<th>张量</th>
+<th>形状</th>
+<th>B=1, H=32, N=8192</th>
+<th>B=8, H=32, N=8192</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>N=2048, H=32, d=128</td>
-<td>180 TFLOPS</td>
-<td>45 TFLOPS</td>
-<td>4×</td>
+<td>Q（K、V、O 各一份，共 4 份）</td>
+<td>(B,H,N,d)</td>
+<td>64 MiB × 4</td>
+<td>512 MiB × 4</td>
 </tr>
 <tr>
-<td>N=8192, H=32, d=128</td>
-<td>330 TFLOPS</td>
-<td>18 TFLOPS</td>
-<td>18×</td>
+<td><strong>S = QKᵀ/√d</strong></td>
+<td>(B,H,N,N)</td>
+<td><strong>4 GiB</strong></td>
+<td><strong>32 GiB</strong></td>
 </tr>
 <tr>
-<td>N=32768, H=32, d=128</td>
-<td>380 TFLOPS</td>
-<td>OOM</td>
+<td><strong>P = softmax(S)</strong></td>
+<td>(B,H,N,N)</td>
+<td><strong>4 GiB</strong></td>
+<td><strong>32 GiB</strong></td>
+</tr>
+</tbody>
+</table>
+<p>验算一下 4 GiB 那一格：<code>32 头 × 8192 × 8192 × 2 字节 = 32 × 67,108,864 × 2 = 4,294,967,296 字节 = 4 GiB</code>。</p>
+<p>现在把它放进真实训练场景。batch 8 × 序列 8192 = 65536 个 token，是个很普通的训练批次。<strong>一层</strong> Transformer 的注意力就要 32 GiB（<code>P</code>）到 64 GiB（<code>S</code> 和 <code>P</code> 都在）。</p>
+<p>更致命的是：反向传播需要 <code>P</code>（下面 §4.6 会推导），所以<strong>每一层的 <code>P</code> 都必须留到反向</strong>，不能层间复用。</p>
+<div class="codehilite"><pre><span></span><code>一个 40 层的模型，B=8, H=32, N=8192, BF16：
+    P 的总占用 = 40 层 × 32 GiB = 1280 GiB = 1.25 TiB
+
+H100 SXM5 只有 80 GB。差 16 倍。
+加上 causal mask（因果掩码，只看前文）只用下三角，打个对折 → 还差 8 倍。
+
+而这还没算模型权重、优化器状态、以及其他所有层的激活值。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>所以长序列训练卡死的原因，从来不是"算不动"，是"存不下"。</strong> 换一块算力翻倍的卡完全没用，因为瓶颈是那 80 GB 的容量硬墙。FA 的第一价值不是快，是<strong>把这 1.25 TiB 变成 0</strong>。</p>
+</blockquote>
+<p>再看一个极端：<code>N = 32768</code>（32K 上下文）、<code>B = 1</code>、<code>H = 32</code>，光 <code>S</code> 一个矩阵就是 <code>32768² × 32 × 2 = 64 GiB</code>——<strong>batch 只有 1、只有一层、只有一个矩阵，就已经塞不进 80 GB 了</strong>。</p>
+<h3 id="413-kernel">4.1.3 搬运账：三个 kernel 的屋顶线分解</h3>
+<p>就算你有无限显存，朴素实现也还是慢。用 <a href="02-屋顶线与性能剖析.html">02 章</a> 的屋顶线方法拆开看。朴素实现是<strong>三个独立的 kernel</strong>：</p>
+<div class="codehilite"><pre><span></span><code>kernel ①  S = Q Kᵀ / √d      一次 GEMM（通用矩阵乘）
+kernel ②  P = softmax(S)      逐行的 max / exp / sum / div
+kernel ③  O = P V             又一次 GEMM
+</code></pre></div>
+
+<p>关键在于：<strong>kernel 之间只能通过 HBM 传递数据</strong>（<a href="01-GPU硬件基础.html">01 章 §1.2.1</a>：L1/共享内存是 SM 独占的，跨 kernel 必然落盘）。所以那个 134 MB 的 <code>S</code> 矩阵，要写一遍、读一遍、再写一遍 <code>P</code>、再读一遍。</p>
+<p>按<strong>一个 head</strong>（N=8192, d=128, BF16）算，H100 SXM5，屋脊点 295 FLOP/Byte：</p>
+<table>
+<thead>
+<tr>
+<th>kernel</th>
+<th>浮点运算量</th>
+<th>HBM 读写字节</th>
+<th>算术强度 I</th>
+<th>算力时间</th>
+<th>带宽时间</th>
+<th>取大者</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① QKᵀ</td>
+<td>2N²d = 17.18 G</td>
+<td>读 Q,K 4.2 MB + 写 S 134.2 MB = 138.4 MB</td>
+<td>124</td>
+<td>17.4 µs</td>
+<td><strong>41.3 µs</strong></td>
+<td>41.3 µs</td>
+</tr>
+<tr>
+<td>② softmax</td>
+<td>≈ 5N² = 0.34 G</td>
+<td>读 S 134.2 + 写 P 134.2 = 268.4 MB</td>
+<td><strong>1.3</strong></td>
 <td>—</td>
+<td><strong>80.1 µs</strong></td>
+<td>80.1 µs</td>
+</tr>
+<tr>
+<td>③ PV</td>
+<td>2N²d = 17.18 G</td>
+<td>读 P 134.2 + 读 V 2.1 + 写 O 2.1 = 138.4 MB</td>
+<td>124</td>
+<td>17.4 µs</td>
+<td><strong>41.3 µs</strong></td>
+<td>41.3 µs</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>34.7 G</strong></td>
+<td><strong>545.2 MB</strong></td>
+<td>64</td>
+<td>—</td>
+<td>—</td>
+<td><strong>162.7 µs</strong></td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>✅ FA2 是目前最广泛使用的版本，PyTorch 2.0+ 的 <code>F.scaled_dot_product_attention</code> 在检测到支持时会自动调用 FA2 的 CUDA 实现。</p>
+<p>⚠️ 上表是<strong>屋顶线理论下界的推算</strong>，不是实测：算力按 BF16 稠密 989 TFLOPS、带宽按 3.35 TB/s（见 <a href="附-速查表.html">附-速查表 §A</a>），并假设两个 GEMM 都能吃满峰值。实测会更慢。</p>
 </blockquote>
+<p>三件事一眼就看出来了：</p>
+<ol>
+<li><strong>中间那个 softmax 是纯粹的带宽消耗</strong>。它的算术强度只有 1.3 FLOP/Byte，离屋脊点 295 差 227 倍，是 <a href="02-屋顶线与性能剖析.html">02 章</a> 定义的极端 Memory Bound（访存受限）。它几乎不做计算，却占掉了 <strong>80.1 / 162.7 = 49%</strong> 的时间。</li>
+<li><strong>两个 GEMM 本来该是 Compute Bound（算力受限）的，却被拖成了 Memory Bound</strong>——因为它们的输入输出里有那个 134 MB 的巨无霸。单看 <code>17.4 µs vs 41.3 µs</code>，有 58% 的时间是在等数据。</li>
+<li><strong>545 MB 的 HBM 流量里，490 MB（90%）是在读写 <code>S</code> 和 <code>P</code></strong>。Q、K、V、O 加起来才 8.4 MB。</li>
+</ol>
+<blockquote>
+<p>★ <strong>这三条指向同一个结论</strong>：只要 <code>S</code>、<code>P</code> 还要经过 HBM，注意力就注定慢。而它们之所以要经过 HBM，只是因为"三个 kernel"这个实现结构——<code>softmax</code> 要先看完一整行才能算，所以必须等 kernel ① 全部写完。<strong>打破这个"必须先看完"，就是 §4.2 在线 Softmax 要干的事。</strong></p>
+</blockquote>
+<h3 id="414">4.1.4 目标定在哪</h3>
+<p>如果能把 <code>S</code>、<code>P</code> 完全留在片上，一个 head 的 HBM 流量就只剩 Q、K、V、O 四份，共 8.4 MB：</p>
+<div class="codehilite"><pre><span></span><code>理想情况下的算术强度 I = 34.36 GFLOP ÷ 8.4 MB = 4090 FLOP/Byte
+                                                    ↑ 屋脊点是 295，远远在右侧
+→ 从彻底的 Memory Bound 翻转成彻底的 Compute Bound
+→ 理论耗时 = 34.36 G ÷ 989 TFLOPS = 34.7 µs（vs 朴素的 162.7 µs，快 4.7×）
+</code></pre></div>
+
+<p>FA 就是奔着这个数去的。<strong>能不能真的做到 8.4 MB，取决于分块之后 K、V 被重复读了几次，以及有多少次被 L2 缓存接住</strong>——这笔账在 §4.3.3 算。</p>
 <hr />
-<h2 id="45-flashattention-3fa32024">4.5 FlashAttention-3（FA3，2024）</h2>
-<p><strong>论文</strong>：Shah et al., "FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision"</p>
-<p>FA2 在 A100 上表现优秀，但在 H100 的 Hopper 架构上还没充分利用新硬件特性。FA3 专门针对 H100 重写。</p>
-<h3 id="h100">H100 的两个新硬件特性</h3>
-<p><strong>1. Warpgroup MMA（wgmma）指令</strong></p>
-<p>H100 引入了 Warpgroup 级别的矩阵乘累加指令：4 个 Warp（128 个线程）协作完成一次大型 MMA。相比 FA2 使用的单 Warp MMA，Warpgroup MMA 的吞吐是其 2 倍以上。</p>
-<p>FA3 把所有矩阵乘换成了 <code>wgmma</code> 指令，这是性能提升的最大来源。</p>
-<p><strong>2. TMA（Tensor Memory Accelerator）</strong></p>
-<p>H100 新增了硬件单元 TMA，专门负责 HBM → SRAM 的数据搬运，完全不占用计算流水线（比 FA2 里的 <code>cp.async</code> 更彻底）。</p>
-<p>FA3 用 TMA 做所有数据加载，让加载和矩阵乘真正<strong>流水线化</strong>：</p>
-<div class="codehilite"><pre><span></span><code>时间 →
-  加载 K_j+1, V_j+1:  [────TMA异步────]
-  计算 S_j, P_j V_j:          [────wgmma────]
-  两者完全重叠，互不干扰
+<h2 id="42-softmax">4.2 在线 Softmax：全章唯一需要动笔的数学</h2>
+<h3 id="421-softmax">4.2.1 标准 Softmax 为什么要扫三遍</h3>
+<p>Softmax 的定义：<code>softmax(x)_i = exp(x_i) / Σ_j exp(x_j)</code>。</p>
+<p>直接这么算会溢出：<code>x_i</code> 稍微大一点，<code>exp(x_i)</code> 就爆了。所以所有实现都用<strong>减最大值</strong>的等价形式（分子分母同时乘 <code>exp(-m)</code>，值不变）：</p>
+<div class="codehilite"><pre><span></span><code>m = max(x)                         ← 第 1 遍：扫一遍求最大值
+ℓ = Σ_j exp(x_j − m)               ← 第 2 遍：扫一遍求分母
+y_i = exp(x_i − m) / ℓ             ← 第 3 遍：扫一遍出结果
 </code></pre></div>
 
-<h3 id="fa3-fa2-warp">FA3 解决了 FA2 的"单 Warp 低效"问题</h3>
-<p>FA2 用单 Warp MMA，但 Softmax 的非矩阵乘操作（exp、max、sum）在 CUDA Core 上运行，而且和矩阵乘是串行的：</p>
-<div class="codehilite"><pre><span></span><code>FA2：[矩阵乘 QK^T][等待][Softmax 操作][等待][矩阵乘 PV][等待]...
-FA3：[wgmma QK^T ─────][Softmax ──────][wgmma PV ──────]...
-                              ↑
-               wgmma 和 Softmax 流水线重叠（不同硬件单元）
+<p><strong>三遍扫描，每一遍都要把整行 <code>x</code> 读一次。</strong> 而 <code>x</code> 就是注意力分数矩阵 <code>S</code> 的一行，长度 N。这就是 §4.1.3 里 softmax kernel 要读写 268 MB 的原因。</p>
+<p>更要命的是第 1 遍：<strong>在看到最后一个元素之前，你不知道最大值是多少</strong>。这就锁死了分块——你没法算完前一半就把它扔掉，因为后一半可能出现更大的值，会让前一半的所有 <code>exp(x−m)</code> 全部作废。</p>
+<p><strong>在线 Softmax 就是在解这一件事：如果后面真的出现了更大的值，能不能不重算，只用一个乘法把前面的结果修正过来？</strong> 能。</p>
+<h3 id="422">4.2.2 一个能手算的玩具例子：一次性算法</h3>
+<p>设 1 个 query 对 6 个 key，注意力分数（已经除过 <code>√d</code>）是：</p>
+<div class="codehilite"><pre><span></span><code>s = [ 2,  4,  1,  5,  3,  0 ]
+v = [10, 20, 30, 40, 50, 60]
 </code></pre></div>
 
-<h3 id="fa3-h100-sxm5fp16">FA3 实测效果（H100 SXM5，FP16）</h3>
+<blockquote>
+<p>真实的 V 每一行是 d 维向量。这里取 <code>d = 1</code>（每个 V 就是一个标量）只是为了能手算；换成向量之后每一步<strong>一模一样</strong>，只是"标量 × 标量"变成"标量 × 向量"。</p>
+</blockquote>
+<p>一次性算法（先扫最大值，再算）。全局最大值 <code>m = 5</code>：</p>
 <table>
 <thead>
 <tr>
-<th>场景</th>
-<th>FA3</th>
-<th>FA2</th>
-<th>提升</th>
+<th>i</th>
+<th>s_i</th>
+<th>s_i − m</th>
+<th>e_i = exp(s_i − m)</th>
+<th>v_i</th>
+<th>e_i · v_i</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>前向，N=8192</td>
-<td>740 TFLOPS</td>
-<td>540 TFLOPS</td>
-<td>1.37×</td>
+<td>1</td>
+<td>2</td>
+<td>−3</td>
+<td>0.049787</td>
+<td>10</td>
+<td>0.49787</td>
 </tr>
 <tr>
-<td>前向，N=32768</td>
-<td>810 TFLOPS</td>
-<td>600 TFLOPS</td>
-<td>1.35×</td>
+<td>2</td>
+<td>4</td>
+<td>−1</td>
+<td>0.367879</td>
+<td>20</td>
+<td>7.35758</td>
 </tr>
 <tr>
-<td>理论峰值利用率</td>
-<td>75%</td>
-<td>55%</td>
-<td>—</td>
+<td>3</td>
+<td>1</td>
+<td>−4</td>
+<td>0.018316</td>
+<td>30</td>
+<td>0.54948</td>
+</tr>
+<tr>
+<td>4</td>
+<td>5</td>
+<td>0</td>
+<td>1.000000</td>
+<td>40</td>
+<td>40.00000</td>
+</tr>
+<tr>
+<td>5</td>
+<td>3</td>
+<td>−2</td>
+<td>0.135335</td>
+<td>50</td>
+<td>6.76675</td>
+</tr>
+<tr>
+<td>6</td>
+<td>0</td>
+<td>−5</td>
+<td>0.006738</td>
+<td>60</td>
+<td>0.40428</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>ℓ = 1.578055</strong></td>
+<td></td>
+<td><strong>Σ = 55.57596</strong></td>
 </tr>
 </tbody>
 </table>
-<p>FA3 还新增了 FP8 支持（H100 原生 FP8 Tensor Core），在 FP8 精度下前向可达 1200+ TFLOPS，是 FA2 FP16 的 2 倍以上。</p>
-<hr />
-<h2 id="46">4.6 反向传播：重计算换显存</h2>
-<p>FlashAttention 在反向传播中采用了一个重要的权衡：<strong>不保存注意力矩阵，反向时重计算它</strong>。</p>
-<h3 id="fa">标准反向传播（不用 FA）</h3>
-<div class="codehilite"><pre><span></span><code>前向保存：Q, K, V, S = QK^T, P = softmax(S), O
-反向需要：dP = dO V^T    → 需要 V
-          dS = P ⊙ (dP - sum(P ⊙ dP, dim=-1))  → 需要 P（N×N！）
-          dQ = dS K
-          dK = dS^T Q
-          dV = P^T dO
+<div class="codehilite"><pre><span></span><code>O = 55.57596 ÷ 1.578055 = 35.2180      ← 这是标准答案，下面要对上它
 </code></pre></div>
 
-<p>保存 P（N×N 矩阵）的显存：N=8192 时 4 GB，是训练时显存的主要占用之一。</p>
-<h3 id="flashattention">FlashAttention 的重计算策略</h3>
-<div class="codehilite"><pre><span></span><code>前向只保存：Q, K, V, O, ℓ（归一化分母，大小 N），m（最大值，大小 N）
-反向时：从 Q, K, V 重新计算 S 和 P（分块，不写 HBM）
+<h3 id="423">4.2.3 分块在线算法：逐块推演</h3>
+<p>现在把这 6 个元素切成 <strong>3 块，每块 2 个</strong>，假装我们一次只能看到一块（这正是 GPU 上的处境：SRAM 只装得下一块 K/V）。</p>
+<p>维护三个状态：<strong><code>m</code>（到目前为止见过的最大值）、<code>ℓ</code>（到目前为止的分母）、<code>O</code>（到目前为止的输出）</strong>，初始 <code>m = −∞, ℓ = 0, O = 0</code>。</p>
+<p>每来一个新块，做五件事：</p>
+<div class="codehilite"><pre><span></span><code>① 算本块最大值 m_j = max(本块分数)
+② 更新全局最大值 m_新 = max(m_旧, m_j)
+③ 算修正因子 ρ = exp(m_旧 − m_新)            ← 全章最关键的一个量
+④ ℓ_新 = ℓ_旧 · ρ + Σ exp(本块分数 − m_新)
+⑤ O_新 = ( O_旧 · ℓ_旧 · ρ + Σ exp(本块分数 − m_新) · v ) ÷ ℓ_新
 </code></pre></div>
 
-<p>代价：反向传播的 FLOPs 增加约 30%（因为重新做了一次 QK^T）。<br />
-收益：显存从 O(N²) 降至 O(N)，对序列长度和 batch size 有根本性突破。</p>
-<p>这个权衡在大多数训练场景是绝对合算的：GPU 的 FLOP 相对便宜，而 HBM 显存是硬约束。</p>
+<p>逐块代数字（保留 6 位小数）：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>本块 s</th>
+<th>本块 v</th>
+<th>m_j</th>
+<th>m_新</th>
+<th>ρ = exp(m_旧−m_新)</th>
+<th>Σexp(s − m_新)</th>
+<th>ℓ_新 = ℓ_旧·ρ + 本块和</th>
+<th>O_新</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>初始</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>−∞</td>
+<td>—</td>
+<td>—</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td>块 1</td>
+<td>[2, 4]</td>
+<td>[10, 20]</td>
+<td>4</td>
+<td><strong>4</strong></td>
+<td>0</td>
+<td>e⁻²+e⁰ = 1.135335</td>
+<td>0·0 + 1.135335 = <strong>1.135335</strong></td>
+<td><strong>18.8080</strong></td>
+</tr>
+<tr>
+<td>块 2</td>
+<td>[1, 5]</td>
+<td>[30, 40]</td>
+<td>5</td>
+<td><strong>5</strong></td>
+<td>e⁻¹ = <strong>0.367879</strong></td>
+<td>e⁻⁴+e⁰ = 1.018316</td>
+<td>1.135335×0.367879 + 1.018316 = <strong>1.435982</strong></td>
+<td><strong>33.7086</strong></td>
+</tr>
+<tr>
+<td>块 3</td>
+<td>[3, 0]</td>
+<td>[50, 60]</td>
+<td>3</td>
+<td><strong>5</strong></td>
+<td>e⁰ = <strong>1</strong></td>
+<td>e⁻²+e⁻⁵ = 0.142073</td>
+<td>1.435982×1 + 0.142073 = <strong>1.578055</strong></td>
+<td><strong>35.2180</strong></td>
+</tr>
+</tbody>
+</table>
+<p>把最后两列的算式摊开，这样每一个数字都能自己按出来：</p>
+<div class="codehilite"><pre><span></span><code>块 1：
+  分子 = 0（没有旧的） + (e⁻²×10 + e⁰×20) = 0.135335×10 + 1×20 = 21.35335
+  O    = 21.35335 ÷ 1.135335 = 18.8080
+
+块 2：  m 从 4 涨到 5，所以旧的一切都要乘 ρ = e⁻¹ = 0.367879
+  旧部分 = O_旧 × ℓ_旧 × ρ = 18.8080 × 1.135335 × 0.367879 = 21.35335 × 0.367879 = 7.85546
+  新部分 = e⁻⁴×30 + e⁰×40 = 0.018316×30 + 40 = 40.54948
+  分子   = 7.85546 + 40.54948 = 48.40494
+  O      = 48.40494 ÷ 1.435982 = 33.7086
+
+块 3：  本块最大值 3 &lt; 已有的 5，m 不变，所以 ρ = e⁰ = 1，不需要重缩放
+  旧部分 = 33.7086 × 1.435982 × 1 = 48.40494
+  新部分 = e⁻²×50 + e⁻⁵×60 = 0.135335×50 + 0.006738×60 = 6.76675 + 0.40428 = 7.17103
+  分子   = 48.40494 + 7.17103 = 55.57597
+  O      = 55.57597 ÷ 1.578055 = 35.2180      ★ 和 §4.2.2 的标准答案一模一样
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>对上了。</strong> 最后的 <code>ℓ = 1.578055</code> 和 <code>O = 35.2180</code> 与一次性算法完全一致（差异只在第 6 位小数，是四舍五入）。<strong>这不是近似，是恒等</strong>——FA 是精确算法，不是稀疏注意力那种近似方法。</p>
+</blockquote>
+<p>这张表里还藏着三个值得单独拎出来的观察：</p>
+<p><strong>观察一：中途的每一个 O 都是一个"合法的答案"。</strong> 块 1 之后的 <code>O = 18.8080</code>，恰好就是"只对前 2 个 key 做注意力"的正确结果（自己验算：<code>(0.135335×10 + 20) / 1.135335 = 18.8080</code>）。块 2 之后的 <code>33.7086</code> 是前 4 个的正确结果。所以在线 Softmax 不是"攒够了再算"，而是<strong>每一步都保持正确，只是见识在扩大</strong>。</p>
+<p><strong>观察二：修正因子 <code>ρ</code> 在块 3 等于 1，那一步的重缩放白做了。</strong> 真实 kernel 里<strong>照样无条件做</strong>，不写 <code>if (m_new &gt; m_old)</code> 判断。原因见 <a href="01-GPU硬件基础.html">01 章 §1.2.5</a>：同一个 Warp 内不同的行可能命运不同，一加分支就是 Warp 分歧，代价比一次乘法大得多。</p>
+<p><strong>观察三：<code>ρ = exp(m_旧 − m_新)</code> 永远 ≤ 1。</strong> 因为 <code>m_新 ≥ m_旧</code>。所以重缩放永远是"把旧的缩小"，不会放大，数值上不会炸。</p>
+<h3 id="424">4.2.4 为什么这样改就对了：一行代数</h3>
+<p><code>ℓ</code> 的更新为什么成立？把定义摊开就看见了。设已经扫过的集合是 A，新块是 B：</p>
+<div class="codehilite"><pre><span></span><code>ℓ_旧 = Σ_{i∈A} exp(s_i − m_旧)
+
+想要的 ℓ_新 = Σ_{i∈A∪B} exp(s_i − m_新)
+             = Σ_{i∈A} exp(s_i − m_新)      +  Σ_{i∈B} exp(s_i − m_新)
+             = Σ_{i∈A} exp(s_i − m_旧) · exp(m_旧 − m_新)  +  Σ_{i∈B} exp(s_i − m_新)
+
+                 其中 Σ_{i∈A} exp(s_i − m_旧) 就是 ℓ_旧
+                      exp(m_旧 − m_新)        就是 ρ
+                      两者都是已知量，不用重扫 A
+
+             = ℓ_旧 · ρ + Σ_{i∈B} exp(s_i − m_新)          ✓
+</code></pre></div>
+
+<p>全部的魔法就是中间那一步：<code>exp(a − c) = exp(a − b) · exp(b − c)</code>。<strong>指数函数把"换一个基准点"变成了"乘一个常数"</strong>，所以旧的求和不用重算，乘一下就行。<code>O</code> 的分子 <code>Σ exp(s_i − m)·v_i</code> 是同构的求和，同一个因子同样适用。</p>
+<blockquote>
+<p>★ 这就是 FA 的全部数学。剩下的十几页都是工程：怎么把这个递推式塞进 GPU 的 SRAM、寄存器、Tensor Core 和流水线里。</p>
+</blockquote>
+<h3 id="425">4.2.5 为什么非减最大值不可：溢出的具体门槛</h3>
+<p>有人会问：分块本来就够麻烦了，能不能干脆不减最大值，直接 <code>exp(s)</code>？看数字：</p>
+<div class="codehilite"><pre><span></span><code>FP32（32 位浮点）最大约 3.4×10³⁸   →  exp(x) 溢出的门槛 x ≈ 88.7
+FP16（16 位浮点）最大约 65504      →  exp(x) 溢出的门槛 x ≈ 11.09   ← 只有 11！
+BF16 最大约 3.4×10³⁸（和 FP32 同指数范围，但只有 8 位尾数）
+</code></pre></div>
+
+<p>注意力分数 <code>s = qᵀk / √d</code>，训练中后期出现 ±15 甚至更大的值完全正常（尤其是有"注意力汇聚点"、attention sink 的那几个 token）。<strong>在 FP16 下，一个 11.1 的分数就会让 <code>exp</code> 变成 <code>inf</code>，接着 <code>inf / inf = NaN</code>，整个 batch 的 loss 变 NaN。</strong></p>
+<p>所以所有 FA 实现都遵守两条：</p>
+<ul>
+<li><strong><code>exp</code> 一律在 FP32 里算</strong>，即使 Q/K/V 是 BF16。<code>P</code> 转回低精度只发生在喂给第二个矩阵乘之前。</li>
+<li><strong>减最大值不可省</strong>。减完之后 <code>s − m ≤ 0</code>，<code>exp</code> 的结果落在 <code>(0, 1]</code>，永远不溢出；下溢成 0 也无所谓（那一项本来就该忽略）。</li>
+</ul>
 <hr />
-<h2 id="47-paged">4.7 变长序列与 Paged 注意力</h2>
-<h3 id="varlen">varlen（可变长度批处理）</h3>
-<p>训练/推理时一批序列长度不同，朴素做法是 padding 到最长长度，但短序列的计算就浪费了。</p>
-<p>FA2/FA3 支持 <code>varlen</code> 模式：把一批不同长度的序列<strong>拼接</strong>成一条长序列，用额外的 <code>cu_seqlens</code>（累计序列长度数组）记录边界：</p>
-<div class="codehilite"><pre><span></span><code>例子：seq_1 (len=3), seq_2 (len=5), seq_3 (len=2)
-拼接后：[tok₀tok₁tok₂ | tok₀tok₁tok₂tok₃tok₄ | tok₀tok₁]
+<h2 id="43-flashattention-1fa12022-kernel">4.3 FlashAttention-1（FA1，2022）：把递推式变成 kernel</h2>
+<p><strong>论文</strong>：Dao et al., <em>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness</em>（NeurIPS 2022）</p>
+<h3 id="431">4.3.1 两层循环长什么样</h3>
+<p>FA1 的做法：把 Q 按行切块、K/V 按行切块，两层循环遍历所有的 (Q 块, KV 块) 组合，每个组合算出一小块 <code>S_ij</code>，立刻用 §4.2 的递推式吃掉它，<strong><code>S_ij</code> 从头到尾没离开过片上</strong>。</p>
+<p><strong>FA1 论文 Algorithm 1 的循环顺序是：外层 K/V，内层 Q。</strong>（记住这一点，§4.4 的第一个改动就是把它反过来。）</p>
+<div class="codehilite"><pre><span></span><code>符号：Tr = ⌈N/Br⌉ 个 Q 块      Br = 每个 Q 块的行数
+      Tc = ⌈N/Bc⌉ 个 KV 块     Bc = 每个 KV 块的行数
+
+外层 for j = 1 … Tc:                      ← K/V 块
+  │   把 K_j, V_j (Bc×d) 从 HBM 搬进 SRAM
+  │
+  └─ 内层 for i = 1 … Tr:                 ← Q 块
+       ├─ 从 HBM 读进 Q_i (Br×d)
+       ├─ 从 HBM 读进上一轮存下的 O_i (Br×d)、ℓ_i (Br)、m_i (Br)
+       ├─ S_ij = Q_i K_jᵀ / √d            （Br×Bc，留在片上）
+       ├─ 按 §4.2 的五步更新 m_i, ℓ_i, O_i
+       └─ 把 O_i, ℓ_i, m_i 写回 HBM       ← 问题就在这里
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>注意内层循环那两行"读 O_i / 写 O_i"</strong>：因为外层是 K/V，每个 Q 块的累加状态在两次被访问之间必须存回 HBM。<strong><code>O_i</code> 被完整地读写了 Tc 遍。</strong> 这是 FA1 留给 FA2 的最大一块肉。</p>
+</blockquote>
+<h3 id="432-sram">4.3.2 块开多大：SRAM 预算和寄存器预算</h3>
+<p>FA1 论文给的块大小是 <code>Bc = ⌈M / 4d⌉</code>、<code>Br = min(⌈M / 4d⌉, d)</code>，其中 <code>M</code> 是 SRAM 能装的<strong>元素个数</strong>。这个式子的来历就是"Q、K、V、O 四块加起来要装得下"：<code>4 × Bc × d ≤ M</code>。</p>
+<p>代 H100 的数字（每 SM 最多 228 KB 共享内存，BF16 2 字节/元素）：</p>
+<div class="codehilite"><pre><span></span><code>M = 228 KB ÷ 2 B = 116,736 个元素
+d = 128
+Bc = ⌈116736 / (4 × 128)⌉ = ⌈228⌉ = 228 行
+</code></pre></div>
+
+<p>但<strong>真实 kernel 里块大小不是被共享内存卡住的，是被寄存器卡住的</strong>。这一点新手很容易搞错，值得单独算：</p>
+<div class="codehilite"><pre><span></span><code>取 Br = 128, Bc = 64, d = 128，一个线程块 4 个 Warp = 128 线程：
+
+  放在 SRAM 里的：
+    Q_i        128×128×2 B = 32 KB   （整个内循环不动它）
+    K_j, V_j   64×128×2 B × 2 块 = 32 KB
+    × 2（双缓冲，见 03 章 §3.5）    = 64 KB
+    合计约 96 KB   ← 228 KB 够用，宽裕
+
+  放在寄存器里的（Tensor Core 的累加器只能在寄存器）：
+    O_i 累加器  128×128 个 FP32 = 64 KB
+    S_ij 累加器 128×64  个 FP32 = 32 KB
+    合计 96 KB ÷ 128 线程 = 768 B/线程 = 192 个 32-bit 寄存器
+                                          ↑ 每线程硬上限是 255 个（01 章 §1.2.2）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 上面的配置是<strong>为了说明量级的示意</strong>，真实 FA 的块大小随 head_dim、精度、正反向而变，以仓库里的 tile 表为准。但结论是稳的：<strong>FA 是一个寄存器压力极大的 kernel</strong>。一个 SM 的寄存器文件总共 256 KB，一个上面这样的线程块就吃掉 96 KB，所以一个 SM 只放得下 2 个块 = 8 个 Warp，Occupancy（占用率）只有 <code>8/64 = 12.5%</code>。</p>
+<p>★ 这正是 <a href="01-GPU硬件基础.html">01 章 §1.6.3</a> 说的"高 Occupancy ≠ 高性能"的又一个活例子：FA 靠的是<strong>每个线程持有大量数据、反复复用</strong>，不是靠堆 Warp 掩盖延迟。想不通这一点，去调 <code>-maxrregcount</code> 压寄存器，只会把 tile 压小、复用变差、性能塌掉。</p>
+</blockquote>
+<h3 id="433-io-545-mb">4.3.3 IO 账：从 545 MB 降到多少</h3>
+<p>现在把 §4.1.3 的那笔账重算一遍。还是一个 head，N=8192, d=128, BF16。</p>
+<p>FA 的 HBM 流量由两部分组成：<strong>只读写一次的 Q 和 O</strong>，加上<strong>被重复读的 K 和 V</strong>。K/V 被重复读几次，取决于循环结构：</p>
+<div class="codehilite"><pre><span></span><code>Q（2.1 MB）读一次，O（2.1 MB）写一次                       = 4.2 MB
+K、V（各 2.1 MB）被重复读 T 次                             = 4.2 × T MB
+
+FA2 那种&quot;Q 外层&quot;的结构：T = Tr = N/Br = 8192/128 = 64 次
+    → 4.2 + 4.2×64 = 4.2 + 268.8 = 273 MB
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>实现</th>
+<th>HBM 流量</th>
+<th>算术强度 I</th>
+<th>带宽时间</th>
+<th>算力时间</th>
+<th>取大者</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>朴素三 kernel</td>
+<td>545.2 MB</td>
+<td>63</td>
+<td>162.7 µs</td>
+<td>17.4×2 µs</td>
+<td><strong>162.7 µs</strong></td>
+</tr>
+<tr>
+<td>FA（K/V 重读全部<strong>未命中</strong> L2，最坏）</td>
+<td>272.6 MB</td>
+<td>126</td>
+<td>81.4 µs</td>
+<td>34.7 µs</td>
+<td><strong>81.4 µs</strong></td>
+</tr>
+<tr>
+<td>FA（K/V 重读全部<strong>命中</strong> L2，最好）</td>
+<td>8.4 MB</td>
+<td>4090</td>
+<td>2.5 µs</td>
+<td>34.7 µs</td>
+<td><strong>34.7 µs</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 三行都是屋顶线推算，不是实测。</p>
+</blockquote>
+<p><strong>真实情况在中间偏好的一侧，原因是 L2</strong>：一个 head 的 K + V 只有 4.2 MB，而 H100 的 L2 是 50 MB 全芯片共享；同一时刻有 64 个线程块在读<strong>同一份</strong> K/V，第一个读进 L2 之后，后面 63 个大概率直接命中。所以那 268 MB 的"重读"里，绝大部分根本没碰到 HBM。</p>
+<div class="codehilite"><pre><span></span><code>加速比 = 162.7 ÷ 81.4 = 2.0×   （最坏）
+       = 162.7 ÷ 34.7 = 4.7×   （最好）
+
+FA1 论文实测报告的是 2–4×   ✓ 落在这个区间里，两边对上了
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>到这里，FA 的两个收益就都量化完了</strong>：显存从 §4.1.2 的 1.25 TiB 降到 0（这是<strong>质变</strong>，决定了能不能跑），HBM 流量降到 1/2 ~ 1/65、速度快 2–4×（这是<strong>量变</strong>，决定跑多快）。</p>
+</blockquote>
+<p>顺带纠正一个常被抄错的公式。FA1 论文 Theorem 2 给的是：</p>
+<div class="codehilite"><pre><span></span><code>标准注意力：Θ(N d + N²)     的 HBM 访问
+FlashAttention：Θ(N² d² / M) 的 HBM 访问       ← 分母是 M 的一次方，不是 √M
+
+  M 越大（SRAM 越多），块越大，K/V 重读次数越少，流量越低。
+  当 M ≥ N·d（SRAM 大到能装下整个 K、V）时退化成 Θ(Nd)，一次读完。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 这个式子里的 <code>M</code> 是<strong>一个 SM 的 SRAM 大小</strong>（H100 是 228 KB），<strong>不是 L2 的 50 MB</strong>。这是本章旧版的一处错误：旧版写成"<code>O(N²d/√M)</code>，M=50MB（SRAM）"，公式和数字都不对。</p>
+</blockquote>
+<h3 id="434-fa1">4.3.4 FA1 剩下的问题</h3>
+<p>FA1 解决了显存，但 GPU 利用率仍然不高。FA1 论文自己的说法是：<strong>只达到理论峰值算力的 25–40%</strong>（同期优化良好的 GEMM 能到 80–90%）。差距来自三处：</p>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>具体表现</th>
+<th>谁来修</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>循环顺序反了</strong></td>
+<td>外层 K/V，导致 <code>O_i</code>、<code>ℓ_i</code>、<code>m_i</code> 被读写 Tc 遍</td>
+<td>FA2 改动二</td>
+</tr>
+<tr>
+<td><strong>并行度只有 B×H</strong></td>
+<td><code>batch × head</code> 如果小于 132（SM 数），就有 SM 空转</td>
+<td>FA2 改动二</td>
+</tr>
+<tr>
+<td><strong>Warp 之间要归约</strong></td>
+<td>块内 4 个 Warp 各算一部分和，要过共享内存汇总</td>
+<td>FA2 改动三</td>
+</tr>
+<tr>
+<td><strong>非矩阵乘运算太多</strong></td>
+<td>每个 KV 块都对 <code>O</code> 做一次缩放 <strong>加一次除法</strong></td>
+<td>FA2 改动一</td>
+</tr>
+<tr>
+<td><strong><code>exp</code> 和矩阵乘串行</strong></td>
+<td>SFU 在算 <code>exp</code> 时 Tensor Core 完全空着</td>
+<td>FA3</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="44-flashattention-2fa22023">4.4 FlashAttention-2（FA2，2023）：三处改动，全在实现层</h2>
+<p><strong>论文</strong>：Dao, <em>FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning</em>（ICLR 2024）</p>
+<p>先说一句最重要的：<strong>FA2 对数学一个字没改</strong>。同样的分块、同样的在线 Softmax 递推、同样的 IO 复杂度。三处改动全部是"同一个算法怎么映射到 GPU 硬件上"。结果：A100 上从峰值的 25–40% 提到 <strong>50–73%</strong>，端到端约 <strong>2×</strong>（✅ 论文数字）。</p>
+<h3 id="441">4.4.1 改动一：把除法推迟到最后</h3>
+<p>回到 §4.2.3 那张表。FA1 的第 ⑤ 步是：</p>
+<div class="codehilite"><pre><span></span><code>FA1：O_新 = ( O_旧 · ℓ_旧 · ρ + Σ exp(s − m_新)·v ) ÷ ℓ_新      ← 每块都除一次
+</code></pre></div>
+
+<p>每处理一个 KV 块，就要把整个 <code>O_i</code>（Br×d 的矩阵）除以 <code>ℓ_新</code> 一遍。但仔细看：<strong>这个除法做完，下一块开头又要把它乘回 <code>ℓ_旧</code> 去。乘回来再除下去，纯属白忙。</strong></p>
+<p>FA2 的改法：<strong>全程只维护未归一化的 <code>Õ</code>，出循环之后统一除一次。</strong></p>
+<div class="codehilite"><pre><span></span><code>FA2：Õ_新 = Õ_旧 · ρ + Σ exp(s − m_新)·v         ← 循环里只有一次乘法，没有除法
+     ……
+     循环结束后：O = Õ ÷ ℓ                        ← 整个 kernel 只除这一次
+</code></pre></div>
+
+<p>用 §4.2.3 <strong>完全相同的数字</strong>走一遍，看看结果还对不对：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>ρ</th>
+<th>ℓ（和 FA1 一样）</th>
+<th>Õ = Õ_旧·ρ + 本块 Σexp·v</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>块 1</td>
+<td>—</td>
+<td>1.135335</td>
+<td>0 + 21.35335 = <strong>21.35335</strong></td>
+</tr>
+<tr>
+<td>块 2</td>
+<td>0.367879</td>
+<td>1.435982</td>
+<td>21.35335 × 0.367879 + 40.54948 = 7.85546 + 40.54948 = <strong>48.40494</strong></td>
+</tr>
+<tr>
+<td>块 3</td>
+<td>1</td>
+<td>1.578055</td>
+<td>48.40494 × 1 + 7.17103 = <strong>55.57597</strong></td>
+</tr>
+<tr>
+<td><strong>收尾</strong></td>
+<td></td>
+<td></td>
+<td><strong>O = 55.57597 ÷ 1.578055 = 35.2180</strong> ✓</td>
+</tr>
+</tbody>
+</table>
+<p><strong>同一个答案 35.2180，但循环里一次除法都没有。</strong></p>
+<p>把操作数点清楚（逐行统计，d = 128，N = 8192，Bc = 128 → Tc = 64 个 KV 块）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>每块的非矩阵乘操作</th>
+<th>64 块合计</th>
+<th>其中除法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FA1</strong></td>
+<td>128 次乘（<code>O × ℓ_旧ρ</code>）+ 128 次除（<code>÷ ℓ_新</code>）= 256</td>
+<td><strong>16,384</strong></td>
+<td><strong>8,192</strong></td>
+</tr>
+<tr>
+<td><strong>FA2</strong></td>
+<td>128 次乘（<code>Õ × ρ</code>）= 128</td>
+<td>8,192 + 收尾 128 次除 = <strong>8,320</strong></td>
+<td><strong>128</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>非矩阵乘操作总数：16384 → 8320     少一半
+除法次数：         8192 → 128       少 64 倍
+</code></pre></div>
+
+<p>除法少 64 倍比操作数少一半更值钱。<strong>GPU 上的浮点除法不是一条指令</strong>：硬件只提供"求倒数"（走 SFU），IEEE 精确除法还要接几轮牛顿迭代修正，一次除法折合十几条指令。而这些全都跑在 CUDA Core / SFU 上，<strong>Tensor Core 在旁边干等着</strong>。</p>
+<blockquote>
+<p>★ 这就是"减少非矩阵乘 FLOP"这句话的真实含义。它不是"总运算量降了"——矩阵乘的 34.4 GFLOP 一点没变。它是<strong>把占用错误硬件单元的那部分运算干掉</strong>。这个思路在 §4.5 会以更极端的形式再出现一次。</p>
+</blockquote>
+<p>顺带一个工程细节：FA2 出循环时不分开存 <code>m</code> 和 <code>ℓ</code>，而是存一个合并量 <strong>logsumexp</strong>：<code>L = m + log(ℓ)</code>。反向传播只需要这一个数组（大小 <code>Br</code>，微不足道）就能重建 <code>P</code>，省一半元数据。</p>
+<h3 id="442">4.4.2 改动二：交换内外层循环，并在序列维度上并行</h3>
+<p><strong>这是 FA1 → FA2 最大的一处改动，也是本章旧版写错的地方。</strong></p>
+<p>回顾 §4.3.1：FA1 的外层是 K/V，内层是 Q。后果是每个 Q 块的 <code>O_i, ℓ_i, m_i</code> 要在 HBM 上来回搬 Tc 次。FA2 把两层循环<strong>对调</strong>：</p>
+<div class="codehilite"><pre><span></span><code>FA1 —— 外层 K/V，内层 Q
+────────────────────────────────────────
+for j = 1..Tc:
+    载入 K_j, V_j
+    for i = 1..Tr:
+        读 HBM:  Q_i, O_i, ℓ_i, m_i      ← 每个 Q 块的累加器，每一轮都要捞回来
+        S_ij  =  Q_i K_jᵀ
+        更新     O_i, ℓ_i, m_i
+        写 HBM:  O_i, ℓ_i, m_i           ← 又送回去，一共来回 Tc 趟
+
+FA2 —— 外层 Q，内层 K/V
+────────────────────────────────────────
+for i = 1..Tr:                           ← 这一层被搬到 grid 维度上，完全并行
+    载入 Q_i，在寄存器里开 Õ_i, ℓ_i, m_i
+    for j = 1..Tc:
+        载入 K_j, V_j
+        S_ij  =  Q_i K_jᵀ
+        更新     Õ_i, ℓ_i, m_i           ← 全程待在寄存器，一次都不落 HBM
+    出循环：O_i = Õ_i / ℓ_i              ← 唯一的一次除法（改动一）
+    写 HBM: O_i, L_i                     ← 只写一次
+</code></pre></div>
+
+<p>对调带来两个独立的收益：</p>
+<p><strong>收益 A：累加器整轮不落盘。</strong> <code>Õ_i</code>、<code>ℓ_i</code>、<code>m_i</code> 从进入外层循环到出来，一直待在寄存器里。少掉的 HBM 流量：<code>Tc × (Br×d + 2×Br) × 2 字节</code>，对 N=8192、Br=128、Tc=64 来说，一个 Q 块少读写 <code>64 × 128 × 128 × 2 × 2 = 4.2 MB</code>，全部 64 个 Q 块就是 <strong>268 MB</strong>——和 §4.3.3 里 K/V 重读的量级一样大。</p>
+<p><strong>收益 B：外层循环变成 grid 维度，并行度从 B×H 涨到 B×H×Tr。</strong> 这一条对长序列尤其重要，因为<strong>长序列恰恰意味着小 batch</strong>（显存就那么多）。算一笔 Block 数的账（H100 有 132 个 SM）：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>B</th>
+<th>H</th>
+<th>N</th>
+<th>Tr = N/128</th>
+<th>FA1 并行度 = B×H</th>
+<th>FA2 并行度 = B×H×Tr</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>短序列大批次</td>
+<td>32</td>
+<td>32</td>
+<td>512</td>
+<td>4</td>
+<td>1024 ✓ 够</td>
+<td>4096 ✓ 够</td>
+</tr>
+<tr>
+<td><strong>长序列小批次</strong></td>
+<td><strong>1</strong></td>
+<td><strong>32</strong></td>
+<td><strong>16384</strong></td>
+<td><strong>128</strong></td>
+<td><strong>32</strong> ✗ <strong>只填满 24% 的 SM</strong></td>
+<td><strong>4096</strong> ✓ 够</td>
+</tr>
+<tr>
+<td>极端长序列</td>
+<td>1</td>
+<td>8</td>
+<td>65536</td>
+<td>512</td>
+<td>8 ✗ 只用 6% 的 SM</td>
+<td>4096 ✓ 够</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>本章旧版在这里说反了</strong>：旧版写的是"对于短序列，Q 块数量少，无法占满所有 SM……序列越短收益越明显"。恰恰相反——<strong>短序列时 batch 可以开大，<code>B×H</code> 本来就够用；出问题的是长序列小 batch，这也正是 FA 被发明出来要服务的场景。</strong> 论文原话是 "In the case of long sequences (which usually means small batch sizes or small number of heads), to make better use of the multiprocessors on the GPU, we now additionally parallelize over the sequence length dimension."</p>
+<p>★ 论文还特别注明：交换循环顺序 + 在序列维度并行这个想法，最早是 Phil Tillet 在 <strong>Triton</strong>（见 <a href="07-Triton编程.html">07 章</a>）里提出并实现的。</p>
+</blockquote>
+<p>顺带说反向：反向的并行方式反过来，是<strong>按 KV 块</strong>开线程块，因为 <code>dK</code>、<code>dV</code> 的累加天然按列块分组；代价是 <code>dQ</code> 要跨线程块用原子加（atomicAdd）汇总。</p>
+<h3 id="443-warp-split-k-split-q">4.4.3 改动三：Warp 分工从 split-K 换成 split-Q</h3>
+<p>一个线程块里通常有 4 或 8 个 Warp。这些 Warp 怎么分这一块活，FA1 和 FA2 的答案完全相反。</p>
+<div class="codehilite"><pre><span></span><code>split-K（FA1 的分法）：K/V 切成 4 份，Q 大家共用
+──────────────────────────────────────────────────────────────
+  Warp 0:  Q_i (完整) × K_j[ 0:16]ᵀ  →  S 的第 0–15 列  →  × V_j[ 0:16]  →  O_i 的一份「部分和」
+  Warp 1:  Q_i (完整) × K_j[16:32]ᵀ  →  S 的第16–31 列  →  × V_j[16:32]  →  O_i 的一份「部分和」
+  Warp 2, 3 同理
+
+  ▸ 四个 Warp 各自算出来的都是完整形状 (Br×d) 的「部分和」，谁都不是最终答案
+  ▸ 必须：写共享内存 → __syncthreads() → 读回来相加
+  ▸ 每处理一个 KV 块就要走一次这个流程，一共 Tc 次
+
+split-Q（FA2 的分法）：Q 切成 4 份，K/V 大家共用
+──────────────────────────────────────────────────────────────
+  Warp 0:  Q_i[ 0:32] × K_j (完整)ᵀ  →  S 的第 0–31 行  →  × V_j (完整)  →  O_i 的第 0–31 行（最终值）
+  Warp 1:  Q_i[32:64] × K_j (完整)ᵀ  →  S 的第32–63 行  →  × V_j (完整)  →  O_i 的第32–63 行（最终值）
+  Warp 2, 3 同理
+
+  ▸ 四个 Warp 负责的输出行号互不重叠，各写各的
+  ▸ 不需要写共享内存，不需要 __syncthreads()，不需要归约
+  ▸ 每一行的 m、ℓ 也只归本 Warp 管，rowmax / rowsum 用 warp shuffle 在寄存器里就做完了
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>本章旧版在这里也说反了</strong>：旧版写的是"FA2：不同 Warp 处理不同的 KV 块，用 reduction 汇总"——那是 <strong>FA1 的 split-K</strong>，正是 FA2 要废掉的东西。</p>
+</blockquote>
+<p>为什么 split-Q 更优，一句话：<strong>Softmax 是按行做的，<code>m</code> 和 <code>ℓ</code> 都是"每行一个"。按行切分，每个 Warp 就拥有完整的一行，统计量自给自足；按列切分，每一行的统计量散在 4 个 Warp 手里，只能汇总。</strong></p>
+<h3 id="444-causal-mask">4.4.4 causal mask：顺手省掉一半</h3>
+<p>FA2 还有一个工程上很实惠的优化：<strong>整块被因果掩码盖住的 (i, j) 组合，直接 <code>continue</code> 跳过，连矩阵乘都不发。</strong></p>
+<div class="codehilite"><pre><span></span><code>Tr x Tc 的块网格（这里画 Tr = Tc = 6 的缩略图），causal 时：
+
+          j=0  j=1  j=2  j=3  j=4  j=5        （j 是 KV 块编号，横向）
+  i=0      D    .    .    .    .    .
+  i=1      X    D    .    .    .    .
+  i=2      X    X    D    .    .    .         （i 是 Q 块编号，纵向）
+  i=3      X    X    X    D    .    .
+  i=4      X    X    X    X    D    .
+  i=5      X    X    X    X    X    D
+
+  X = 整块都要算，不用打 mask（最快的一条路径）
+  D = 对角线块，要算，但块内部还要逐元素打 mask，一半元素是浪费的
+  . = 整块被因果掩码盖住，直接 continue，一条指令都不发
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>N = 8192, Br = Bc = 128  →  Tr = Tc = 64
+  不跳过：64 × 64 = 4096 个块
+  跳过后：64 × 65 ÷ 2 = 2080 个块
+  省掉 (4096 − 2080) / 4096 = 49.2%
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 这个 49% 是<strong>块数</strong>的比例，不完全等于时间的比例：对角线上的 64 个块虽然要算，但一半元素被 mask 掉，属于纯浪费。而且不同 Q 块的工作量从 1 块到 64 块不等，<strong>负载严重不均</strong>——这正是 §4.9.1 昇腾侧把"核间负载均衡"列为主要优化手段的原因，GPU 侧靠大量线程块和调度器动态补位来摊平。</p>
+</blockquote>
+<h3 id="445-gqa-mqa">4.4.5 GQA / MQA 原生支持</h3>
+<p><strong>GQA</strong>（Grouped Query Attention，分组查询注意力）：多个 Query 头共享一组 K/V 头。<strong>MQA</strong>（Multi-Query Attention，多查询注意力）是它的极端情况，所有 Query 头共享同一组。目的是压 KV Cache（见 <a href="09-推理侧算子.html">09 章 §9.2</a>）。</p>
+<div class="codehilite"><pre><span></span><code>Llama-3-70B：H_q = 64 个 Query 头，H_kv = 8 个 K/V 头，分组比 8:1
+
+  朴素做法：先把 K/V 用 repeat_interleave 广播成 64 份，再喂给注意力
+            → K/V 的显存和带宽都白白涨 8 倍，而内容完全一样
+
+  FA2 做法：kernel 直接接受 H_q ≠ H_kv，内部用 head 索引映射
+            → 8 个共享同一份 K/V 的 Q 头，被排进同一个线程块，
+              K/V 块搬进 SRAM 一次，被 8 个 Q 块复用
+            → K/V 的 HBM 流量降为 1/8
+</code></pre></div>
+
+<h3 id="446-fa2">4.4.6 FA2 的实际水平</h3>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>指标</th>
+<th>数值</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A100</td>
+<td>占理论峰值算力</td>
+<td><strong>50–73%</strong></td>
+<td>✅ FA2 论文</td>
+</tr>
+<tr>
+<td>A100</td>
+<td>端到端 GPT 训练</td>
+<td>225 TFLOPS/卡，MFU 72%</td>
+<td>✅ FA2 论文</td>
+</tr>
+<tr>
+<td>A100</td>
+<td>相对 FA1</td>
+<td>约 <strong>2×</strong></td>
+<td>✅ FA2 论文</td>
+</tr>
+<tr>
+<td><strong>H100</strong></td>
+<td>前向 FP16 吞吐</td>
+<td><strong>约 350 TFLOPS</strong></td>
+<td>✅ FA3 官方博客</td>
+</tr>
+<tr>
+<td><strong>H100</strong></td>
+<td>占理论峰值（989 TFLOPS）</td>
+<td><strong>约 35%</strong></td>
+<td>✅ FA3 官方博客</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>注意 A100 上 50–73%、H100 上只剩 35%。</strong> 不是 FA2 退步了，是 H100 的 Tensor Core 比 A100 快得多，而 FA2 用的那套指令（Ampere 的 <code>mma.sync</code>）在 Hopper 上<strong>最多只能摸到峰值的约三分之二</strong>（✅ FA3 博客脚注）。硬件跑在前面，kernel 没跟上——这就是 FA3 存在的理由。</p>
+<p>✅ PyTorch 2.0 起，<code>F.scaled_dot_product_attention</code> 会在条件满足时自动选中一个基于 FA2 的后端。⚠️ 注意它是 <strong>PyTorch 自己编译进去的那一份</strong>，不是 pip 装的 <code>flash-attn</code> 包；新版本 PyTorch 在 H100 上还可能选到 cuDNN 后端，具体走了哪条路要用 <code>torch.backends.cuda.sdp_kernel</code> 上下文管理器或 profiler 确认。</p>
+</blockquote>
+<hr />
+<h2 id="45-flashattention-3fa32024-hopper">4.5 FlashAttention-3（FA3，2024）：为 Hopper 重写</h2>
+<p><strong>论文</strong>：Shah et al., <em>FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision</em>（NeurIPS 2024）</p>
+<h3 id="451-exp-254">4.5.1 全章最值得记住的一个比值：exp 比矩阵乘慢 254 倍</h3>
+<p>先不谈 FA3 做了什么，先算清楚 FA2 那 35% 里丢掉的 65% 去哪了。</p>
+<p>H100 上两个硬件单元的吞吐，差距大到反直觉：</p>
+<div class="codehilite"><pre><span></span><code>BF16 Tensor Core（稠密）        989 TFLOPS      ← 矩阵乘走这里
+SFU（特殊函数单元，算 exp）     约 3.9 TFLOPS   ← softmax 的 exp 走这里
+                                ──────────────
+                                989 / 3.9 ≈ 254 倍
+</code></pre></div>
+
+<p>这个 3.9 能自己反推出来，和 <a href="01-GPU硬件基础.html">01 章 §1.2.2</a> 的 SM 结构图对得上：</p>
+<div class="codehilite"><pre><span></span><code>每个处理块 4 个 SFU × 每 SM 4 个处理块 × 132 个 SM = 2112 个 SFU
+每个 SFU 每周期出 1 个结果，主频约 1.76 GHz
+    2112 × 1.76×10⁹ ≈ 3.7×10¹² 次 exp/s ≈ 3.7 TFLOPS   ⚠️ 推算
+NVIDIA 官方博客给的口径是 3.9 TFLOPS                      ✅ 对得上
+</code></pre></div>
+
+<p>现在代进注意力。一个 head，N = 8192，d = 128：</p>
+<div class="codehilite"><pre><span></span><code>矩阵乘的运算量  = 4 N² d = 34.36 × 10⁹ FLOP
+exp 的次数      = N²     =  67.1 × 10⁶ 次     ← S 矩阵每个元素一次 exp
+
+exp 占总运算量的比例 = N² / (4N²d) = 1 / (4d) = 1/512      ← 只有 0.2%！
+
+但换成时间：
+  矩阵乘 = 34.36×10⁹ ÷ 989×10¹² = 34.8 µs
+  exp    = 67.1×10⁶  ÷ 3.9×10¹² = 17.2 µs
+                                  ─────────
+  exp 只占 0.2% 的运算量，却要花掉矩阵乘 50% 的时间
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这就是 FA2 只有 35% 的头号原因。</strong> 一般的比例算式是：<code>exp 时间 / 矩阵乘时间 = 254 / (4d)</code>。d = 128 时是 50%，<strong>d = 64 时就是 99%——exp 和矩阵乘一样贵</strong>。head_dim 越小，注意力算子的 Tensor Core 利用率天花板越低，这和"Tensor Core 有多快"完全无关。</p>
+</blockquote>
+<p>把上界排出来（一个 layer，B=1, H=32, N=8192, d=128，总 FLOP = 1.10 TFLOP）：</p>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>耗时</th>
+<th>折合吞吐</th>
+<th>占峰值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只算矩阵乘，exp 完全免费（不可能达到）</td>
+<td>1.11 ms</td>
+<td>989 TFLOPS</td>
+<td>100%</td>
+</tr>
+<tr>
+<td><strong>exp 和矩阵乘完全串行</strong>（FA2 的结构）</td>
+<td>1.11 + 0.55 = <strong>1.66 ms</strong></td>
+<td><strong>661 TFLOPS</strong></td>
+<td><strong>67%</strong></td>
+</tr>
+<tr>
+<td>FA2 实测</td>
+<td>3.14 ms</td>
+<td>350 TFLOPS</td>
+<td>35%</td>
+</tr>
+<tr>
+<td><strong>FA3 实测</strong></td>
+<td><strong>1.49 ms</strong></td>
+<td><strong>740 TFLOPS</strong></td>
+<td><strong>75%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 前两行是推算，后两行的吞吐是 ✅ 官方博客数字，耗时由 <code>1.10 TFLOP ÷ 吞吐</code> 反算。</p>
+</blockquote>
+<p><strong>注意最后一行超过了"串行"那一行的 67%。</strong> 这不是数字打架，而是一个反过来的证明：<strong>FA3 的 740 TFLOPS 只有在 exp 和矩阵乘真的重叠执行时才可能达到</strong>。这就是 FA3 全部工作的目标。</p>
+<h3 id="452-hopper">4.5.2 Hopper 给了两件新工具</h3>
+<p><strong>工具一：wgmma（Warpgroup MMA，线程束组矩阵乘累加）。</strong></p>
+<p>Ampere 的 MMA 指令 <code>mma.sync</code> 是<strong>同步</strong>的、<strong>Warp 级</strong>的：32 个线程一起发射，发完就在那儿等结果。Hopper 的 <code>wgmma</code> 是<strong>异步</strong>的、<strong>Warpgroup 级</strong>的：4 个 Warp（128 线程）合起来发射一条，发完<strong>指令流立刻继续往下走</strong>，结果晚点再收。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>mma.sync</code>（Ampere 时代）</th>
+<th><code>wgmma</code>（Hopper 新增）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一条指令由谁发射</td>
+<td>1 个 Warp（32 线程）</td>
+<td>1 个 Warpgroup（4 Warp，128 线程）</td>
+</tr>
+<tr>
+<td>操作数从哪来</td>
+<td>全部要先搬进寄存器</td>
+<td><strong>A 可以直接从共享内存取</strong></td>
+</tr>
+<tr>
+<td>同步性</td>
+<td>同步，发完就等</td>
+<td><strong>异步，发完继续往下走</strong></td>
+</tr>
+<tr>
+<td>在 Hopper 上能摸到的峰值</td>
+<td>约 <strong>2/3</strong>（✅ 官方脚注）</td>
+<td><strong>100%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>两个差别都重要：<strong>能摸到 100% 峰值</strong>（FA2 卡在 2/3 就是因为用的 <code>mma.sync</code>），以及<strong>操作数 A 可以直接从共享内存喂进 Tensor Core</strong>，省下大量寄存器——而 §4.3.2 算过，FA 是被寄存器卡死的 kernel，省寄存器就等于能开更大的 tile。</p>
+<p><strong>工具二：TMA（Tensor Memory Accelerator，张量内存加速器）。</strong></p>
+<p>一个专门搬数的硬件单元。FA2 用 <code>cp.async</code> 异步拷贝，虽然也是异步，但地址计算、边界判断（尾块越界怎么办）全都要计算线程自己写指令来做。TMA 把这些统统接管：给它一个描述符，它自己算地址、自己处理越界补零，<strong>完全不占用计算线程的寄存器和指令槽</strong>。</p>
+<h3 id="453">4.5.3 用这两件工具搭出流水线</h3>
+<p>光把指令换成 <code>wgmma</code> + TMA，就从 FA2 的 350 涨到约 <strong>540–570 TFLOPS</strong>。但要突破 §4.5.1 算出的 661 上限，必须让 SFU 和 Tensor Core<strong>同时</strong>工作。FA3 用了两层重叠：</p>
+<p><strong>第一层：pingpong（乒乓调度，Warpgroup 之间）。</strong> 一个线程块里放 2 个 Warpgroup，让它们<strong>错开一个阶段</strong>：</p>
+<div class="codehilite"><pre><span></span><code>时间 →
+  Warpgroup 1:  [wgmma: S=QKᵀ]  [softmax: exp]   [wgmma: O+=PV]  [softmax]   ...
+  Warpgroup 2:  [等]            [wgmma: S=QKᵀ]   [softmax: exp]  [wgmma:PV]  ...
+
+  从第 2 格起，每一格里都是「一组在做 wgmma，另一组在做 exp」
+  → Tensor Core 和 SFU 同时在忙，谁也不等谁
+  靠 setmaxnreg 之类的同步原语强制两组错开，而不是让调度器碰运气
+</code></pre></div>
+
+<p><strong>第二层：intra-warpgroup（Warpgroup 内部，两段 KV 块之间）。</strong> 同一个 Warpgroup 内部，把第 j 块的 softmax 和第 j+1 块的 <code>QKᵀ</code> 叠在一起：</p>
+<div class="codehilite"><pre><span></span><code>时间 →
+  TMA 搬运:     [K_j+1,V_j+1]──[K_j+2,V_j+2]──[K_j+3,V_j+3]      ← 独立硬件，一直在跑
+  Tensor Core:  [S_j+1=QK ]──[O+=P_j V_j]──[S_j+2=QK]──[O+=P_j+1 V]
+  SFU:                    [exp(S_j)]──────────[exp(S_j+1)]
+
+  三行是三类硬件，各跑各的：TMA 搬第 j+2 块、Tensor Core 算第 j+1 块、SFU 算第 j 块
+  → 同一时刻三者都不空闲，这是 FA3 追求的稳态
+</code></pre></div>
+
+<p>分阶段的收益（✅ 全部来自 FA3 官方博客，FP16 前向，head_dim 128，序列长 8K）：</p>
+<table>
+<thead>
+<tr>
+<th>累加的改动</th>
+<th>吞吐</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FA2 基线（H100）</td>
+<td>约 350 TFLOPS</td>
+</tr>
+<tr>
+<td>换成 wgmma + TMA</td>
+<td>约 540–570 TFLOPS</td>
+</tr>
+<tr>
+<td>加 pingpong（Warpgroup 间错峰）</td>
+<td>约 620 TFLOPS</td>
+</tr>
+<tr>
+<td>加 intra-warpgroup 流水（GEMM / softmax 叠合）</td>
+<td>约 640–660 TFLOPS</td>
+</tr>
+<tr>
+<td>论文报告的最高值</td>
+<td><strong>740 TFLOPS（峰值的 75%）</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 最后一行是特定 shape 下的最好成绩，不是所有配置都能到。整体口径是"比 FA2 快 1.5–2.0×"（✅ 官方）。另外 intra-warpgroup 流水的代价是<strong>寄存器压力进一步上升</strong>——又回到 §4.3.2 那笔账。</p>
+</blockquote>
+<h3 id="454-fp8">4.5.4 FP8：再快一倍，外加一个精度技巧</h3>
+<p>H100 的 FP8 Tensor Core 峰值是 BF16 的两倍（1979 vs 989 TFLOPS，均为稠密值）。FA3 支持 FP8，实测<strong>接近 1.2 PFLOPS</strong>（✅ 官方），即 1200 TFLOPS，是 FA3 自己 FP16 的 1.6 倍、FA2 FP16 的 3.4 倍。</p>
+<p>FP8 的麻烦是动态范围小（E4M3 格式只到 ±448），注意力分数里那几个"离群值"（outlier）一过界就毁掉整块的量化精度（<a href="06-量化算子.html">06 章</a> 会系统讲这个问题）。FA3 用了一个叫<strong>非相干处理</strong>（incoherent processing）的技巧：在量化之前，给 Q 和 K 各乘一个<strong>随机符号的 Hadamard 矩阵</strong>（哈达玛变换，每个头的开销只有 <code>O(d log d)</code>）。</p>
+<div class="codehilite"><pre><span></span><code>直觉：Hadamard 变换是正交的 → QKᵀ 的值完全不变（两边的变换互相抵消）
+      但它把每个向量的能量「摊平」到所有分量上
+      → 原本集中在少数几个分量上的离群值被打散，量化误差随之下降
+
+✅ 官方报告：在 0.1% 的元素被人为放大的合成测试里，误差比基线 FP8 注意力小 2.6 倍
+</code></pre></div>
+
+<hr />
+<h2 id="46">4.6 反向传播：重计算不只省显存，连时间都省</h2>
+<p>FA 在反向做了一个关键取舍：<strong>不保存注意力矩阵，反向时重新算一遍。</strong> 这一节把这笔账彻底算清楚——结论会有点反直觉。</p>
+<h3 id="461">4.6.1 反向到底需要什么</h3>
+<p>先看标准注意力反向要用到哪些量（<code>⊙</code> 是逐元素乘）：</p>
+<div class="codehilite"><pre><span></span><code>前向：S = QKᵀ/√d  →  P = softmax(S)  →  O = P V
+
+反向（已知 dO，要求 dQ, dK, dV）：
+  dV = Pᵀ dO                                   ← 需要 P
+  dP = dO Vᵀ                                   ← 需要 V
+  dS = P ⊙ (dP − rowsum(P ⊙ dP))               ← 需要 P   ★ 关键
+  dQ = dS K / √d
+  dK = dSᵀ Q / √d
+</code></pre></div>
+
+<p><strong><code>P</code> 出现了两次，而它是 N×N 的。</strong> 所以标准实现必须把 <code>P</code> 从前向一路留到反向。这就是 §4.1.2 那 1.25 TiB 的来源。</p>
+<h3 id="462-fa">4.6.2 FA 的做法</h3>
+<div class="codehilite"><pre><span></span><code>前向只存：Q, K, V, O（都是 N×d，和输入同量级）
+          外加 L = m + log(ℓ)                  ← 每行一个数，大小只有 N
+
+反向时：  重新算 S_ij = Q_i K_jᵀ / √d          （分块，留在 SRAM）
+          直接用存下来的 L 还原：P_ij = exp(S_ij − L_i)
+                                 ↑ 不需要重新求 max、重新求 sum，
+                                   L 里已经把两个统计量都编码进去了
+</code></pre></div>
+
+<p><code>L</code> 有多大？<code>B=8, H=32, N=8192</code>、FP32：<code>8 × 32 × 8192 × 4 = 8.4 MB</code>。对比它替代掉的 32 GiB——<strong>小了 3900 倍</strong>。</p>
+<h3 id="463-flop">4.6.3 FLOP 账：多花多少</h3>
+<p>按一个 head、矩阵乘 FLOP 计（<code>2·M·K·N</code> 的老规矩）：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>做哪几个矩阵乘</th>
+<th>FLOP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前向</td>
+<td><code>QKᵀ</code>、<code>PV</code></td>
+<td>2 × 2N²d = <strong>4N²d</strong></td>
+</tr>
+<tr>
+<td>标准反向</td>
+<td><code>PᵀdO</code>、<code>dOVᵀ</code>、<code>dS·K</code>、<code>dSᵀ·Q</code></td>
+<td>4 × 2N²d = <strong>8N²d</strong></td>
+</tr>
+<tr>
+<td>FA 反向</td>
+<td>上面四个 <strong>+ 重算 <code>QKᵀ</code></strong></td>
+<td>5 × 2N²d = <strong>10N²d</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>反向的增量      = (10 − 8) / 8  = +25%
+前向+反向的增量 = (14 − 12) / 12 = +16.7%
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 社区常引的"约 30%"是个偏保守的口径（不同文献的计数口径不一致，有的把逐元素运算也折进去）。按矩阵乘 FLOP 严格数就是上面这两个数。</p>
+</blockquote>
+<h3 id="464">4.6.4 为什么说"连时间都省"</h3>
+<p>现在做一个对比，用 B=1, H=32, N=8192, d=128, BF16，<strong>一层</strong>：</p>
+<div class="codehilite"><pre><span></span><code>【路线 A：存 P，反向时读回来】
+  前向写 P：4.29 GB  →  4.29 GB ÷ 3.35 TB/s = 1.28 ms
+  反向读 P：4.29 GB  →                          1.28 ms
+                                             ─────────
+                                 光搬这一个矩阵：2.56 ms
+
+【路线 B：不存 P，反向时重算】
+  多做的矩阵乘 = 2N²d × 32 头 = 0.55 TFLOP
+  按 FA3 的 740 TFLOPS 算：0.55 ÷ 740 = 0.74 ms
+  （按 989 TFLOPS 的理论峰值算：0.56 ms）
+                                             ─────────
+                                 重算的全部代价：0.74 ms
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>0.74 ms &lt; 2.56 ms。重计算比存下来再读回来，快 3.5 倍。</strong> 而它顺带把 4.29 GB 的显存降到 0。这不是"用时间换空间"的常规权衡，<strong>这是一笔两头都赚的买卖</strong>——之所以成立，全靠 §4.1 那个比值：H100 的算力和带宽比是 295 FLOP/Byte，重算一个 N×N 矩阵所需的 FLOP，远比搬运它所需的字节"便宜"。</p>
+<p>⚠️ 上面四个数都是屋顶线推算，不是实测，实际会有出入。但量级关系（重算 &lt; 搬运）是稳的，而且序列越长、d 越小，优势越明显。</p>
+<p>★ 这个道理不止适用于注意力。<strong>只要一个中间结果"算起来的 FLOP 成本 ÷ 989T"小于"搬起来的字节成本 ÷ 3.35T"，就该重算而不是存</strong>。梯度检查点（gradient checkpointing）、<a href="05-算子融合.html">05 章</a> 的算子融合，本质上都在做同一道判断题。</p>
+</blockquote>
+<hr />
+<h2 id="47">4.7 三代对照：各自改了哪一层，省了哪一类开销</h2>
+<p>把前面四节压成一张表。<strong>这是本章最该记住的一页。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>FA1</strong>（2022）</th>
+<th><strong>FA2</strong>（2023）</th>
+<th><strong>FA3</strong>（2024）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>改的是哪一层</strong></td>
+<td>算法层 + kernel 结构</td>
+<td><strong>kernel 内的循环与线程映射</strong>（数学一字未改）</td>
+<td><strong>指令与流水线</strong>（算法、循环结构都未改）</td>
+</tr>
+<tr>
+<td><strong>循环顺序</strong></td>
+<td>外层 K/V，内层 Q</td>
+<td><strong>对调</strong>：外层 Q，内层 K/V</td>
+<td>同 FA2</td>
+</tr>
+<tr>
+<td><strong>并行维度</strong></td>
+<td>B × H</td>
+<td><strong>B × H × Q 块数</strong></td>
+<td>同 FA2 + Warpgroup 间 pingpong</td>
+</tr>
+<tr>
+<td><strong>Warp 分工</strong></td>
+<td>split-K（要过共享内存归约）</td>
+<td><strong>split-Q</strong>（零 Warp 间通信）</td>
+<td>同 FA2，另加生产者/消费者分工</td>
+</tr>
+<tr>
+<td><strong>归一化时机</strong></td>
+<td>每个 KV 块除一次</td>
+<td><strong>只在出循环时除一次</strong></td>
+<td>同 FA2</td>
+</tr>
+<tr>
+<td><strong>矩阵乘指令</strong></td>
+<td><code>mma.sync</code>（Warp 级，同步）</td>
+<td><code>mma.sync</code></td>
+<td><strong><code>wgmma</code></strong>（Warpgroup 级，异步）</td>
+</tr>
+<tr>
+<td><strong>数据搬运</strong></td>
+<td>手写 <code>ld.global</code></td>
+<td><code>cp.async</code>（异步，但地址计算占线程）</td>
+<td><strong>TMA</strong>（专用硬件，完全不占线程）</td>
+</tr>
+<tr>
+<td><strong>exp 与矩阵乘</strong></td>
+<td>串行</td>
+<td>串行</td>
+<td><strong>重叠</strong>（两层流水）</td>
+</tr>
+<tr>
+<td><strong>省掉的是哪一类开销</strong></td>
+<td><strong>HBM 上 N×N 矩阵的读写</strong>（545 → 273 MB/head）</td>
+<td><strong>① 除法与冗余缩放 ② 累加器落盘 ③ Warp 间归约 ④ SM 空转</strong></td>
+<td><strong>Tensor Core 的空转时间</strong>（等 SFU 算 exp 的那段）</td>
+</tr>
+<tr>
+<td><strong>没解决什么</strong></td>
+<td>峰值利用率只有 25–40%</td>
+<td>H100 上只到 35%（指令用的是 Ampere 的）</td>
+<td>依赖 Hopper，A100 上用不了</td>
+</tr>
+<tr>
+<td><strong>A100 峰值利用率</strong></td>
+<td>25–40% ✅</td>
+<td>50–73% ✅</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>H100 前向 FP16</strong></td>
+<td>—</td>
+<td>约 350 TFLOPS（35%）✅</td>
+<td><strong>约 740 TFLOPS（75%）</strong>✅</td>
+</tr>
+<tr>
+<td><strong>FP8</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✓ 接近 1.2 PFLOPS ✅</td>
+</tr>
+<tr>
+<td><strong>GQA / MQA 原生</strong></td>
+<td>✗</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><strong>varlen 变长</strong></td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 三代的关系可以用一句话概括：<strong>FA1 解决"能不能跑"（显存），FA2 解决"GPU 有没有在干活"（并行与冗余运算），FA3 解决"干活的是不是最快的那个单元"（指令与流水）</strong>。后两代都没有改数学——§4.2 那张手算表对三代同样成立。</p>
+<p>⚠️ 表里 A100 和 H100 的百分比不能横向比较（分母是不同卡的峰值算力）。FA2 从 A100 的 50–73% 掉到 H100 的 35%，是因为 H100 的峰值分母涨了、而 <code>mma.sync</code> 在 Hopper 上只能摸到 2/3 的峰值。</p>
+</blockquote>
+<hr />
+<h2 id="48-paged-kv">4.8 变长序列、Paged KV 与实用选型</h2>
+<h3 id="481-varlen-padding">4.8.1 varlen：为什么 padding 在注意力上特别亏</h3>
+<p>一批序列长短不一时，朴素做法是 padding（补齐）到最长的那条。在别的算子上这只是线性的浪费，<strong>在注意力上是平方的浪费</strong>。</p>
+<div class="codehilite"><pre><span></span><code>一批 4 条序列，长度 [512, 300, 1800, 64]：
+
+  token 槽位：padding 到 1800 → 4 × 1800 = 7200 个槽
+              真实 token      = 512+300+1800+64 = 2676 个
+              浪费 = 63%                            ← 线性的浪费
+
+  注意力计算量（正比于 Σ L²）：
+              padding 后 = 4 × 1800² = 12,960,000
+              真实       = 512²+300²+1800²+64² = 3,596,240
+              浪费 = 72%，多算 3.6 倍            ← 平方的浪费，更狠
+</code></pre></div>
+
+<p>FA2/FA3 的 <strong>varlen</strong> 模式：把一批序列<strong>首尾拼成一条</strong>，另外传一个 <code>cu_seqlens</code>（cumulative sequence lengths，累计序列长度）数组记边界。</p>
+<div class="codehilite"><pre><span></span><code>三条序列：seq_A（长 3）、seq_B（长 5）、seq_C（长 2）
+
+拼接后的一维 token 流（总长 10）：
+  下标:  0    1    2  |  3    4    5    6    7  |  8    9
+  内容:  A0   A1   A2 |  B0   B1   B2   B3   B4 |  C0   C1
+  归属:  &lt;--seq_A--&gt;  |  &lt;------seq_B------&gt;    |  &lt;-seq_C-&gt;
+
 cu_seqlens = [0, 3, 8, 10]
+              ↑  ↑  ↑   ↑
+              │  │  │   └ 总长
+              │  │  └ seq_B 结束 = seq_C 开始（3+5）
+              │  └ seq_A 结束 = seq_B 开始
+              └ 起点
 
-每个序列内部正常做 causal attention，序列之间天然不能互相关注
-（causal mask + 边界检查保证了这一点）
+第 k 条序列占用的下标区间 = [cu_seqlens[k], cu_seqlens[k+1])
+kernel 靠这个区间把每条序列的注意力限制在自己内部，序列之间天然不会互相看见
 </code></pre></div>
 
-<h3 id="paged-kv-cache-09">Paged KV Cache（推理场景，见第 09 章）</h3>
-<p>推理时 KV Cache 不连续（PagedAttention），FA 的 kernel 需要支持"逻辑块 → 物理块"的查表式内存访问，即所谓 Paged FlashAttention。vLLM 实现了这一变体。</p>
-<hr />
-<h2 id="48">4.8 实用选型</h2>
+<blockquote>
+<p>★ 注意是 <strong><code>cu_seqlens</code> 划出的边界</strong>保证了序列之间互不可见，不是 causal mask。即使做双向（非因果）注意力，varlen 的隔离也成立。这一点在昇腾上对应 <code>input_layout="TND"</code> + <code>actual_seq_qlen</code>，见 §4.9.3 坑 3。</p>
+</blockquote>
+<h3 id="482-paged-kv-cache">4.8.2 Paged KV Cache（推理场景）</h3>
+<p>推理时 KV Cache 按物理页（Page）分块管理，<strong>逻辑上连续、物理上不连续</strong>（PagedAttention，见 <a href="09-推理侧算子.html">09 章 §9.3</a>）。这要求 FA 的 kernel 不能假设"K/V 在显存里是一整条"，而要先查 <code>block_table</code>（页表）把逻辑块号翻译成物理块号，再去搬。</p>
+<div class="codehilite"><pre><span></span><code>一条序列的 KV Cache：逻辑上是连续的 4 个块，物理上散落在显存各处
+
+  逻辑块号        物理页号
+  --------        --------
+     0     ----&gt;     17
+     1     ----&gt;      3
+     2     ----&gt;     41
+     3     ----&gt;      8
+
+  block_table = [17, 3, 41, 8]
+  ← kernel 每搬一个 KV 块，先查这张表拿到物理基址，再发搬运指令
+</code></pre></div>
+
+<p>对 FA 来说，改动其实很小：<strong>内循环每一轮多做一次查表，K/V 的搬运基址从"连续递增"变成"查表得到"</strong>。因为 FA 的内循环本来就是一块一块搬 K/V 的，块的粒度和页的粒度对齐之后，这个改动几乎是免费的。vLLM、SGLang 都实现了这个变体。</p>
+<h3 id="483-ring-attention">4.8.3 超长序列：Ring Attention</h3>
+<p>单卡再怎么优化，<code>N = 1M</code> 的 KV 也放不进 80 GB。<strong>Ring Attention（环形注意力）</strong> 的做法：把序列按长度切成 P 段分到 P 张卡上，每张卡持有自己那段的 Q/K/V；然后让 <strong>K/V 块在卡之间环形传递</strong> P 轮，每张卡的 Q 依次和所有卡的 K/V 相遇。</p>
+<div class="codehilite"><pre><span></span><code>4 张卡，K/V 顺时针传，转满 4 轮每个 Q 就见过了全部 K/V：
+
+   GPU0 ──K/V──→ GPU1
+     ↑              │
+    K/V           K/V
+     │              ↓
+   GPU3 ←──K/V── GPU2
+
+  每一轮：本卡的 Q 和手上这份 K/V 做一次 §4.2 的在线 Softmax 更新
+  转完 4 轮：每张卡的 m、ℓ、Õ 都已经吸收了全部 4 份 K/V → 归一化输出
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>Ring Attention 能成立，靠的恰恰是 §4.2 的在线 Softmax 具有"结合律"</strong>：吸收 KV 块的顺序无所谓，分几批吸收也无所谓，最后的 <code>m / ℓ / Õ</code> 都一样。单卡分块和多卡分片是同一个递推式的两种用法。通信可以和计算重叠（传第 k+1 份 K/V 的同时算第 k 份）。</p>
+</blockquote>
+<h3 id="484">4.8.4 选型</h3>
 <table>
 <thead>
 <tr>
@@ -517,34 +1537,49 @@ cu_seqlens = [0, 3, 8, 10]
 </thead>
 <tbody>
 <tr>
-<td>PyTorch 训练，PyTorch &gt;= 2.0</td>
+<td>PyTorch 训练，PyTorch ≥ 2.0</td>
 <td><code>F.scaled_dot_product_attention</code></td>
-<td>自动调用 FA2，开箱即用</td>
+<td>自动选后端，开箱即用；⚠️ 用 profiler 确认实际走了哪条路</td>
 </tr>
 <tr>
-<td>需要 GQA</td>
-<td>FA2（<code>flash-attn</code> 库）</td>
-<td>原生支持</td>
+<td>需要 GQA / MQA</td>
+<td><code>flash-attn</code> 包的 <code>flash_attn_func</code></td>
+<td>原生支持 H_q ≠ H_kv</td>
+</tr>
+<tr>
+<td>变长批次（训练或 Prefill）</td>
+<td><code>flash_attn_varlen_func</code></td>
+<td>配 <code>cu_seqlens</code>，见 §4.8.1</td>
 </tr>
 <tr>
 <td>H100，追求最高性能</td>
-<td>FA3（<code>flash-attn &gt;= 2.6</code> 或 <code>hopper_flash</code>）</td>
-<td>需要 CUDA 12.x</td>
+<td>FA3</td>
+<td>⚠️ 在 <code>flash-attention</code> 仓库的 <code>hopper/</code> 目录下单独编译安装，包名和 FA2 不同；版本要求以仓库 README 为准</td>
 </tr>
 <tr>
 <td>FP8 精度</td>
 <td>FA3</td>
-<td>原生 FP8 kernel</td>
+<td>原生 FP8 kernel + 非相干处理</td>
 </tr>
 <tr>
-<td>超长序列（&gt;100K）</td>
+<td>A100 / 更老的卡</td>
+<td>FA2</td>
+<td>FA3 依赖 Hopper 的 wgmma 和 TMA，在 Ampere 上跑不了</td>
+</tr>
+<tr>
+<td>超长序列（&gt; 100K）</td>
 <td>Ring Attention + FA2/FA3</td>
-<td>跨 GPU 分片</td>
+<td>跨卡分片，见 §4.8.3</td>
 </tr>
 <tr>
-<td>推理服务（vLLM/SGLang）</td>
-<td>Paged FA2/FA3</td>
-<td>框架内置</td>
+<td>推理服务（vLLM / SGLang）</td>
+<td>框架内置的 Paged FA</td>
+<td>不用自己接，见 <a href="09-推理侧算子.html">09 章</a></td>
+</tr>
+<tr>
+<td>想改 kernel（加自定义 mask、加 bias）</td>
+<td>Triton 版 FA</td>
+<td>见 <a href="07-Triton编程.html">07 章</a>；手改 CUDA 版 FA 的门槛极高</td>
 </tr>
 </tbody>
 </table>
@@ -553,34 +1588,47 @@ cu_seqlens = [0, 3, 8, 10]
 <blockquote>
 <p>本节需要 <a href="12-昇腾硬件基础.html">12 章</a> 的硬件背景。只关心 GPU 可以跳过。</p>
 </blockquote>
-<p><strong>算法是同一个</strong>——分块、在线 Softmax、反向重计算，前面八节讲的数学在昇腾上一字不改。变的是两件事：<strong>实现路径</strong>和<strong>接口形态</strong>。</p>
+<p><strong>算法是同一个</strong>——分块、在线 Softmax、反向重计算，前面八节讲的数学在昇腾上一字不改。§4.2 那张手算表原样成立。变的是两件事：<strong>实现路径</strong>和<strong>接口形态</strong>。</p>
 <h3 id="491">4.9.1 为什么昇腾的优化文章在讲别的事</h3>
-<p>回顾 §4.3：GPU 上 FA 的核心收益来自"把 S = QKᵀ 和中间的 Softmax 结果留在 SRAM 里，不写回 HBM"。</p>
-<p>昇腾 910B 上这个前提部分失效。原因在 <a href="12-昇腾硬件基础.html">12 章 §12.2.3</a>：Cube 和 Vector 是<strong>两个独立的核</strong>（AIC / AIV），中间没有直连通道。而 FlashAttention 恰恰是 Cube 和 Vector 高频交替的算子：</p>
-<div class="codehilite"><pre><span></span><code>Flash Attention = Matmul(Cube) → Scale(Vector) → Mask(Vector)
-                → SoftMax(Vector) → flash update(Vector) → Matmul(Cube)
-                  ↑ 每一次箭头，都是一次 AIC↔AIV 的交接
+<p>回顾 §4.3：GPU 上 FA 的核心收益来自"把 <code>S = QKᵀ</code> 和中间的 Softmax 结果留在 SRAM 里，不写回 HBM"。</p>
+<p>昇腾 910B 上这个前提<strong>部分失效</strong>。原因在 <a href="12-昇腾硬件基础.html">12 章 §12.2.3</a>：<strong>Cube 单元和 Vector 单元是两个独立的核</strong>（AIC = AI Cube Core，矩阵核；AIV = AI Vector Core，向量核），中间<strong>没有直连通道</strong>。而 FlashAttention 恰恰是 Cube 和 Vector 高频交替的算子——§4.4.1 那个循环体，每一轮都要在两者之间来回好几次：</p>
+<div class="codehilite"><pre><span></span><code>一轮内循环的单元归属：
 
-GPU：中间结果留在 SRAM，交接是免费的
-910B：AIC 和 AIV 之间必须绕 Global Memory（经 L2）
-      → &quot;不落盘&quot;这个收益来源被削弱
+  Cube (AIC)   ① S = QKᵀ
+                 ↓  交接 1：Cube 算出的 S 要送给 Vector
+  Vector (AIV) ② Scale 和 Mask
+  Vector (AIV) ③ rowmax / exp / rowsum
+  Vector (AIV) ④ 重缩放 O 和 ℓ
+                 ↓  交接 2：Vector 算出的 P 要送回 Cube
+  Cube (AIC)   ⑤ O += P·V
+
+  每一轮内循环，这两次交接各发生一次
+
+  GPU（H100）：这两次交接发生在 SRAM / 寄存器里，几乎免费
+               —— 所以 FA3 能把它们流水起来（§4.5.3）
+  昇腾 910B ：AIC 和 AIV 是两个核，中间结果必须绕 Global Memory（经 L2）
+               —— &quot;不落盘&quot;这个收益来源被削弱了一大块
 </code></pre></div>
 
 <p>所以昇腾的解法换成了<strong>流水重叠</strong>（<a href="00-总纲.html">00 章</a> 的手段三）而不是<strong>消灭搬运</strong>（手段二）：既然交接躲不掉，那就让它和计算重叠。官方给出的 FlashAttention 反向算子优化手段（✅ 官方技术文章）：</p>
-<div class="codehilite"><pre><span></span><code>① tiling 基本块大小调整
-② 核间负载均衡        ← 变长序列场景的主要矛盾
-③ CV 流水并行          ← AIC 算第 k+1 块时，AIV 处理第 k 块的 Softmax
-④ MTE2 流水优化
-⑤ FixPipe 流水优化
+<div class="codehilite"><pre><span></span><code>① tiling 基本块大小调整     ← 对应 §4.3.2 的块大小预算，只是预算的是 UB/L1 而不是 SRAM/寄存器
+② 核间负载均衡              ← 变长序列 + causal 场景的主要矛盾，见 §4.4.4 那张三角形块网格图
+③ CV 流水并行               ← AIC 算第 k+1 块的 QKᵀ 时，AIV 处理第 k 块的 Softmax
+                              思路和 FA3 的 intra-warpgroup 流水（§4.5.3）完全一致，
+                              只是 GPU 上是&quot;两个硬件单元&quot;，昇腾上是&quot;两个核&quot;
+④ MTE2 流水优化             ← MTE = Memory Transfer Engine（存储转换引擎），
+                              MTE2 是 GM → 片上的搬入通路，角色相当于 GPU 的 TMA
+⑤ FixPipe 流水优化          ← Cube 结果出口的定点流水线（量化、搬出）
+
 效果：约 4× 性能提升（Atlas A2 训练系列 / Atlas 800I A2 推理产品验证平台）
 </code></pre></div>
 
 <blockquote>
 <p>⚠️ 这个 "4×" 是相对<strong>优化前的自身基线</strong>，不是相对 GPU。</p>
+<p>★ <strong>这是本系列反复出现的一个模式</strong>：同一个算法，在不同硬件上最优的手段组合不同。对照 §4.7 那张三代表看得更清楚——FA3 在 GPU 上做的第三层优化（让 exp 和矩阵乘重叠），和昇腾的 ③ CV 流水并行是<strong>同一个念头</strong>，只是一个发生在 SM 内部的两类单元之间，一个发生在两颗核之间。读昇腾的优化文章时，先问它在用四个手段里的哪几个。</p>
 </blockquote>
-<p><strong>这是本系列反复出现的一个模式</strong>：同一个算法，在不同硬件上最优的手段组合不同。读昇腾的优化文章时，先问它在用四个手段里的哪几个。</p>
 <h3 id="492">4.9.2 三个算子，别用错</h3>
-<p>GPU 侧 <code>flash_attn</code> 一个库通吃训练和推理。昇腾按场景拆成了三个，理由和 <a href="09-推理侧算子.html">09 章 §9.4</a> 讲的 Prefill/Decode 分野完全一致：</p>
+<p>GPU 侧 <code>flash_attn</code> 一个库通吃训练和推理。昇腾按场景拆成了三个，理由和 <a href="09-推理侧算子.html">09 章 §9.4</a> 讲的 Prefill（预填充）/ Decode（解码）分野完全一致：</p>
 <table>
 <thead>
 <tr>
@@ -622,7 +1670,8 @@ GPU：中间结果留在 SRAM，交接是免费的
 </tr>
 </tbody>
 </table>
-<p>IFA 的参数表直接暴露了它的定位：<code>block_table</code>（<a href="09-推理侧算子.html">09 章</a> 讲的 PagedAttention 页表）、<code>antiquant_scale</code> / <code>antiquant_offset</code>（KV Cache 量化的反量化参数）、<code>kv_padding_size</code>、<code>block_size</code>。<strong>这是一个为分页 KV Cache 量身定做的 decode 算子</strong>，不是通用 Attention。</p>
+<p>为什么 Decode 值得单独一个算子？因为 <code>q_len = 1</code> 时，<code>S = QKᵀ</code> 退化成 <strong>1×N 的一个向量</strong>，整个 §4.2 的分块递推还在，但"矩阵乘"变成了"矩阵-向量乘"——算术强度从 §4.1.4 的几千掉到个位数，彻底 Memory Bound。这时该优化的不是 Tensor Core 利用率，而是 KV Cache 的搬运。</p>
+<p>IFA 的参数表直接暴露了它的定位：<code>block_table</code>（§4.8.2 / <a href="09-推理侧算子.html">09 章</a> 讲的 PagedAttention 页表）、<code>antiquant_scale</code> / <code>antiquant_offset</code>（KV Cache 量化的反量化参数）、<code>kv_padding_size</code>、<code>block_size</code>。<strong>这是一个为分页 KV Cache 量身定做的 decode 算子</strong>，不是通用 Attention。</p>
 <p>源码可读：这些算子都在开源的 <a href="https://gitee.com/ascend/cann-ops-adv">cann-ops-adv</a> 仓库里，比读 cuDNN 闭源二进制友好得多。</p>
 <h3 id="493">4.9.3 四个迁移坑，前两个是静默错误</h3>
 <p><strong>坑 1：<code>atten_mask</code> 语义相反。</strong></p>
@@ -648,7 +1697,7 @@ GPU：中间结果留在 SRAM，交接是免费的
 替换 flash-attn ≥ 2.1 → sparse_mode = 3
 </code></pre></div>
 
-<p>原因是 flash-attn 2.1 改过因果掩码在非方阵（S_q ≠ S_kv）时的对齐方式。</p>
+<p>原因是 flash-attn 2.1 改过因果掩码在非方阵（S_q ≠ S_kv）时的对齐方式：到底是把三角形对齐到左上角还是右下角。方阵时两种对齐一模一样，所以<strong>单元测试如果只测 S_q = S_kv，永远发现不了这个 bug</strong>。</p>
 <blockquote>
 <p><strong>坑 1 和坑 2 都不报错，只是结果不对</strong>，而且短序列小 batch 上 loss 曲线可能看着还正常。迁移后第一件事是拿 GPU 结果做逐元素比对，不要靠看 loss 判断。</p>
 </blockquote>
@@ -661,43 +1710,120 @@ GPU：中间结果留在 SRAM，交接是免费的
              配 actual_seq_qlen / actual_seq_kvlen 传每条的真实长度
 </code></pre></div>
 
-<p><strong>TND 是昇腾上做变长场景的正确布局</strong>，相当于 GPU 侧 <code>flash_attn_varlen_func</code> 的 <code>cu_seqlens</code> 机制。做连续批处理（<a href="09-推理侧算子.html">09 章 §9.5</a>）必须用它。</p>
+<p><strong>TND 是昇腾上做变长场景的正确布局</strong>，它就是 §4.8.1 那个 <code>cu_seqlens</code> 机制的昇腾版本——把一批序列首尾拼成一条 <code>Total_tokens</code>，靠一个长度数组划边界。做连续批处理（<a href="09-推理侧算子.html">09 章 §9.5</a>）必须用它。而 §4.8.1 算过，padding 在注意力上的浪费是<strong>平方级</strong>的，这不是一个"顺手优化一下"的事。</p>
 <p><strong>坑 4：head_dim 对齐要求比 GPU 严。</strong> <a href="12-昇腾硬件基础.html">12 章 §12.3.3</a> 讲的 FRACTAL_NZ 分形格式对维度有硬要求，非标准 head_dim 可能落不到快路径。<a href="11-训推一致性算子层.html">11 章</a> 讲的 MLA Absorptive 变换在昇腾上要单独验证是否真的走到了融合算子。</p>
 <hr />
 <h2 id="410">4.10 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>三代 FlashAttention 的核心演进：
+<p><strong>一句话版本</strong></p>
+<blockquote>
+<p>注意力的 N×N 中间矩阵，既存不下（§4.1.2：40 层就要 1.25 TiB）也搬不动（§4.1.3：90% 的 HBM 流量都在读写它）。在线 Softmax（§4.2）让这个矩阵可以<strong>分块生成、分块消费、永不落盘</strong>。剩下的三代演进，全是在同一个数学递推上换更好的硬件映射。</p>
+</blockquote>
+<p><strong>三个必须记住的数字</strong></p>
+<table>
+<thead>
+<tr>
+<th>数字</th>
+<th>含义</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>N / d</strong></td>
+<td>N×N 中间矩阵比 Q 大多少倍（N=8192, d=128 时是 <strong>64 倍</strong>）</td>
+<td>§4.1.1</td>
+</tr>
+<tr>
+<td><strong>295 FLOP/Byte</strong></td>
+<td>H100 屋脊点。注意力融合后 I 从 1.3 跳到 126~4090，跨过它</td>
+<td>§4.1.3、§4.1.4</td>
+</tr>
+<tr>
+<td><strong>254</strong></td>
+<td>H100 上 Tensor Core 比 SFU 快多少倍（989 ÷ 3.9）。<code>exp 时间 / 矩阵乘时间 = 254/(4d)</code></td>
+<td>§4.5.1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>在线 Softmax 的两个递推式</strong>（§4.2，全章唯一的数学）</p>
+<div class="codehilite"><pre><span></span><code>ρ  = exp(m_旧 − m_新)                          ← 修正因子，永远 ≤ 1
+m  ← max(m_旧, 本块最大值)
+ℓ  ← ℓ_旧 · ρ + Σ exp(本块分数 − m_新)
+Õ  ← Õ_旧 · ρ + Σ exp(本块分数 − m_新) · v      ← FA2 起，出循环才除 ℓ
 
-FA1（2022）：
-  核心思路：KV 分块 + 在线 Softmax → 不写 N×N 矩阵
-  收益：显存 O(N²) → O(N)，速度 2–4×
-  代价：CUDA 实现复杂，反向需重计算
-
-FA2（2023）：
-  核心改进：减少非矩阵乘操作，改进并行策略，GQA 原生支持
-  收益：在 FA1 基础上再提升 2×
-
-FA3（2024）：
-  核心改进：用 H100 的 Warpgroup MMA 和 TMA，流水线重叠
-  收益：H100 利用率 55% → 75%，FP8 支持
-
-数学本质：在线 Softmax 的两个递推式
-  m_new = max(m_old, m_new_block)
-  ℓ_new = ℓ_old × exp(m_old - m_new) + sum(exp(S_new - m_new))
-
-反向传播的核心取舍：
-  不保存 P（节省 O(N²) 显存）
-  反向时重计算 P（多花 ~30% FLOPs）
-
-推理时的变体：Paged FA，支持非连续 KV Cache（PagedAttention）
-
-下一章：光优化单个 kernel 还不够，算子之间的数据搬运也是大头——算子融合。
+成立的唯一理由：exp(a − c) = exp(a − b) · exp(b − c)
+                「换基准点」= 「乘一个常数」，所以旧结果不用重算
 </code></pre></div>
 
+<p><strong>三代对照</strong>（详表见 §4.7）</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>改了哪一层</th>
+<th>省了哪一类开销</th>
+<th>H100 前向 FP16</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FA1</td>
+<td>算法 + kernel 结构（外 K/V 内 Q）</td>
+<td>N×N 矩阵的 HBM 读写</td>
+<td>—</td>
+</tr>
+<tr>
+<td>FA2</td>
+<td>循环对调 + 线程映射（外 Q 内 K/V，split-Q）</td>
+<td>除法、累加器落盘、Warp 间归约、SM 空转</td>
+<td>约 350 TFLOPS（35%）</td>
+</tr>
+<tr>
+<td>FA3</td>
+<td>指令与流水（wgmma + TMA + 两层重叠）</td>
+<td>Tensor Core 等 SFU 算 exp 的空转时间</td>
+<td>约 740 TFLOPS（75%）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>反向重计算的账</strong>（§4.6）</p>
+<div class="codehilite"><pre><span></span><code>多花：反向矩阵乘 +25%，前向+反向合计 +16.7%
+省下：每层 O(N²) 的 P 矩阵（N=8192, H=32, B=1 时是 4.29 GB）
+
+★ 但真正的结论是：重算 0.74 ms  &lt;  存下来再读回的 2.56 ms
+  它不是&quot;用时间换空间&quot;，是时间和空间两头都赚。
+</code></pre></div>
+
+<p><strong>三个最容易搞反的点</strong>（本章旧版都错过）</p>
+<ul>
+<li><strong>FA1 的外层循环是 K/V，不是 Q。</strong> FA2 最大的改动就是把它对调过来。</li>
+<li><strong>FA2 的序列维度并行，收益在长序列小 batch，不是短序列。</strong> 短序列时 <code>B×H</code> 本来就够填满 SM。</li>
+<li><strong>FA2 的 Warp 分工是 split-Q（按 Q 切行，无需归约），FA1 才是 split-K（按 K 切列，要过共享内存汇总）。</strong></li>
+</ul>
+<p><strong>自测三题</strong>（答案在下面，都能用计算器验算）</p>
+<ol>
+<li><strong>在线 Softmax 手算</strong>：分数 <code>s = [1, 0, 3, 2]</code>，对应 <code>v = [100, 200, 300, 400]</code>，切成 2 块（前 2 个一块、后 2 个一块）。逐块算出 <code>m</code>、<code>ρ</code>、<code>ℓ</code>、<code>Õ</code>，最后除出 <code>O</code>，并和一次性算法的结果对照。</li>
+<li><strong>显存账</strong>：<code>N = 16384</code>、<code>B = 4</code>、<code>H = 64</code>、BF16。一层的 <code>P</code> 矩阵多大？一个 40 层的模型全部留到反向要多少？和 80 GB 比差几倍？</li>
+<li><strong>exp 账</strong>：某个模型 <code>head_dim = 64</code>（不是 128），<code>N = 4096</code>。按 §4.5.1 的方法算：一个 head 的矩阵乘要多久、<code>exp</code> 要多久、比值是多少？这说明 head_dim 变小对注意力算子意味着什么？</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li><strong>一次性算法</strong>：<code>m = 3</code>，<code>exp(s−3) = [e⁻², e⁻³, e⁰, e⁻¹] = [0.135335, 0.049787, 1, 0.367879]</code>，<code>ℓ = 1.553001</code>；分子 <code>= 13.5335 + 9.9574 + 300 + 147.1516 = 470.6425</code>；<code>O = 470.6425 ÷ 1.553001 = 303.054</code>。<br />
+<strong>分块算法</strong>：块 1（<code>s = [1,0]</code>，<code>v = [100,200]</code>）：<code>m = 1</code>，<code>ρ</code> 无（初始），<code>ℓ = e⁰ + e⁻¹ = 1.367879</code>，<code>Õ = 1×100 + 0.367879×200 = 173.5758</code>。块 2（<code>s = [3,2]</code>，<code>v = [300,400]</code>）：块内最大值 3 &gt; 旧的 1，所以 <code>m ← 3</code>，<code>ρ = exp(1−3) = 0.135335</code>；本块 <code>Σexp(s−3) = e⁰ + e⁻¹ = 1.367879</code>；<code>ℓ = 1.367879 × 0.135335 + 1.367879 = 0.185125 + 1.367879 = 1.553004</code>；<code>Õ = 173.5758 × 0.135335 + (1×300 + 0.367879×400) = 23.4898 + 447.1516 = 470.6414</code>。收尾：<code>O = 470.6414 ÷ 1.553004 = 303.054</code> ✓ <strong>和一次性算法一致</strong>（末位差异是四舍五入）。注意这一题的块 2 出现了更大的最大值，所以 <code>ρ ≠ 1</code>，重缩放真的发生了。参见 §4.2.3、§4.4.1。</li>
+<li>一层的 <code>P</code>：<code>4 × 64 × 16384 × 16384 × 2 字节 = 4 × 64 × 268,435,456 × 2 = 137,438,953,472 字节 = **128 GiB**</code>。<strong>一层就已经超过 80 GB 了。</strong> 40 层全部留到反向：<code>40 × 128 GiB = 5120 GiB = **5 TiB**</code>，是 80 GB 的 <strong>64 倍</strong>。就算加上 causal 只算下三角打对折，也还差 32 倍。参见 §4.1.2。</li>
+<li>矩阵乘 <code>= 4N²d = 4 × 4096² × 64 = 4 × 16,777,216 × 64 = 4.295 × 10⁹ FLOP</code>，耗时 <code>4.295e9 ÷ 989e12 = **4.34 µs**</code>。<code>exp</code> 次数 <code>= N² = 16.78 × 10⁶</code>，耗时 <code>16.78e6 ÷ 3.9e12 = **4.30 µs**</code>。比值 <code>= 4.30 / 4.34 ≈ **99%**</code>，也可以直接用公式 <code>254/(4d) = 254/256 = 99%</code>。<strong>结论：head_dim = 64 时，算 exp 和做矩阵乘一样贵。</strong> 如果两者串行，注意力算子的 Tensor Core 利用率上限只有 50%——head_dim 越小，FA 越难跑满，这和 Tensor Core 有多快毫无关系。这也是 FA3 的流水重叠在小 head_dim 上收益更大的原因。参见 §4.5.1。</li>
+</ol>
+<blockquote>
+<p><strong>下一章</strong>：FlashAttention 是"把一串小算子焊成一个大 kernel"的极致案例——它把 GEMM、mask、softmax、GEMM 五个算子融成了一个。这个思路能不能套到别的算子上？什么时候值得融、什么时候融了反而更慢？见 <a href="05-算子融合.html">05 · 算子融合</a>。</p>
+<p><strong>昇腾对照</strong>：同一套数学，在 AIC / AIV 分离架构上要改用"CV 流水并行"而不是"不落盘"，以及训练/Prefill/Decode 被拆成的三个算子和四个迁移坑，见本章 §4.9。硬件背景见 <a href="12-昇腾硬件基础.html">12 章</a>，迁移 checklist 见 <a href="14-GPU到NPU迁移实战.html">14 章</a>。</p>
+</blockquote>
 <p><strong>延伸资料</strong>：<br />
-- <a href="https://arxiv.org/abs/2205.14135">FlashAttention-1 论文</a>（Dao et al., 2022）<br />
-- <a href="https://arxiv.org/abs/2307.08691">FlashAttention-2 论文</a>（Dao, 2023）<br />
+- <a href="https://arxiv.org/abs/2205.14135">FlashAttention-1 论文</a>（Dao et al., 2022；Theorem 2 是 §4.3.3 那个 IO 复杂度式子的出处）<br />
+- <a href="https://arxiv.org/abs/2307.08691">FlashAttention-2 论文</a>（Dao, 2023；§4.4 三处改动的一手来源）<br />
 - <a href="https://arxiv.org/abs/2407.08608">FlashAttention-3 论文</a>（Shah et al., 2024）<br />
-- <a href="https://github.com/Dao-AILab/flash-attention">flash-attn GitHub</a>（含安装、API 文档）<br />
+- <a href="https://tridao.me/blog/2024/flash3/">FlashAttention-3 官方博客</a>（§4.5 所有 TFLOPS 数字、以及 exp 3.9 TFLOPS 这个关键口径的出处）<br />
+- <a href="https://arxiv.org/abs/1805.02867">Online normalizer calculation for softmax</a>（Milakov &amp; Gimelshein, 2018；§4.2 在线 Softmax 的原始论文，比 FA 早四年）<br />
+- <a href="https://github.com/Dao-AILab/flash-attention">flash-attn GitHub</a>（含安装、API 文档；FA3 在 <code>hopper/</code> 子目录）<br />
 - <a href="https://gordicaleksa.medium.com/eli5-flash-attention-5c44017022ad">Making FlashAttention Go Brrrr</a>（通俗图解）</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

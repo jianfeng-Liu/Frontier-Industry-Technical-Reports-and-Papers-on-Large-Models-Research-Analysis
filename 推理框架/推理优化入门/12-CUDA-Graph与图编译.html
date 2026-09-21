@@ -248,131 +248,652 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="12-cuda-graph">12 CUDA Graph 与图编译</h1>
 <blockquote>
-<p><strong>一句话</strong>：小 batch 解码时，GPU 每个 kernel 只跑几十微秒，而 CPU 派发一个 kernel 也要几微秒——<strong>CPU 追不上 GPU 了</strong>。这一章讲怎么把 CPU 从关键路径上拿掉。</p>
+<p><strong>一句话</strong>：一步前向的实际耗时 = <code>max(CPU 把命令发完的时间, GPU 把活干完的时间)</code>。小 batch、高并行度的解码里，<strong>左边那一项可能比右边大——GPU 在饿着等命令</strong>。这一章讲怎么把左边那一项压到几微秒；也讲一件同样重要的事：<strong>如果本来就是右边更大，CUDA Graph 的收益是零。</strong></p>
+<p>⚠️ <strong>本章单位约定</strong>（沿用 <a href="02-KV-Cache与显存账.html">02 章 §2.2</a>）：算<strong>显存容量</strong>用 <strong>GiB</strong>（1 GiB = 2³⁰ 字节），算<strong>带宽流量</strong>用十进制 <strong>GB</strong>（因为 3.35 TB/s 是十进制单位）。两套差 7%，混着用是本主题最常见的错账来源。</p>
 </blockquote>
 <hr />
-<h2 id="121">12.1 一个反直觉的瓶颈</h2>
-<p>先看 GPU 是怎么被驱动的：</p>
-<div class="codehilite"><pre><span></span><code>    Python 代码 → PyTorch 算子 → CUDA Runtime → 驱动 → ★ 一个 kernel 排进 GPU 队列
+<h2 id="121-kernel">12.1 ⚠️ 先把「kernel 启动开销」这件事说准确</h2>
+<p>这一节要纠正一个几乎所有中文材料都算错、<strong>本章旧版也算错了</strong>的地方。先看错的版本长什么样，因为你在别处一定会再遇到它：</p>
+<div class="codehilite"><pre><span></span><code>    ✗ 常见的错算法：
+       32 层 × 每层 25 个 kernel = 800 个 kernel
+       800 × 10 μs = 8 毫秒
+       &quot;所以 CPU 光派发就花了 8 ms，比 GPU 计算的 5 ms 还多&quot;
 
-    ★ 每个 kernel 的【CPU 端派发开销】：大约 5~20 微秒（μs）
+    ⚠️ 这个算法把【两个不同的量】混成了一个，结论会偏好几倍。
 </code></pre></div>
 
-<p>现在数一数一次解码前向要派发多少 kernel：</p>
-<div class="codehilite"><pre><span></span><code>    一层里有：QKV 投影、RoPE、注意力、输出投影、all-reduce、
-             两个 LayerNorm、MLP 的三个矩阵乘、激活函数、残差相加 ...
-             ★ 保守估计 15~30 个 kernel
+<h3 id="1211">12.1.1 ★★ 两个被混成一个的量</h3>
+<div class="codehilite"><pre><span></span><code>    📖 量一：启动延迟（launch latency）—— 5~20 μs
+       从 CPU 调用 cudaLaunchKernel，到 GPU 上【第一个线程开始跑】，
+       中间隔了这么久。
 
-    32 层 × 25 ≈ ★★ 800 个 kernel
+       ⚠️ 它【不是】每个 kernel 都要串行付一遍的成本。
+       连续启动时，★ CPU 发第 2 个 kernel 和 GPU 执行第 1 个是
+       【同时】发生的 —— 启动是【流水化】的，不是排队相加的。
 
-    CPU 派发总耗时：800 × 10 μs = ★ 8 毫秒
-</code></pre></div>
+    📖 量二：单个下发的吞吐成本（launch throughput cost）—— ⚠️ 约 2 μs
+       CPU 每提交一个 kernel，要【占用 CPU 自己】多久。
+       ★ 这一项才是会累加的：发 500 个 kernel，CPU 就忙 500 × 2 μs。
 
-<div class="codehilite"><pre><span></span><code>    ★★ 关键对比（Llama-3-8B，单张 H100，batch=1 解码）：
-
-       GPU 实际计算时间：  ≈ 5 ms
-       ★ CPU 派发时间：    ≈ 8 ms
-
-    ⟹ ★★★ GPU 有 3 ms 在【干等 CPU 喂饭】。
-       这个现象叫【CPU 瓶颈 / launch overhead bound】。
+    ⟹ ★★★ 上面那个错算法的毛病：拿【量一】的数字（10 μs），
+             按【量二】的方式去累加。数字大了 5 倍。
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>为什么这个问题只在推理里严重？</strong><br />
-训练的 batch 大，每个 kernel 要跑几毫秒，派发那 10 μs 完全可以忽略。<br />
-<strong>Decode 的 batch=1，kernel 小到只跑几十微秒——派发开销占比一下子变成主角。</strong><br />
-⟹ ★ 这是 01 章「解码阶段一切都不一样」的第三个后果（前两个是访存受限和 GEMV）。</p>
+<p>⚠️ <strong>那个「约 2 μs」本身也要打个问号。</strong> 它是 C++ / 驱动层的量级；如果你的前向是一层层 Python 代码调下来的（PyTorch eager 模式），每个算子还要付 Python 解释、算子分发、参数检查的钱，<strong>实际可以是它的 2~5 倍</strong>。本章统一按 2 μs 算，是为了给一个<strong>乐观下界</strong>——真实系统只会比这更 Host Bound，不会更轻松。用 Nsight Systems 量一遍你自己那套，永远比抄任何一页笔记（包括这一页）靠谱。</p>
+</blockquote>
+<h3 id="1212">12.1.2 ★★ 判据只有一条</h3>
+<div class="codehilite"><pre><span></span><code>    一串 kernel 的实际耗时 ≈ max( CPU 下发总时间 , GPU 执行总时间 )
+                                 ▲                    ▲
+                     kernel 数 × 单个下发成本      真正干活的时间
+                        （⚠️ 约 2 μs）
+
+    ★ CPU 侧 ≤ GPU 侧  →  正常。启动开销被 GPU 的工作【完全掩盖】，
+                          ⟹ ★★ CUDA Graph 的收益是【零】。
+    ★ CPU 侧 &gt; GPU 侧  →  📖 Host Bound（下发受限）：GPU 饿着等命令。
+                          ⟹ ★★★ 这才是 CUDA Graph 的战场。
+</code></pre></div>
+
+<p>把两种情形画成时间线，一眼就分得清：</p>
+<div class="codehilite"><pre><span></span><code>    （每格 1 μs，K = 一个 kernel）
+
+    情形一 · 正常（GPU 慢，CPU 快）：
+      CPU: [发K1][发K2][发K3]..........................（发完就闲着）
+      GPU: ....[====== K1 ======][===== K2 =====][===== K3 =====]
+           └ ★ GPU 一直有活干，启动开销被完全掩盖 ⟹ 图白录
+
+    情形二 · Host Bound（GPU 快，CPU 慢）：
+      CPU: [--发K1--][--发K2--][--发K3--][--发K4--]
+      GPU: ....[K1]......[K2]......[K3]......[K4]
+                  ▲空闲     ▲空闲     ▲空闲
+           └ ★★ GPU 每次都要等 CPU，总时间由 CPU 决定 ⟹ 图有用
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意这两张图里 GPU 的「空闲」是真空闲</strong>——SM 上一个 kernel 都没在跑。这和 Decode 的「访存受限」完全不是一回事：访存受限时 GPU <strong>一直在跑 kernel</strong>，只是 kernel 在等 HBM 返回数据。<strong>两种瓶颈的区分办法在 §12.1.4。</strong></p>
+</blockquote>
+<h3 id="1213-host-bound">12.1.3 ★★★ 一次完整的 Host Bound 判定推演</h3>
+<p>判据有了，现在把一个真实部署代进去，从头算到尾。<strong>全章统一基准</strong>：Llama-3-8B，BF16，H100 SXM5（BF16 稠密算力 989 TFLOPS、HBM3 80 GB / 3.35 TB/s、屋脊点 295，见 <a href="01-推理与训练的根本差异.html">01 章 §1.3</a>）。</p>
+<p><strong>第一步：数 kernel。</strong> 不要拍一个「25 个」，逐个列出来：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>这一层里的算子</th>
+<th>kernel 数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>输入 RMSNorm</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td>2</td>
+<td>QKV 投影</td>
+<td>1</td>
+<td>★ 框架已把 Q/K/V 三个权重矩阵拼成一个，不是 3 个</td>
+</tr>
+<tr>
+<td>3</td>
+<td>RoPE（旋转位置编码）</td>
+<td>1</td>
+<td>Q 和 K 在同一个 kernel 里转</td>
+</tr>
+<tr>
+<td>4</td>
+<td>注意力（分页 decode kernel）</td>
+<td>1</td>
+<td>含 KV Cache 写入</td>
+</tr>
+<tr>
+<td>5</td>
+<td>O 投影</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td>6</td>
+<td>all-reduce</td>
+<td>1</td>
+<td>⚠️ 只有 TP &gt; 1 才有</td>
+</tr>
+<tr>
+<td>7</td>
+<td>残差相加</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td>8</td>
+<td>注意力后 RMSNorm</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td>9</td>
+<td>gate + up 投影</td>
+<td>1</td>
+<td>★ 同样已拼成一个</td>
+</tr>
+<tr>
+<td>10</td>
+<td>SiLU × 门控</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td>11</td>
+<td>down 投影</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td>12</td>
+<td>all-reduce</td>
+<td>1</td>
+<td>⚠️ 只有 TP &gt; 1 才有</td>
+</tr>
+<tr>
+<td>13</td>
+<td>残差相加</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>核心算子小计</strong></td>
+<td><strong>11（TP=1）/ 13（TP&gt;1）</strong></td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td>⚠️ reshape / contiguous / dtype 转换 / 元数据搬运这类零碎</td>
+<td>⚠️ 约 5</td>
+<td>随框架版本、注意力后端变化很大</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>每层合计</strong></td>
+<td><strong>⚠️ 约 16（TP=1）/ 约 18（TP=8）</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    全模型 kernel 数 = 32 层 × 每层 + 头尾（embedding 查表、最后一个
+                       RMSNorm、lm_head、采样）⚠️ 约 15
+
+       TP=1：32 × 16 + 15 = ⚠️ ★ 约 530 个
+       TP=8：32 × 18 + 15 = ⚠️ ★ 约 590 个
+
+    ⟹ ★ 注意：旧版那个「800 个」在【数量】上并不算离谱。
+       错的不是数量，是【拿数量去乘 10 μs】那一步。
+</code></pre></div>
+
+<p><strong>第二步：GPU 侧要多久。</strong> Decode 是访存受限的，时间 ≈ 把该读的字节读完（<a href="03-Prefill与Decode两阶段.html">03 章 §3.2</a>）：</p>
+<div class="codehilite"><pre><span></span><code>    每卡搬运字节 = 权重 15.0 GB ÷ TP  +  KV Cache（batch × 上下文 × 128 KiB）÷ TP
+                    ▲                     ▲
+        （16.1 GB 总权重减去 embedding    （单 token 全模型 KV = 128 KiB，
+          表的 1.05 GB —— 每步只查一行）    见 02 章 §2.2；8 个 KV 头
+                                            正好被 TP=8 分完）
+
+    GPU 侧耗时 = 每卡搬运字节 ÷ 3.35 GB/ms
+</code></pre></div>
+
+<p><strong>第三步：代进判据。</strong> 上下文统一取 2048 token：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>TP</th>
+<th>kernel 数</th>
+<th>CPU 侧 = N × 2 μs</th>
+<th>每卡搬运</th>
+<th>GPU 侧</th>
+<th><strong>max()</strong></th>
+<th>判定</th>
+<th>开图后</th>
+<th>★ 收益上限</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Decode，batch=1</td>
+<td>1</td>
+<td>530</td>
+<td><strong>1.06 ms</strong></td>
+<td>15.27 GB</td>
+<td><strong>4.56 ms</strong></td>
+<td>4.56 ms</td>
+<td>✅ GPU 侧大 4.3 倍</td>
+<td>4.56 ms</td>
+<td>★ <strong>零</strong></td>
+</tr>
+<tr>
+<td>Decode，batch=1</td>
+<td>8</td>
+<td>590</td>
+<td><strong>1.18 ms</strong></td>
+<td>1.91 GB</td>
+<td><strong>0.57 ms</strong></td>
+<td>1.18 ms</td>
+<td>⚠️ <strong>Host Bound</strong></td>
+<td>0.57 ms</td>
+<td>时间减少 52% = <strong>加速 2.07 倍</strong></td>
+</tr>
+<tr>
+<td>Decode，batch=32</td>
+<td>8</td>
+<td>590</td>
+<td><strong>1.18 ms</strong></td>
+<td>2.95 GB</td>
+<td><strong>0.88 ms</strong></td>
+<td>1.18 ms</td>
+<td>⚠️ <strong>Host Bound</strong>（勉强）</td>
+<td>0.88 ms</td>
+<td>时间减少 25% = <strong>加速 1.34 倍</strong></td>
+</tr>
+<tr>
+<td>Decode，batch=128</td>
+<td>8</td>
+<td>590</td>
+<td><strong>1.18 ms</strong></td>
+<td>6.17 GB</td>
+<td><strong>1.84 ms</strong></td>
+<td>1.84 ms</td>
+<td>✅ GPU 侧更大</td>
+<td>1.84 ms</td>
+<td>★ <strong>零</strong></td>
+</tr>
+<tr>
+<td><strong>Prefill，20 token prompt</strong></td>
+<td>8</td>
+<td>590</td>
+<td><strong>1.18 ms</strong></td>
+<td>1.90 GB</td>
+<td><strong>0.57 ms</strong></td>
+<td>1.18 ms</td>
+<td>⚠️ ★★ <strong>Host Bound</strong></td>
+<td>0.57 ms</td>
+<td><strong>加速 2.07 倍</strong></td>
+</tr>
+<tr>
+<td><strong>Prefill，2048 token prompt</strong></td>
+<td>8</td>
+<td>590</td>
+<td><strong>1.18 ms</strong></td>
+<td>4.13 GB</td>
+<td><strong>3.75 ms</strong></td>
+<td>3.75 ms</td>
+<td>✅ GPU 侧更大</td>
+<td>3.75 ms</td>
+<td>★ <strong>零</strong></td>
+</tr>
+<tr>
+<td><strong>EAGLE 草稿模型</strong>，batch=1</td>
+<td>8</td>
+<td>⚠️ ~25</td>
+<td><strong>0.05 ms</strong></td>
+<td>0.075 GB</td>
+<td><strong>0.022 ms</strong></td>
+<td>0.05 ms</td>
+<td>⚠️ ★★★ <strong>Host Bound</strong></td>
+<td>0.022 ms</td>
+<td><strong>加速 2.3 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📖 <strong>TP（Tensor Parallel，张量并行）</strong>——把每个权重矩阵横着或竖着切开，放到多张卡上，每张卡算一部分再 all-reduce 汇总。详见 <a href="06-推理中的并行策略.html">06 章</a>。<br />
+⚠️ <strong>表里 Decode 各行的「GPU 侧」只算了带宽侧</strong>，因为这些行的算术强度都远低于屋脊点 295，算力侧可忽略。<strong>Prefill 那两行取的是 <code>max(算力侧, 带宽侧)</code></strong>：20 token 那行算力侧只有 0.04 ms（带宽侧赢），2048 token 那行算力侧 3.75 ms（算力侧赢，这正是 <a href="03-Prefill与Decode两阶段.html">03 章 §3.3</a> 说的临界点约 390 token 已被越过）。★ 那个 3.75 ms 是 <code>(28.6 矩阵乘 + 1.10 注意力) TFLOP ÷ 8 卡 ÷ 989 TFLOPS</code>，沿用 03 章 §3.3 的口径——<strong>矩阵乘 FLOP 按 6.98 B 非 embedding 参数算</strong>，别拿 8.03 B 去乘，会多出 15%。<br />
+⚠️ <strong>草稿模型那行</strong>：EAGLE 的草稿头是 1 个 decoder 层（⚠️ 约 0.3 B 参数 ≈ 0.6 GB BF16，lm_head 与主模型共享、不重复计），kernel 数按「11 个核心 + 采样/建树的零碎」估。</p>
+</blockquote>
+<p><strong>这张表里读出五件事，每一件都推翻了一条常见说法</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① ★★ 单卡跑 8B 模型，batch=1 —— 【不是】Host Bound。
+       GPU 侧 4.56 ms 是 CPU 侧的 4.3 倍。
+       ⟹ 旧版「CPU 8 ms &gt; GPU 5 ms，GPU 干等 3 ms」是算出来的假象。
+
+    ② ★★★ 让它变成 Host Bound 的是【张量并行】，不是 batch 小。
+       切 TP=8 之后：GPU 侧的活被 8 张卡分摊，掉到 1/8；
+                     ★ 但 kernel 数一个没少 —— 每张卡还是要发那 590 个。
+       ⟹ 📖 这是 Host Bound 的第一成因：【并行度放大了 CPU 侧的占比】。
+          并行度越高、模型越小、batch 越小，越容易滑进去。
+
+    ③ ★ batch 从 1 涨到 128，收益就消失了。
+       因为 KV Cache 的流量随 batch 线性涨，GPU 侧被抬过了 CPU 侧。
+       ⟹ 和 08 章投机解码同一个规律：【填补空闲的优化，忙碌时都会失效】。
+
+    ④ ★★ Prefill 【不是】天然不需要图 —— 短 prompt 的 Prefill
+       和 Decode 一样 Host Bound（20 token 那行）。
+       ⟹ 因为 kernel 数几乎一样（还是那 590 个），
+          而 20 个 token 的活 GPU 半毫秒就干完了。
+       ⟹ ★ 长 prompt 才真的不需要（2048 token 那行，算力侧 3.75 ms）。
+
+    ⑤ ★★★ 草稿模型是全表最 Host Bound 的一行：CPU 侧是 GPU 侧的 2.3 倍。
+       ⟹ 这就是 §12.7 要讲的、SGLang 为什么给草稿模型单独做图。
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>收益上限在哪，这张表也直接给了答案</strong>：CUDA Graph 能做的事只有一件——<strong>把耗时从 <code>CPU 侧</code> 那一栏拉回到 <code>GPU 侧</code> 那一栏</strong>。第二行的天花板就是 0.57 ms，<strong>再开十张图也快不了</strong>。它动不了 GPU 侧一分一毫（要动 GPU 侧，那是 §12.3 图编译的活）。</p>
+</blockquote>
+<h3 id="1214">12.1.4 ⚠️ 顺手纠三个说法</h3>
+<div class="codehilite"><pre><span></span><code>    ✗ 「推理时 GPU 利用率只有 3%，全浪费了」
+    ✓  ★★ 先问【哪个利用率】。这里其实有【三个】不同的数：
+
+       ① 算力利用率 = 实际 FLOP/s ÷ 989 TFLOPS
+          ⟹ batch=1 解码时 0.34%。★ 这是 Memory Bound 的【定义】，
+             是物理规律，不是浪费（01 章 §1.3 算过）。
+       ② 带宽利用率 = 实际 Byte/s ÷ 3.35 TB/s
+          ⟹ batch=1 解码时接近打满。★ 推理侧真正该看的是这个。
+       ③ 📖 nvidia-smi 的 utilization.gpu
+          = 采样窗口里「有 kernel 在跑」的时间比例。
+          ⟹ ★★★ 本章的瓶颈只在【这个数】上现形：
+             Host Bound 时 GPU 真的在空转，③ 会掉下来；
+             Memory Bound 时 GPU 一直在跑 kernel（只是在等 HBM），
+             ③ 照样接近 100%。
+          ⟹ ★ 所以：② 打满而 ③ 也高 = 正常的访存受限，别管；
+                     ③ 明显不到 100% 而 CPU 一核跑满 = Host Bound，该开图了。
+
+    ✗ 「Prefill 是算力受限的，所以不需要 CUDA Graph」
+    ✓  ★ 有前提：prompt 得够长。算术强度 ≈ prompt 长度，
+       临界点在【几百个 token】（03 章 §3.3 按本章基准算出约 390）。
+       ⟹ 聊天场景里一句十几个字的问题，它的 Prefill 和 Decode 一样访存受限，
+          一样 Host Bound —— 见 §12.1.3 表里那两行 Prefill 的对比。
+
+    ✗ 「开了 CUDA Graph，延迟降了 52%，所以加速了 52%」
+    ✓  ★★ 这两句是两回事，差了一倍多：
+          时间 1.18 ms → 0.57 ms
+          ✅ 时间减少 52%   （1.18 − 0.57）÷ 1.18
+          ✅ 加速 2.07 倍   1.18 ÷ 0.57
+          ❌ 加速 52%       那是 1.18 → 1.79 ms，方向都反了
+       ⟹ 公式：时间减少 p ⟺ 加速 1/(1−p) 倍。完整换算表见 13 章 §13.5。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>本节和 <a href="../../大模型算子开发/05-算子融合.html">大模型算子开发 · 05 章 §5.5</a> 是同一个判据的两个视角。</strong> 那一章从<strong>算子实现</strong>出发（一个 TP=8 的固定场景，讲 PyTorch 捕获代码怎么写、<code>copy_</code> 的坑在哪）；本章从<strong>推理服务</strong>出发（扫一遍 TP / batch / 阶段，讲框架该怎么配）。判据完全一致，不要两边都记。</p>
 </blockquote>
 <hr />
-<h2 id="122-cuda-graph-800-1">12.2 CUDA Graph：把 800 次派发变成 1 次</h2>
+<h2 id="122-cuda-graph">12.2 CUDA Graph：录一次，之后每步只发一条命令</h2>
 <blockquote>
-<p>📖 <strong>CUDA Graph</strong>——把一连串 kernel 调用<strong>录制</strong>成一张固定的图，之后<strong>一次调用就把整张图交给 GPU</strong>。</p>
+<p>📖 <strong>CUDA Graph</strong>——把一连串 kernel 调用<strong>录制</strong>成一张固定的有向无环图（节点是 kernel，边是依赖关系），之后<strong>一次 API 调用就把整张图交给 GPU</strong>，GPU 硬件按依赖顺序自己往下调度，中途不再回头问 CPU 要命令。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★ 录制（capture）阶段（只做一次，在启动时）：
-      跑一遍前向，但不真执行，而是把
-      「先跑 kernel A，再跑 B，B 依赖 A……」这个结构记下来
+<h3 id="1221">12.2.1 ★ 录制—重放的完整流程</h3>
+<div class="codehilite"><pre><span></span><code>    ═══ 阶段一 · 录制（启动时做，每个 batch 档位做一次）═══
 
-    ★ 重放（replay）阶段（每一步）：
-      ★★ CPU 只发【一条】指令：「重放这张图」
-      ⟹ 800 次派发 → 1 次
-      ⟹ CPU 开销从 8 ms 降到 ★ 几十微秒
-      ⟹ GPU 不再等 CPU
+      ① 预热：先正常跑 1~3 次前向
+         └ 为什么：让 cuBLAS 挑好算法、内存池稳定下来。
+           ⚠️ 不预热就录，会把「第一次运行的临时行为」录进去。
+                      │
+                      ▼
+      ② cudaStreamBeginCapture(stream)        ← 打开&quot;录音&quot;
+                      │
+                      │  照常调用 kernel_1 … kernel_590，
+                      │  ★ 但这些调用【不会真的送去执行】，
+                      │    而是被记录成图里的节点
+                      ▼
+            kernel_1   ──→ 节点 1
+            kernel_2   ──→ 节点 2（依赖节点 1）
+              ⋮              ⋮
+            kernel_590 ──→ 节点 590
+                      │
+                      ▼
+      ③ cudaStreamEndCapture                  ← 得到一张 Graph
+                      │
+                      ▼
+      ④ cudaGraphInstantiate                  ← 得到 GraphExec（可执行实例）
+         ★★ 此时【参数地址、grid/block 配置】全部固化进去，
+            之后不能再改 —— §12.2.3 的一切麻烦都来自这一行。
+
+    ═══ 阶段二 · 重放（运行期每一步都走这条路）═══
+
+      ⑤ 这一步来了 batch=5 个请求
+                      │
+                      ▼
+      ⑥ 选档：在录好的档位里挑最接近的 ⟹ 用 batch=8 那张图
+                      │
+                      ▼
+      ⑦ 把这一步的新数据【拷进】录制时用的那几块固定 buffer
+         ★ 必须是 copy_（原地拷贝），不能是重新赋值 —— 地址不能变
+         空出来的 3 个槽位填 0 长度哨兵
+                      │
+                      ▼
+      ⑧ cudaGraphLaunch(graphExec)   ← ★★ 全程只有这【一次】API 调用
+                      │
+                      ▼
+      ⑨ GPU 硬件按图的依赖顺序跑完 590 个节点
+         ⟹ ★ CPU 侧从 590 × 2 μs ≈ 1.18 ms 降到 ⚠️ 约 5~10 μs
 </code></pre></div>
 
-<p><strong>⚠️ 但 CUDA Graph 有三个硬性限制</strong>，理解它们才能理解框架为什么要做得那么复杂：</p>
-<div class="codehilite"><pre><span></span><code>    ⚠️ ① 形状必须固定
-       录制时 batch=8，重放时也必须是 batch=8。
-       ⟹ ★ 框架的做法：为一批【预设的 batch 大小】各录一张图
-          （比如 1,2,4,8,16,...,256），
-          实际 batch=5 时，★ 用 batch=8 的图，多出来的位置填【垃圾数据】
-       ⟹ 📖 这叫 padding（补齐）。代价是算了一点无用功，
-          但比 CPU 瓶颈划算得多。
+<div class="codehilite"><pre><span></span><code>    ★★ 一句话记住它省了什么、没省什么：
 
-    ⚠️ ② 显存地址必须固定
-       图里记的是【绝对地址】。所以输入输出必须放在
-       ★ 预先分配好的固定缓冲区里，每次把新数据【拷进去】。
-
-    ⚠️ ③ 不能有依赖数据的控制流
-       图是死的。★ 「if 某个条件成立就走另一条路」录不进去。
+       kernel 数量：      590  →  590     （★ 一个没少）
+       HBM 搬运字节：     不变  →  不变    （★ 一个字节没省）
+       数值结果：         ★★ 逐位完全一致（同样的 kernel，同样的顺序）
+       ★ CPU 侧 API 调用：590 次 → 1 次   ← 只有这一栏变了
 </code></pre></div>
 
-<p><strong>⟹ 于是有一条重要推论</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ★★ Prefill 阶段【几乎用不了】CUDA Graph。
-       因为 prompt 长度千变万化，形状不固定，为每种长度录图不现实。
-    ★★ 而 Prefill 本来就是算力受限、kernel 很大，
-       派发开销占比小 ⟹ ★ 它也【不需要】CUDA Graph。
+<blockquote>
+<p>🔑 <strong>所以 CUDA Graph 是一个纯粹的「CPU 侧」优化</strong>。它不碰 GPU 上跑的任何东西，因此<strong>不会改变一个 bit 的计算结果</strong>。这一点很重要——<strong>§12.6 那一整节的数值麻烦，全部属于图编译（算子融合），一点都不属于 CUDA Graph。</strong> 初学者常把两者的账混在一起。</p>
+</blockquote>
+<h3 id="1222">12.2.2 ⚠️ 限制：为什么这件事在推理框架里那么难做</h3>
+<p><code>cudaGraphInstantiate</code> 把地址和配置<strong>固化</strong>了，一切限制都是这一条的推论：</p>
+<table>
+<thead>
+<tr>
+<th>⚠️ 限制</th>
+<th>图里为什么不行</th>
+<th>★ 推理框架怎么绕过</th>
+<th>⚠️ 绕不掉的残留代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>输入形状必须固定</strong></td>
+<td>grid/block 配置在实例化时写死</td>
+<td>batch 分<strong>档</strong>，每档录一张图，运行时选最近的一档并 padding（补齐）</td>
+<td>每档一张图，都要占显存（见 §12.5）</td>
+</tr>
+<tr>
+<td><strong>显存地址必须固定</strong></td>
+<td>图里记的是<strong>绝对地址</strong></td>
+<td>输入输出放在预分配的静态 buffer 里，每步 <code>copy_</code> 进去；捕获期 PyTorch 切到专用内存池</td>
+<td>输入多拷一次</td>
+</tr>
+<tr>
+<td><strong>不能有依赖数据的控制流</strong></td>
+<td>录的时候走哪条分支，以后永远走哪条</td>
+<td>把 EOS 判断、top-p 截断、抢占决策全挪到图<strong>外面</strong>的 CPU 侧</td>
+<td>采样的一部分享受不到图</td>
+</tr>
+<tr>
+<td><strong>捕获期不能有 CPU-GPU 同步</strong></td>
+<td><code>.item()</code> / <code>.cpu()</code> / <code>print()</code> 会让捕获失败，或更糟——静默录错</td>
+<td>所有调度元数据一次性写进固定的 int32 buffer</td>
+<td>元数据准备代码必须写成"无同步"的，改造很痛</td>
+</tr>
+<tr>
+<td><strong>上下文长度每步都在变长</strong></td>
+<td>如果长度是<strong>形状</strong>，每步都得换一张图</td>
+<td>★★ 见下一节：把长度从形状变成<strong>张量内容</strong></td>
+<td>注意力后端必须配合，否则整图录不了</td>
+</tr>
+<tr>
+<td><strong>图不知道"这一步只有 5 条请求"</strong></td>
+<td>图里的请求槽位数是固死的</td>
+<td>空槽填 0 长度哨兵或垃圾数据</td>
+<td>⚠️ <strong>空槽绝不能影响归约结果</strong>，写错就是静默错误</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 表里的<strong>静默错误</strong>那两格是最凶的坑：<code>static_input = new_data</code>（重新赋值而不是 <code>copy_</code>）不会报错，图里固化的还是老地址，<strong>结果是用上一步的旧数据算出来的</strong>。捕获期混进一个 <code>.item()</code> 同理。这类 bug 不崩溃、不报警，只是答案慢慢变得不对。</p>
+</blockquote>
+<h3 id="1223">12.2.3 ★★★ 推理侧的图比训练侧难录，难在两个「变动的量」</h3>
+<p><strong>训练侧的图为什么好录？</strong> 因为训练的 <code>batch</code> 和 <code>seq_len</code> 是启动脚本里写死的常数，全程一动不动。<strong>一张图就够了</strong>，既不用分档，也不用下面这套机制。</p>
+<p><strong>推理侧有两个东西在每一步变</strong>，而且性质完全不同：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 变动量 ① ——【这一步有几条请求】（batch）
 
-    ⟹ ★★★ 完美互补：需要它的（Decode）形状固定，
-             形状不固定的（Prefill）不需要它。
+       连续批处理下，batch 由此刻在跑的请求数决定：3 → 7 → 5 → 12 …
+       ⟹ 每个 batch 值一张图？开不下（max_num_seqs 可以是 1024）
+       ⟹ ★ 解法：分档 + padding
+          ✅ vLLM 默认档位（config/vllm.py:1993-2018，⚠️ 本地源码快照）：
+             [1, 2, 4] + range(8, 256, 8) + range(256, max+1, 16)
+             max 默认封在 512（数据中心级 Blackwell 上是 1024，同文件 1910）
+             ⟹ 3 + 31 + 17 = ★ 51 张图（⚠️ 这个 51 是按公式算出来的，
+                实际还会被 max_num_seqs、序列并行对齐等条件裁剪）
+          ⟹ batch=5 时用 batch=8 那张，多出 3 个槽位填哨兵
+          ✅ 另有一档 performance_mode=&quot;interactivity&quot;（同文件 1993-1996）：
+             ★ 档位换成 range(1, 33) —— 1 到 32 每个整数一张图
+             ⟹ 低延迟场景下宁可多录 32 张，也要把 padding 误差压到零
+
+    ⚠️⚠️ 变动量 ② ——【每条请求的上下文有多长】
+
+       请求 A 在第 137 个 token，请求 B 在第 4021 个，下一步各加 1。
+       ⟹ ★★★ 这个【分档解决不了】：
+          51 档 batch × 每条请求的长度任意组合 = 组合爆炸，
+          一辈子也录不完那么多图。
+       ⟹ ★★★ 唯一的出路：让上下文长度【不再是形状】。
 </code></pre></div>
 
+<p><strong>第二个量的解法，正是 <a href="05-PagedAttention与前缀缓存.html">05 章 §5.3</a> 那个块表</strong>。把它放到 CUDA Graph 的语境里看，它的意义完全不一样了：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 朴素做法（长度 = 形状）：
+       每条请求的 KV Cache 是一个 [seq_len, ...] 的连续张量
+       ⟹ seq_len 变 ⟹ 张量形状变 ⟹ ★★ 必须换图。死路。
+
+    ★★★ PagedAttention 的做法（长度 = 内容）：
+       block_table : int32 张量，形状恒定 [max_num_reqs, max_num_blocks_per_req]
+                     ✅ vLLM block_table.py:115（⚠️ 本地源码快照）
+                     └ 内容是「第 i 条请求的第 j 个逻辑块，放在哪个物理块」
+       seq_lens    : int32 张量，形状恒定 [max_num_reqs]
+                     └ 内容是「第 i 条请求现在有多长」
+
+       ⟹ 上下文从 3 token 长到 4096 token，这两个张量的【形状一个字节没变】，
+          只是里面的【数字变了】。
+       ⟹ ★★★ 而 CUDA Graph 固化的是【形状和地址】，不是【内容】。
+          ⟹ 一张图，服务所有上下文长度。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 这就是本章最重要的一条因果链，也是初学者最难自己看出来的：
+
+       CUDA Graph 要求形状固定
+          ↓
+       但推理的上下文长度天然在变
+          ↓
+       ⟹ 必须重新设计 KV Cache 的数据布局，
+          把「长度」从张量的【形状】搬进张量的【内容】
+          ↓
+       ⟹ 这个改造必须由【注意力 kernel 本身】配合完成
+          —— kernel 得学会去读 block_table 和 seq_lens，
+             而不是靠形状推断自己要算多少
+          ↓
+       ⟹ ★★ 所以 §12.4 里 FULL 模式会写着「要求注意力后端支持」。
+          它要求的不是别的，就是这件事。
+          后端不支持 ⟹ 注意力只能留在图外面 ⟹ 只能走 PIECEWISE。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>顺带看清一件事</strong>：PagedAttention 常被介绍成「一个省显存的技术」（05 章的角度）。但它同时也是<strong>让整图录制成为可能的前提</strong>。同一个设计，两处收益——这两条收益是独立的，任缺一条，另一条也照样站得住。</p>
+</blockquote>
 <hr />
 <h2 id="123-torchcompile">12.3 图编译（torch.compile）：另一件事</h2>
-<p><strong>初学者最容易把这两个混起来，它们解决的是不同的问题</strong>：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────┬────────────────────────┬──────────────────────┐
-│              │  CUDA Graph            │  图编译 torch.compile │
-├──────────────┼────────────────────────┼──────────────────────┤
-│  解决什么     │ ★ CPU 派发开销          │ ★ kernel 本身不够好   │
-│  怎么做      │ 把派发【打包成一次】     │ ★【融合】多个算子     │
-│              │                        │  成一个更大的 kernel  │
-│  kernel 数量 │ ★ 不变（还是 800 个）   │ ★ 变少（融合了）      │
-│  典型收益     │ 小 batch 下 20%~50%    │ 10%~30%              │
-└──────────────┴────────────────────────┴──────────────────────┘
-</code></pre></div>
-
+<p><strong>初学者最容易把这两件事混起来。</strong> 用 §12.1.2 那个 <code>max()</code> 判据一照，区别立刻清楚——<strong>它们各自动的是等号右边的不同一项</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>CUDA Graph</strong></th>
+<th><strong>图编译 torch.compile</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一句话</td>
+<td>把 590 次 API 调用打包成 1 次</td>
+<td>把 590 个 kernel 融合成更少、更大的 kernel</td>
+</tr>
+<tr>
+<td>解决什么</td>
+<td>★ CPU 下发跟不上（Host Bound）</td>
+<td>★ kernel 本身不够好（多余的 HBM 往返）</td>
+</tr>
+<tr>
+<td>★★ <strong>动 <code>max()</code> 的哪一边</strong></td>
+<td>★ <strong>CPU 侧</strong>（压到几微秒）</td>
+<td>★ <strong>GPU 侧</strong>（减少 HBM 流量）</td>
+</tr>
+<tr>
+<td>kernel 数量</td>
+<td>不变（还是 590 个）</td>
+<td>★ 变少（融合了）</td>
+</tr>
+<tr>
+<td>HBM 搬运字节</td>
+<td>★ 完全不变</td>
+<td>★ 变少 ← 这才是它真正的收益来源</td>
+</tr>
+<tr>
+<td>数值结果</td>
+<td>★★ 逐位完全一致</td>
+<td>⚠️ <strong>会改变</strong>（见 §12.6）</td>
+</tr>
+<tr>
+<td>不是 Host Bound 时的收益</td>
+<td>★★ <strong>零</strong></td>
+<td>★ 仍然有</td>
+</tr>
+<tr>
+<td>收益上限</td>
+<td>(CPU 侧 − GPU 侧)。§12.1.3 第二行 = 时间减少 52%</td>
+<td>取决于省掉多少次 HBM 往返，⚠️ 无通用数字</td>
+</tr>
+<tr>
+<td>启动代价</td>
+<td>每档录一张图，⚠️ 几十秒到几分钟</td>
+<td>⚠️ 首次编译几分钟；改配置要重编</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>📖 <strong>算子融合（kernel fusion）</strong>——把「LayerNorm → 乘法 → 加法」三个 kernel 合成一个。<br />
-★ 好处不只是少启动两次，更重要的是<strong>中间结果不用写回显存再读出来</strong>——<br />
-回收 01 章：<strong>推理是访存受限的，省一次显存往返比省一次计算值钱得多。</strong></p>
-<p>⚠️ <strong>而「中间结果不写回显存」这件事，同时也改变了数值结果</strong>——省下的那次往返，<br />
-也是省下的一次精度截断。<strong>这是融合的第二面，单独放在 §12.6。</strong></p>
+★ 好处不只是少启动两次，<strong>更重要的是中间结果不用写回显存再读出来</strong>——回收 01 章：<strong>推理是访存受限的，省一次显存往返比省一次计算值钱得多。</strong></p>
+<p>⚠️ <strong>而「中间结果不写回显存」这件事，同时也改变了数值结果</strong>——省下的那次往返，也是省下的一次精度截断。<strong>这是融合的第二面，单独放在 §12.6。</strong></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★★ 两者是【叠加】关系，不是二选一：
-       torch.compile 先把 800 个 kernel 融合成 400 个（每个更高效）
-       CUDA Graph 再把这 400 次派发打包成 1 次
+<div class="codehilite"><pre><span></span><code>    ★★ 两者是【叠加】关系，不是二选一 —— 因为它们压的是 max() 的两端：
+
+       torch.compile 先把 590 个 kernel 融成 400 个（GPU 侧的 HBM 流量降了）
+       CUDA Graph 再把这 400 次下发打包成 1 次（CPU 侧降到几微秒）
+
+    ⚠️ 但注意顺序上的一个反效果：
+       融合把 kernel 数从 590 降到 400，★ 这件事本身就已经
+       把 CPU 侧从 1.18 ms 降到 0.80 ms 了 —— 融合【顺手缓解了 Host Bound】。
+    ⟹ ★ 所以先做融合，再判断还要不要开图。不要拿融合前的 kernel 数去算判据。
 </code></pre></div>
 
 <hr />
 <h2 id="124-vllm">12.4 ★ vLLM 的分段方案：读懂那个枚举</h2>
-<p>vLLM 把两件事的组合做成了一个五值枚举。<strong>读懂它，就读懂了这一章的全部工程权衡</strong>：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ 源码原文：config/compilation.py:53</span>
+<p>vLLM 把这两件事的组合做成了一个五值枚举。<strong>读懂它，就读懂了这一章的全部工程权衡</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ 源码原文：vllm/config/compilation.py:53-69（⚠️ 本地源码快照，非发布版本号）</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">CUDAGraphMode</span><span class="p">(</span><span class="n">enum</span><span class="o">.</span><span class="n">Enum</span><span class="p">):</span>
     <span class="n">NONE</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">PIECEWISE</span> <span class="o">=</span> <span class="mi">1</span>
     <span class="n">FULL</span> <span class="o">=</span> <span class="mi">2</span>
     <span class="n">FULL_DECODE_ONLY</span> <span class="o">=</span> <span class="p">(</span><span class="n">FULL</span><span class="p">,</span> <span class="n">NONE</span><span class="p">)</span>          <span class="c1"># ★ 注意：值是【元组】</span>
     <span class="n">FULL_AND_PIECEWISE</span> <span class="o">=</span> <span class="p">(</span><span class="n">FULL</span><span class="p">,</span> <span class="n">PIECEWISE</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">decode_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>   <span class="c1"># ★ 纯解码步用元组的第 0 个</span>
+        <span class="k">return</span> <span class="n">CUDAGraphMode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">separate_routine</span><span class="p">()</span> <span class="k">else</span> <span class="bp">self</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">mixed_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>    <span class="c1"># ★ 混合步用元组的第 1 个</span>
+        <span class="k">return</span> <span class="n">CUDAGraphMode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">separate_routine</span><span class="p">()</span> <span class="k">else</span> <span class="bp">self</span>
 </code></pre></div>
 
-<p><strong>元组是关键</strong>。源码里有两个方法解释了它（同文件 L65-69）：</p>
-<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">decode_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>   <span class="k">return</span> <span class="n">CUDAGraphMode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">...</span>  <span class="c1"># ★ 纯解码步用第 0 个</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">mixed_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>    <span class="k">return</span> <span class="n">CUDAGraphMode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="o">...</span>  <span class="c1"># ★ 混合步用第 1 个</span>
-</code></pre></div>
+<div class="codehilite"><pre><span></span><code>    ★★★ 元组是关键：这个配置允许【同一次部署，两种批次用两种模式】。
 
-<div class="codehilite"><pre><span></span><code>    ★★★ 也就是说：这个配置允许【同一次部署，两种批次用两种模式】。
-       为什么需要这样？回收 03 章——连续批处理下有两种批次：
-         ① 纯 Decode 批（全是 1-token）    ⟹ 形状规整，★ 可以用 FULL 图
-         ② 混合批（含 chunked prefill）    ⟹ 形状不规整，用不了 FULL 图
+    为什么需要这样？回收 03 章 §3.5 —— 连续批处理下有两种批次：
+      ① 纯 Decode 批（全是 1-token）    ⟹ 形状规整，★ 可以用 FULL 图
+      ② 混合批（含 chunked prefill）    ⟹ 形状不规整，用不了 FULL 图
 </code></pre></div>
 
 <p>逐个解释这五个值：</p>
@@ -381,16 +902,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
     ★ PIECEWISE（分段）
       ★★ 这是 vLLM 的招牌做法：
-      把模型切成若干段，★ 把「注意力」这个形状会变的算子【挖掉】，
+      把模型切成若干段，★ 把【注意力】这个跟形状打交道的算子从图里挖掉，
       剩下的部分（全是形状固定的矩阵乘和逐元素操作）分段录成小图。
-      ⟹ 注意力用手写 kernel（FlashAttention 等）单独跑，
+      ⟹ 注意力用手写 kernel（FlashAttention 等）在图外单独跑，
          其余部分享受 CUDA Graph
       ⟹ ★ 兼容性最好：不管 prompt 多长都能用
+      ⚠️ 代价：图被切成好几段，每段都要 CPU 发一次 launch
+         ⟹ CPU 侧不是降到 1 次，是降到「段数」次。收益比 FULL 小。
 
     ★ FULL（整图）
       整个前向录成一张图，★ 包括注意力。
-      ⟹ 收益最大（连注意力的派发也省了）
-      ⚠️ 但要求注意力后端支持固定形状 ⟹ 兼容性差
+      ⟹ 收益最大（CPU 侧真的只剩 1 次调用）
+      ⚠️ 但要求注意力后端支持固定形状 —— ★ 即 §12.2.3 那件事：
+         kernel 得从 block_table / seq_lens 里读长度，不靠形状推断
+      ⟹ 后端不支持就得降级
 
     ★★ FULL_DECODE_ONLY = (FULL, NONE)
       纯 Decode 批 → FULL（形状规整，用最快的）
@@ -401,48 +926,101 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ★★★ FULL_AND_PIECEWISE = (FULL, PIECEWISE)
       纯 Decode 批 → FULL（榨干性能）
       混合批       → PIECEWISE（退一步，但仍有收益）
-      ⟹ ★ 这是【两全其美】的配置，也是 03 章 chunked prefill
-         场景下的推荐值
+      ⟹ ★ 两全其美
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 一句话读懂这个枚举的设计意图：
-       【解码步形状规整，就上最激进的 FULL；
-        混合步形状不规整，就退回 PIECEWISE 保底。
-        一次部署，两套策略。】
-</code></pre></div>
+<p><strong>⚠️ 这里有一个比旧版更重要的事实：<code>FULL_AND_PIECEWISE</code> 不只是「推荐配置」，它是默认值。</strong> 两条源码合起来才看得出来：</p>
+<table>
+<thead>
+<tr>
+<th>✅ 源码位置（⚠️ 本地源码快照）</th>
+<th>内容</th>
+<th>意味着</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vllm/config/vllm.py:435</code></td>
+<td><code>optimization_level: OptimizationLevel = OptimizationLevel.O2</code></td>
+<td>优化等级默认 <strong>O2</strong></td>
+</tr>
+<tr>
+<td><code>vllm/config/vllm.py:317</code></td>
+<td>O2 预设里 <code>"cudagraph_mode": CUDAGraphMode.FULL_AND_PIECEWISE</code></td>
+<td>⟹ ★★ 默认就是 <code>FULL_AND_PIECEWISE</code></td>
+</tr>
+<tr>
+<td><code>vllm/config/vllm.py:271 / 294</code></td>
+<td>O0 → <code>NONE</code>，O1 → <code>PIECEWISE</code></td>
+<td>★ <code>-O0/-O1</code> 是往下调的两个档</td>
+</tr>
+<tr>
+<td><code>vllm/config/scheduler.py:74</code></td>
+<td><code>enable_chunked_prefill: bool = True</code></td>
+<td>⟹ ★★★ <strong>混合批是常态，不是例外</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 把这四行连起来读，才是这个枚举真正的设计动机：
 
-<hr />
-<h2 id="125">12.5 ⚠️ 代价</h2>
-<div class="codehilite"><pre><span></span><code>    ⚠️ ① 启动变慢
-       要为几十个 batch 大小分别录图，★ 启动可能多花 1~5 分钟
-       ⟹ 频繁重启的场景（自动扩缩容）要权衡
-
-    ⚠️ ② 显存额外开销
-       每张图要占一份固定缓冲区，几十张图加起来 ★ 可能吃掉几个 GB
-       ⟹ 回收 02 章：这部分显存是从 KV Cache 里扣的 ⟹ 并发数下降
-       ⟹ ★ 所以 batch 大小列表不能设太密
-
-    ⚠️ ③ 大 batch 时收益消失
-       batch=256 时 kernel 本来就跑得久，★ 派发开销占比可忽略
-       ⟹ CUDA Graph 只在【小 batch 低延迟】场景有明显价值
-       ⟹ ★ 和 08 章的投机解码是同一个规律：
-          ★★ 【填补空闲的优化，在忙碌时都会失效】
-
-    ⚠️ ④ padding 的浪费
-       batch=5 用 batch=8 的图 ⟹ 3 个位置在算垃圾
-       ⟹ ★ 所以 batch 大小列表在小值处要密（1,2,4,8），
-          大值处可以疏（128,256）
+       chunked prefill 默认【开】（scheduler.py:74）
+          ↓
+       ⟹ 混合批不是少数情况，是每天都在发生的主流情况
+          ↓
+       ⟹ 所以不能用 FULL_DECODE_ONLY（那等于对混合批完全放弃优化）
+          ↓
+       ⟹ ★ 默认必须是 FULL_AND_PIECEWISE：
+          解码步形状规整，就上最激进的 FULL；
+          混合步形状不规整，就退回 PIECEWISE 保底。
+          【一次部署，两套策略。】
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>以上四条是 CUDA Graph 的代价。§12.3 那件事（算子融合）另有一笔自己的账，而且是【数值】上的</strong>——<br />
-融合会改变计算结果本身，在 RL 训推一致性场景里这是头号麻烦。<strong>下一节专门讲。</strong></p>
+<p>⚠️ <strong>源码里还有一大段「降级路径」</strong>（<code>compilation.py:1383-1458</code> 一带）：注意力后端不支持整图、开了序列并行、用了 DeepEP 高吞吐 all-to-all 等等，都会把 <code>cudagraph_mode</code> 自动往下调，并打一行 warning。<strong>所以你配的值不一定是最终生效的值——启动日志里那行 warning 才是真相。</strong></p>
+</blockquote>
+<hr />
+<h2 id="125">12.5 ⚠️ 代价</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ① 启动变慢
+       51 个档位各录一张图（§12.2.3 那个默认列表），
+       每张图还要预热 ⟹ ⚠️ 启动多花几十秒到几分钟
+       （若同时开 torch.compile，首次编译还要再加几分钟）
+       ⟹ ★ 频繁重启的场景（自动扩缩容、抢占式实例）要权衡
+       ⟹ ★ 旋钮：把档位列表改短（vLLM 的 cudagraph_capture_sizes）
+
+    ⚠️ ② 显存额外开销 —— 这一条能换算成【少几条并发】
+       每张图要占一份自己的固定 buffer。
+       ✅ 02 章 §2.3 那张显存账里第 ④ 行：
+          「框架预留 + CUDA Graph 显存池 ⚠️ ~3 GiB」
+       ⟹ 那张表的 KV 预算是 50 GiB，一条 8K 对话的 KV 是 1 GiB
+       ⟹ ★★ 这 3 GiB ≈ 少 3 条 8K 并发，约占并发能力的 6%
+       ⟹ ★ 这就是「图的显存是从 KV Cache 里扣的」的具体数字
+
+    ⚠️ ③ GPU 侧一忙，收益就归零
+       §12.1.3 表里 batch=128 那行：GPU 侧 1.84 ms &gt; CPU 侧 1.18 ms
+       ⟹ 此时开图，收益【零】，但代价 ①② 照付
+       ⟹ ★ 和 08 章 §8.6 的投机解码是同一个规律：
+          ★★ 【填补空闲的优化，在忙碌时都会失效】
+
+    ⚠️ ④ padding 的浪费 —— ★ 但没有你想的那么贵
+       batch=5 用 batch=8 的图 ⟹ 3 个槽位在算垃圾。
+       ★★ 可是 Decode 的耗时由【读权重 15.0 GB】决定，
+          这一项和 batch 完全无关！3 个空槽多读的 KV ≈ 0（哨兵长度为 0）。
+       ⟹ ★ 所以小 batch 处 padding 的【时间】代价几乎为零。
+       ⟹ ⚠️ 真正的代价是【每档一张图要占显存】，即上面的 ②。
+       ⟹ ★ 所以档位列表的疏密，不是在「省计算」和「省显存」之间权衡，
+          而是在【选档误差】和【图的显存】之间权衡：
+          小值处密（1,2,4,8）是因为那里相对误差大；
+          大值处疏（每 16 一档）是因为那里相对误差小、且本来就不 Host Bound。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>以上四条是 CUDA Graph 的代价，注意它们【全是工程代价】</strong>——启动时间、显存、无用功。<strong>它一个 bit 的计算结果都不会改。</strong><br />
+而 §12.3 那件事（算子融合）另有一笔自己的账，<strong>而且是【数值】上的</strong>——融合会改变计算结果本身，在 RL 训推一致性场景里这是头号麻烦。<strong>下一节专门讲。</strong></p>
 </blockquote>
 <hr />
 <h2 id="126">12.6 ⚠️ 融合的另一笔账：数值精度</h2>
 <blockquote>
-<p>§12.5 那四条讲的是 CUDA Graph 的代价。<strong>算子融合（§12.3）还有一笔自己的账，也是最容易被漏掉的一笔——<br />
-它会改变计算结果本身。</strong><br />
+<p>§12.5 那四条讲的是 CUDA Graph 的代价，<strong>全是工程代价</strong>。<strong>算子融合（§12.3）还有一笔自己的账，也是最容易被漏掉的一笔——它会改变计算结果本身。</strong><br />
 纯推理场景里它通常无害甚至有益；<strong>但在 RL 训练 / 训推一致性场景里，它是头号麻烦制造者。</strong></p>
 </blockquote>
 <h3 id="_1">★ 先把问题问对：这其实是两个问题</h3>
@@ -466,8 +1044,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>★★ 注意这和 §12.3 说的是<strong>同一件事的两面</strong>：中间结果不写回显存，<br />
-既省了访存（性能），也省了截断（精度）。<strong>一次融合，两处收益。</strong></p>
+<p>★★ 注意这和 §12.3 说的是<strong>同一件事的两面</strong>：中间结果不写回显存，既省了访存（性能），也省了截断（精度）。<strong>一次融合，两处收益。</strong></p>
 </blockquote>
 <table>
 <thead>
@@ -511,12 +1088,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
     ⚠️ ④ 融合 kernel 锁死了 dtype
        接口只接 bf16 ⟹ 你本来想走的更高或更低精度路径被迫改。
-       ★ 这一条方向是【向上】的：它挡住你降精度 ⟹ 看起来&quot;精度更高&quot;，
+       ★ 这一条方向是【向上】的：它挡住你降精度 ⟹ 看起来「精度更高」，
          但那是被动的，不是算得更准。
 </code></pre></div>
 
 <h3 id="1263-openpangu-20">12.6.3 ✅ 一手证据：openPangu-2.0 报告里正好有这三面</h3>
-<p>（详见 <a href="../../业界模型技术报告/openPangu-2.0-Pro.html">业界模型技术报告/openPangu-2.0-Pro.md</a> §10.3 / §11.1）</p>
+<p>（详见 <a href="../../业界模型技术报告/openPangu-2.0-Pro.html">业界模型技术报告/openPangu-2.0-Pro.md</a> 第十、十一节）</p>
 <p><strong>① 报告自己把「非融合」那条路当精度参考</strong> ✅ 原文，<code>papers/openPangu-2.0-正文提取.txt:573-590</code></p>
 <p>它给 PAS（Parametric Attention Sink，参数化注意力汇聚点）准备了两条路：<strong>融合算子</strong>，以及 <strong>FA Rescale</strong>——两次标准 FlashAttention 调用再按 softmax 统计量重新缩放合并。原文对后者的评价是：</p>
 <blockquote>
@@ -527,7 +1104,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ 报告给的排序是：融合 = 更快，非融合 = 更通用且可证无损。
 </code></pre></div>
 
-<p><strong>② 融合算子是量化的「精度地板」</strong> ✅ 原文，<code>正文提取.txt:1127</code></p>
+<p><strong>② 融合算子是量化的「精度地板」</strong> ✅ 原文，<code>正文提取.txt:1127-1128</code></p>
 <p>W8A8 量化时有几个模块被迫留在 BF16，报告列的第一条原因就是：</p>
 <blockquote>
 <p><em>"fused operators restricted to BF16 inputs"</em>（融合算子只接受 BF16 输入）</p>
@@ -536,16 +1113,63 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        是它把你锁在 BF16 上，不让你降到 8-bit。
 </code></pre></div>
 
-<p><strong>③ 融合是训推失配里「最深、最微妙」的一类</strong> ✅ 原文，<code>正文提取.txt:890-897</code></p>
+<p><strong>③ ⚠️ 融合属于「第二深」的那一类，不是最深的那一类</strong> ✅ 原文，<code>正文提取.txt:870-897</code></p>
+<p><strong>这一条旧版写错了，必须改过来。</strong> 报告把训推不一致分成三类，融合和「最深最微妙」分属<strong>不同的两类</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>报告的分类</th>
+<th>是什么</th>
+<th>融合在哪</th>
+<th>报告怎么解决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Category A</strong> 显式定义失配</td>
+<td>训练用 Megatron、推理用 vLLM，★ 两份独立的模型定义脚本，细节必然对不上</td>
+<td>—</td>
+<td>逐层导出张量做二进制比对，反向定位分叉点</td>
+</tr>
+<tr>
+<td><strong>Category B</strong> 计算图重排失配</td>
+<td>数学等价但浮点顺序变了。三个成因：(i) 算法变体不同（MLA 的吸收/非吸收）、(ii) 并行策略不同、★ <strong>(iii) 算子融合</strong></td>
+<td>★ <strong>就在这里</strong>，是 B 的第三个成因</td>
+<td>★★ <strong>两边重新实现成同一个算子</strong>（FlashAttention 统一，开源在 omni-ops）</td>
+</tr>
+<tr>
+<td><strong>Category C</strong> 硬件调度非确定性</td>
+<td>kernel 的动态 Tiling（分块）策略随 shape 变，逐次运行结果都可能抖</td>
+<td>—</td>
+<td>改 CANN 算子的 Tiling 策略、<strong>约束 SplitK</strong>、统一多核归约轴，重编译部署</td>
+</tr>
+</tbody>
+</table>
+<p>融合（Category B(iii)）那句原文是：</p>
 <blockquote>
-<p><em>"kernel fusion implicitly rewrites the underlying computation graph and numerical precision... this </em><em>directly introduces numerical mismatches</em><em>"</em>，并称 kernel 层面的差异 <em>"constitutes the </em><em>deepest and most subtle</em><em> source of inconsistency"</em>。</p>
+<p><em>"kernel fusion implicitly rewrites the underlying computation graph and numerical precision... this </em><em>directly introduces numerical mismatches</em><em>"</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★★ 所以报告的两阶段对齐里：
-       Phase I（训练前向 ↔ 推理 Prefill）⟹ 对齐并行策略就能解决
-       Phase II（Decode 对齐）          ⟹ ★ 明确写了「需要 kernel 级介入」
-                                          就是被这一层卡住的
+<p>而「最深最微妙」那句说的是 <strong>Category C</strong>，不是融合：</p>
+<blockquote>
+<p><em>"The dynamic execution strategy (Tiling) of kernels constitutes the </em><em>deepest and most subtle</em><em> source of inconsistency."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 旧版把「deepest and most subtle」这句挂到了融合头上 —— 错了。
+       ★ 融合是【第二类】（可以靠&quot;两边用同一个算子&quot;解决）；
+       ★★ 最深的是【第三类】硬件调度的 Tiling 抖动
+           （连&quot;用同一个算子&quot;都不够，得进去改 kernel 的分块策略）。
+
+    ★★ 报告的两阶段对齐，按这三类排的：
+       Phase I（训练前向 ↔ 推理 Prefill）⟹ 收拾 Category A + B
+                                          ★ 融合这一项就是在这一阶段
+                                            靠「两边共用一个 FA 实现」解决的
+       Phase II（推理 Decode ↔ 训练前向）⟹ 收拾 Category C
+                                          ★ 明确写了「需要 kernel 级介入」
+                                            —— 改 Tiling、约束 SplitK
 </code></pre></div>
 
+<blockquote>
+<p>★★ <strong>这个纠正反而让本章的结论更硬</strong>：报告解决融合失配的办法，不是「挑一个更准的融合算子」，而是<strong>让训练侧和推理侧共用同一份算子实现</strong>。这正是 §12.6 最后那句话说的事。</p>
+</blockquote>
 <h3 id="1264">12.6.4 ★ 怎么在自己的系统上判断</h3>
 <div class="codehilite"><pre><span></span><code>    ① 先立 golden：同一段计算用 FP32（或 FP64）逐算子实现当参考。
        ★★ 脱离参考谈「谁精度高」没有意义 —— 融合和单算子【都不是】真值。
@@ -556,7 +1180,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        · KL 散度 / PCC（皮尔逊相关系数）
 
     ③ 测确定性：同一输入连跑两次做 bitwise 比对
-       ⟹ 不一致 = 里面有原子加 ⟹ ★ 这种 kernel 不能进 RL 训练侧
+       ⟹ 不一致 = 里面有原子加或动态 Tiling
+       ⟹ ★ 这种 kernel 不能进 RL 训练侧
 
     ④ 拉长序列：累加深度越大，差距越明显
        ⟹ 8K 上看不出的问题，128K 上会放大
@@ -566,66 +1191,141 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <h3 id="_2">★ 本节一句话</h3>
-<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────────┐
-│  ★ 默认预期：融合算子精度【略好】，因为少了几次 bf16 截断         │
-│    ⟹ FlashAttention、norm+残差、fused optimizer 都属于这一类      │
-│                                                                    │
-│  ⚠️ 但只要实现里含【近似函数】或【原子加归约】，方向就反过来     │
-│                                                                    │
-│  ★★ 而在训推一致性 / RL 场景里，这个问题本身就问错了——           │
-│     要问的不是「谁更准」，是「两边能不能用【同一个】kernel」。     │
-│     ⟹ 一个略差但两边一致的 kernel，远好过一边准一边不准。         │
-└────────────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>    ★ 默认预期：融合算子精度【略好】，因为少了几次 bf16 截断
+      ⟹ FlashAttention、norm+残差、fused optimizer 都属于这一类
+
+    ⚠️ 但只要实现里含【近似函数】或【原子加归约】，方向就反过来
+
+    ★★ 而在训推一致性 / RL 场景里，这个问题本身就问错了 ——
+       要问的不是「谁更准」，是「两边能不能用【同一个】kernel」。
+       ⟹ 一个略差但两边一致的 kernel，远好过一边准一边不准。
+       ✅ openPangu 的做法就是这一条：把 FlashAttention 重写成
+          训练和推理共用的一个算子。
 </code></pre></div>
 
 <hr />
 <h2 id="127-sglang">12.7 SGLang 的做法</h2>
-<p>思路一致，但做得更细——因为它要覆盖更多场景：</p>
-<div class="codehilite"><pre><span></span><code>    ✅ 除了主模型的图，SGLang 还为【草稿模型】单独做图（回收 08 章）：
+<p>思路和 vLLM 一致，但覆盖面更宽。有三点值得单独看。</p>
+<p><strong>① ✅ 给草稿模型单独做图</strong>——回收 08 章：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 除了主模型的图，SGLang 为【草稿模型】准备了一整套
+       （⚠️ 本地源码快照，python/sglang/srt/speculative/ 下）：
        eagle_draft_cuda_graph_runner.py
        eagle_draft_extend_cuda_graph_runner.py
        multi_layer_eagle_draft_extend_cuda_graph_runner.py
        frozen_kv_mtp_cuda_graph_runner.py
 
-    ★ 为什么草稿模型也要单独做图？
-      因为草稿模型【更小】⟹ 它的 kernel 更小
-      ⟹ ★★ CPU 派发开销占比【更严重】
-      ⟹ 不给草稿模型上 CUDA Graph，投机解码的加速会被派发开销吃掉一大半
+    ★★ 为什么草稿模型【更】需要图？§12.1.3 那张表的最后一行已经算出来了：
+       草稿模型只有 1 层 ⟹ GPU 侧 0.022 ms（几乎没活干）
+       但 kernel 数不成比例地少 ⟹ CPU 侧 0.05 ms
+       ⟹ ★★★ CPU 侧是 GPU 侧的 2.3 倍 —— 全表最 Host Bound 的一行
+    ⟹ 不给草稿模型上 CUDA Graph，投机解码的加速会被下发开销吃掉一大半
 </code></pre></div>
 
 <blockquote>
-<p>★ 这是一个很好的例子，说明这些优化不是彼此独立的：<br />
-<strong>投机解码（08）的实际收益，取决于 CUDA Graph（12）做得好不好。</strong></p>
+<p>★ 这是一个很好的例子，说明这些优化不是彼此独立的：<strong>投机解码（08 章）的实际收益，取决于 CUDA Graph（本章）做得好不好。</strong></p>
+</blockquote>
+<p><strong>② ⚠️ Prefill 现在也上图了</strong>——这一条推翻了旧版「Prefill 用不上 CUDA Graph」的断言：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 本地源码快照里，SGLang 已经有独立的 Prefill 图运行器：
+       model_executor/runner/prefill_cuda_graph_runner.py
+       ★ 且 CUDA 平台上默认开启（cuda_graph_config.py:110-119，
+         默认后端 &quot;breakable&quot;），Decode 侧默认是 &quot;full&quot;（同文件 126-131）
+
+    ★★ 它怎么绕过「prompt 长度千变万化」这个死结？
+       和 vLLM 的 PIECEWISE 是同一个思路 ——
+       ★ 只把 transformer 主体录进图，
+         把【注意力元数据】和【lm_head / logits 尾巴】留在图外面，
+         按 token 数分档、请求槽位用 0 长度哨兵补齐。
+
+    ⟹ ★★★ 为什么 2026 年要做这件事？§12.1.3 那两行 Prefill 已经回答了：
+       20 token 的 prompt ⟹ Host Bound（GPU 侧只有 0.57 ms）
+       2048 token 的 prompt ⟹ 不是（GPU 侧 3.75 ms）
+    ⟹ ★ 所以准确的说法是：
+       ✗ 「Prefill 不需要 CUDA Graph」
+       ✓ 「长 prompt 的 Prefill 不需要；短 prompt 的 Prefill 一样需要」
+       而聊天类负载里，短 prompt 恰恰是多数。
+</code></pre></div>
+
+<p><strong>③ ⚠️ 但 SGLang 的批次结构和 vLLM 不同，所以不需要那个五值枚举</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ✅ 本地源码快照，python/sglang/srt/managers/scheduler.py:3175-3184：
+       一步里【要么全是 Prefill，要么全是 Decode】——
+       &quot;Run prefill first if possible&quot;，否则才走 decode 分支。
+
+    ⟹ ★★ 也就是说 SGLang 默认【没有】vLLM 那种混合批。
+       想要混合批得显式开 enable_mixed_chunk（server_args.py:992）。
+    ⟹ ★ 所以它的配置是按【阶段】分的（prefill 一套后端、decode 一套后端），
+       而 vLLM 是按【批次类型】分的（纯解码批 / 混合批）。
+       ★★★ 两边解决的是同一个问题，切法不同，是因为调度器的批次结构不同。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个和本章判据吻合得很好的一手证据</strong>：openPangu-2.0 的推理框架优化里，第二项就是 <em>"a Multi-MTP Full-Graph mode that guarantees </em><em>every decode step executes within a static graph</em><em>"</em>（✅ <code>正文提取.txt:1336-1338</code>）——<strong>每一个 decode 步都必须在静态图里跑，包括投机解码（MTP）那部分</strong>。同一节还列出它要消灭的三个同步瓶颈：MTP 验证带来的变长依赖、频繁的 CPU 侧 Tiling 调用、DP 级批次协调的阻塞通信（<code>正文提取.txt:1341-1344</code>）。<strong>这三个全是 Host 侧的瓶颈，没有一个是 GPU 算不过来。</strong> §12.1.2 那个判据，在一个真实的大规模部署里就是这么现形的。</p>
 </blockquote>
 <hr />
 <h2 id="128">12.8 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① ★★ 小 batch 解码时，CPU 是瓶颈                             │
-│     800 个 kernel × 10 μs 派发 = 8 ms &gt; GPU 计算的 5 ms       │
-│     ⟹ 这是「解码阶段一切都不一样」的第三个后果                 │
-│                                                              │
-│  ② ★ CUDA Graph：录制一次，重放时 800 次派发变 1 次            │
-│     ⚠️ 三个限制：形状固定、地址固定、无数据依赖控制流           │
-│     ⟹ ★★ 正好互补：Decode 需要它且形状固定，                  │
-│           Prefill 形状不定但也不需要它                        │
-│                                                              │
-│  ③ 图编译（torch.compile）是【另一件事】：★ 算子融合           │
-│     省的是显存往返 ⟹ 对访存受限的推理特别值钱                  │
-│     ⟹ 两者【叠加】使用                                        │
-│                                                              │
-│  ④ ★★★ vLLM 的 CUDAGraphMode 五值枚举（config/compilation.py:53）│
-│     元组值 = 【纯解码批】和【混合批】用不同模式                 │
-│     ★ FULL_AND_PIECEWISE 是 chunked prefill 下的推荐配置      │
-│                                                              │
-│  ⑤ ⚠️ 代价：启动慢、占显存（挤 KV Cache）、大 batch 下收益消失│
-│     ★★ 规律同 08 章：【填补空闲的优化，在忙碌时都会失效】    │
-│                                                              │
-│  ⑥ ★★ §12.6 算子融合的另一笔账：【数值精度】                 │
-│     · 融合通常【更准】：中间量不落回 bf16，少几次截断        │
-│     · ⚠️ 但含近似函数 / 原子加归约的融合会更差、且可能不确定  │
-│     · ★★★ RL 场景要问的不是「谁更准」，而是                  │
-│       「训练侧和推理侧能不能用【同一个】kernel」             │
-└──────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>  ① ⚠️⚠️ 最该记住的一条：kernel 启动开销【不是】串行相加的
+
+     ✗ 「590 个 kernel × 10 μs = 5.9 ms 全是启动开销」—— 错
+     ✓  📖 启动【延迟】5~20 μs（从调用到开跑）是流水化的，不累加；
+        📖 单个下发的【吞吐成本】⚠️ 约 2 μs（CPU 占用）才累加。
+
+     ★★★ 判据只有一条：
+        一步耗时 ≈ max( kernel 数 × 2 μs , GPU 执行时间 )
+        CPU 侧 &gt; GPU 侧 ⟹ Host Bound ⟹ 开图
+        CPU 侧 ≤ GPU 侧 ⟹ ★ CUDA Graph 收益【零】
+
+  ② ★★ 把 Llama-3-8B 代进去（H100，上下文 2048），结论反直觉：
+
+     单卡 batch=1：  CPU 1.06 ms  vs  GPU 4.56 ms  ⟹ ★ 不是 Host Bound
+     TP=8 batch=1：  CPU 1.18 ms  vs  GPU 0.57 ms  ⟹ ★★ Host Bound，加速上限 2.07 倍
+     TP=8 batch=128：CPU 1.18 ms  vs  GPU 1.84 ms  ⟹ 收益归零
+     草稿模型：      CPU 0.05 ms  vs  GPU 0.022 ms ⟹ ★★★ 最严重
+
+     ⟹ ★★★ 真凶是【张量并行】：GPU 侧的活被 8 张卡分摊掉，
+        ★ 但 kernel 数一个没少。并行度越高、模型越小、batch 越小，越 Host Bound。
+
+  ③ ★ 收益上限就是「把耗时从 CPU 侧拉回 GPU 侧」，再开十张图也快不了。
+     ⚠️ 且「时间减少 52%」= 「加速 2.07 倍」，不是「加速 52%」（13 章 §13.5）
+
+  ④ ★ CUDA Graph：录一次，重放时 590 次下发变 1 次
+     ★★ 它只动 CPU 侧：kernel 数不变、HBM 流量不变、★ 数值结果逐位一致
+     ⚠️ 限制全来自 cudaGraphInstantiate 固化了地址和形状：
+        形状固定、地址固定、无数据依赖控制流、捕获期不能同步
+
+  ⑤ ★★★ 推理侧的图比训练侧难录，难在两个变动的量：
+     · batch（并发请求数）⟹ 分档 + padding（vLLM 默认 51 档）
+     · 每条请求的上下文长度 ⟹ ★★ 分档解决不了，组合爆炸
+       ⟹ 只能靠 PagedAttention 的 block_table + seq_lens
+          把「长度」从张量的【形状】搬进张量的【内容】
+       ⟹ ★ 这就是 FULL 模式「要求注意力后端支持」的真正含义
+     · 训练侧 batch/seq_len 是写死的常数 ⟹ 一张图就够，这两个麻烦都没有
+
+  ⑥ ★ 图编译（torch.compile）是【另一件事】：算子融合
+     ★★ 用 max() 判据一照就清楚：CUDA Graph 动【CPU 侧】，
+        图编译动【GPU 侧】（减 HBM 流量）⟹ 两者【叠加】，不是二选一
+     ⚠️ 但融合会先把 kernel 数压下去 ⟹ 顺手缓解 Host Bound
+        ⟹ ★ 先融合，再用融合后的 kernel 数去判断要不要开图
+
+  ⑦ ★★★ vLLM 的 CUDAGraphMode 五值枚举（compilation.py:53）
+     元组值 = 【纯解码批】和【混合批】用不同模式
+     ✅ FULL_AND_PIECEWISE 不只是推荐值，★ 它是默认值（-O2 是默认等级）
+     ✅ 因为 enable_chunked_prefill 默认 True（scheduler.py:74）
+        ⟹ 混合批是常态，不是例外
+     ⚠️ SGLang 不需要这个枚举：它一步要么全 Prefill 要么全 Decode
+        （scheduler.py:3175-3184），混合要显式开 enable_mixed_chunk
+
+  ⑧ ⚠️ 代价【全是工程代价】，不碰数值：
+     启动慢（51 张图）、占显存（~3 GiB ≈ 少 3 条 8K 并发）、大 batch 下收益消失
+     ★ padding 的时间代价近乎零（Decode 耗时由读权重决定，与 batch 无关），
+       真正的代价是「每档一张图要占显存」
+     ★★ 规律同 08 章：【填补空闲的优化，在忙碌时都会失效】
+
+  ⑨ ★★ §12.6 算子融合的另一笔账：【数值精度】—— 这笔账不属于 CUDA Graph
+     · 融合通常【更准】：中间量不落回 bf16，少几次截断
+     · ⚠️ 但含近似函数 / 原子加归约的融合会更差、且可能不确定
+     · ⚠️ openPangu 的三类失配里，融合是【第二类】（计算图重排），
+       最深的是【第三类】硬件 Tiling 抖动 —— 旧版把这两类搞混了
+     · ★★★ RL 场景要问的不是「谁更准」，而是
+       「训练侧和推理侧能不能用【同一个】kernel」
 </code></pre></div>
 
 <hr />

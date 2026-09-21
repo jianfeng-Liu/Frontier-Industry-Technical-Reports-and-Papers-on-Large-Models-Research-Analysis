@@ -266,10 +266,22 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ② ✅ 代码规模：638 个 .py 文件，约 24 万行
    ⚠️ 不要试图从头读。本文给的是【按需切入点】。
 
-③ ✅ 命令行参数有 419 个（arguments.py 里 add_argument 的个数）
+③ ✅ arguments.py 里显式写出的 add_argument 有 419 处
+   ⚠️ 但【419 不等于参数总数】。0.20.0 还会从配置 dataclass 自动生成一批参数：
+      megatron/training/argument_utils.py 的 ArgumentGroupFactory
+      会把一个 dataclass 的字段逐个展开成命令行参数，
+      arguments.py 里这样挂了 15 个配置类（TransformerConfig 在第 2327 行挂上去）。
+      ✅ 仅 TransformerConfig 一个类就声明了约 268 个带类型标注的字段。
+   ⇒ 所以真实可用的参数【明显多于 419】，
+     而且你在 --help 里看到的很多参数，在 arguments.py 里【搜不到】——
+     ★ 搜不到的时候，去 megatron/core/transformer/transformer_config.py
+       和 megatron/core/model_parallel_config.py 里按字段名（下划线版）搜。
    ★ 这就是为什么训练脚本动辄几十行参数 —— 但真正需要你决定的只有十来个
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>一个具体例子，说明上面这条为什么重要</strong>：<code>--ckpt-format</code>、<code>--overlap-moe-expert-parallel-comm</code>、<code>--delay-wgrad-compute</code> 这三个参数都真实可用，但在 <code>arguments.py</code> 里都<strong>搜不到 <code>add_argument</code></strong>。前者来自 <code>CheckpointConfig</code>（<code>arguments.py:2949</code> 挂上），后两者是 <code>ModelParallelConfig</code> 的字段（<code>model_parallel_config.py:343</code> 和 <code>:348</code>），经 <code>TransformerConfig</code> 继承后被自动展开。✅ <code>arguments.py:2967</code> 那个 <code>--dist-ckpt-format</code> 反而是<strong>已废弃</strong>的旧名（<code>dest='dist_ckpt_format_deprecated'</code>，help 里直接写 "Deprecated: see --ckpt-format"）。</p>
+</blockquote>
 <hr />
 <h2 id="1">1 · ★ 一分钟看懂目录结构</h2>
 <div class="codehilite"><pre><span></span><code>Megatron-LM/
@@ -359,44 +371,159 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </table>
 <blockquote>
 <p>★ <strong>一个反直觉的观察</strong>：<code>tensor_parallel/</code> 只有 <strong>7330 行</strong>，是核心目录里最小的之一。<br />
-张量并行这个"听起来最玄"的东西，<strong>代码量其实最少</strong> —— 因为它的本质就是<br />
-"矩阵按行切还是按列切" + "什么时候插一次 all-reduce"，逻辑非常收敛。<br />
+张量并行这个"听起来最玄"的东西，<strong>代码量其实最少</strong> —— 因为它的本质就是"矩阵按行切还是按列切" + "什么时候插一次 all-reduce"，逻辑非常收敛。<br />
 ⚠️ 真正臃肿的是 <code>transformer/</code>，因为它要支持几十种模型变体。</p>
 </blockquote>
 <hr />
 <h2 id="2">2 · ★★★ 主线：一次训练是怎么跑起来的</h2>
 <p><strong>这是全篇最重要的一节。搞清楚这条链，你就能自己往下钻任何一环。</strong></p>
-<div class="codehilite"><pre><span></span><code>pretrain_gpt.py  __main__                          ← ✅ 第 508 行
-      │
-      │  把三个&quot;提供者函数&quot;传给 pretrain()：
-      │    - train_valid_test_datasets_provider  怎么造数据集
-      │    - model_provider                      怎么造模型
-      │    - forward_step                        一个 micro-batch 怎么前向
-      ▼
-megatron/training/training.py  pretrain()           ← ✅ 第 1500 行
-      │
-      ├─ initialize_megatron()      解析 419 个参数、初始化 NCCL、建各种并行组
-      ├─ setup_model_and_optimizer()← ✅ 第 2661 行：造模型、切分、包 DDP、造优化器
-      ├─ build_train_valid_test_data_iterators()
-      ▼
-                    train()                         ← ✅ 第 4114 行  【主循环】
-                      │
-                      │  while iteration &lt; train_iters:
-                      ▼
-                  train_step()                      ← ✅ 第 2997 行  【一步】
-                      │
-                      ├─ ① optimizer.zero_grad()
-                      ├─ ② forward_backward_func(...)   ★★ 这里进入流水线调度
-                      ├─ ③ 梯度规约（DP all-reduce / reduce-scatter）
-                      ├─ ④ optimizer.step()
-                      └─ ⑤ 学习率调度
-                      ▼
+<h3 id="21">2.1 ★★ 调用链：从进程启动到主循环</h3>
+<div class="codehilite"><pre><span></span><code>pretrain_gpt.py  __main__                        &lt;- (1) 第 508 行
+      |
+      |  把三个&quot;提供者函数&quot;传给 pretrain()：
+      |    - train_valid_test_datasets_provider    怎么造数据集
+      |    - model_provider                        怎么造模型
+      |    - forward_step                          一个 micro-batch 怎么前向
+      v
+megatron/training/training.py  pretrain()        &lt;- (2) 第 1500 行
+      |
+      +-- initialize_megatron()                     解析参数、初始化 NCCL、建并行组
+      +-- setup_model_and_optimizer()             &lt;- (3) 第 2661 行
+      |                                             造模型、切分、包 DDP、造优化器
+      +-- build_train_valid_test_data_iterators() &lt;- (4) 第 5503 行
+      v
+            train()                              &lt;- (5) 第 4114 行 【主循环】
+              |
+              |  while iteration &lt; train_iters:
+              v
+            train_step()                         &lt;- (6) 第 2997 行 【一步】
+              |
+              v
 megatron/core/pipeline_parallel/schedules.py
-                  get_forward_backward_func()       ← ✅ 第 53 行
+            get_forward_backward_func()           &lt;- (7) 第 53 行
 </code></pre></div>
 
-<h3 id="8">★★ 全库最值得读的 8 行代码</h3>
-<p><code>megatron/core/pipeline_parallel/schedules.py</code> 第 161-168 行（✅ 原文）：</p>
+<blockquote>
+<p>✅ 上面 7 个行号均取自 Megatron-Core 0.20.0（commit <code>c9676f4</code>）实测，用 <code>grep -n "^def pretrain" megatron/training/training.py</code> 这类命令可逐个复核。</p>
+</blockquote>
+<h3 id="22-step">2.2 ★★★ 一次 step 到底改了哪些状态</h3>
+<p><strong>这是全篇最重要的一张表。</strong> 上面那张图只告诉你"经过了谁"，但学框架真正要搞清的是"<strong>每一步之后，内存里什么东西变了</strong>"。</p>
+<p>⚠️ <strong>先纠正一个很容易画错的地方</strong>：很多拆解（包括本文的上一版）会把"梯度规约"画成 <code>train_step()</code> 里位于前反向和 <code>optimizer.step()</code> <strong>之间</strong>的一个独立步骤。✅ 源码里不是这样：<code>train_step()</code> 从 <code>forward_backward_func(...)</code> 返回时，<strong>DP 规约已经做完了</strong>。规约是在调度函数内部、前反向循环跑完之后，通过 <code>config.finalize_model_grads_func</code> 这个回调触发的。</p>
+<div class="codehilite"><pre><span></span><code>train_step()  training.py:2997
+   |
+   | (a) while rerun_state_machine.should_run_forward_backward(...)
+   |     ★ 前反向被包在一个【重跑状态机】的循环里，不是直接执行
+   |
+   +-- (b) for model_chunk in model: model_chunk.zero_grad_buffer()
+   |        ★ 先清【梯度桶】，不是先清 param.grad
+   +-- (c) optimizer.zero_grad()
+   |
+   +-- (d) forward_backward_func(...)   &lt;- 进入 schedules.py，跑完全部 micro-batch
+   |          |
+   |          |  ... 前反向按调度算法交错执行，梯度累加进 param.main_grad ...
+   |          |
+   |          +-- schedules.py:852  if config.finalize_model_grads_func is not None:
+   |                     |
+   |                     v
+   |              finalize_model_grads()   distributed/finalize_model_grads.py:560
+   |                     |   ★★ 梯度规约在这里发生，【还在 forward_backward 里面】
+   |                     +-- (d1) model_chunk.finish_grad_sync()      DP all-reduce / reduce-scatter
+   |                     +-- (d2) _allreduce_conditional_embedding_grads()
+   |                     +-- (d3) _allreduce_non_tensor_model_parallel_grads()   LayerNorm 梯度，走 TP 组
+   |                     +-- (d4) _allreduce_word_embedding_grads()     首尾 PP stage 之间
+   |                     +-- (d5) _update_router_expert_bias()          MoE 才有
+   |                     +-- (d6) model_chunk.scale_gradients(1/num_tokens)
+   |
+   +-- (e) optimizer.step()             &lt;- training.py:3152
+   |          返回 (update_successful, grad_norm, num_zeros_in_grad)
+   |
+   +-- (f) opt_param_scheduler.step(increment=...)   仅当 update_successful 为真
+   v
+</code></pre></div>
+
+<p>✅ <code>config.finalize_model_grads_func</code> 的默认值在 <code>training.py:4325</code> 被设为 <code>finalize_model_grads</code>；调度函数里的触发点在 <code>schedules.py</code> 第 852、2081、2475 行（三种调度各一处）。</p>
+<p><strong>逐步状态变化表</strong>（✅ 均对应上面的源码位置）：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>调用</th>
+<th>调用后，什么状态变了</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a</td>
+<td><code>should_run_forward_backward()</code></td>
+<td>无数据变化；决定这一轮前反向要不要<strong>重跑</strong>（用于 NaN 复查、结果校验）</td>
+</tr>
+<tr>
+<td>b</td>
+<td><code>zero_grad_buffer()</code></td>
+<td><strong>梯度桶</strong>（<code>param_and_grad_buffer.py</code> 里那块连续显存）被清零</td>
+</tr>
+<tr>
+<td>c</td>
+<td><code>optimizer.zero_grad()</code></td>
+<td>优化器侧持有的梯度引用被清</td>
+</tr>
+<tr>
+<td>d</td>
+<td><code>forward_backward_func()</code></td>
+<td>激活值被创建又释放；<code>param.main_grad</code> 从 0 累加到<strong>已规约、已按 token 数缩放</strong>的最终梯度</td>
+</tr>
+<tr>
+<td>d1</td>
+<td><code>finish_grad_sync()</code></td>
+<td>桶内梯度跨 <strong>DP 组</strong>规约。开了 distributed optimizer 走 reduce-scatter（每卡只留自己那片），否则走 all-reduce</td>
+</tr>
+<tr>
+<td>d3</td>
+<td><code>_allreduce_non_tensor_model_parallel_grads()</code></td>
+<td><strong>LayerNorm / 非 TP 切分参数</strong>的梯度跨 <strong>TP 组</strong> all-reduce（开 SP 时必需：这些参数在 TP 组内是复制的，梯度必须对齐）</td>
+</tr>
+<tr>
+<td>d4</td>
+<td><code>_allreduce_word_embedding_grads()</code></td>
+<td>词嵌入权重共享时，<strong>第一个和最后一个 PP stage</strong> 的 embedding 梯度对齐</td>
+</tr>
+<tr>
+<td>d6</td>
+<td><code>scale_gradients(1/num_tokens)</code></td>
+<td>梯度整体除以全局 batch 的<strong>非 padding token 总数</strong>（per-token loss 归一）</td>
+</tr>
+<tr>
+<td>e</td>
+<td><code>optimizer.step()</code></td>
+<td><strong>参数本体更新</strong>；Adam 的 m/v 更新；返回梯度范数。失败（溢出）时<strong>不更新</strong>，返回 <code>update_successful=False</code></td>
+</tr>
+<tr>
+<td>f</td>
+<td><code>opt_param_scheduler.step()</code></td>
+<td>学习率、权重衰减推进一格；<code>update_successful=False</code> 时<strong>跳过</strong>，学习率不动</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表最值得记住的三件事：
+
+  ① 梯度规约不在 train_step 的主干上，在 forward_backward 内部的回调里。
+     ⇒ 想插手梯度（裁剪、监控、自定义规约），入口是
+       config.finalize_model_grads_func，不是去 train_step 里加一行。
+
+  ② 一次 step 里有【四种不同范围】的梯度通信，不是一次：
+       DP 组   全部梯度        (d1)  ← 量最大
+       TP 组   LayerNorm 类    (d3)
+       PP 首尾 共享 embedding  (d4)
+       EP 相关 router bias     (d5)
+     ⇒ ★ 新手常以为&quot;梯度同步&quot;就是一次 all-reduce，源码告诉你是四次不同的。
+
+  ③ optimizer.step() 可能【什么都不做】。
+     混合精度下梯度溢出就跳过这一步，学习率也跟着不推进。
+     ⇒ 这就是日志里 &quot;skipped iterations&quot; 的来源。
+</code></pre></div>
+
+<h3 id="23-8">2.3 ★★ 全库最值得读的 8 行代码</h3>
+<p><code>megatron/core/pipeline_parallel/schedules.py</code> 第 161-168 行（✅ 原文，逐字核对）：</p>
 <div class="codehilite"><pre><span></span><code>    <span class="k">if</span> <span class="n">pp_size</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">vp_size</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">forward_backward_func</span> <span class="o">=</span> <span class="n">forward_backward_pipelining_with_interleaving</span>
@@ -424,6 +551,9 @@ megatron/core/pipeline_parallel/schedules.py
   找到这段分支，等于找到了整个模块的地图。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>补一个这 8 行之前就返回的分支</strong>（容易漏）：<code>schedules.py</code> 第 154-155 行有一个前置判断 —— 如果传进来的 <code>schedule_pg_collection</code> 是 <code>MultiModuleProcessGroupCollection</code>（多模块 / 跨"网格"模型，比如 VLM 的视觉塔 + 语言塔分别占不同卡组），<strong>直接返回 <code>forward_backward_pipelining_without_interleaving</code>，不再看 PP/VPP</strong>。✅ 所以严格说是"三选一 + 一个前置短路"，共四条路径。</p>
+</blockquote>
 <hr />
 <h2 id="3-tensor_parallel">3 · 张量并行：<code>tensor_parallel/</code></h2>
 <h3 id="31-tp">3.1 ★★ 两个类，就是 TP 的全部</h3>
@@ -473,26 +603,122 @@ megatron/core/pipeline_parallel/schedules.py
 </code></pre></div>
 
 <h3 id="32-mappingspy">3.2 通信原语在 <code>mappings.py</code></h3>
-<p>✅ 这个文件里的 <code>torch.autograd.Function</code> 子类，是 TP 的通信全集：</p>
-<div class="codehilite"><pre><span></span><code>_CopyToModelParallelRegion        前向 = 恒等，反向 = all-reduce
-_ReduceFromModelParallelRegion    前向 = all-reduce，反向 = 恒等
-_ScatterToModelParallelRegion     前向 = split，反向 = all-gather
-_GatherFromModelParallelRegion    前向 = all-gather，反向 = split
+<p>✅ 这个文件里的 <code>torch.autograd.Function</code> 子类，就是 TP 的通信全集 —— <strong>一共 10 个，行号逐个实测</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>类（<code>mappings.py</code>）</th>
+<th style="text-align: right;">行号</th>
+<th>前向</th>
+<th>反向</th>
+<th>切/拼哪一维</th>
+<th>服务于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_CopyToModelParallelRegion</code></td>
+<td style="text-align: right;">201</td>
+<td>恒等</td>
+<td>all-reduce</td>
+<td>—</td>
+<td>TP</td>
+</tr>
+<tr>
+<td><code>_ReduceFromModelParallelRegion</code></td>
+<td style="text-align: right;">221</td>
+<td>all-reduce</td>
+<td>恒等</td>
+<td>—</td>
+<td>TP</td>
+</tr>
+<tr>
+<td><code>_ScatterToModelParallelRegion</code></td>
+<td style="text-align: right;">240</td>
+<td>split</td>
+<td>all-gather</td>
+<td>最后一维（hidden）</td>
+<td>TP</td>
+</tr>
+<tr>
+<td><code>_GatherFromModelParallelRegion</code></td>
+<td style="text-align: right;">260</td>
+<td>all-gather</td>
+<td>split</td>
+<td>最后一维（hidden）</td>
+<td>TP</td>
+</tr>
+<tr>
+<td><code>_AllGatherFromTensorParallelRegion</code></td>
+<td style="text-align: right;">384</td>
+<td>all-gather</td>
+<td>reduce-scatter</td>
+<td>最后一维（hidden）</td>
+<td>TP</td>
+</tr>
+<tr>
+<td><code>_ReduceScatterToTensorParallelRegion</code></td>
+<td style="text-align: right;">404</td>
+<td>reduce-scatter</td>
+<td>all-gather</td>
+<td>最后一维（hidden）</td>
+<td>TP</td>
+</tr>
+<tr>
+<td><code>_ScatterToSequenceParallelRegion</code></td>
+<td style="text-align: right;">280</td>
+<td>split</td>
+<td>all-gather</td>
+<td><strong>第一维（序列）</strong></td>
+<td>SP</td>
+</tr>
+<tr>
+<td><code>_GatherFromSequenceParallelRegion</code></td>
+<td style="text-align: right;">300</td>
+<td>all-gather</td>
+<td>reduce-scatter 或 split</td>
+<td><strong>第一维（序列）</strong></td>
+<td>SP</td>
+</tr>
+<tr>
+<td><code>_ReduceScatterToSequenceParallelRegion</code></td>
+<td style="text-align: right;">355</td>
+<td>reduce-scatter</td>
+<td>all-gather</td>
+<td><strong>第一维（序列）</strong></td>
+<td>SP</td>
+</tr>
+<tr>
+<td><code>_AllToAll</code></td>
+<td style="text-align: right;">424</td>
+<td>all-to-all</td>
+<td>all-to-all</td>
+<td>指定维</td>
+<td>MoE / EP</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>这张表里最容易被忽略、又最能说明 TP 和 SP 区别的是"切哪一维"那列</strong>：TP 那几个切的是 <code>_split_along_last_dim</code>（<strong>隐藏维</strong>，因为 TP 切的是矩阵的列/行），SP 那几个切的是 <code>_split_along_first_dim</code>（<strong>序列维</strong>，因为 SP 切的是 token）。✅ 函数名本身就写着 <code>last</code> 和 <code>first</code> —— 这是"TP 切宽度、SP 切长度"这句话在代码里的直接证据。</p>
+<p>⚠️ <code>_GatherFromSequenceParallelRegion</code> 的反向有<strong>两条路</strong>（源码里按 <code>tensor_parallel_output_grad</code> 标志二选一）：要么 <code>_reduce_scatter_along_first_dim</code>，要么 <code>_split_along_first_dim</code>。表里写"或"不是含糊，是源码真有两个分支。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表真正要看的是【前向和反向那两列互为对偶】：
 
-★★★ 注意这四个是【两两对偶】的：
-    前向做 all-reduce 的，反向什么都不做；
-    前向什么都不做的，反向做 all-reduce。
-    ⇒ 这就是 [06 章](分布式训练入门/06-张量并行TP.md) 里 f / f̄ 那对算子的实现。
+    前向 恒等        &lt;-&gt; 反向 all-reduce        (_CopyTo...)
+    前向 all-reduce  &lt;-&gt; 反向 恒等              (_ReduceFrom...)
+    前向 split       &lt;-&gt; 反向 all-gather        (_ScatterTo...)
+    前向 all-gather  &lt;-&gt; 反向 split             (_GatherFrom...)
 
-序列并行（[08 章](分布式训练入门/08-序列并行与上下文并行.md)）多出来的三个：
-_ScatterToSequenceParallelRegion
-_GatherFromSequenceParallelRegion         ← all-gather
-_ReduceScatterToSequenceParallelRegion    ← reduce-scatter
+  ⇒ 这就是 [06 章](分布式训练入门/06-张量并行TP.md) 里 f / f̄ 那对算子的实现：
+    你只需要写【前向怎么通信】，反向的通信是它的对偶，照抄另一行即可。
 
-★ 印证 08 章的核心结论：SP 把一次 all-reduce
-  拆成了 reduce-scatter + all-gather，【总通信量不变】，但激活省了。
+★ 再看 SP 那三行（[08 章](分布式训练入门/08-序列并行与上下文并行.md)）：
+  出现了 reduce-scatter，而 TP 那四行里没有。
+  ⇒ 印证 08 章的核心结论：SP 把一次 all-reduce
+    拆成了 reduce-scatter + all-gather，【总通信量不变】，但激活省了。
 
-_AllToAll                                  ← MoE 用（[09 章](分布式训练入门/09-专家并行EP.md)）
+★ 最后一行 _AllToAll 只有一个，前向反向都是 all-to-all
+  —— 它自己就是自己的对偶（[09 章](分布式训练入门/09-专家并行EP.md)）。
 </code></pre></div>
 
 <h3 id="33-randompy">3.3 ⚠️ 一个容易被忽略的文件：<code>random.py</code></h3>
@@ -506,7 +732,7 @@ _AllToAll                                  ← MoE 用（[09 章](分布式训�
       ⇒ 必须让&quot;同一份数据的 dropout 掩码&quot;在 TP 组内一致，
         而&quot;不同数据&quot;之间又要真的随机
         ↓
-      ⇒ 需要维护【两套 RNG 状态】并来回切换
+      ⇒ 需要维护【两套 RNG（Random Number Generator，随机数生成器）状态】并来回切换
 
 ⚠️ 这也是 [13 章](分布式训练入门/13-断点续训与容错.md) 说的
    &quot;checkpoint 必须存随机数状态&quot;的原因之一 ——
@@ -551,13 +777,13 @@ bridge_communicator.py        跨&quot;网格&quot;通信（多模块模型，�
 └── torch_fully_sharded_data_parallel.py   ★ 也支持直接用 PyTorch 原生 FSDP
 
 optimizer/                          ★★ &quot;分布式优化器&quot; = ZeRO-1
-       → 开关是 --use-distributed-optimizer
+       → 开关是 --use-distributed-optimizer（✅ arguments.py 里实测存在）
        → [05 章](分布式训练入门/05-ZeRO与FSDP.md)：优化器状态 12Ψ 切成 12Ψ/d
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>命名陷阱</strong>：Megatron 说的 <strong>"distributed optimizer"</strong> 指的是 <strong>ZeRO-1</strong>（只切优化器状态），<br />
-不是 ZeRO-3。想要 ZeRO-3 级别的显存节省，要走 <code>distributed/fsdp/</code> 那条线。<br />
+<p><strong>⚠️ 进门口径声明（Ψ 是什么）</strong>：本节沿用 <a href="分布式训练入门/05-ZeRO与FSDP.html">05 章</a> 的口径 —— <strong>Ψ = 参数的个数</strong>（不是字节数）。在这个口径下，混合精度 + Adam 的常驻显存是 <strong>16 字节/参数</strong>：FP32 主权重 4 + Adam 一阶动量 m <strong>4</strong> + 二阶动量 v <strong>4</strong>（★ m 和 v 是<strong>各</strong> 4 字节，合计 8，这里最容易漏一半）+ BF16 参数 2 + BF16 梯度 2。其中被 ZeRO-1 切开的"优化器状态"是前三项 = <strong>12 字节/参数</strong>，写成 <strong>12Ψ</strong>，切到 d 路数据并行上就是 <strong>12Ψ/d</strong>。⚠️ 本目录 03 / 05 章在讲通信量时用的是另一个口径（Ψ = 一份梯度的<strong>字节数</strong>），BF16 下与本节差 2 倍 —— <strong>看到 Ψ 先确认口径</strong>。</p>
+<p>⚠️ <strong>命名陷阱</strong>：Megatron 说的 <strong>"distributed optimizer"</strong> 指的是 <strong>ZeRO-1</strong>（只切优化器状态），不是 ZeRO-3。想要 ZeRO-3 级别的显存节省，要走 <code>distributed/fsdp/</code> 那条线。<br />
 ★ 这个术语混淆在实践中造成的误解非常多。</p>
 </blockquote>
 <h3 id="_1">★ 重叠通信的三个开关（✅ 实际参数名）</h3>
@@ -582,8 +808,9 @@ fused_a2a.py           ★ 融合的 all-to-all
 moe_utils.py           负载均衡损失等
 </code></pre></div>
 
-<h3 id="readmemd-430">✅ 一手数字：README.md 第 430 行</h3>
+<h3 id="megatroncoretransformermoereadmemd-430">✅ 一手数字：<code>megatron/core/transformer/moe/README.md</code> 第 430 行</h3>
 <blockquote>
+<p>⚠️ <strong>注意这个路径</strong>：是 MoE 目录自己的 README，<strong>不是仓库根目录的 <code>README.md</code></strong>（根 README 里没有这段）。本文上一版只写了"README.md 第 430 行"，会让人在根目录里白找一遍。</p>
 <p><em>"</em><em>EP All-to-All can consume 30-40% of training time without optimization.</em><em> These features hide or reduce EP communication overhead."</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>★★ 这个数字论文里没有，只在源码 README 里。
@@ -591,12 +818,20 @@ moe_utils.py           负载均衡损失等
    EP 省了显存，但把通信从 all-reduce 换成了 all-to-all，
    而 all-to-all 是【最难优化的集合通信】—— 每张卡给每张卡发不同的数据。
 
-✅ 缓解手段（README 第 434 行）：
+✅ 缓解手段（同一个 README 第 434 行的表格行）：
    --overlap-moe-expert-parallel-comm --delay-wgrad-compute
    原理：&quot;Overlaps All-to-All with computation by merging
           FWD-BWD passes of adjacent microbatches&quot;
    ★ 即：把相邻两个 micro-batch 的前向和反向搅在一起，
      用一个的计算去盖另一个的通信。
+   ⚠️ 这两个参数在 arguments.py 里搜不到 add_argument ——
+      它们是 ModelParallelConfig 的字段
+      （model_parallel_config.py:343 和 :348），由 dataclass 自动展开（见 §0）。
+      ✅ 源码里还有一条硬约束：delay_wgrad_compute 必须和
+        overlap_moe_expert_parallel_comm 一起开
+        （transformer_config.py:3025 的断言原文
+         &quot;overlap_moe_expert_parallel_comm must be enabled when
+          enabling delay_wgrad_compute&quot;）。
 
 ✅ 另一条 README 原文（第 191 行）：
    &quot;For very large MoE models like DeepSeek-V3, the EP communication
@@ -605,6 +840,9 @@ moe_utils.py           负载均衡损失等
       说明大 MoE 的 EP 通信压力已经大到机内互联都吃不消。
 </code></pre></div>
 
+<blockquote>
+<p>★ <strong>把"超过 NVLink 带宽"换成数字感受一下</strong>（⚠️ 以下为标称值推算，非实测）：NVLink 常被引用的 <strong>900 GB/s 是双向聚合</strong>口径，<strong>算单向要用 450 GB/s</strong>；而跨机的 <strong>InfiniBand（IB，无限带宽，一种高速网络互联标准）</strong> 400 <strong>Gb</strong>/s ÷ 8 = <strong>50 GB/s</strong>。⇒ 同口径下 <strong>NVLink : IB ≈ 9 倍</strong>（不是 18 倍 —— 18 倍是拿 NVLink 的双向值去比 IB 的单向值，两边口径不一致）。所以 README 那句话的分量是：EP 的 all-to-all 已经吃满了那个<strong>快 9 倍</strong>的机内链路，一旦它溢出到机外，差距是数量级的。</p>
+</blockquote>
 <hr />
 <h2 id="7-parallel_statepy">7 · ★★ 并行组是怎么建出来的：<code>parallel_state.py</code></h2>
 <p><strong>这是理解"多维并行"最关键的一个文件。</strong></p>
@@ -628,29 +866,296 @@ moe_utils.py           负载均衡损失等
 <blockquote>
 <p><em>"Note that </em><em>for efficiency, the caller should make sure adjacent ranks are on the same DGX box</em><em>. For example if we are using 2 DGX-1 boxes with a total of 16 GPUs, rank 0 to 7 belong to the first box and ranks 8 to 15 belong to the second box."</em></p>
 </blockquote>
+<h3 id="71-order">7.1 ⚠️ 先把 <code>order</code> 这件事说准确</h3>
+<p>很多资料（包括本文上一版）会写成"Megatron 的 rank 排布顺序是 <code>tp-cp-ep-dp-pp</code>"，好像它是一个写死的常量。✅ <strong>源码里不是常量，是一个默认参数值</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># megatron/core/parallel_state.py:617</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">initialize_model_parallel</span><span class="p">(</span>
+    <span class="o">...</span>
+    <span class="n">order</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;tp-cp-ep-dp-pp&quot;</span><span class="p">,</span>
+    <span class="o">...</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</code></pre></div>
+
+<p>⇒ 它是 <code>initialize_model_parallel()</code> 的<strong>第 17 个参数的默认值</strong>，调用方可以传别的顺序进去。★ 这个区别很重要：<strong>它是可配置的策略，不是框架的硬性约定</strong> —— 你想验证"TP 排外层会掉多少 MFU"，改这一个字符串就行。</p>
+<p>⚠️ <strong>而且这一个字符串会被拆成【两套】排布，不是一套。</strong> 这是本节最容易读错的地方：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>稠密（decoder）排布</th>
+<th>专家（expert）排布</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>构造位置</td>
+<td><code>parallel_state.py:859</code></td>
+<td><code>parallel_state.py:887</code></td>
+</tr>
+<tr>
+<td>实际 order 串</td>
+<td><code>tp-gtp_remat-cp-ep-dp-pp</code></td>
+<td><code>tp-cp-ep-gtp_remat-dp-pp</code></td>
+</tr>
+<tr>
+<td><code>ep</code> 取值</td>
+<td><strong>强制为 1</strong></td>
+<td><code>expert_model_parallel_size</code></td>
+</tr>
+<tr>
+<td><code>cp</code> 取值</td>
+<td><code>context_parallel_size</code></td>
+<td><strong>强制为 1</strong></td>
+</tr>
+<tr>
+<td><code>dp</code> 取值</td>
+<td><code>data_parallel_size</code></td>
+<td><code>world_size ÷ (etp × ep × pp × egtp)</code></td>
+</tr>
+<tr>
+<td><code>tp</code> 取值</td>
+<td><code>tensor_model_parallel_size</code></td>
+<td><code>expert_tensor_parallel_size</code>（默认同 TP）</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 证据有两条。一是 <code>RankGenerator.__init__</code>（<code>parallel_state.py:479-482</code>）开头就断言两者不能共存，断言消息把原因写得很清楚：</p>
+<blockquote>
+<p><em>"Both EP and CP &gt; 1 in not allow in one rank generator. </em><em>CP is only included in default RankGenerator, and EP only in expert RankGenerator.</em><em>"</em></p>
+</blockquote>
+<p>二是 <code>_inject_gtp_remat_axis()</code>（<code>parallel_state.py:582</code>）的 docstring 解释了两套串为什么插在不同位置：</p>
+<blockquote>
+<p><em>"Position controls locality (</em><em>leftmost token = smallest stride = most adjacent ranks</em><em>)"</em> —— 稠密侧插在 <code>tp</code> 后，专家侧插在 <code>ep</code> 后，<em>"so EP keeps more-local placement than EGTP (the MoE EP all-to-all is the heavier expert-side collective)"</em>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★★ 所以&quot;排布顺序&quot;的正确读法是：
+
+   一个 order 字符串 &quot;tp-cp-ep-dp-pp&quot;
+        |
+        +--&gt; 稠密 RankGenerator：ep 置 1，CP 生效  → 管 TP/CP/DP/PP 组
+        +--&gt; 专家 RankGenerator：cp 置 1，EP 生效  → 管 MoE 那套 ETP/EP/EDP 组
+
+   ⇒ ⚠️ 不要以为 CP 和 EP 在同一个 5 维网格里各占一维 ——
+     它们分属两套网格，只是共用同一个顺序声明。
+</code></pre></div>
+
+<h3 id="72-rank-16-tp2-pp2-dp4">7.2 ★★★ 用具体 rank 号算一遍（16 卡，TP=2 / PP=2 / DP=4）</h3>
+<p>上面 docstring 给的是 TP=2 / PP=4 / DP=2。换一组更常见的配置手推一遍，规律就清楚了。</p>
+<p><strong>推导规则</strong>（从 order 串直接得到）：<code>tp</code> 在最左 ⇒ <strong>步长最小、变化最快</strong>；<code>pp</code> 在最右 ⇒ <strong>步长最大、变化最慢</strong>。CP=EP=1 时：</p>
+<div class="codehilite"><pre><span></span><code>rank = tp_idx + TP x (dp_idx + DP x pp_idx)
+     = tp_idx + 2 x (dp_idx + 4 x pp_idx)
+</code></pre></div>
+
+<p>⇒ 16 张卡的归属（<code>g0</code>–<code>g15</code>，假设 8 卡一台机，<code>g0</code>–<code>g7</code> 在机器 A，<code>g8</code>–<code>g15</code> 在机器 B）：</p>
+<table>
+<thead>
+<tr>
+<th>rank</th>
+<th style="text-align: right;">tp_idx</th>
+<th style="text-align: right;">dp_idx</th>
+<th style="text-align: right;">pp_idx</th>
+<th>在哪台机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>g0</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g1</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g2</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g3</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g4</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g5</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g6</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g7</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">0</td>
+<td>A</td>
+</tr>
+<tr>
+<td>g8</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g9</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g10</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g11</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g12</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g13</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g14</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+<tr>
+<td>g15</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">1</td>
+<td>B</td>
+</tr>
+</tbody>
+</table>
+<p><strong>⇒ 三种组的完整成员表</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>组类型</th>
+<th style="text-align: right;">组数</th>
+<th style="text-align: right;">每组大小</th>
+<th>具体成员</th>
+<th>rank 间隔</th>
+<th>落在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TP 组</strong></td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">2</td>
+<td><code>[g0,g1] [g2,g3] [g4,g5] [g6,g7]</code> <code>[g8,g9] [g10,g11] [g12,g13] [g14,g15]</code></td>
+<td><strong>1（紧邻）</strong></td>
+<td>✅ 必定同机，走 NVLink</td>
+</tr>
+<tr>
+<td><strong>DP 组</strong></td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">4</td>
+<td><code>[g0,g2,g4,g6]</code> <code>[g1,g3,g5,g7]</code> <code>[g8,g10,g12,g14]</code> <code>[g9,g11,g13,g15]</code></td>
+<td>2</td>
+<td>同机</td>
+</tr>
+<tr>
+<td><strong>PP 组</strong></td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">2</td>
+<td><code>[g0,g8] [g1,g9] [g2,g10] [g3,g11]</code> <code>[g4,g12] [g5,g13] [g6,g14] [g7,g15]</code></td>
+<td><strong>8（跨得最远）</strong></td>
+<td>⚠️ 必定跨机，走 IB</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 自检：组数 x 组大小应该等于 16
+     TP: 8 x 2 = 16  ✅
+     DP: 4 x 4 = 16  ✅
+     PP: 8 x 2 = 16  ✅
+   ★ 这个自检很有用 —— 手推 rank 表时一旦哪个乘不出 world_size，就是推错了。
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>这套推导方法是可验证的</strong>：用同样的公式去算源码 docstring 里那组（TP=2 / PP=4 / DP=2），得到的 DP 组是 <code>[g0,g2] [g1,g3] [g4,g6] [g5,g7] [g8,g10] [g9,g11] [g12,g14] [g13,g15]</code>、PP 组是 <code>[g0,g4,g8,g12] [g1,g5,g9,g13] [g2,g6,g10,g14] [g3,g7,g11,g15]</code> —— <strong>和 §7 开头引用的 docstring 逐字一致</strong>。所以上面那张 TP=2/PP=2/DP=4 的表可以放心用。</p>
+</blockquote>
+<h3 id="73">7.3 ★★ 为什么是这个顺序</h3>
 <div class="codehilite"><pre><span></span><code>★★★ 这段注释把 [12 章](分布式训练入门/12-并行策略组合与MFU.md) 的 Takeaway #1 变成了代码事实：
 
-   rank 排布顺序：TP → CP → EP → DP → PP
-                  ↑最内层                ↑最外层
+   order = &quot;tp-cp-ep-dp-pp&quot;
+            ^最内层          ^最外层
+           （步长最小）      （步长最大）
 
-   TP 在最内层  ⇒  TP 组的 rank 号最紧密相邻
+   TP 在最内层  ⇒  TP 组的 rank 号最紧密相邻（上表里间隔 = 1）
                 ⇒  TP 组落在同一台机器里，走 NVLink
                 ⇒  ✅ 而 TP 恰恰是通信最频繁的那个（每层 2 次 all-reduce）
 
-   PP 在最外层  ⇒  PP 组跨机器
+   PP 在最外层  ⇒  PP 组跨机器（上表里间隔 = 8）
                 ⇒  ✅ 而 PP 恰恰是通信最少的那个（每 stage 边界 1 次 send/recv）
 
 ★★ 一句话：【通信越频繁的并行方式，排得越靠内层】。
    这个排布不是随意的，是把通信频次和链路带宽做了匹配。
+
+✅ 还有一条源码级的印证：parallel_state.py:898-902 有一句断言，
+   要求满足以下三者之一：
+     ① order 以 &quot;pp&quot; 结尾（即 PP 在最外层），或
+     ② PP = 1（没开流水线，顺序无所谓），或
+     ③ 专家侧 DP 大小 == 稠密侧 DP 大小
+   ⚠️ 注意它不是&quot;PP 必须在最外层&quot;的死规定，条件 ③ 留了口子。
+   ✅ 断言消息原文说明了它真正防的是什么：
+     &quot;the data parallel size of the attention and moe layers must be the same&quot;
+   ⇒ 把 PP 挪走会让稠密侧和专家侧的 DP 大小对不上，
+     两套网格就没法共用同一组 PP 组了
+     （紧接着第 904 行还有一句断言，直接检查两套生成器算出的 PP 组必须相同）。
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>实践提醒</strong>：如果你手工改 rank 映射（比如某些调度器会打乱），<br />
-可能在不知情的情况下把 TP 组拆到了两台机器上，MFU 会莫名其妙掉一大截。<br />
+<p>⚠️ <strong>实践提醒</strong>：如果你手工改 rank 映射（比如某些调度器会打乱），可能在不知情的情况下把 TP 组拆到了两台机器上，MFU 会莫名其妙掉一大截。<br />
 ★ <a href="分布式训练入门/12-并行策略组合与MFU.html">12 章 §12.5</a> 排查清单的第 4 条查的就是这个。</p>
 </blockquote>
 <hr />
-<h2 id="8_1">8 · 容错与存档</h2>
+<h2 id="8">8 · 容错与存档</h2>
 <div class="codehilite"><pre><span></span><code>core/dist_checkpointing/       ★★ 分布式 checkpoint
        → --ckpt-format torch_dist
        → [13 章](分布式训练入门/13-断点续训与容错.md)：存取时并行度可以不同
@@ -684,23 +1189,35 @@ core/telemetry/                遥测
 <tbody>
 <tr>
 <td>知道训练怎么跑起来的</td>
-<td><code>pretrain_gpt.py</code> → <code>training/training.py:1500</code></td>
+<td><code>pretrain_gpt.py:508</code> → <code>training/training.py:1500</code></td>
+</tr>
+<tr>
+<td>看一次 step 的完整状态变化</td>
+<td><code>training/training.py:2997</code>（<code>train_step</code>）★ 配合本文 §2.2 那张表</td>
 </tr>
 <tr>
 <td>改流水线调度</td>
 <td><code>pipeline_parallel/schedules.py:53</code> 起</td>
 </tr>
 <tr>
+<td><strong>插手梯度（裁剪/监控/自定义规约）</strong></td>
+<td><code>distributed/finalize_model_grads.py:560</code> ★★ 入口是 <code>config.finalize_model_grads_func</code>，<strong>不要</strong>去 <code>train_step</code> 里加行（见 §2.2）</td>
+</tr>
+<tr>
 <td>理解 TP 怎么切矩阵</td>
-<td><code>tensor_parallel/layers.py:906</code> / <code>:1294</code></td>
+<td><code>tensor_parallel/layers.py:906</code>（Column）/ <code>:1294</code>（Row）</td>
 </tr>
 <tr>
 <td>理解 TP 的通信</td>
-<td><code>tensor_parallel/mappings.py</code></td>
+<td><code>tensor_parallel/mappings.py</code> ★ 10 个类的对偶表见 §3.2</td>
 </tr>
 <tr>
 <td>加一种新并行组</td>
-<td><code>core/parallel_state.py</code></td>
+<td><code>core/parallel_state.py</code> ⚠️ 注意有<strong>两套</strong> RankGenerator（见 §7.1）</td>
+</tr>
+<tr>
+<td>查一个参数为什么搜不到</td>
+<td><code>core/transformer/transformer_config.py</code> + <code>core/model_parallel_config.py</code> ★ 见 §0</td>
 </tr>
 <tr>
 <td>改重计算策略</td>
@@ -732,8 +1249,11 @@ core/telemetry/                遥测
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>✅ 表里所有行号均为 Megatron-Core 0.20.0（<code>c9676f4</code>）实测。⚠️ 换版本后行号会漂，但<strong>类名和函数名</strong>在这几年里相当稳定，按名字搜即可。</p>
+</blockquote>
 <hr />
-<h2 id="10">10 · ⚠️ 读这份源码时的四个坑</h2>
+<h2 id="10">10 · ⚠️ 读这份源码时的六个坑</h2>
 <div class="codehilite"><pre><span></span><code>① Megatron 有【两套】DDP 和【两套】FSDP
    - megatron/core/distributed/distributed_data_parallel.py   自己的 DDP
    - megatron/core/distributed/fsdp/                          自己的 FSDP
@@ -747,10 +1267,20 @@ core/telemetry/                遥测
    ⚠️ 生产配置基本都走 TE 版，但 TE 版更难读。
    ★ 想理解【原理】读原生版，想理解【性能】读 TE 版。
 
-④ 419 个参数里，绝大多数有合理默认值
+④ 参数极多，但绝大多数有合理默认值
    ⚠️ 不要因为看到一个参数就觉得需要调它。
    ★ 真正需要你决策的，就是 [12 章 §12.4](分布式训练入门/12-并行策略组合与MFU.md)
      那七步里涉及的十来个。
+
+⑤ ⚠️ 参数不止 arguments.py 里那 419 处 add_argument
+   还有一大批从配置 dataclass 自动展开（见 §0）。
+   ⇒ 在 arguments.py 里搜不到某个参数【不等于它不存在】，
+     要去 transformer_config.py / model_parallel_config.py 按下划线名再搜一遍。
+
+⑥ ⚠️ 别把&quot;梯度规约&quot;当成 train_step 主干上的一步
+   它在 forward_backward_func 内部的回调里（见 §2.2）。
+   ★ 这个误解会直接导致你改错地方 —— 在 train_step 里加的那行
+     会在梯度【已经规约完】之后才执行。
 </code></pre></div>
 
 <hr />
@@ -761,20 +1291,36 @@ core/telemetry/                遥测
    pretrain_gpt.py → pretrain() → train() → train_step()
                                               → forward_backward_func()
 
-③ ★★★ 全库最值得读的是 schedules.py 里那 8 行分派 ——
-   PP 的三种调度在那里一目了然。
+③ ★★★ 一次 step 的状态变化比调用链更值得记（§2.2）：
+   清梯度桶 → 前反向累加 main_grad → 【规约在 forward_backward 内部的
+   回调里】→ optimizer.step() 改参数 → 学习率推进。
+   ⚠️ 规约不在 train_step 主干上，这是最容易画错的一处。
 
-④ ★★ TP 的全部实现就是两个类（Column/RowParallelLinear）
-   加一组对偶的通信算子（mappings.py）。代码量小得出人意料。
+④ ★★ 一次 step 里有【四种范围】的梯度通信，不是一次：
+   DP 组（全部梯度）/ TP 组（LayerNorm 类）/ PP 首尾（共享 embedding）
+   / EP（router bias）。
 
-⑤ ★★★ parallel_state.py 的 rank 排布（TP 最内、PP 最外）
+⑤ ★★★ 全库最值得读的是 schedules.py 第 161-168 行那 8 行分派 ——
+   PP 的三种调度在那里一目了然（⚠️ 另有一个多模块前置短路，见 §2.3）。
+
+⑥ ★★ TP 的全部实现就是两个类（Column/RowParallelLinear）
+   加一组对偶的通信算子（mappings.py 里 10 个类）。代码量小得出人意料。
+   ★ 而 TP 与 SP 的分界，就写在函数名的 last / first 上（§3.2）。
+
+⑦ ★★★ parallel_state.py 的 rank 排布（TP 最内、PP 最外）
    是&quot;通信频次匹配链路带宽&quot;这条原则的代码化，
    也是 PTD-P Takeaway #1 能成立的工程前提。
+   ⚠️ 但要说准确：order 是【默认参数值】而非常量，
+     而且同一个字符串会拆成【稠密 + 专家两套】排布（§7.1）。
 
-⑥ ✅ 源码 README 里藏着论文没有的数字，
-   比如 MoE 的 &quot;EP All-to-All 未优化时占 30-40% 训练时间&quot;。
+⑧ ✅ 源码 README 里藏着论文没有的数字，
+   比如 MoE 的 &quot;EP All-to-All 未优化时占 30-40% 训练时间&quot;
+   （出处是 moe/README.md，不是根 README）。
 
-⑦ ★ 有没有 fault_injector 和 straggler 检测，
+⑨ ⚠️ &quot;419 个参数&quot;只是 arguments.py 里 add_argument 的处数，
+   不是参数总数 —— 还有一大批从 dataclass 自动展开（§0）。
+
+⑩ ★ 有没有 fault_injector 和 straggler 检测，
    是判断一个框架有没有真上过万卡的实用标志。
 </code></pre></div>
 

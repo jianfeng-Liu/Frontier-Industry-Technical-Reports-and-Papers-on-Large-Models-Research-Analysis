@@ -252,7 +252,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="13">13 · 断点续训、容错与确定性</h1>
 <blockquote>
 <p><strong>前十二章都在讲"怎么跑得快"。这一章讲一个更扎心的问题：跑了三个星期，第 19 天半夜一张卡掉了，怎么办？</strong><br />
-读完你应该能回答：checkpoint 到底要存什么、有多大？为什么存一次要几分钟、怎么降到几秒——<strong>降到几秒之后，又是什么决定了你到底能存多勤</strong>？<strong>什么是慢卡（straggler），为什么它比宕机更可怕</strong>？以及——<strong>为什么"从断点续训"很难做到和没断过一模一样</strong>？</p>
+读完你应该能回答：checkpoint 到底要存什么、有多大？为什么存一次要几分钟、怎么降到几秒——<strong>降到几秒之后，又是什么决定了你到底能存多勤</strong>？<strong>到底该多久存一次才划算，这个"划算"能不能算出来</strong>？<strong>什么是慢卡（straggler），为什么它比宕机更可怕</strong>？以及——<strong>为什么"从断点续训"很难做到和没断过一模一样</strong>？</p>
 </blockquote>
 <hr />
 <h2 id="131">13.1 ★ 先建立一个数量级：故障是常态</h2>
@@ -266,157 +266,663 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★★ 一次训练，坏了 100 多次 ★★
 
-    ⚠️ 我们可以粗算一下这意味着什么（⚠️ 我的推算，不是论文数字）：
-      假设跑了 6 周 = 约 1000 小时
-      → 平均每 10 小时就要恢复一次
+    ⚠️ 粗算一下这意味着什么（⚠️ 我的推算，不是论文数字）：
+      跑了 6 周 = 42 天 = 约 1000 小时
+      1000 小时 ÷ 100 次 = 平均每 10 小时就要恢复一次
 
     ⟹ ★ 所以&quot;容错&quot;不是锦上添花的功能，它决定了这个训练能不能跑完。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★ 为什么规模一大就必然出事 —— 一个简单的概率账：
+<blockquote>
+<p>📖 <strong>MTBF</strong> = <strong>M</strong>ean <strong>T</strong>ime <strong>B</strong>etween <strong>F</strong>ailures，<strong>平均无故障间隔时间</strong>。上面那个"平均每 10 小时一次"就是 MTBF ≈ 10 小时。<strong>★ 这个 10 小时会贯穿本章后面所有的推演</strong>，请先记住它。</p>
+</blockquote>
+<h3 id="1311">13.1.1 ★ 概率账：为什么规模一大就必然出事</h3>
+<p><strong>先假设单张卡的月故障率是 0.1%</strong>（一千张卡一个月坏一张，已经算相当可靠了）。那么 N 张卡一个月"全都不出事"的概率就是 <code>0.999^N</code>：</p>
+<table>
+<thead>
+<tr>
+<th>卡数 N</th>
+<th>一个月【全都不出事】的概率 = 0.999^N</th>
+<th>一个月的期望故障次数 = N × 0.1%</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>99.90%</td>
+<td>0.001 次</td>
+</tr>
+<tr>
+<td>8（单机）</td>
+<td>99.20%</td>
+<td>0.008 次</td>
+</tr>
+<tr>
+<td>64（8 台机器）</td>
+<td>93.80%</td>
+<td>0.064 次</td>
+</tr>
+<tr>
+<td>1024（128 台）</td>
+<td>35.89%</td>
+<td>1.0 次</td>
+</tr>
+<tr>
+<td>8192</td>
+<td>0.0275%</td>
+<td>8.2 次</td>
+</tr>
+<tr>
+<td>10000</td>
+<td><strong>0.0045%</strong></td>
+<td><strong>10 次</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 从 1024 张卡开始，天平就翻过去了：
+       ★ 1024 张：一个月里有 64% 的概率会坏至少一次 —— 还能靠运气
+       ★ 10000 张：一个月不坏的概率是万分之四点五 —— 运气没有了
 
-      假设单张卡的月故障率是 0.1%（已经算相当可靠了）
-      1 张卡：  一个月不出事的概率 = 99.9%
-      1 万张卡：一个月【全都不出事】的概率 = 0.999^10000 ≈ 0.0045%
-
-    ⟹ ★★ 几乎必然出事。而分布式训练是【一荣俱荣、一损俱损】：
+    ⟹ ★★ 而分布式训练是【一荣俱荣、一损俱损】：
        ★ 任何一张卡挂了，整个 1 万卡的任务就停了。
+       所以&quot;期望故障次数&quot;这一列才是真正要看的那一列。
+</code></pre></div>
+
+<h3 id="1312-01">13.1.2 ⚠️ 反推一下：真实的单卡故障率比 0.1% 高不少</h3>
+<p><strong>上表那个 0.1% 是我拍的。用 MegaScale 的公开数字反推一下真实值</strong>（⚠️ 以下全是我的推算，论文没有直接给单卡故障率）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>怎么算</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 规模</td>
+<td>✅ 论文：12288 张 GPU</td>
+<td>12288</td>
+</tr>
+<tr>
+<td>② 时长</td>
+<td>✅ 论文："several weeks"，按 6 周算</td>
+<td>1.4 个月</td>
+</tr>
+<tr>
+<td>③ 故障次数</td>
+<td>✅ 论文："over 100 times"</td>
+<td>100 次</td>
+</tr>
+<tr>
+<td>④ 单卡月故障率</td>
+<td>③ ÷ (① × ②) = 100 ÷ (12288 × 1.4)</td>
+<td><strong>≈ 0.58%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 0.58% 是上表假设值 0.1% 的【约 6 倍】。
+
+    ★ 这不奇怪 —— &quot;故障&quot;不只是 GPU 芯片坏掉，还包括：
+      网卡掉线、交换机抖动、主机内存 ECC 不可纠错、
+      文件系统超时、宿主机被运维重启、软件死锁……
+      ★★ 整条链路上任何一环断了，这个任务都算&quot;挂了&quot;。
+
+    ⟹ ★ 结论不变，只是更严峻：万卡规模下，MTBF 是【小时】量级，不是【天】量级。
 </code></pre></div>
 
 <hr />
-<h2 id="132-checkpoint">13.2 checkpoint 要存什么</h2>
+<h2 id="132-checkpoint">13.2 checkpoint 要存什么，有多大</h2>
 <p><strong>很多人以为 checkpoint 就是"存模型权重"。⚠️ 那是推理的 checkpoint，训练的要大得多。</strong></p>
-<div class="codehilite"><pre><span></span><code>    ┌─ 训练 checkpoint 的完整清单 ──────────────────────────┐
-    │                                                        │
-    │  ① 模型参数（FP32 主副本）        4 Ψ 字节  ★ 必须     │
-    │  ② 优化器状态 m 和 v（FP32）      8 Ψ 字节  ★★ 必须    │
-    │  ③ 学习率调度器的步数              几十字节             │
-    │  ④ 数据加载器的位置                几 KB   ★ 容易漏     │
-    │  ⑤ 随机数生成器状态                几 KB   ★ 容易漏     │
-    │  ⑥ （若有）梯度累加的中间态                            │
-    └────────────────────────────────────────────────────────┘
-
-    ★★ 大头是 ①+② = 12 Ψ 字节 ★★
-       （回忆 [02 章](02-显存去哪了.md)：显存里那 16 Ψ 中，
-         BF16 的那份 2Ψ 是可以从 FP32 主副本重建的，不用存；
-         梯度 2Ψ 也不用存 —— 存的是&quot;这一步开始前&quot;的状态）
+<h3 id="1321">13.2.1 完整清单</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>内容</th>
+<th>大小</th>
+<th>重要性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>模型参数（<strong>FP32 主副本</strong>）</td>
+<td><strong>4 Ψ 字节</strong></td>
+<td>★ 必须</td>
+</tr>
+<tr>
+<td>②</td>
+<td>优化器状态 <strong>m</strong>（一阶动量，FP32）</td>
+<td><strong>4 Ψ 字节</strong></td>
+<td>★★ 必须</td>
+</tr>
+<tr>
+<td>③</td>
+<td>优化器状态 <strong>v</strong>（二阶动量，FP32）</td>
+<td><strong>4 Ψ 字节</strong></td>
+<td>★★ 必须</td>
+</tr>
+<tr>
+<td>④</td>
+<td>学习率调度器的步数</td>
+<td>几十字节</td>
+<td>必须</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>数据加载器（dataloader）的位置</td>
+<td>几 KB</td>
+<td>★ 容易漏</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>每个 rank 各自的随机数生成器（RNG）状态</td>
+<td>几 KB</td>
+<td>★ 容易漏</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>（若有）梯度累加的中间态</td>
+<td>视实现</td>
+<td>视实现</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>大头是 ①+②+③</strong></td>
+<td><strong>★★ 12 Ψ 字节</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📖 <strong>Ψ</strong>（Psi）= 模型参数量（个）。这是本教程沿用 Megatron 论文的记号，见 <a href="README.html">README 的记号约定</a>。70B 模型的 Ψ = 7.0 × 10¹⁰。</p>
+</blockquote>
+<h3 id="1322-16-12">13.2.2 ⚠️ 一个容易混的地方：显存里是 16 Ψ，盘上只要 12 Ψ</h3>
+<p><strong><a href="02-显存去哪了.html">02 章</a> 那张著名的"16 字节/参数"表，和这里的 12 字节/参数，差的是哪两项？</strong></p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>精度</th>
+<th>字节/参数</th>
+<th>在显存里？</th>
+<th>要存进 checkpoint 吗？</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16 权重</td>
+<td>BF16</td>
+<td>2</td>
+<td>✅ 在</td>
+<td>❌ 不用</td>
+<td>★ 可以从 FP32 主副本直接转出来</td>
+</tr>
+<tr>
+<td>BF16 梯度</td>
+<td>BF16</td>
+<td>2</td>
+<td>✅ 在</td>
+<td>❌ 不用</td>
+<td>★ 存盘点在"这一步开始前"，梯度此时是 0</td>
+</tr>
+<tr>
+<td>FP32 主权重</td>
+<td>FP32</td>
+<td>4</td>
+<td>✅ 在</td>
+<td>✅ 要</td>
+<td>更新是在它身上做的，丢了就断了</td>
+</tr>
+<tr>
+<td>Adam <strong>m</strong></td>
+<td>FP32</td>
+<td>4</td>
+<td>✅ 在</td>
+<td>✅ 要</td>
+<td>见 §13.2.4</td>
+</tr>
+<tr>
+<td>Adam <strong>v</strong></td>
+<td>FP32</td>
+<td>4</td>
+<td>✅ 在</td>
+<td>✅ 要</td>
+<td>见 §13.2.4</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>显存 16</strong> ｜ <strong>盘上 12</strong></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 这里有一个本仓库真实踩过的坑：
+       把 Adam 的 m 和 v 合起来当成一份 4Ψ 来算。
+       ★★ m 和 v 是【两个】和参数量一样大的 FP32 张量，各 4Ψ，合计 8Ψ。
+       70B 模型：m = 280 GB，v = 280 GB，★ 两个加起来 560 GB，不是 280 GB。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★ 算个数：
-      70B  模型 → 12 × 70e9  = 840 GB
-      400B 模型 → 12 × 400e9 = 4.8 TB     ★★ 一次 checkpoint 快 5 TB
+<h3 id="1323-checkpoint-gb">13.2.3 ★ 算个数：一次 checkpoint 到底多少 GB</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>字节/参数</th>
+<th>7B</th>
+<th>70B</th>
+<th>400B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FP32 主权重</td>
+<td>4</td>
+<td>28 GB</td>
+<td>280 GB</td>
+<td>1.6 TB</td>
+</tr>
+<tr>
+<td>Adam m</td>
+<td>4</td>
+<td>28 GB</td>
+<td>280 GB</td>
+<td>1.6 TB</td>
+</tr>
+<tr>
+<td>Adam v</td>
+<td>4</td>
+<td>28 GB</td>
+<td>280 GB</td>
+<td>1.6 TB</td>
+</tr>
+<tr>
+<td><strong>一个 checkpoint 合计</strong></td>
+<td><strong>12</strong></td>
+<td><strong>84 GB</strong></td>
+<td><strong>★ 840 GB</strong></td>
+<td><strong>★★ 4.8 TB</strong></td>
+</tr>
+<tr>
+<td>（对照）显存里的模型状态</td>
+<td>16</td>
+<td>112 GB</td>
+<td>1120 GB</td>
+<td>6.4 TB</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 换算规则就一条：checkpoint 大小 = 12 × Ψ 字节。
+      70B  → 12 × 7.0×10¹⁰  = 8.4×10¹¹ B = 840 GB
+      400B → 12 × 4.0×10¹¹  = 4.8×10¹² B = 4.8 TB
 
-    ⚠️ 而且这是【每存一次】的量。存 10 次就是 48 TB。
+    ⚠️ 而且这是【每存一次】的量。保留最近 10 个版本 = 48 TB 占着盘。
 </code></pre></div>
 
-<h3 id="2">★★ 为什么 ②（优化器状态）绝对不能省</h3>
-<div class="codehilite"><pre><span></span><code>    ★ Adam 的 m 和 v 是【滑动平均】，携带了过去几千步的梯度历史：
-      m ← β₁ m + (1−β₁) g      β₁ = 0.9   → 记忆约 10 步
-      v ← β₂ v + (1−β₂) g²     β₂ = 0.95  → ★ 记忆约 20~2000 步
+<blockquote>
+<p>⚠️ <strong>GB 还是 GiB，这里会差 7%</strong>：本教程一律用十进制（1 GB = 10⁹ 字节，见 <a href="README.html">README 的单位约定</a>），所以 70B 的 checkpoint 是 <strong>840 GB</strong>。但 <code>ls -lh</code>、<code>du -h</code> 和大多数文件系统配额用的是二进制单位，同一份文件它们会显示 <strong>782 GiB</strong>（840 × 10⁹ ÷ 2³⁰）。<strong>★ 申请存储配额时按哪个口径填，问清楚再填</strong>——4.8 TB 的 400B checkpoint 在 <code>du -h</code> 眼里只有 4.37 TiB，反过来说，一个"4.5 TiB"的配额其实只有 4.95 TB。</p>
+</blockquote>
+<h3 id="1324-m-v">13.2.4 ★★ 为什么 m 和 v 绝对不能省</h3>
+<div class="codehilite"><pre><span></span><code>    ★ Adam 的 m 和 v 是【指数滑动平均】，携带着过去很多步的梯度历史：
 
-    如果丢掉 m、v 从零开始：
-      → 第一步 v ≈ 0 → 更新量 m/√v 会异常巨大
-      → ★★ loss 直接飞掉（俗称 &quot;loss spike&quot;）
+      m ← β₁·m + (1−β₁)·g       一阶动量（梯度的平均）
+      v ← β₂·v + (1−β₂)·g²      二阶动量（梯度平方的平均）
+
+    ★ 有效记忆长度 ≈ 1/(1−β)：
+      β₁ = 0.9    →  1/(1−0.9)    =   10 步
+      β₂ = 0.95   →  1/(1−0.95)   =   20 步     ← 大模型训练常见取法
+      β₂ = 0.999  →  1/(1−0.999)  = 1000 步     ← 另一种常见取法
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 如果丢掉 m、v 从零重新开始，第一步会发生什么：
+
+      Adam 的更新量 = m / (√v + ε)
+
+      v = 0  →  √v = 0  →  分母只剩 ε（典型 1e-8）
+      m = (1−β₁)·g = 0.1·g
+                     ──────────
+      更新量 ≈ 0.1·g / 1e-8 = ★★ 1e7 × g
+
+    ⟹ ★★ 比正常更新量大七个数量级 → loss 一步飞掉（俗称 loss spike）
 
     ⟹ ★ 只存权重不存优化器状态 = 训练无法真正续上。
-       这是新手最常犯的错误之一。
+       这是新手最常犯的错误之一，而且它的症状（恢复后 loss 突然爆炸）
+       很容易被误诊成&quot;数据有脏样本&quot;。
 </code></pre></div>
 
 <hr />
-<h2 id="133">13.3 ★★ 慢：存一次要多久</h2>
-<div class="codehilite"><pre><span></span><code>    ★ 一个朴素实现的耗时（⚠️ 举例估算）：
+<h2 id="133">13.3 ★★ 慢：存一次要多久，又该多久存一次</h2>
+<p><strong>这一节是全章最硬的部分。它要回答两个连在一起的问题：存一次多久（工程量），以及多久存一次才划算（经济账）。</strong></p>
+<h3 id="1331">13.3.1 全节统一的配置</h3>
+<p><strong>后面每一个数字都从这几行推出来，换模型、换卡照着同样的步骤重算就行。</strong></p>
+<div class="codehilite"><pre><span></span><code>模型    70B 稠密，Ψ = 7.0 × 10¹⁰ 参数
+        L = 80 层，h = 8192，s = 4096（和 01 章 §1.3.1 的算例保持一致）
+        BF16 混合精度 + AdamW
 
-      4.8 TB ÷ 分布式文件系统写入 2 GB/s ≈ ★ 2400 秒 = 40 分钟
+硬件    1024 × H100 SXM5（= 128 台 8 卡机）
+        BF16 稠密峰值      989 TFLOP/s
+          ⚠️ 规格表上还有一个 1979 TFLOP/s，那是【2:4 结构化稀疏】的值，
+             稠密训练用不上。别把它当稠密峰值填进 MFU 的分母。
+        HBM3               80 GB / 3.35 TB/s
+        机内 NVLink        900 GB/s 是【双向聚合】带宽 → ★ 单向 450 GB/s
+        机间 InfiniBand    400 Gb/s ÷ 8 = ★ 50 GB/s（注意是小 b 的 bit）
+        GPU ↔ 主机内存     PCIe 5.0 ×16，单向理论 63 GB/s
+          ⚠️ H100 SXM5 是 PCIe 5.0，不是 4.0（4.0 ×16 单向才 31.5 GB/s）
+          ⚠️ 63 GB/s 是单向，不是双向合计
 
-    而这段时间里，★★ 全部 1024 张卡在【干等】★★
+存储    分布式文件系统（HDFS / 并行文件系统），多任务共用
+        ⚠️ 训练任务实际能拿到的【聚合写带宽】按两档各算一遍：2 GB/s 和 20 GB/s
 
-    → 每小时存一次 = 40/60 = ★ 67% 的时间在存盘 —— 完全不可接受
-    → 那就少存一点？每 6 小时存一次
-      → ⚠️ 崩了就要重跑最多 6 小时。而故障平均每 10 小时一次……
+训练    global batch = 1024 条 × 4096 token = 4.19 × 10⁶ token
+        MFU 40%
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★★★ 这就是 checkpoint 的核心矛盾 ★★★
-
-      存得勤  → 浪费在存盘上的时间多
-      存得稀  → 崩溃后重跑的时间多
-
-    ⟹ 出路不是在两者间取平衡，而是 ★【让存盘不再占用训练时间】★
+<blockquote>
+<p>📖 <strong>MFU</strong> = <strong>M</strong>odel <strong>FLOPs </strong>U<strong>tilization，模型算力利用率，见 <a href="12-并行策略组合与MFU.html">12 章 §12.2</a>。<br />
+📖 </strong>HDFS<strong> = </strong>H<strong>adoop </strong>D<strong>istributed </strong>F<strong>ile </strong>S**ystem，Hadoop 分布式文件系统。MegaScale 用的就是它。</p>
+</blockquote>
+<p><strong>先把"一步多久"算出来，后面所有的时间都要换算成"耽误了多少步"</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>项</th>
+<th>怎么算</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>每 token 的模型算力</td>
+<td>6Ψ = 6 × 7.0×10¹⁰</td>
+<td>4.20 × 10¹¹ FLOP</td>
+</tr>
+<tr>
+<td>②</td>
+<td>注意力补项（每 token）</td>
+<td>12·L·s·h = 12 × 80 × 4096 × 8192</td>
+<td>0.32 × 10¹¹ FLOP</td>
+</tr>
+<tr>
+<td>③</td>
+<td>每 token 合计</td>
+<td>① + ②</td>
+<td>4.52 × 10¹¹ FLOP</td>
+</tr>
+<tr>
+<td>④</td>
+<td>一步的总算力</td>
+<td>③ × 4.19 × 10⁶ token</td>
+<td>1.90 × 10¹⁸ FLOP</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>1024 卡的有效算力</td>
+<td>1024 × 989×10¹² × 40%</td>
+<td>4.05 × 10¹⁷ FLOP/s</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong>一步耗时 t_step</strong></td>
+<td>④ ÷ ⑤</td>
+<td><strong>≈ 4.7 秒</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>一小时跑多少步</td>
+<td>3600 ÷ 4.7</td>
+<td>≈ 766 步</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>关于那个 6Ψ</strong>：<code>6 = 前向 2 + 反向 4</code>（反向要同时算"对输入的梯度"和"对权重的梯度"，所以是前向的两倍）。<strong>★ 6Ψ 里【不含优化器】</strong>——优化器是每步每参数十来次运算，和 token 数无关，占比在千万分之一量级。<strong>⚠️ 6Ψ 还漏了注意力里的 <code>QKᵀ</code> 和 <code>PV</code> 两个矩阵乘</strong>，它们只和序列长度有关、和参数量无关，补全式是 <code>6Ψ + 12·L·s·h</code>（上表 ②，本例让总量多了 7.7%）。完整推导见 <a href="01-为什么需要分布式训练.html">01 章 §1.3.1</a>。</p>
+</blockquote>
+<h3 id="1332">13.3.2 ★ 朴素做法的时间账：一次存盘耽误多少步</h3>
+<p><strong>最朴素的实现：所有 rank 把自己那份状态汇聚到 rank 0，由 rank 0 序列化成一个大文件写出去，全场等它写完。</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>环节</th>
+<th>数据量</th>
+<th>通路</th>
+<th>带宽</th>
+<th>耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>各 rank → rank 0 汇聚</td>
+<td>840 GB</td>
+<td>机间 InfiniBand，<strong>瓶颈在 rank 0 那一张网卡</strong></td>
+<td>50 GB/s</td>
+<td>16.8 s</td>
+</tr>
+<tr>
+<td>②</td>
+<td>rank 0 序列化 + 写 DFS</td>
+<td>840 GB</td>
+<td>单机写分布式文件系统</td>
+<td>⚠️ 2 GB/s</td>
+<td>420 s</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>GPU 阻塞合计</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>★ 437 s ≈ 7.3 分钟</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>换算成步数</td>
+<td>437 ÷ 4.7</td>
+<td></td>
+<td></td>
+<td>⚠️ <strong>白白停掉 93 步</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 而且 ① 还有一个更硬的约束：rank 0 那台机器要有 840 GB 的【主机内存】
+       才装得下汇聚来的状态。400B 模型要 4.8 TB —— 单机根本放不下。
+       ★ 所以&quot;汇聚到 rank 0&quot;这条路在大模型上不只是慢，是走不通。
 </code></pre></div>
 
-<h3 id="megascale-checkpoint">✅ MegaScale 的两阶段 checkpoint（这一节最值得学的一招）</h3>
+<p><strong>第一个修法很直白：不汇聚，每台机器写自己那一片。</strong></p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>汇聚</th>
+<th>写入</th>
+<th>GPU 阻塞</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>汇聚到 rank 0</td>
+<td>16.8 s</td>
+<td>840 GB ÷ 2 GB/s = 420 s</td>
+<td><strong>437 s</strong></td>
+</tr>
+<tr>
+<td>★ 分片并行写（128 台各写 6.56 GB）</td>
+<td><strong>0</strong>（不汇聚）</td>
+<td>840 GB ÷ <strong>20 GB/s</strong> 聚合 = 42 s</td>
+<td><strong>★ 42 s</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 这里有个容易估错的坑：分片并行【不等于】带宽无限叠加。
+       每台机器写自己那一片，单机也许能跑 1~2 GB/s，
+       128 台一起写，纸面上是聚合 100+ GB/s。
+       ★★ 但 HDFS / 并行文件系统本身通常吃不下这个量，
+          而且它还是多个训练任务共用的。
+       → ⚠️ 真实聚合吞吐往往被封顶在【几 GB/s ~ 几十 GB/s】
+          本节取 20 GB/s 作为&quot;调好了的分片写&quot;的代表值。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 但 42 秒也还是太多了 ★★★
+
+      每 10 分钟存一次 → 42 ÷ 600 = 7.0% 的时间在存盘
+      每 30 分钟存一次 → 42 ÷ 1800 = 2.3%
+      → 那就少存一点？可是故障平均每 10 小时一次，
+        存得越稀，崩了要重跑的就越多。
+
+    ⟹ ★ 这就是 checkpoint 的核心矛盾：
+       存得勤 → 浪费在存盘上的时间多
+       存得稀 → 崩溃后重跑的时间多
+       出路不是在两者间硬取平衡，而是 ★【让存盘不再占用训练时间】★
+</code></pre></div>
+
+<h3 id="1333-megascale-checkpoint">13.3.3 ✅ MegaScale 的两阶段 checkpoint（这一节最值得学的一招）</h3>
 <blockquote>
 <p>✅ 论文原文：<em>"To achieve fast checkpointing, we introduce an optimized, </em><em>two-stage approach</em><em>. In the </em><em>first stage</em><em>, each GPU worker writes its </em><em>on-chip states to the host memory</em><em>, and then </em><em>continues the training process</em><em>. After the optimization of Pytorch's serialization mechanism and the use of </em><em>pinned memory</em><em>, this process can be reduced to </em><em>several seconds</em><em> thanks to the high PCIe bandwidth, thereby minimally interrupting the ongoing training process. In the </em><em>second stage</em><em>, a </em><em>background process</em><em> takes over, </em><em>asynchronously</em><em> transferring the state from the host memory to a distributed file system (HDFS in our deployment)."</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ┌─ 朴素做法 ───────────────────────────────────────────┐
-    │  训练 ████  [───── 存盘 40 分钟，全员干等 ─────]  训练 │
-    └───────────────────────────────────────────────────────┘
+<p><strong>画成时间线（★ 横向是时间，两行分别是 GPU 和 CPU 在干什么）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    朴素做法（分片并行写，已经是优化过的版本）
 
-    ┌─ 两阶段 ─────────────────────────────────────────────┐
-    │  GPU： 训练 ████ [拷到内存·几秒] ████████ 继续训练 ██  │
-    │  CPU：              ╰→ 后台慢慢写 HDFS ▒▒▒▒▒▒▒▒▒▒▒   │
-    │                        ★ 和训练【并行】                │
-    └───────────────────────────────────────────────────────┘
+    GPU   训练 ████████  ✋ 干  等  42  秒 ✋  训练 ████████
+    CPU                  写 DFS ▒▒▒▒▒▒▒▒▒▒
 
-    ★★ 关键洞察：GPU → CPU 内存走 PCIe（几十 GB/s），
-       比 CPU → 分布式文件系统（几 GB/s）快一个数量级。
-       ★ 那就只让 GPU 等快的那一段，慢的那一段交给后台。
+                         ↑ 这 42 秒里，1024 张卡一件事都没干
 
-    ⟹ ✅ 阻塞时间从【几十分钟】降到【几秒】
-       ⟹ ★ 于是可以存得非常勤，崩溃损失也就小了
+
+    两阶段
+
+    GPU   训练 ████████ [拷贝·几秒] ████████████████ 继续训练 ████
+    CPU                     ╰→ 后台慢慢写 DFS ▒▒▒▒▒▒▒▒▒▒▒▒
+                                ↑ ★ 和训练【并行】，GPU 不等它
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>搬什么</th>
+<th>走哪条通路</th>
+<th>每卡数据量</th>
+<th>理论耗时</th>
+<th>GPU 阻塞吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一</strong></td>
+<td>GPU 显存 → 主机 pinned 内存</td>
+<td>PCIe 5.0 ×16，单向 63 GB/s</td>
+<td>840 GB ÷ 1024 = 0.82 GB</td>
+<td>13 ms</td>
+<td>✅ 阻塞，但极短</td>
+</tr>
+<tr>
+<td><strong>二</strong></td>
+<td>主机内存 → 分布式文件系统</td>
+<td>机间网络 + 存储集群</td>
+<td>每台 6.56 GB</td>
+<td>42 s（聚合）</td>
+<td>❌ 不阻塞</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 关键洞察：
+       GPU → 主机内存走 PCIe，单向 63 GB/s；
+       主机内存 → 分布式文件系统只有 20 GB/s（还是全场聚合）。
+       ★ 那就只让 GPU 等快的那一段，慢的那一段交给后台进程。
+
+    ⚠️ 但阶段一的实际耗时【不是】13 毫秒：
+       ✅ MegaScale 原文说的是 &quot;several seconds&quot;（几秒）。
+       差在哪：张量要先序列化、pinned 内存要分配、
+       每个 rank 有成千上万个小张量要逐个拷贝（小拷贝跑不满 PCIe）。
+       ★ 本章后面一律按 ⚠️【5 秒】记阶段一的阻塞成本。
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>pinned memory</strong>（页锁定内存）是这里的关键细节：普通内存可能被操作系统换出到硬盘，GPU 无法直接 DMA 传输，必须先复制一次；<strong>pinned memory 被锁定在物理内存里，GPU 可以直接搬，速度快得多。</strong></p>
+<p>📖 <strong>pinned memory</strong>（页锁定内存）是这里的关键细节：普通内存可能被操作系统换出到硬盘，GPU 无法直接做 DMA 传输，必须先复制一次到内核缓冲区；<strong>pinned memory 被锁定在物理内存里，GPU 可以直接搬，速度快得多。</strong> 代价是它不能被换出，占着实打实的物理内存——70B 的 checkpoint 要 840 GB 的 pinned 内存分摊到 128 台机器上，每台 6.56 GB。</p>
 </blockquote>
-<h3 id="_1">⚠️ 追问一句：两个存盘点之间，后台真的写得完吗？</h3>
+<h3 id="1334">13.3.4 ⚠️ 追问一句：两个存盘点之间，后台真的写得完吗</h3>
 <div class="codehilite"><pre><span></span><code>    ★★ 回头看上面那张两阶段的图，问一个关键问题：
        CPU 那一行的 ▒▒▒▒▒▒ 到底有多长？
 
-    ⟹ 还是【40 分钟】—— 和朴素做法一模一样，一秒没变。
+    ⟹ 还是【42 秒】—— 和分片并行写一模一样，一秒没变。
 
-    ★ 两阶段并没有让&quot;写 HDFS&quot;这件事变快，
+    ★ 两阶段并没有让&quot;写 DFS&quot;这件事变快，
       它只是把这件事从 GPU 的关键路径上【挪走】了。
       慢的那一段还在，只是躲到了幕后。
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ⟹ 于是多出一个必须【主动满足】的约束（两阶段不自带这个保证）：
 
-         存盘间隔 T_间隔  ≥  后台写完的时间 T_写  ×  安全系数(2~3)
+         存盘间隔 T  ≥  后台写完的时间 T_写  ×  安全系数(2~3)
 
     ★ 反过来读更有用：★★ T_写 决定了你最勤能存多勤 ★★
-
-      拿 13.2 那个 400B 的例子：4.8 TB ÷ 2 GB/s → T_写 = 40 分钟
-      → T_间隔 至少要 80~120 分钟 = ⚠️【每 2 小时才敢存一次】
-
-    ★★ 所以上面&quot;于是可以存得非常勤&quot;是【有条件的】：
-       只有当 T_写 本身也被压下去，才真的能存得勤。
 </code></pre></div>
 
-<p><strong>⚠️ 那怎么把 T_写 压下去（以下均为量级估算，非论文披露）</strong></p>
-<div class="codehilite"><pre><span></span><code>    ① 提高聚合写入带宽
-         4.8 TB ÷  2 GB/s = ⚠️ 40 分钟  → 只能 2 小时存一次
-         4.8 TB ÷ 20 GB/s = ★   4 分钟  → 就能十几分钟存一次了
-
-       ⚠️ 这里有个容易估错的坑：不能只按单机网卡算。
-          每台机器写自己那一片（分片并行），单机也许能跑 1~2 GB/s，
-          128 台一起写 = 聚合 100+ GB/s。
-          ★★ 但 HDFS 集群本身通常吃不下这个量，而且它还是多任务共用的。
-          → 真实聚合吞吐往往被封顶在【几 GB/s ~ 几十 GB/s】
-
-    ② 减小 ckpt 体积（就是 13.2 那 12Ψ）
-       → 每张卡只存自己那一片、不向 rank 0 汇聚，见下一节的分布式 checkpoint
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>checkpoint 大小</th>
+<th>聚合写带宽</th>
+<th>T_写</th>
+<th>存盘间隔下限（×2~3）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>70B</td>
+<td>840 GB</td>
+<td>20 GB/s</td>
+<td>42 s</td>
+<td>1.4 ~ 2.1 分钟</td>
+</tr>
+<tr>
+<td>70B</td>
+<td>840 GB</td>
+<td>⚠️ 2 GB/s</td>
+<td>7.0 分钟</td>
+<td>14 ~ 21 分钟</td>
+</tr>
+<tr>
+<td>400B</td>
+<td>4.8 TB</td>
+<td>20 GB/s</td>
+<td>4.0 分钟</td>
+<td>8 ~ 12 分钟</td>
+</tr>
+<tr>
+<td>400B</td>
+<td>4.8 TB</td>
+<td>⚠️ 2 GB/s</td>
+<td><strong>40 分钟</strong></td>
+<td>⚠️ <strong>80 ~ 120 分钟</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 所以&quot;两阶段之后就可以存得非常勤&quot;是【有条件的】：
+       只有当 T_写 本身也被压下去，才真的能存得勤。
+       最后那一行（400B + 2 GB/s）意味着【每两小时才敢存一次】。
 </code></pre></div>
 
 <p><strong>★★ 掩盖不住的时候会发生什么：不是"后台慢慢补上"，而是【背压】打回 GPU</strong></p>
-<div class="codehilite"><pre><span></span><code>    ┌─ T_间隔 30 分钟，但 T_写 40 分钟 ────────────────────────────┐
-    │ GPU：训练 ████ [拷贝·几秒] ████ 到第二个存盘点 ██ ✋干等 10 分钟✋│
-    │ CPU：              ╰→ 写 HDFS ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ 还没写完       │
-    │                                          ↑                    │
-    │                 内存里那份副本还占着，新的拷不进来             │
-    └───────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>    场景：存盘间隔设成 30 分钟，但 T_写 是 40 分钟
+
+    GPU   训练 ████ [拷贝] ████████ 到第二个存盘点 ██ ✋干等 10 分钟✋
+    CPU        ╰→ 写 DFS ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒ 还没写完
+                                             ↑
+                       内存里那份副本还占着，新的拷不进来
 
     ★★ 卡点恰恰就在那块 pinned memory：
-       它在后台写完之前【不能释放】（后台还在读它往 HDFS 送），
+       它在后台写完之前【不能释放】（后台还在读它往 DFS 送），
        第二次存盘想拷进来，发现地方还占着 → GPU 只能干等。
 
     ⟹ ⚠️ 两阶段的收益归零，甚至更糟：
@@ -424,15 +930,295 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>背压</strong>（backpressure）：下游堵住了，压力顺着管道倒推回上游，逼上游也停下来。这里"下游"是 HDFS 写入，"上游"是 GPU 训练。</p>
+<p>📖 <strong>背压</strong>（backpressure）：下游堵住了，压力顺着管道倒推回上游，逼上游也停下来。这里"下游"是 DFS 写入，"上游"是 GPU 训练。</p>
 </blockquote>
-<p><strong>✅ 工程上的三道保险</strong></p>
+<h3 id="1335">13.3.5 ★★ 三种手段的收益对照表</h3>
+<p><strong>把前面几节的手段并排放在一起。★ 注意三列的分工完全不同：一列改 GPU 阻塞，一列改后台时长，一列什么时间都不改、改的是"能不能换并行度读回来"。</strong></p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>改变了什么</th>
+<th>GPU 每次阻塞 C</th>
+<th>后台 T_写</th>
+<th>30 分钟一存时的开销占比</th>
+<th>主机内存要求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 基线：汇聚 rank 0 + 单点同步写</td>
+<td>—</td>
+<td><strong>437 s</strong></td>
+<td>0</td>
+<td><strong>24.3%</strong></td>
+<td>⚠️ rank 0 要 840 GB</td>
+</tr>
+<tr>
+<td>② ＋分片并行写</td>
+<td>去掉汇聚，写入并行化</td>
+<td><strong>42 s</strong></td>
+<td>0</td>
+<td><strong>2.3%</strong></td>
+<td>每台 6.56 GB</td>
+</tr>
+<tr>
+<td>③ ＋两阶段异步（pinned memory）</td>
+<td>把写盘挪出关键路径</td>
+<td>⚠️ <strong>约 5 s</strong></td>
+<td>42 s</td>
+<td><strong>0.28%</strong></td>
+<td>每台 6.56 GB（且要 pinned）</td>
+</tr>
+<tr>
+<td>④ ＋并行度无关格式（DCP，§13.4）</td>
+<td><strong>不改任何耗时</strong></td>
+<td>约 5 s</td>
+<td>42 s</td>
+<td>0.28%</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"开销从 24.3% 降到 0.28%"不等于"训练快了 87 倍"</strong>，这是本教程反复强调的一个读数陷阱。<strong>★ 阻塞时间确实缩短了 87 倍（437 s → 5 s），但训练本身一秒都没变快</strong>——它只是少停了。端到端吞吐的实际变化是：<code>(1 − 0.28%) ÷ (1 − 24.3%) = 1.32</code>，即 <strong>★ 整体快了 32%，不是 87 倍</strong>。<strong>看到"时间减少 X%"和"加速 X 倍"这两种说法时，一定要先分清楚分母是谁。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ ④ 那一行值得单独说一句：DCP【不省时间】。
+      它解决的是另一个完全不同的问题（换了并行度还能不能读回来），
+      §13.4 专门讲。把它放进这张表，是为了提醒你：
+      ★★ &quot;分布式 checkpoint&quot;这个词经常被误当成&quot;存得更快的 checkpoint&quot;，
+         它真正的卖点是【可移植】，不是【快】。
+</code></pre></div>
+
+<h3 id="1336">13.3.6 ★★ 故障恢复的时间账：崩一次到底赔多少</h3>
+<p><strong>存盘只是账本的一半。另一半是：真崩了，从崩到重新跑起来，中间赔进去多少时间？</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>环节</th>
+<th>怎么算</th>
+<th>耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>检测</strong>：心跳超时判死</td>
+<td>心跳 30 s × 连续 3 次判死</td>
+<td>⚠️ 1.5 分钟</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>调度</strong>：驱逐坏节点 + 拉起新 pod + 拉镜像</td>
+<td>⚠️ 经验量级</td>
+<td>⚠️ 3 分钟</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>建立通信组</strong></td>
+<td>§13.6：Megatron 原版在 2048 卡上要 1047 秒</td>
+<td><strong>17.5 分钟</strong>（优化后 &lt; 5 秒）</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>读回 checkpoint</strong></td>
+<td>840 GB ÷ 聚合读 20 GB/s</td>
+<td>42 秒</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>重算丢失的步数</strong></td>
+<td>平均 = 存盘间隔 T ÷ 2</td>
+<td><strong>T / 2</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 把 ①②③④ 合起来叫【固定开销 R】，它和存盘间隔无关：
+
+      R（初始化未优化） = 1.5 + 3 + 17.5 + 0.7 = ⚠️ 22.7 分钟
+      R（初始化已优化） = 1.5 + 3 + 0.08 + 0.7 = ★  5.3 分钟
+
+    ★★ 只有 ⑤ 是【你自己的存盘间隔决定的】—— 这就是下一小节推演的入口。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>存盘间隔 T</th>
+<th>⑤ 重算 = T/2</th>
+<th>总恢复时间（R = 5.3 分钟）</th>
+<th>每 10 小时崩一次，占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10 分钟</td>
+<td>5 分钟</td>
+<td>10.3 分钟</td>
+<td>1.7%</td>
+</tr>
+<tr>
+<td>30 分钟</td>
+<td>15 分钟</td>
+<td>20.3 分钟</td>
+<td>3.4%</td>
+</tr>
+<tr>
+<td>60 分钟</td>
+<td>30 分钟</td>
+<td>35.3 分钟</td>
+<td>5.9%</td>
+</tr>
+<tr>
+<td>120 分钟</td>
+<td>60 分钟</td>
+<td>65.3 分钟</td>
+<td>10.9%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 注意 ③ 那一项有多吓人：初始化不优化时，R 从 5.3 分钟涨到 22.7 分钟，
+       在&quot;每 10 小时崩一次&quot;下就是 3.8% 的净损失，而且这 3.8% 和存盘策略
+       ★ 完全无关 —— 你把 checkpoint 调得再好也省不掉。这就是 §13.6 的伏笔。
+</code></pre></div>
+
+<h3 id="1337">13.3.7 ★★★ 到底该多久存一次：一个可以算出来的答案</h3>
+<p><strong>现在两边的账都齐了，可以把"存得勤"和"存得稀"放进同一个式子。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★ 设：
+      C    = 每次存盘阻塞 GPU 的时间（§13.3.5 那一列）
+      T    = 存盘间隔
+      R    = 恢复的固定开销（§13.3.6）
+      MTBF = 平均故障间隔（本章一律取 10 小时 = 600 分钟）
+
+    ★★ 浪费掉的时间占比：
+
+      W(T)  =    C / T        ← 存盘本身占的
+            +  (T/2) / MTBF   ← 崩了要重算的（平均丢半个间隔）
+            +    R  / MTBF    ← 恢复的固定开销（★ 和 T 无关，是个常数）
+
+    ★ 前两项一个随 T 变小、一个随 T 变大 —— 中间必然有个最低点。
+      对 T 求导置零：
+
+         dW/dT  =  −C/T²  +  1/(2·MTBF)  =  0
+
+         ⟹  ★★★  T* = √(2 · C · MTBF)  ★★★
+</code></pre></div>
+
+<blockquote>
+<p>📖 这个平方根式子在高性能计算领域叫 <strong>Young/Daly 公式</strong>，是 checkpoint 间隔的标准结论。<strong>★ 它不是深度学习专有的东西</strong>——超算做数值模拟几十年前就在用同一个式子。出处（✅ 已回溯）：</p>
+<ul>
+<li><strong>Young (1974)</strong>，<em>A first order approximation to the optimum checkpoint interval</em>，Communications of the ACM 17(9): 530–531。给出一阶近似 <code>T ≈ √(2·T_s·T_f)</code>（T_s = 存一次的耗时，T_f = 平均无故障时间）。</li>
+<li><strong>Daly (2006)</strong>，<em>A higher order estimate of the optimum checkpoint interval for restart dumps</em>，Future Generation Computer Systems 22(3): 303–312。做了高阶修正，在 Poisson 故障模型下给出 <code>T_opt = √(2δ(M+R)) − δ</code>（δ = 写 checkpoint 耗时，M = MTBF，R = 重启开销），并说明当 <code>(T_opt + δ)/M &lt; 1/2</code> 时它是很好的估计。</li>
+</ul>
+<p>⚠️ 本节用的是<strong>一阶</strong>形式 <code>T* = √(2·C·MTBF)</code>。Daly 的高阶式多减一个 δ、且把重启开销 R 算进了括号里——<strong>C 远小于 MTBF 时两者几乎一样</strong>，但如果你的 checkpoint 要写十几分钟、而 MTBF 只有几小时，应该改用高阶式。</p>
+</blockquote>
+<p><strong>代进 §13.3.5 那三种方案的 C（MTBF = 600 分钟，R = 5.3 分钟）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>C</th>
+<th>T* = √(2·C·MTBF)</th>
+<th>存盘浪费 C/T*</th>
+<th>重算浪费 T*/(2·MTBF)</th>
+<th>固定开销 R/MTBF</th>
+<th><strong>总浪费 W</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 汇聚 + 同步写</td>
+<td>7.3 分钟</td>
+<td><strong>93.6 分钟</strong></td>
+<td>7.80%</td>
+<td>7.80%</td>
+<td>0.88%</td>
+<td><strong>⚠️ 16.5%</strong></td>
+</tr>
+<tr>
+<td>② 分片并行同步写</td>
+<td>0.70 分钟</td>
+<td><strong>29.0 分钟</strong></td>
+<td>2.42%</td>
+<td>2.41%</td>
+<td>0.88%</td>
+<td><strong>5.7%</strong></td>
+</tr>
+<tr>
+<td>③ 两阶段异步</td>
+<td>⚠️ 0.083 分钟（5 s）</td>
+<td><strong>★ 10.0 分钟</strong></td>
+<td>0.83%</td>
+<td>0.83%</td>
+<td>0.88%</td>
+<td><strong>★ 2.6%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 这张表里有两个值得记住的规律：
+
+    ① 在最优点上，【存盘浪费】和【重算浪费】永远相等。
+       （看那两列：7.80/7.80、2.42/2.41、0.83/0.83）
+       ★ 这是平方根的几何含义，也是一条很好用的现场判据：
+         ★★ 如果你的存盘开销明显大于&quot;平均重算时间&quot;，说明存得太勤了；反之太稀。
+
+    ② T* 只随 √C 变化，不是随 C 变化。
+       C 从 7.3 分钟缩到 0.083 分钟（缩了 88 倍），
+       T* 只从 93.6 分钟缩到 10.0 分钟（缩了 9.4 倍 ≈ √88）。
+       ⟹ ★ 想把存盘间隔缩短 10 倍，得把单次存盘成本压低 100 倍。
+</code></pre></div>
+
+<p><strong>⚠️ 但 T* 不是你能自由选的，还要过 §13.3.4 那道背压关：</strong></p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>T*（Young/Daly）</th>
+<th>T_写 × 2~3 下限</th>
+<th>实际只能取</th>
+<th>代入 W(T) 的总浪费</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>70B + 20 GB/s + 两阶段</td>
+<td>10.0 分钟</td>
+<td>1.4 ~ 2.1 分钟</td>
+<td>✅ <strong>10 分钟</strong>（T* 说了算）</td>
+<td><strong>2.6%</strong></td>
+</tr>
+<tr>
+<td>400B + 2 GB/s + 两阶段</td>
+<td>10.0 分钟</td>
+<td>⚠️ <strong>80 ~ 120 分钟</strong></td>
+<td>⚠️ <strong>100 分钟</strong>（背压说了算）</td>
+<td>⚠️ <strong>9.3%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 最后那一行是全节的结论：
+
+      两阶段把 GPU 阻塞压到了 5 秒，Young/Daly 说&quot;10 分钟存一次最划算&quot;，
+      ⚠️ 但后台写带宽只有 2 GB/s，逼你必须 100 分钟才敢存一次，
+      ★ 总浪费从 2.6% 变成 9.3% —— 多赔了 6.7 个百分点，
+        而且这 6.7 个点【和 GPU、和 checkpoint 代码一点关系都没有】，
+        它纯粹是存储侧的聚合写带宽不够。
+
+    ⟹ ★★ 所以一个训练系统的容错做得好不好，最后往往卡在存储上，
+       而不是卡在训练框架上。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>上表的 400B 那一行沿用了 70B 的 R = 5.3 分钟</strong>（400B 读回 4.8 TB 显然更久），这是为了把变量控制在"T 的影响"这一项上。<strong>★ 换真实配置时请把 R 也一起重算</strong>，方法就是 §13.3.6 那五行。</p>
+</blockquote>
+<h3 id="1338">13.3.8 ✅ 工程上的三道保险</h3>
 <div class="codehilite"><pre><span></span><code>    ① ★ 留 2~3 倍安全系数，不要卡着 1 倍算
-       ⚠️ 因为 HDFS 有【尾延迟】（tail latency，少数请求异常慢）：
+       ⚠️ 因为分布式文件系统有【尾延迟】（tail latency，少数请求异常慢）：
           128 台一起写，只要一台碰上慢盘或热点 DataNode，整次都得等它
        ★★ 而存盘是全局同步的 —— 最慢那台决定所有人
-          （和 13.5 慢卡是同一个逻辑，只是换到了存储侧）
-       → 平均 3 分钟的操作，p99（100 次里最慢那次）到 10 分钟很常见
+          （和 §13.5 的慢卡是同一个逻辑，只是换到了存储侧）
+       → 平均 42 秒的操作，p99（100 次里最慢那次）到 2~3 分钟很常见
 
     ② ★★ 代码里加一道&quot;上一次没写完就跳过&quot;的兜底
        到存盘点先查后台任务状态：还没完成 → 跳过这次 + 打条日志
@@ -442,17 +1228,17 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ③ ⚠️ 别忘了后台写会【偷训练的资源】
        后台进程要吃 CPU 核、内存带宽和网卡，
        而【数据加载】（从存储读训练数据喂 GPU）也在抢同一张网卡
-       → 实际会有 1%~5% 的训练降速
+       → ⚠️ 实际会有 1%~5% 的训练降速（⚠️ 量级估计，无来源）
        ★ 所以生产系统常给后台写【限流】，故意写慢一点保护训练
-         代价：T_写 变长，安全系数要留得更足
+         代价：T_写 变长，§13.3.4 的安全系数要留得更足
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ⟹ 所以上面那句结论，完整版应该是：
+<div class="codehilite"><pre><span></span><code>    ⟹ 把 §13.3 整节压成一句话：
 
-       ✅ 阻塞时间从几十分钟降到几秒
-          —— ★ 前提是存盘间隔留足了后台写完的时间（建议 ≥ 2~3 倍）
-       ⚠️ 否则背压会打回 GPU，收益归零。
-       ★★ T_写 这个上限，决定了你到底能存多勤。
+       ✅ 两阶段把 GPU 阻塞从几分钟降到几秒，
+       ★ Young/Daly 告诉你在这个阻塞成本下该多久存一次（T* = √(2·C·MTBF)），
+       ⚠️ 但后台写带宽给了一个硬下限（T ≥ T_写 × 2~3），
+       ★★ 两者取大的那个，才是你真正能用的存盘间隔。
 </code></pre></div>
 
 <hr />
@@ -464,23 +1250,64 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        切法变了，切片就对不上了。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★ 两种解法：
+<p><strong>具体是怎么对不上的？拿一个 8192 × 8192 的权重矩阵举例</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    原始的完整矩阵 W（8192 行 × 8192 列）
 
-    ① 转换脚本（Megatron 的做法）
-       tools/checkpoint/convert.py
-       → 离线把 TP=8/PP=16 的 checkpoint 重排成 TP=4/PP=32
-       ⚠️ 需要一台内存够大的机器，大模型上很慢
+    TP=8 按列切 → 每张卡拿到 8192 × 1024
+      卡0: 列 0~1023    卡1: 列 1024~2047   ...   卡7: 列 7168~8191
+      盘上就是 8 个独立文件，各存一块 8192×1024
 
-    ② ★★ 分布式 checkpoint（DCP，现代做法）
-       存的时候就【按逻辑张量】记录，附带&quot;我是它的哪一块&quot;的元信息
-       → ★ 读的时候按新的切法重新组装，【和存盘时的并行度无关】
-       → PyTorch 的 torch.distributed.checkpoint 就是干这个的
-       ✅ VeOmni 直接用它（源码 veomni/checkpoint/）
-       ✅ Megatron 也支持（--ckpt-format torch_dist）
+    TP=4 按列切 → 每张卡要 8192 × 2048
+      卡0 需要的是【原卡0 + 原卡1】拼起来的那 2048 列
+
+    ⚠️ 问题在于：盘上那 8 个文件里【没有任何元信息】说明
+       &quot;我是 W 的第 0~1023 列&quot;。它们只是 8 个形状为 8192×1024 的张量。
+       ★ 加载器看见 8 个文件、要填 4 张卡，它不知道该怎么拼。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>解法</th>
+<th>怎么做</th>
+<th>代价</th>
+<th>谁在用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>转换脚本</strong></td>
+<td>离线把 TP=8/PP=16 的 checkpoint 重排成 TP=4/PP=32</td>
+<td>⚠️ 需要一台内存装得下整个模型的机器；大模型上很慢；每换一次并行度跑一次</td>
+<td>Megatron <code>tools/checkpoint/convert.py</code></td>
+</tr>
+<tr>
+<td>② ★★ <strong>分布式 checkpoint（DCP）</strong></td>
+<td>存的时候就按【逻辑张量 + "我是它的哪一块"】记录元信息；读的时候按新切法重新组装</td>
+<td>元信息占一点空间；加载时多一次重组</td>
+<td>✅ PyTorch <code>torch.distributed.checkpoint</code>；✅ Megatron <code>--ckpt-format torch_dist</code>；✅ VeOmni 直接构建在它之上</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📖 <strong>DCP</strong> = <strong>D</strong>istributed <strong>C</strong>heck<strong>p</strong>oint，分布式检查点。<strong>★ 它的卖点是【和存盘时的并行度无关】，不是【存得更快】</strong>（见 §13.3.5 那张表的第 ④ 行）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ DCP 存的东西，概念上长这样：
+
+      逻辑张量名           全局形状        我这一片的位置            这一片的数据
+      ────────────────────────────────────────────────────────────────────
+      layer.0.mlp.w1     [8192, 8192]   offset=[0, 0]   size=[8192,1024]   &lt;bytes&gt;
+      layer.0.mlp.w1     [8192, 8192]   offset=[0,1024] size=[8192,1024]   &lt;bytes&gt;
+      ...
+
+    ★★ 有了中间那两列，读的时候就是一道纯粹的区间覆盖题：
+       &quot;我这张卡要 [0, 2048) 这段列，去找所有和它有交集的分片，拼起来。&quot;
+       ⟹ 和存的时候切成几份、怎么切，完全脱钩。
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>为什么这件事在今天变得重要</strong>：训练过程中改并行度是常见需求——<strong>扩容了、序列拉长了、某批机器坏了只剩 900 张卡</strong>。★ 如果 checkpoint 和并行度绑死，这些操作全都做不了。</p>
+<p>🔑 <strong>为什么这件事在今天变得重要</strong>：训练过程中改并行度是常见需求——<strong>扩容了、序列拉长了要加 CP、某批机器坏了只剩 900 张卡</strong>。★ 如果 checkpoint 和并行度绑死，这些操作全都做不了，你只能等那批坏机器修好。<strong>⚠️ 而 §13.1 已经说过：万卡规模下，"某批机器坏了"是每周都会发生的事。</strong></p>
+<p>⚠️ <strong>但要留意 §13.7 的那条冲突</strong>：改了并行度，规约顺序就变了，<strong>"续训"和"bitwise 一致"从此不可兼得</strong>。DCP 让你【能】换并行度，它不保证换完以后数值和原来一样。</p>
 </blockquote>
 <hr />
 <h2 id="135-straggler">13.5 ★★ 慢卡（straggler）：比宕机更可怕</h2>
@@ -488,45 +1315,180 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ★★ 慢卡是【坏】故障：什么都不报，就是慢一点。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ┌─ 为什么一张慢卡能拖垮一万张 ──────────────────────┐
-    │                                                    │
-    │  每一步结束都有 all-reduce（[03 章](03-通信原语.md)）│
-    │  ★ all-reduce 是【同步】的：所有人到齐才能走         │
-    │                                                    │
-    │  卡 0~9998：算完了，等 ▒▒▒▒▒▒▒▒▒▒▒                 │
-    │  卡 9999  ：算得慢 ████████████████                │
-    │             ↑ ★ 全场的速度 = 最慢那张卡的速度       │
-    │                                                    │
-    │  → 一张卡慢 20%，★ 整个任务就慢 20%                 │
-    │  → 一万张卡的钱，买到八千张卡的产出                  │
-    └────────────────────────────────────────────────────┘
+<h3 id="1351">13.5.1 为什么一张慢卡能拖垮一万张</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 每一步结束都有一次 all-reduce（[03 章](03-通信原语.md)），
+      而 all-reduce 是【同步】的：所有人到齐才能走。
+
+    卡 0      算完了 ████████            等 ▒▒▒▒▒▒▒▒▒▒▒▒
+    卡 1      算完了 ████████            等 ▒▒▒▒▒▒▒▒▒▒▒▒
+    ...
+    卡 9998   算完了 ████████            等 ▒▒▒▒▒▒▒▒▒▒▒▒
+    卡 9999   算得慢 ████████████████████████
+                                        ↑ 全场在这里对齐，然后一起走
+
+    ← 一步的时长，由【最慢那张卡】决定 ──────────────────→
 </code></pre></div>
 
-<p><strong>慢卡的常见成因</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ⚠️ GPU 降频（散热不好、电源不足）
-    ⚠️ ECC 内存错误触发的自动重试
-    ⚠️ 网卡协商到了较低速率（本该 400G，实际跑在 100G）
-    ⚠️ 这台机器上还跑着别的进程（资源被抢）
-    ⚠️ ★ 数据倾斜：这个 rank 恰好分到了特别长的样本
-       （这条不是硬件问题，是【负载不均】—— 见 [09 章](09-专家并行EP.md) 的 MoE 版本）
+<table>
+<thead>
+<tr>
+<th>最慢那张卡慢多少</th>
+<th>整个任务的速度</th>
+<th>1 万张卡实际买到的产出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不慢</td>
+<td>100%</td>
+<td>10000 张</td>
+</tr>
+<tr>
+<td>慢 10%</td>
+<td>90.9%</td>
+<td>9091 张</td>
+</tr>
+<tr>
+<td>慢 20%</td>
+<td>83.3%</td>
+<td>8333 张</td>
+</tr>
+<tr>
+<td>慢 50%</td>
+<td>66.7%</td>
+<td>6667 张</td>
+</tr>
+<tr>
+<td>慢 2 倍</td>
+<td>50.0%</td>
+<td>5000 张</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 注意这张表的残酷之处：代价【和卡数无关】。
+       一张卡慢 20%，不管总共是 8 张卡还是 1 万张卡，
+       整体都是慢 20%。但 1 万张卡上，这 20% 换算成钱是另一个数量级。
 </code></pre></div>
 
-<h3 id="megascale">✅ MegaScale 怎么抓它</h3>
+<h3 id="1352-gpu">13.5.2 ⚠️ 说"GPU 利用率低"之前，先说清楚是哪个利用率</h3>
+<p><strong>这是排查慢卡时最常见的误区：三个完全不同的指标，都被叫做"GPU 利用率"。</strong></p>
+<table>
+<thead>
+<tr>
+<th>口径</th>
+<th>怎么量</th>
+<th>它到底在说什么</th>
+<th>干等 all-reduce 时它是多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong><code>nvidia-smi</code> 的 <code>utilization.gpu</code></strong></td>
+<td>采样周期内<strong>有 kernel 在跑</strong>的时间占比</td>
+<td>只回答"卡上有没有活"</td>
+<td>⚠️ <strong>接近 100%</strong>——NCCL 的等待也是一个 kernel 在自旋</td>
+</tr>
+<tr>
+<td>② <strong>算力利用率</strong>（MFU / Tensor Core 占用）</td>
+<td>实际 FLOP/s ÷ 峰值 FLOP/s</td>
+<td>算力被用掉了多少</td>
+<td>接近 0</td>
+</tr>
+<tr>
+<td>③ <strong>带宽利用率</strong></td>
+<td>实测 HBM 带宽 ÷ 3.35 TB/s</td>
+<td>显存带宽被用掉了多少</td>
+<td>接近 0</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 三个坑，一个比一个隐蔽：
+
+    ① ★ &quot;nvidia-smi 显示 100%，所以卡在干活&quot; —— ⚠️ 错。
+       全场干等 all-reduce 时它也是 100%。
+       ⟹ 它是一个【有没有活】的指标，不是【干得好不好】的指标。
+
+    ② ★★ &quot;算力利用率只有 3%，所以在浪费&quot; —— ⚠️ 不一定。
+       如果这个算子是 Memory Bound（访存受限）的，
+       算力利用率低是【定义决定的物理规律】，不是浪费。
+
+    ③ ★ 只说&quot;GPU 利用率 15%&quot;而不说口径 —— ⚠️ 这句话等于没说。
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>Memory Bound</strong>（访存受限）：一个算子每从显存读 1 字节能顺带做的浮点运算次数，叫<strong>算术强度</strong>（arithmetic intensity，单位 FLOP/字节）。H100 SXM5 的分界点是 <code>989 TFLOP/s ÷ 3.35 TB/s = 295 FLOP/字节</code>。<strong>★ 算术强度低于 295 的算子，一定卡在带宽上，算力必然用不满——这是硬件规格决定的，写多好的 kernel 都改不了。</strong> 典型例子是 LayerNorm、逐元素加法，以及 <a href="14-RL训练框架.html">14 章</a> 要讲的自回归生成。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 排查慢卡的正确姿势：
+       ★ 不看 nvidia-smi 的 utilization，
+       ★★ 看【每个 rank 进入 all-reduce 之前的那段计算时间】。
+          总时间大家都一样（因为要同步），
+          这段&quot;进屏障之前&quot;的时间才会暴露谁在拖后腿。
+</code></pre></div>
+
+<h3 id="1353">13.5.3 慢卡的常见成因</h3>
+<table>
+<thead>
+<tr>
+<th>成因</th>
+<th>属于</th>
+<th>特征</th>
+<th>处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU 降频（散热差、供电不足）</td>
+<td>硬件</td>
+<td>同一台机器持续慢，<code>nvidia-smi -q -d PERFORMANCE</code> 有 <code>SW Thermal Slowdown</code></td>
+<td>驱逐机器，报修</td>
+</tr>
+<tr>
+<td>ECC 内存错误触发自动重试</td>
+<td>硬件</td>
+<td><code>nvidia-smi -q -d ECC</code> 的可纠错计数在涨</td>
+<td>驱逐机器</td>
+</tr>
+<tr>
+<td>网卡协商到低速率（本该 400G 跑在 100G）</td>
+<td>网络</td>
+<td>只在跨机通信的步骤慢</td>
+<td>查 <code>ibstat</code> 的 rate</td>
+</tr>
+<tr>
+<td>这台机器上还跑着别的进程</td>
+<td>调度</td>
+<td>随机出现、随机消失</td>
+<td>检查调度隔离</td>
+</tr>
+<tr>
+<td>★ <strong>数据倾斜</strong>：这个 rank 恰好分到特别长的样本</td>
+<td><strong>负载不均</strong></td>
+<td>慢的 rank 每步都不一样</td>
+<td>★ 改数据分桶，不是换机器</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 最后一条是唯一一个【不是硬件问题】的：
+       它是负载不均，换机器一点用都没有。
+       ★ MoE 里的专家负载不均是同一个病的另一种形态，见 [09 章](09-专家并行EP.md)；
+       ★ RL 生成阶段的长尾也是，见 [14 章 §14.6](14-RL训练框架.md)。
+       ★★ 这三处的共同结构：【同步屏障 + 负载不均 = 全场等最慢的】。
+</code></pre></div>
+
+<h3 id="1354-megascale">13.5.4 ✅ MegaScale 怎么抓它</h3>
 <blockquote>
 <p>✅ <em>"To troubleshoot nuanced cases caused by stragglers, we develop a performance analysis tool to record </em><em>fine-grained CUDA events</em><em> and generate </em><em>system-wide heat-map and timeline trace from a distributed view</em><em>, and develop a </em><em>3D parallel training visualization tool</em><em> to show data dependencies between ranks for diagnosis."</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★ 抓慢卡的通用思路（不依赖具体工具）：
 
-    ① 给每个 rank 的每一步打时间戳
-    ② ★ 关键是看【计算时间】而不是【总时间】：
-       总时间大家都一样（因为要同步），
-       ★★ 但&quot;进入 all-reduce 之前&quot;的那段时间会暴露谁在拖后腿
-    ③ 画成热力图，一眼看出哪个 rank / 哪台机器是常客
+    ① 给每个 rank 的每一步打时间戳（用 CUDA event，不要用 CPU 的 time.time）
+    ② ★★ 只看【进入 all-reduce 之前】的那段，见 §13.5.2
+    ③ 画成热力图（横轴时间、纵轴 rank），一眼看出哪个 rank 是常客
     ④ 找到后：驱逐这台机器，换一台
 </code></pre></div>
 
 <blockquote>
-<p>✅ MegaScale 的整套自动化流程：<strong>心跳（heartbeat）</strong>→ 驱动进程发现异常 → <strong>自检诊断</strong>（<em>"we run an </em><em>all-to-all test</em><em> among the GPUs within a single node... each node also conducts an </em><em>all-reduce test</em><em> with neighboring machines under the same ToR switch"</em>）→ <strong>Kubernetes 驱逐坏节点、补上健康节点</strong> → 从最近的 checkpoint 恢复。</p>
+<p>✅ MegaScale 的整套自动化流程：<strong>心跳（heartbeat）</strong>→ 驱动进程发现异常 → <strong>自检诊断</strong>（<em>"we run an </em><em>all-to-all test</em><em> among the GPUs within a single node... each node also conducts an </em><em>all-reduce test</em><em> with neighboring machines under the same ToR switch"</em>）→ <strong>Kubernetes 驱逐坏节点、补上健康节点</strong> → 从最近的 checkpoint 恢复。<strong>★ 注意这四步正好对应 §13.3.6 时间账里的 ①②③④。</strong></p>
 </blockquote>
 <hr />
 <h2 id="136">13.6 ✅ 一个意外的瓶颈：初始化也要优化</h2>
@@ -534,10 +1496,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>✅ <em>"our empirical measurement indicates that the </em><em>initialization time for Megatron-LM on 2,048 NVIDIA Ampere GPUs is approximately 1047 seconds</em><em>."</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★★ 什么都还没开始算，光是【建立通信组】就花了 17 分钟 ★★
+<div class="codehilite"><pre><span></span><code>    ★★ 什么都还没开始算，光是【建立通信组】就花了 1047 秒 = 17.5 分钟 ★★
 
     ⚠️ 平时看不出问题（相比几周的训练不算什么），
-    ★ 但如果你要恢复 100 多次，17 分钟 × 100 = ★ 28 小时纯浪费。
+    ★ 但如果你要恢复 100 多次：
+         1047 秒 × 100 = 104700 秒 = ★ 29 小时纯浪费
+       —— 比一整天还多，而且这一天里 2048 张卡什么都没算。
     ★ 而且它让&quot;改一行代码测一下&quot;变得无法忍受。
 </code></pre></div>
 
@@ -546,76 +1510,187 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ① <em>"This barrier uses </em><em>TCPStore</em><em>, an inner distributed Key-Value Store implementation in Pytorch which operates in a </em><em>single-threaded, blocking</em><em> read-write manner. We </em><em>replace TCPStore with Redis</em><em>, which is non-blocking and asynchronous. This reduces the initialization time to </em><em>361 seconds</em><em> on 2,048 GPUs."</em><br />
 ② <em>"we carefully design the </em><em>order in which communication groups are initialized</em><em> to minimize the need for global barriers. This approach lowers the time complexity of the global barrier from </em><em>O(n²) to O(n)</em><em>. The initialization time is reduced to </em><em>under 5 seconds</em><em> on 2048 GPUs."</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★★ 1047 秒 → 361 秒 → ★ 5 秒（约 200 倍）★★
-
-    🔑 这个案例的教训比数字本身更重要：
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>耗时</th>
+<th>相对上一步：时间减少了</th>
+<th>相对上一步：加速了</th>
+<th>相对最初：加速了</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原版（TCPStore + O(n²) barrier）</td>
+<td>1047 s</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>① 换成 Redis</td>
+<td>361 s</td>
+<td>65.5%</td>
+<td><strong>2.90×</strong></td>
+<td>2.90×</td>
+</tr>
+<tr>
+<td>② 再优化初始化顺序，barrier 降到 O(n)</td>
+<td><strong>&lt; 5 s</strong></td>
+<td>98.6%</td>
+<td><strong>&gt; 72×</strong></td>
+<td><strong>★ &gt; 209×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这张表的后两列，是本教程反复提醒的那个读数陷阱</strong>：第 ① 步"时间减少 65.5%"听起来像"快了 65%"，<strong>★ 实际是快了 190%（2.90 倍）</strong>。两者的关系是 <code>加速倍数 = 1 ÷ (1 − 时间减少比例)</code>。<strong>看到"降低了 X%"一定要换算一次再比较。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    🔑 这个案例的教训比数字本身更重要：
        ★ 大规模系统里，&quot;平时无所谓的常数开销&quot;会变成主要矛盾。
-       ★ 而且这两处都不是算法问题 —— 一个是数据结构选错了，
+       ★ 而且这两处都不是算法问题 —— 一个是数据结构选错了
+         （单线程阻塞的 KV store），
          一个是同步次数的复杂度是 O(n²)。
+       ★★ 两个都是&quot;写的时候没想过要跑在 2048 张卡上&quot;。
+
+    ⟹ 回头看 §13.3.6 那张恢复时间账：
+       ③ 那一项从 17.5 分钟变成 5 秒，
+       固定开销 R 从 22.7 分钟降到 5.3 分钟，
+       ★ 在&quot;每 10 小时崩一次&quot;下，白捡 2.9 个百分点的吞吐。
 </code></pre></div>
 
 <hr />
 <h2 id="137">13.7 ⚠️ 确定性：为什么"续训"很难和"没断过"一样</h2>
-<p><strong>理想情况</strong>：从第 8 万步的 checkpoint 恢复，后面每一步的 loss 都和没断过时一模一样（bitwise 相同）。<strong>⚠️ 现实中这很难做到。</strong></p>
-<div class="codehilite"><pre><span></span><code>    ★ 五个破坏确定性的来源：
+<p><strong>理想情况</strong>：从第 8 万步的 checkpoint 恢复，后面每一步的 loss 都和没断过时一模一样（bitwise 相同，即每一个比特都相等）。<strong>⚠️ 现实中这很难做到。</strong></p>
+<h3 id="1371">13.7.1 五个破坏确定性的来源</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>来源</th>
+<th>为什么会破坏</th>
+<th>好不好修</th>
+<th>修法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>数据顺序</strong></td>
+<td>checkpoint 里没存 dataloader 位置 → 恢复后喂的数据不一样</td>
+<td>★ 最容易</td>
+<td>存下来就行（§13.2 的 ⑤）</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>随机数</strong>（dropout 掩码、数据增强）</td>
+<td>恢复后 RNG 从头开始</td>
+<td>★ 容易</td>
+<td>存 RNG 状态，★ 而且是【每个 rank 各自的】</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★ <strong>浮点加法不满足结合律</strong></td>
+<td>见下</td>
+<td>⚠️ <strong>最难</strong></td>
+<td>固定 NCCL 算法，代价是性能</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>非确定性 CUDA 算子</strong></td>
+<td>用了原子加（atomicAdd），线程完成顺序不定</td>
+<td>中等</td>
+<td><code>torch.use_deterministic_algorithms(True)</code>，⚠️ 代价是变慢</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>并行度变了</strong></td>
+<td>TP=8 和 TP=4 的规约顺序不同</td>
+<td>❌ <strong>不可修</strong></td>
+<td>★ 和 §13.4 天然冲突，只能二选一</td>
+</tr>
+</tbody>
+</table>
+<h3 id="1372-3">13.7.2 ★★ 把第 ③ 条摊开看：三个数，两种加法，两个答案</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 浮点加法不满足结合律，这不是精度问题，是【表示范围】问题：
 
-    ① 数据顺序
-       → checkpoint 里没存 dataloader 的位置 → 恢复后喂的数据不一样
-       → ★ 这是最容易犯也最容易修的一条（存下来就行）
+      取三个数：a = 1.0，b = 1e16，c = −1e16
+      （用 FP64 举例，FP32/BF16 上同样成立，只是阈值更低）
 
-    ② 随机数（dropout 掩码、数据增强）
-       → 必须存 RNG 状态。★ 而且是【每个 rank 各自的】
-       → 📌 回忆 [11 章](11-重计算与激活优化.md)：重计算也依赖这个
+      写法一： (a + b) + c
+               a + b = 1.0 + 1e16
+                     ⚠️ 1e16 在 FP64 里的最小可分辨间隔约是 2.0，
+                        1.0 比它还小 → 加不进去，结果还是 1e16
+               1e16 + (−1e16) = ★ 0.0
 
-    ③ ★★ 浮点加法不满足结合律
-       (a + b) + c  ≠  a + (b + c)      ← 在浮点数下真的不相等
-       → all-reduce 的规约顺序若不固定，结果就有微小差异
-       → ★ 而 NCCL 会根据网络拓扑、消息大小【自动选算法】，
-         同样的代码在不同时刻可能走不同的规约树
-       ⟹ ★★ 这是最难消除的一条
+      写法二： a + (b + c)
+               b + c = 1e16 − 1e16 = 0.0
+               1.0 + 0.0 = ★ 1.0
 
-    ④ 非确定性 CUDA 算子
-       → 某些 kernel 用了原子加（atomicAdd），线程完成顺序不定
-       → torch.use_deterministic_algorithms(True) 可以强制换掉，
-         ⚠️ 代价是变慢
-
-    ⑤ 并行度变了
-       → TP=8 和 TP=4 的规约顺序不同 → 数值必然有差异
-       → ★ 所以&quot;改并行度续训&quot;和&quot;bitwise 一致&quot;是【天然冲突】的
+    ⟹ ★★ 0.0 ≠ 1.0。同样三个数，换个加法顺序，答案差了 100%。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★★ 一个重要的观念纠正：
+<div class="codehilite"><pre><span></span><code>    ★ 这件事怎么传到 all-reduce 上：
 
-      ⚠️ 微小的数值差异【不等于】训练坏了。
-      训练本身就有噪声，1e-7 的差异会被淹没。
+      ring all-reduce 把 8 个 rank 的梯度依次累加，
+      加法顺序由【环的走向和分块方式】决定。
+      ⟹ 换一个规约树、换一个分块大小，加法顺序就变了。
 
-      ★ 追求 bitwise 一致的真正理由不是&quot;精度&quot;，而是：
-        ★★【可复现 = 可调试】★★
-        loss 飞了要复现现场，没有确定性就只能靠猜。
+    ⚠️ 而 NCCL 会根据【网络拓扑、消息大小、当前可用带宽】自动选算法：
+      同样的代码，在不同时刻、不同机器组合上，可能走 ring，可能走 tree。
+      ⟹ ★★ 这就是为什么第 ③ 条最难消除 —— 它不在你的代码里。
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>这和推理侧的"训推一致"是同一类问题的两个战场</strong>：训练侧要的是"这次训练和上次训练一样"，推理侧要的是"部署出来的模型和训练时算得一样"。<strong>两者都卡在同一个根因上：浮点加法不满足结合律 + 算子实现会按 batch/shape 换 kernel。</strong></p>
+<p>📌 <strong>这和推理侧的"训推一致"是同一类问题的两个战场</strong>：训练侧要的是"这次训练和上次训练一样"，推理侧要的是"部署出来的模型和训练时算得一样"。<strong>两者都卡在同一个根因上：浮点加法不满足结合律 + 算子实现会按 batch/shape 换 kernel。</strong> ★ 这个根因的完整拆解（从几个 ULP 的误差怎么一路放大到训练崩掉）在 <a href="../../大模型算子开发/11-训推一致性算子层.html">大模型算子开发 · 11 训推一致性算子层</a>，本章不重复。RL 场景下它为什么会影响收敛，见 <a href="14-RL训练框架.html">14 章 §14.5</a>。</p>
 </blockquote>
+<h3 id="1373">13.7.3 ★★ 一个重要的观念纠正</h3>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 微小的数值差异【不等于】训练坏了。
+       训练本身就有噪声（数据采样、dropout、梯度裁剪），
+       1e-7 量级的差异会被淹没在里面。
+
+    ★ 追求 bitwise 一致的真正理由不是&quot;精度&quot;，而是：
+
+       ★★★【可复现 = 可调试】★★★
+
+       loss 在第 12 万步飞了，你要复现那个现场。
+       没有确定性，你跑十遍可能十遍都不飞 —— 于是只能靠猜。
+
+    ⟹ ★ 所以确定性开关的正确用法是：
+       平时关着（要性能），排查问题时打开（要可复现）。
+       ⚠️ 而不是&quot;为了严谨一直开着&quot;。
+</code></pre></div>
+
 <hr />
 <h2 id="138">13.8 挂回真实框架</h2>
-<div class="codehilite"><pre><span></span><code><span class="c1"># Megatron</span>
+<div class="codehilite"><pre><span></span><code><span class="c1"># Megatron-LM</span>
 --save<span class="w"> </span>/path/to/ckpt
---save-interval<span class="w"> </span><span class="m">500</span><span class="w">                 </span><span class="c1"># ★ 每 500 步存一次</span>
+--save-interval<span class="w"> </span><span class="m">500</span><span class="w">                 </span><span class="c1"># ★ 每 500 步存一次（§13.3.7 的 T）</span>
 --load<span class="w"> </span>/path/to/ckpt<span class="w">                </span><span class="c1"># 自动找最新的</span>
 --ckpt-format<span class="w"> </span>torch_dist<span class="w">            </span><span class="c1"># ★★ §13.4 的分布式 checkpoint</span>
---async-save<span class="w">                        </span><span class="c1"># ★ §13.3 的异步写盘</span>
+--async-save<span class="w">                        </span><span class="c1"># ★ §13.3.3 的两阶段异步写盘</span>
 --no-load-optim<span class="w"> </span>/<span class="w"> </span>--no-load-rng<span class="w">     </span><span class="c1"># ⚠️ 调试用，正常训练【绝不要加】</span>
---use-checkpoint-opt_param-scheduler
+<span class="w">                                    </span><span class="c1">#    加了就是 §13.2.4 说的 loss spike</span>
+--use-checkpoint-opt_param-scheduler<span class="w"> </span><span class="c1"># 从 checkpoint 恢复学习率调度器状态</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># PyTorch 侧的确定性开关（§13.7，⚠️ 排查问题时才开）</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">use_deterministic_algorithms</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+<span class="c1"># ⚠️ 遇到没有确定性实现的算子会直接抛 RuntimeError —— 这是【特性】不是 bug，</span>
+<span class="c1">#    它在告诉你哪里有不确定性。cuBLAS 那部分要配一个环境变量：</span>
+<span class="c1">#    CUBLAS_WORKSPACE_CONFIG=:4096:8</span>
+<span class="n">torch</span><span class="o">.</span><span class="n">backends</span><span class="o">.</span><span class="n">cudnn</span><span class="o">.</span><span class="n">benchmark</span> <span class="o">=</span> <span class="kc">False</span>   <span class="c1"># ⚠️ 开着会按 shape 自动选 kernel</span>
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    源码位置：
       Megatron-LM/megatron/training/checkpointing.py
           ★ save_checkpoint() / load_checkpoint() —— 存什么、怎么存全在这
       Megatron-LM/megatron/core/dist_checkpointing/
-          ★★ 分布式 checkpoint 的实现（并行度无关的读写）
+          ★★ §13.4 分布式 checkpoint 的实现（并行度无关的读写）
       VeOmni/veomni/checkpoint/
-          ★ 直接构建在 PyTorch DCP 之上，可以对照着读，
+          ★ 直接构建在 PyTorch DCP 之上，代码量小得多，可以对照着读，
             ✅ 它的 README 明确写了用 &quot;Torch Distributed Checkpoint&quot;
 </code></pre></div>
 
@@ -623,40 +1698,68 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="139">13.9 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>① ★ 故障是常态不是意外：✅ MegaScale 一次生产训练恢复了【100 多次】
    ★ 概率账：单卡月故障率 0.1% × 1 万张 → 一个月全不出事的概率 ≈ 0.0045%
+     期望故障次数 10 次/月
+   ⚠️ 用 MegaScale 反推真实单卡月故障率 ≈ 0.58%，是上面假设的 6 倍
    ★★ 而分布式训练一损俱损：一张卡挂 = 全场停
+   🔑 本章统一口径：MTBF = 10 小时
 
-② ★ 训练 checkpoint ≠ 模型权重。必须存：
-   FP32 参数(4Ψ) + 优化器 m,v(8Ψ) = ★ 12Ψ 字节
-   + 调度器步数 + ★ dataloader 位置 + ★ RNG 状态
-   ★★ 优化器状态绝不能省：v 从 0 开始会让 m/√v 爆炸 → loss spike
+② ★ 训练 checkpoint ≠ 模型权重。★★ 大小 = 12 字节/参数：
+   FP32 主权重 4Ψ + Adam m 4Ψ + Adam v 4Ψ
+   ⚠️ m 和 v 是【两个】各 4Ψ 的张量：70B 下各 280 GB，合计 560 GB
+   + 调度器步数 + ★ dataloader 位置 + ★ 每个 rank 的 RNG 状态
+   70B → 840 GB（= 782 GiB）  400B → 4.8 TB
+   ⚠️ 显存里是 16 字节/参数，盘上只要 12 —— BF16 权重和梯度都不用存
+   ★★ 优化器状态绝不能省：v 从 0 开始 → m/(√v+ε) ≈ 1e7×g → loss spike
 
 ③ ★★★ checkpoint 的核心矛盾：存得勤浪费时间，存得稀重跑得多
-   ✅ 出路是 MegaScale 的两阶段：
-      先 GPU→host 内存（pinned memory，PCIe 快）→【几秒】→ 立刻继续训练
-      再由后台进程异步写 HDFS
-   ⟹ 阻塞时间从几十分钟降到几秒 → 于是可以存得很勤
-   ⚠️ 但有个前提：后台那段【一秒没变快】，只是挪到了幕后
-      ★ 约束：存盘间隔 ≥ T_写 × 2~3（HDFS 有尾延迟，最慢那台决定所有人）
+   三种手段各治一处（70B / 1024 卡 / 聚合写 20 GB/s）：
+     基线 汇聚 rank 0 + 同步写      GPU 阻塞 437 s   30 分钟一存 → 24.3%
+     ＋分片并行写                   GPU 阻塞  42 s                → 2.3%
+     ＋✅ MegaScale 两阶段异步       GPU 阻塞 ⚠️ 5 s               → 0.28%
+   ⚠️ 开销 24.3% → 0.28% 不是&quot;快了 87 倍&quot;，端到端只快 32%
+   ⚠️ 两阶段的后台那段【一秒没变快】，只是挪到了幕后
+      ★ 约束：存盘间隔 ≥ T_写 × 2~3（存储有尾延迟，最慢那台决定所有人）
       ★★ 违反了就是【背压】打回 GPU：pinned memory 没释放，新的拷不进来
       🔑 兜底：到存盘点先查上一次写完没，没写完就跳过这次
 
-④ ⚠️ 并行度变了 checkpoint 就读不了 —— 解法是【分布式 checkpoint】
-   按逻辑张量+位置元信息存，读时按新切法重组
-   ✅ Megatron --ckpt-format torch_dist；✅ VeOmni 直接用 PyTorch DCP
+④ ★★★ 多久存一次可以算出来：★ T* = √(2 · C · MTBF)（Young/Daly）
+   C = 每次阻塞，MTBF = 10 小时 → 两阶段（C=5 s）的 T* = 10 分钟，总浪费 2.6%
+   ★ 最优点上&quot;存盘浪费&quot;恒等于&quot;重算浪费&quot; —— 这是最好用的现场判据
+   ★ T* 只随 √C 变：C 缩 88 倍，T* 只缩 9.4 倍
+   ⚠️ 但 T* 要和背压下限取大的那个：
+      400B + 2 GB/s 被逼到 100 分钟一存，总浪费 2.6% → 9.3%
+      ★★ 容错做得好不好，最后常常卡在存储带宽上，不在训练框架上
 
-⑤ ★★ 慢卡比宕机可怕：宕机会报错，慢卡只是慢
-   ★ all-reduce 是同步的 → 全场速度 = 最慢那张卡
-   ★ 抓法：看【进入 all-reduce 之前】的计算时间，而不是总时间
+⑤ ★★ 恢复一次的时间账 = 检测 1.5 min + 调度 3 min + 建通信组
+   + 读 checkpoint 0.7 min + 重算 T/2
+   ★ 前四项是固定开销 R，和存盘间隔无关
+
+⑥ ⚠️ 并行度变了 checkpoint 就读不了 —— 解法是【分布式 checkpoint DCP】
+   按&quot;逻辑张量名 + 全局形状 + offset/size&quot;存，读时按新切法做区间覆盖
+   ✅ Megatron --ckpt-format torch_dist；✅ VeOmni 直接用 PyTorch DCP
+   ⚠️ DCP【不省时间】，它换来的是【可移植】
+
+⑦ ★★ 慢卡比宕机可怕：宕机会报错，慢卡只是慢
+   ★ all-reduce 是同步的 → 全场速度 = 最慢那张卡；慢 20% 就是整体慢 20%
+   ⚠️⚠️ 说&quot;GPU 利用率低&quot;必须说口径：
+      nvidia-smi 的 utilization 在干等 all-reduce 时也是 100%
+      算力利用率低 ≠ 浪费 —— Memory Bound 算子（算术强度 &lt; 295 FLOP/字节）
+      算力用不满是【物理规律】
+   ★ 抓法：看【进入 all-reduce 之前】的计算时间，用 CUDA event 打点
    ✅ MegaScale：心跳 → 自检（节点内 all-to-all + 邻机 all-reduce）
       → K8s 驱逐换机 → 从最近 checkpoint 恢复
 
-⑥ ✅ 意外瓶颈：2048 卡上 Megatron-LM 建通信组花了【1047 秒】
-   TCPStore→Redis：361 秒；再优化初始化顺序把全局 barrier 从 O(n²)→O(n)：★ 5 秒
+⑧ ✅ 意外瓶颈：2048 卡上 Megatron-LM 建通信组花了【1047 秒】
+   TCPStore→Redis：361 秒（时间减少 65.5% = ★ 加速 2.90×）
+   再把全局 barrier 从 O(n²) 降到 O(n)：★ &lt; 5 秒（总计 &gt; 209×）
    🔑 教训：大规模下&quot;平时无所谓的常数开销&quot;会变成主要矛盾
 
-⑦ ⚠️ 确定性的五个破坏源：数据顺序 / RNG / ★★ 浮点加法不满足结合律
+⑨ ⚠️ 确定性的五个破坏源：数据顺序 / RNG / ★★ 浮点加法不满足结合律
    / 非确定性算子 / 并行度变化
-   ★ 追求 bitwise 一致的理由不是精度，是【可复现 = 可调试】
+   ★ (1.0 + 1e16) + (−1e16) = 0，1.0 + (1e16 − 1e16) = 1.0 —— 差 100%
+   ★ NCCL 会按拓扑和消息大小自动换算法，所以第三条不在你的代码里
+   ★★ 追求 bitwise 一致的理由不是精度，是【可复现 = 可调试】
+   ⟹ 平时关着，排查时打开
 </code></pre></div>
 
 <p><strong>到这里，"训练一个基座模型"这件事的系统面已经讲完了。下一章讲一件不太一样的事</strong>：当训练从"喂数据"变成"模型自己生成、再根据结果学"时，<strong>上面这套框架为什么不够用了</strong>。</p>

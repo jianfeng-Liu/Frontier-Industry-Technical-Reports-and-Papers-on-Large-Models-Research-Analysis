@@ -253,9 +253,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这份文档回答一个问题：这么多训练框架，我该用哪个？</strong><br />
 ✅ = 论文/官方源码原文披露 ｜ ⚠️ = 本文的推断或经验判断</p>
-<p>涉及的两份源码均已实际拉取走查：<br />
-✅ <a href="源码/Megatron-LM/">源码/Megatron-LM/</a> commit <code>c9676f4</code>，Megatron-Core 0.20.0<br />
-✅ <a href="源码/VeOmni/">源码/VeOmni/</a> commit <code>c465a63</code></p>
+<p>涉及的<strong>五份源码</strong>均已实际拉取到本地走查，下文所有行数、行号、文件路径都出自它们：</p>
+<ul>
+<li>✅ <a href="源码/Megatron-LM/">源码/Megatron-LM/</a> commit <code>c9676f4</code>（Megatron-Core 0.20.0）</li>
+<li>✅ <a href="源码/VeOmni/">源码/VeOmni/</a> commit <code>c465a63</code></li>
+<li>✅ <a href="源码/TorchTitan/">源码/TorchTitan/</a> commit <code>9d7dc2f</code></li>
+<li>✅ <a href="源码/veRL/">源码/veRL/</a> commit <code>b256ebf</code></li>
+<li>✅ <a href="源码/DeepSpeed/">源码/DeepSpeed/</a> PyPI sdist <code>v0.19.5</code>（⚠️ 非 git commit，原因见 §4.1）</li>
+</ul>
 </blockquote>
 <hr />
 <h2 id="0">0 · ★ 三十秒版本</h2>
@@ -350,7 +355,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>✅ ZeRO-1/2/3 发源地</td>
 <td>✅ FSDP2</td>
 <td>借底层框架</td>
-<td>✅ FSDP2 + HSDP</td>
+<td>✅ FSDP2 + HSDP（Hybrid Sharded Data Parallel，混合分片数据并行）</td>
 </tr>
 <tr>
 <td><strong>SP/CP</strong></td>
@@ -394,7 +399,112 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<h3 id="21">2.1 ✅ 代码规模实测（全部来自本次拉取的源码）</h3>
+<blockquote>
+<p>⚠️ <strong>上面这张表只能用来"查有没有"，不能用来做选型判断。</strong> 它是一张功能勾选清单，而勾选清单最大的问题是：<strong>把"有"和"有且好用"画成了同一个勾</strong>，也把代价全藏起来了 —— 五家在 <code>TP</code> 那一行都能打勾，但 Megatron 的 7,330 行和 TorchTitan 的 95 行背后是两种完全不同的工程承诺。真正决定选型的不是"谁功能多"，而是下面这张表。</p>
+</blockquote>
+<h3 id="21">2.1 ★★★ 真正该看的：六个设计点上各家怎么选、换来什么、代价是什么</h3>
+<p><strong>读法</strong>：每个设计点下面是两种对立的选法。你要做的不是挑"更好的那个"，而是认出<strong>自己项目能接受哪一种代价</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>设计点</th>
+<th>这一派怎么选（代表）</th>
+<th>换来什么</th>
+<th>⚠️ 代价是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 并行原语谁来写</strong></td>
+<td><strong>自己写全套</strong>（Megatron：<code>tensor_parallel/</code> 7,330 行）</td>
+<td>每个通信点都能改；能压榨到极致 MFU；不受上游进度约束</td>
+<td>PyTorch 每次升级都要自己跟；这 7,330 行的 bug 得自己修</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>借上游 PyTorch</strong>（TorchTitan：95 行；VeOmni：FSDP2、DTensor、DCP 全用 PyTorch 原生件）</td>
+<td>代码好读（并行逻辑仅 1.1 万行）；自动跟随上游演进</td>
+<td><strong>上游没做的你也做不了</strong>；精细 TP 切分做不到 Megatron 那么深</td>
+</tr>
+<tr>
+<td><strong>② 要不要改模型代码</strong></td>
+<td><strong>模型必须为并行改写</strong>（Megatron：<code>nn.Linear</code> → <code>ColumnParallelLinear</code>）</td>
+<td>切分方式完全可控，能做到最省通信的切法</td>
+<td>已有的 HuggingFace 模型要重写一遍才能跑；接新结构成本高</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>模型一行不动</strong>（DeepSpeed ZeRO-3：<code>zero.Init()</code> + module hook）</td>
+<td>✅ 接入成本极低，今天就能跑起来</td>
+<td>并行方式受限于 hook 能表达的范围；⚠️ 且<strong>这个红利在 PP 上不成立</strong>（§4.5）</td>
+</tr>
+<tr>
+<td><strong>③ 模型与并行的耦合方式</strong></td>
+<td><strong>写在模型里</strong>（Megatron）</td>
+<td>一处看全，不用在两个文件间跳</td>
+<td>换并行策略 = 改模型；多模态各塔负载不同时必然失衡（§6.1）</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>单独声明</strong>（VeOmni 的 <code>parallel_plan.py</code>；TorchTitan 的 <code>sharding.py</code>）</td>
+<td>✅ 换策略不动模型；DeepSeek-V3 的 EP 策略只要 10 行</td>
+<td>多一层间接；要先理解"声明怎么映射到实际切分"</td>
+</tr>
+<tr>
+<td><strong>④ 显存不够时的兜底</strong></td>
+<td><strong>靠切得更碎</strong>（Megatron / FSDP：加 TP、加 PP、加 ZeRO 级别）</td>
+<td>全程在 GPU 上，不引入慢链路</td>
+<td>切到极限就没招了；⚠️ 切太碎会通信爆炸、MFU 掉</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>卸载到 CPU / NVMe</strong>（DeepSpeed：<code>none/cpu/nvme</code> 三档）</td>
+<td>✅ 卡不够也能跑起来；还能只卸载一部分（<code>ratio</code> 可取小数）</td>
+<td>⚠️ <strong>换来的是"能不能跑"，不是"跑得快"</strong>：PCIe 比 HBM 慢约 55×，NVMe 再慢一个量级</td>
+</tr>
+<tr>
+<td><strong>⑤ PP 调度怎么表达</strong></td>
+<td><strong>每种调度写一个大函数</strong>（Megatron：interleaved 1000+ 行）</td>
+<td>每种调度都能单独手工优化到极致</td>
+<td>加一种新调度 = 再写一个大函数；三份代码要分别维护</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>写成一套"指令集"</strong>（DeepSpeed：<code>PipeInstruction</code> 家族）</td>
+<td>✅ 换调度 = 换生成指令的顺序，执行引擎不动</td>
+<td>多一层解释开销；单条路径的极致优化空间小一些</td>
+</tr>
+<tr>
+<td><strong>⑥ 上层编排与底层计算的关系</strong></td>
+<td><strong>一个框架全包</strong>（Megatron 走 <strong>SPMD</strong>，Single Program Multiple Data，单程序多数据 —— 每张卡跑同一份 <code>train_step</code>，只是喂进去的数据不同）</td>
+<td>预训练只有一条数据流时，这是最直接、最快的形态</td>
+<td>⚠️ RL 那种四五条互相依赖的数据流，表达起来很别扭</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>分层：薄编排 + 厚后端</strong>（veRL：<code>single_controller/</code> 2,247 行 指挥 <code>workers/</code> 23,797 行）</td>
+<td>✅ RL 主循环读起来像单机程序；底层可换 6 种后端</td>
+<td>多一层 Ray 调度；⚠️ 要同时懂编排层和你选的那个后端</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 把这六行压成一句话：
+
+   ①②③ 是同一个取舍的三个侧面 —— 【控制力 vs 接入成本】
+        自己写、改模型、并行长在模型里  = 控制力最大，接入最贵
+        借上游、不改模型、并行单独声明  = 接入最便宜，控制力受限
+
+   ④ 是【能跑 vs 跑得快】的取舍，不是性能优化手段。
+
+   ⑤⑥ 是【单点极致 vs 换起来容易】的取舍。
+
+★★ 所以&quot;该选谁&quot;真正的问法不是&quot;谁最快&quot;，而是这三个问题：
+     - 我的模型结构会频繁变吗？       会 → 往&quot;解耦&quot;那一派走
+     - 我的卡够吗？                   不够 → 才考虑卸载
+     - 我要压到最后几个点 MFU 吗？    要 → 才值得付 Megatron 的复杂度
+</code></pre></div>
+
+<h3 id="22">2.2 ✅ 代码规模实测（全部来自本次拉取的源码）</h3>
 <p>统计口径：<strong>主包目录</strong>下的 <code>.py</code> 文件（不含 <code>tests/</code>、<code>examples/</code>、<code>docs/</code>）。<br />
 （DeepSpeed 一栏来自 PyPI 官方源码包而非 git commit，原因见 §4.1。）</p>
 <table>
@@ -473,8 +583,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <p>⇒ ★★★ <strong>能力差不多，代码量差几十倍——差别不在做不做得到，在"责任放在哪一层"。</strong><br />
-Megatron 什么都自己写（可控、可极致调优、但要自己维护）；<br />
-TorchTitan 把并行原语交给 PyTorch 上游（好读、跟随上游演进、但受上游节奏约束）。<br />
+Megatron 什么都自己写（可控、可极致调优、但要自己维护）；TorchTitan 把并行原语交给 PyTorch 上游（好读、跟随上游演进、但受上游节奏约束）。<br />
 这是第 8 节「该怎么选」真正的分水岭。</p>
 <hr />
 <h2 id="3-megatron-lm">3 · Megatron-LM：能力最全，代价是复杂</h2>
@@ -482,22 +591,34 @@ TorchTitan 把并行原语交给 PyTorch 上游（好读、跟随上游演进、
 <div class="codehilite"><pre><span></span><code>✅ 并行策略覆盖最全：TP / PP（3 种调度）/ DP / SP / CP / EP 全都有，
    而且是【被万卡规模反复验证过的实现】。
 
-✅ 一手战绩（论文原文）：
+✅ 一手战绩（论文原文，均已回溯 papers/ 下的 PDF）：
    PTD-P (2104.04473)：1T 参数 / 3072 GPU / 502 petaFLOP/s
                         = 单卡理论峰值的 52%
-                        ⚠️ 注意：这 52% 算了重计算，实为 HFU；
+                        ✅ 摘要原文：&quot;training iterations on a model with 1 trillion
+                           parameters at 502 petaFLOP/s on 3072 GPUs
+                           (per-GPU throughput of 52% of theoretical peak)&quot;
+                        ⚠️ 注意：这 52% 算了重计算，实为 HFU
+                           （Hardware FLOPs Utilization，硬件浮点利用率，
+                            分子含重计算的那次重复计算）；
                            MFU ≈39%（见 12 章 §12.2 订正）
-   Megatron-3 (2205.05198)：✅ 摘要原文 —— 选择性重计算 MFU 54.2%，
-                        比全量重计算的 MFU 42.1% 快 29%（★ 两个都是 MFU）
+   Megatron-3 (2205.05198)：选择性重计算 MFU 54.2% vs 全量重计算 MFU 42.1%
+                        ✅ 配置条件（缺了就没法比）：530B GPT-3 式模型 / 2240 张 A100
+                        ★ 两个都是 MFU，同配置，可以直接比
 
 ★ 生态位：几乎所有国产/开源大模型的预训练，
   要么直接用 Megatron，要么用它的衍生版（NeMo、Megatron-DeepSpeed 等）。
   ⇒ 遇到问题时，能搜到答案的概率最高。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>关于上面那个 "54.2% vs 42.1%"，论文原文用的词是 "29% faster"，但这个 29% 不能读成"时间少了 29%"。</strong> ✅ 摘要原句是 <em>"we achieve a Model Flops Utilization of 54.2%, which is </em><em>29% faster</em><em> than the 42.1% we achieve using recomputation"</em>。⇒ 54.2 ÷ 42.1 = <strong>1.287</strong>，是<strong>吞吐提升 28.7%</strong>；换成时间是 1 − 42.1 ÷ 54.2 = <strong>时间减少 22.3%</strong>。★ <strong>"快 X%" 和 "时间减少 X%" 永远不是同一个数</strong>，越到高百分比差得越远（快 100% 只等于时间减半，即减少 50%）。同一篇论文还给了另外两个更好懂的口径：<strong>激活显存降到 1/5</strong>（"reduces activation memory by 5×"）、<strong>重计算带来的时间开销减少 90% 以上</strong>。</p>
+</blockquote>
 <h3 id="_3">代价</h3>
-<div class="codehilite"><pre><span></span><code>⚠️ 419 个命令行参数（✅ 实测 arguments.py 的 add_argument 个数）
-⚠️ 24 万行代码，且有【两套 DDP、两套 FSDP、两套算子实现】（见 [拆解文档 §10](Megatron-LM拆解.md)）
+<div class="codehilite"><pre><span></span><code>⚠️ 命令行参数极多：arguments.py 里显式 add_argument 有 419 处，
+   ✅ 但这还不是全部 —— 另有一批从配置 dataclass 自动展开
+     （仅 TransformerConfig 一个类就声明了约 268 个字段）。
+   ⇒ 详见 [拆解文档 §0](Megatron-LM拆解.md)
+⚠️ 24 万行代码（✅ 实测 240,726 行），且有【两套 DDP、两套 FSDP、两套算子实现】（见 [拆解文档 §10](Megatron-LM拆解.md)）
 ⚠️ 加一个新模型结构，往往要动到并行逻辑本身 ——
    ★★ 这正是 VeOmni 论文批评的那一点，见 §6。
 
@@ -510,12 +631,10 @@ TorchTitan 把并行原语交给 PyTorch 上游（好读、跟随上游演进、
 <h2 id="4-deepspeed">4 · ★★ DeepSpeed：显存不够时的答案（源码走查）</h2>
 <h3 id="41-pypi-sdist-v0195">4.1 ✅ 规模实测（PyPI sdist <code>v0.19.5</code>）</h3>
 <p>⚠️ <strong>先说清楚数据来源</strong>：DeepSpeed 的 git 仓库历史超过 150 MB，本次多次克隆均超时失败。<br />
-最终改用 <strong>PyPI 官方源码包（sdist）v0.19.5</strong> —— 它是 DeepSpeed 官方发布的正式版本源码，<br />
-包含完整的 <code>deepspeed/</code> 包，但<strong>不含</strong> <code>tests/</code>、<code>docs/</code> 和 git 历史。<br />
+最终改用 <strong>PyPI 官方源码包（sdist）v0.19.5</strong> —— 它是 DeepSpeed 官方发布的正式版本源码，包含完整的 <code>deepspeed/</code> 包，但<strong>不含</strong> <code>tests/</code>、<code>docs/</code> 和 git 历史。<br />
 所以下面所有代码与行号都是一手实测的，但对应的是"发布版 0.19.5"而不是某个 commit。</p>
 <blockquote>
-<p>名词解释：<strong>sdist</strong>（source distribution，源码分发包）——<br />
-Python 官方的源码发布格式，<code>pip install</code> 时如果没有预编译包就会下载它。<br />
+<p>名词解释：<strong>sdist</strong>（source distribution，源码分发包）——Python 官方的源码发布格式，<code>pip install</code> 时如果没有预编译包就会下载它。<br />
 内容就是作者打包发布的那一版源码。</p>
 </blockquote>
 <table>
@@ -577,9 +696,7 @@ Python 官方的源码发布格式，<code>pip install</code> 时如果没有预
 </tr>
 </tbody>
 </table>
-<p>⇒ DeepSpeed <strong>文件最多、但总行数排中间</strong>：它是"很多个中等大小的模块"，<br />
-不像 Megatron 那样有若干个超大文件。唯一的例外是 <code>engine.py</code>（5,777 行），<br />
-这是全场最大的单文件 —— 它就是那个什么都管的 <code>DeepSpeedEngine</code>。</p>
+<p>⇒ DeepSpeed <strong>文件最多、但总行数排中间</strong>：它是"很多个中等大小的模块"，不像 Megatron 那样有若干个超大文件。唯一的例外是 <code>engine.py</code>（5,777 行），这是全场最大的单文件 —— 它就是那个什么都管的 <code>DeepSpeedEngine</code>。</p>
 <hr />
 <h3 id="42-zero-1-zero-2">4.2 ★★★ 源码里最值得看的一处：ZeRO-1 和 ZeRO-2 只差一个布尔值</h3>
 <p>先回忆 ZeRO 三阶段在讲什么（详见 <a href="分布式训练入门/05-ZeRO与FSDP.html">05 章</a>）：</p>
@@ -608,25 +725,27 @@ ZeRO-3 → 再把【参数】本身也切开
 </code></pre></div>
 
 <p>⇒ ★ <strong>连"我是几阶段"这个名字都是这个布尔值现算出来的。</strong><br />
-所以 ZeRO-1→ZeRO-2 在工程上几乎零成本，<br />
-而 ZeRO-2→ZeRO-3 是换一整套代码路径（3,857 + 2,520 + 682 + 690 ≈ 7,700 行新代码）。</p>
+所以 ZeRO-1→ZeRO-2 在工程上几乎零成本，而 ZeRO-2→ZeRO-3 是换一整套代码路径（3,857 + 2,520 + 682 + 690 ≈ 7,700 行新代码）。</p>
 <p>这解释了一个实践现象：<strong>很多团队停在 ZeRO-2</strong>。<br />
 不是不知道 ZeRO-3 更省显存，而是 ZeRO-3 的复杂度、通信量和踩坑面确实是另一个量级。</p>
 <p>顺带一提，阶段编号在源码里是个枚举，<code>deepspeed/runtime/zero/config.py:81-87</code>：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ZeroStageEnum</span><span class="p">(</span><span class="nb">int</span><span class="p">,</span> <span class="n">Enum</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot; Enum class for possible zero stages &quot;&quot;&quot;</span>
     <span class="n">disabled</span> <span class="o">=</span> <span class="mi">0</span>
-    <span class="n">optimizer_states</span> <span class="o">=</span> <span class="mi">1</span>     <span class="c1"># ZeRO-1</span>
-    <span class="n">gradients</span> <span class="o">=</span> <span class="mi">2</span>            <span class="c1"># ZeRO-2</span>
-    <span class="n">weights</span> <span class="o">=</span> <span class="mi">3</span>              <span class="c1"># ZeRO-3</span>
+    <span class="n">optimizer_states</span> <span class="o">=</span> <span class="mi">1</span>
+    <span class="n">gradients</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="n">weights</span> <span class="o">=</span> <span class="mi">3</span>
     <span class="n">max_stage</span> <span class="o">=</span> <span class="mi">3</span>
 </code></pre></div>
 
-<p>名字本身就把"每一阶段多切了什么"写清楚了：优化器状态 → 梯度 → 权重。</p>
+<p>名字本身就把"每一阶段多切了什么"写清楚了：<code>optimizer_states</code>（优化器状态）→ <code>gradients</code>（梯度）→ <code>weights</code>（权重），正好对应 ZeRO-1 / 2 / 3。</p>
+<blockquote>
+<p>⚠️ <strong>本文上一版在这段代码里加了 <code># ZeRO-1</code> / <code># ZeRO-2</code> / <code># ZeRO-3</code> 三行注释，但源码里没有这些注释</strong>（源码只有那一行 docstring）。上面这份是逐字原文。★ 这类"好心加注释"在源码引用里要特别小心 —— 读者会以为注释也是官方写的，进而以为官方文档里有这层对应关系。</p>
+</blockquote>
 <hr />
 <h3 id="43">4.3 ★★ 它的另一个气质：不要求你改模型代码</h3>
 <p>这是 DeepSpeed 和 Megatron 最根本的分歧，源码里看得很直接。</p>
-<p><strong>Megatron 的做法</strong>：你必须把模型里的 <code>nn.Linear</code> 换成 <code>ColumnParallelLinear</code>，<br />
-也就是<strong>模型代码本身要为并行改写</strong>。</p>
+<p><strong>Megatron 的做法</strong>：你必须把模型里的 <code>nn.Linear</code> 换成 <code>ColumnParallelLinear</code>，也就是<strong>模型代码本身要为并行改写</strong>。</p>
 <p><strong>DeepSpeed ZeRO-3 的做法</strong>：用两个 PyTorch 原生机制接管，模型代码一行不动。</p>
 <p>① <strong>构造期</strong>：一个 <code>with</code> 语句，<code>partition_parameters.py:1024-1026</code> 的官方示例：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">with</span> <span class="n">deepspeed</span><span class="o">.</span><span class="n">zero</span><span class="o">.</span><span class="n">Init</span><span class="p">():</span>
@@ -634,27 +753,21 @@ ZeRO-3 → 再把【参数】本身也切开
 </code></pre></div>
 
 <p><code>Init</code> 类（<code>partition_parameters.py:923</code>）继承自 <code>InsertPostInitMethodToModuleSubClasses</code><br />
-—— 它劫持每个 <code>nn.Module</code> 子类的 <code>__init__</code> 结束时刻，<br />
-在参数刚被创建出来的那一瞬间就切碎分发。<br />
+—— 它劫持每个 <code>nn.Module</code> 子类的 <code>__init__</code> 结束时刻，在参数刚被创建出来的那一瞬间就切碎分发。<br />
 所以<strong>模型从来没有在任何一张卡上完整存在过</strong>，这是能装下超大模型的关键。</p>
-<p>② <strong>运行期</strong>：用 module hook 在每层前后自动聚合/释放，<br />
-<code>deepspeed/runtime/zero/parameter_offload.py:439-442</code>：</p>
+<p>② <strong>运行期</strong>：用 module hook 在每层前后自动聚合/释放，<code>deepspeed/runtime/zero/parameter_offload.py:439-442</code>：</p>
 <div class="codehilite"><pre><span></span><code><span class="bp">self</span><span class="o">.</span><span class="n">forward_hooks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">module</span><span class="o">.</span><span class="n">register_forward_pre_hook</span><span class="p">(</span><span class="n">_pre_forward_module_hook</span><span class="p">))</span>
 <span class="o">...</span>
 <span class="bp">self</span><span class="o">.</span><span class="n">forward_hooks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">module</span><span class="o">.</span><span class="n">register_forward_hook</span><span class="p">(</span><span class="n">_post_forward_module_hook</span><span class="p">))</span>
 </code></pre></div>
 
 <blockquote>
-<p>名词解释：<strong>hook（钩子）</strong>——<br />
-PyTorch 允许你在某个模块 forward 之前/之后自动插入一段函数。<br />
+<p>名词解释：<strong>hook（钩子）</strong>——PyTorch 允许你在某个模块 forward 之前/之后自动插入一段函数。<br />
 模型作者不知情，也不用配合。</p>
 </blockquote>
-<p>配合的两个函数就叫 <code>pre_sub_module_forward_function</code>（第 525 行）和<br />
-<code>post_sub_module_forward_function</code>（第 549 行）—— 语义就是字面意思：<br />
-<strong>进这一层之前把参数聚合回来，出这一层之后立刻放掉。</strong></p>
+<p>配合的两个函数就叫 <code>pre_sub_module_forward_function</code>（第 525 行）和<code>post_sub_module_forward_function</code>（第 549 行）—— 语义就是字面意思：<strong>进这一层之前把参数聚合回来，出这一层之后立刻放掉。</strong></p>
 <p>⇒ ★★★ <strong>这就是 DeepSpeed 最大的产品优势：接入成本极低。</strong><br />
-你已有的 HuggingFace 模型，套个 <code>deepspeed.initialize()</code> 就能跑 ZeRO-3；<br />
-换成 Megatron 则要重写模型定义。<br />
+你已有的 HuggingFace 模型，套个 <code>deepspeed.initialize()</code> 就能跑 ZeRO-3；换成 Megatron 则要重写模型定义。<br />
 代价是并行方式受限于 hook 能表达的范围 —— 精细的 TP 切分它做不到 Megatron 那么极致。</p>
 <hr />
 <h3 id="44-none-cpu-nvme">4.4 ✅ 卸载：<code>none / cpu / nvme</code> 三档</h3>
@@ -665,21 +778,25 @@ PyTorch 允许你在某个模块 forward 之前/之后自动插入一段函数�
     <span class="n">nvme</span> <span class="o">=</span> <span class="s2">&quot;nvme&quot;</span>
 </code></pre></div>
 
-<p>对应两篇论文：ZeRO-Offload（2101.06840，卸载到 CPU 内存）、<br />
-ZeRO-Infinity（2104.07857，卸载到 NVMe 固态盘）。</p>
+<p>对应两篇论文：ZeRO-Offload（2101.06840，卸载到 CPU 内存）、ZeRO-Infinity（2104.07857，卸载到 NVMe 固态盘）。</p>
 <p>NVMe 那一档不是配置项写写就完事，源码里有专门的一个目录做异步磁盘读写：</p>
-<div class="codehilite"><pre><span></span><code>deepspeed/runtime/swap_tensor/          （合计 1,931 行）
+<div class="codehilite"><pre><span></span><code>deepspeed/runtime/swap_tensor/          （✅ 全目录合计 1,931 行）
 ├── optimizer_utils.py              533
 ├── partitioned_param_swapper.py    418
 ├── utils.py                        258
 ├── pipelined_optimizer_swapper.py  242
 ├── partitioned_optimizer_swapper.py 228
-└── async_swapper.py                174
+├── async_swapper.py                174
+├── aio_config.py                    43     ← 上一版漏了这三个小文件
+├── constants.py                     30
+└── __init__.py                       5
+                                   ----
+                                   1,931    ← 现在能对上了
 </code></pre></div>
 
 <blockquote>
-<p>名词解释：<strong>NVMe</strong>（Non-Volatile Memory express）——<br />
-高速固态硬盘的接口标准，比传统硬盘快得多，但仍比显存慢两个量级。</p>
+<p>⚠️ <strong>上一版这里只列了前六个文件、却写"合计 1,931 行"，两个数字对不上</strong>（前六个加起来是 1,853）。1,931 是整个目录的总行数，差的 78 行就是上面补的三个小文件。★ 这种"列表和总计对不上"是核对时最容易发现、也最该顺手补掉的一类瑕疵 —— <strong>凡是写了"合计"，就把加数补全，或者把口径写清楚</strong>。</p>
+<p>名词解释：<strong>NVMe</strong>（Non-Volatile Memory express）——高速固态硬盘的接口标准，比传统硬盘快得多，但仍比显存慢两个量级。</p>
 </blockquote>
 <p>⚠️ <strong>务必清楚代价</strong>：</p>
 <div class="codehilite"><pre><span></span><code>卸载到 CPU 走 PCIe（~60 GB/s），比 HBM（~3.35 TB/s）慢约 55×；
@@ -715,10 +832,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 <p>调度器（<code>TrainSchedule</code>，第 189 行）负责生成一串指令，引擎负责逐条执行。<br />
 ⇒ ★ 好处是<strong>换调度策略 = 换生成指令的顺序</strong>，不用动执行引擎。<br />
 这跟 Megatron 把 1F1B、interleaved 各写一份大函数是完全不同的思路。</p>
-<p>⚠️ 但 PP 这里 DeepSpeed 又变回"侵入式"了：<br />
-<code>deepspeed/runtime/pipe/module.py:86</code> 的 <code>PipelineModule</code> 要求<br />
-<strong>模型必须能表达成一串顺序的层</strong>（像 <code>nn.Sequential</code> 那样），<br />
-才能按层切给不同卡。ZeRO 的"不改模型"红利在 PP 上不成立。</p>
+<p>⚠️ 但 PP 这里 DeepSpeed 又变回"侵入式"了：<code>deepspeed/runtime/pipe/module.py:86</code> 的 <code>PipelineModule</code> 要求<strong>模型必须能表达成一串顺序的层</strong>（像 <code>nn.Sequential</code> 那样），才能按层切给不同卡。ZeRO 的"不改模型"红利在 PP 上不成立。</p>
 <hr />
 <h3 id="46-tp">4.6 ⚠️ 边界：TP 是它的短板</h3>
 <table>
@@ -739,9 +853,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 </tr>
 </tbody>
 </table>
-<p>DeepSpeed 那 393 行主要是配置和管理器（<code>config.py</code> 174 / <code>init_utils.py</code> 146 / <code>tp_manager.py</code> 66），<br />
-真正的切分算子在 <code>module_inject/layers.py</code>（1,500 行）—— 而 <code>module_inject</code> 这个名字已经说明了<br />
-它的出身：<strong>为推理注入而生</strong>，训练侧的 TP 并不是 DeepSpeed 的主战场。</p>
+<p>DeepSpeed 那 393 行主要是配置和管理器（<code>config.py</code> 174 / <code>init_utils.py</code> 146 / <code>tp_manager.py</code> 66），真正的切分算子在 <code>module_inject/layers.py</code>（1,500 行）—— 而 <code>module_inject</code> 这个名字已经说明了它的出身：<strong>为推理注入而生</strong>，训练侧的 TP 并不是 DeepSpeed 的主战场。</p>
 <p>⇒ ★★ 所以选型上的分工很清楚：</p>
 <div class="codehilite"><pre><span></span><code>显存不够、不想改模型      → DeepSpeed
 要极致 TP、极致 MFU      → Megatron
@@ -758,8 +870,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 <blockquote>
 <p><strong>DTensor</strong>（Distributed Tensor，分布式张量）：PyTorch 原生的"带分片信息的张量"。<br />
 一个普通张量只知道自己的形状；一个 DTensor 额外知道"我被切在哪个设备网格的哪一维上"。<br />
-<strong>DeviceMesh</strong>（设备网格）：把 N 张卡排成一个多维网格并给每一维起名字（<code>dp</code> / <code>tp</code> / <code>pp</code> …），<br />
-之后所有并行都表达成"在某个网格轴上做某种操作"。</p>
+<strong>DeviceMesh</strong>（设备网格）：把 N 张卡排成一个多维网格并给每一维起名字（<code>dp</code> / <code>tp</code> / <code>pp</code> …），之后所有并行都表达成"在某个网格轴上做某种操作"。</p>
 </blockquote>
 <h3 id="51-commit-9d7dc2f">5.1 ✅ 规模实测（commit <code>9d7dc2f</code>）</h3>
 <table>
@@ -772,9 +883,9 @@ schedule.py    494      topology.py 472      p2p.py 182
 </thead>
 <tbody>
 <tr>
-<td>整仓 <code>.py</code></td>
-<td>458</td>
-<td>145,890</td>
+<td>整仓 <code>.py</code>（排除版本库内部文件）</td>
+<td>457</td>
+<td>145,423</td>
 </tr>
 <tr>
 <td>主包 <code>torchtitan/</code></td>
@@ -783,6 +894,9 @@ schedule.py    494      topology.py 472      p2p.py 182
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>⚠️ <strong>口径订正</strong>：本文上一版写的是 458 个文件 / 145,890 行 —— 那个数字把版本库内部目录（本仓库里叫 <code>.git-off/</code>）下的一个 <code>.py</code> 文件也算进去了。排除之后是 <strong>457 / 145,423</strong>。主包 <code>torchtitan/</code> 的 374 / 119,882 不受影响，下面所有按目录的统计也都在主包内，均无变化。</p>
+</blockquote>
 <p>主包各目录（<code>.py</code> 行数，实测）：</p>
 <table>
 <thead>
@@ -820,22 +934,17 @@ schedule.py    494      topology.py 472      p2p.py 182
 </tr>
 </tbody>
 </table>
-<p>★ <strong>第一个反直觉的数字</strong>：TorchTitan 承担全部并行职责的 <code>distributed/</code> 只有 <strong>11,526 行</strong>，<br />
-而 Megatron 光 <code>transformer/</code> 一个目录就有 44,819 行。</p>
+<p>★ <strong>第一个反直觉的数字</strong>：TorchTitan 承担全部并行职责的 <code>distributed/</code> 只有 <strong>11,526 行</strong>，而 Megatron 光 <code>transformer/</code> 一个目录就有 44,819 行。</p>
 <h3 id="52-pytorch">5.2 ★★★ 为什么能这么小：并行原语是从 PyTorch 借的</h3>
-<p>最能说明问题的一份文件是 <code>torchtitan/distributed/tensor_parallel.py</code>——<strong>整份文件只有 95 行</strong>，<br />
-而且里面只定义了一个叫 <code>NoParallel</code> 的辅助类，它的注释是这样写的（原文）：</p>
+<p>最能说明问题的一份文件是 <code>torchtitan/distributed/tensor_parallel.py</code>——<strong>整份文件只有 95 行</strong>，而且里面只定义了一个叫 <code>NoParallel</code> 的辅助类，它的注释是这样写的（原文）：</p>
 <blockquote>
 <p>"Replicate computation on the TP mesh <strong>without sharding</strong>. This style does nothing other than:<br />
 (1) setting the module parameters as DTensors on the given mesh, and<br />
 (2) inserting hooks at module boundary to convert torch.Tensor to DTensor and back."</p>
 </blockquote>
 <p>也就是说：<strong>TorchTitan 自己根本没写张量并行</strong>。<br />
-真正的 <code>ColumnwiseParallel</code> / <code>RowwiseParallel</code> 来自上游 <code>torch.distributed.tensor.parallel</code>，<br />
-<code>tensor_parallel.py</code> 只补了一个"这一层不切但要保持 DTensor 类型"的边角情况<br />
-（用于 MoE 的 router gate——因为梯度裁剪和 fused optimizer 假设所有参数在同一个 mesh 上）。</p>
-<p>★ 对照 Megatron：<code>megatron/core/tensor_parallel/</code> 是 <strong>7,330 行</strong>，<br />
-里面自己实现了 <code>ColumnParallelLinear</code> / <code>RowParallelLinear</code> 和全套 f/f̄ 通信算子。</p>
+真正的 <code>ColumnwiseParallel</code> / <code>RowwiseParallel</code> 来自上游 <code>torch.distributed.tensor.parallel</code>，<code>tensor_parallel.py</code> 只补了一个"这一层不切但要保持 DTensor 类型"的边角情况（用于 MoE 的 router gate——因为梯度裁剪和 fused optimizer 假设所有参数在同一个 mesh 上）。</p>
+<p>★ 对照 Megatron：<code>megatron/core/tensor_parallel/</code> 是 <strong>7,330 行</strong>，里面自己实现了 <code>ColumnParallelLinear</code> / <code>RowParallelLinear</code> 和全套 f/f̄ 通信算子。</p>
 <p><strong>同一件事，7330 行 vs 95 行。差别不在能力，在于责任放在哪一层。</strong></p>
 <p>流水线并行同理——<code>pipeline_parallel.py</code> 第 16-19 行直接 import 上游：</p>
 <div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.pipelining</span><span class="w"> </span><span class="kn">import</span> <span class="n">PipelineStage</span>
@@ -853,10 +962,8 @@ schedule.py    494      topology.py 472      p2p.py 182
 <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">fwd_bwd_fn</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">global_valid_tokens</span><span class="p">,</span> <span class="n">extra_kwargs</span><span class="p">)</span>
 </code></pre></div>
 
-<p>★ 这和 <a href="Megatron-LM拆解.html">Megatron 拆解 §2</a> 里那 8 行 dispatch 是<strong>同一个决策</strong>：<br />
-"开没开 PP？开了走流水线路径，没开走普通路径。"<br />
-两个框架长得完全不一样，但骨架的这一处是重合的——说明这不是某家的设计品味，<br />
-而是<strong>问题本身的形状</strong>。</p>
+<p>★ 这和 <a href="Megatron-LM拆解.html">Megatron 拆解 §2</a> 里那 8 行 dispatch 是<strong>同一个决策</strong>："开没开 PP？开了走流水线路径，没开走普通路径。"<br />
+两个框架长得完全不一样，但骨架的这一处是重合的——说明这不是某家的设计品味，而是<strong>问题本身的形状</strong>。</p>
 <h3 id="54">5.4 ★★ 它也把模型和并行拆开了</h3>
 <p><code>torchtitan/models/llama3/</code> 的文件分工（实测行数）：</p>
 <table>
@@ -899,7 +1006,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 <p>——<strong>看不到任何 all-reduce、any group、any rank</strong>。切分信息在 <code>sharding.py</code> 里单独声明。</p>
 <p>★★ 所以：§6 讲的 VeOmni「把并行从模型里拆出来」，TorchTitan 也做了同一件事。<br />
 区别在表达方式：<br />
-- <strong>VeOmni</strong>：一份独立的 <code>parallel_plan.py</code>，用 <strong>FQN 字符串模式</strong>匹配参数名<br />
+- <strong>VeOmni</strong>：一份独立的 <code>parallel_plan.py</code>，用 <strong>FQN</strong>（Fully Qualified Name，全限定名 —— 就是 <code>model.layers.*.mlp.experts.down_proj</code> 这样的完整参数路径）<strong>字符串模式</strong>匹配参数名<br />
 - <strong>TorchTitan</strong>：在 <code>sharding.py</code> 里给每个 sub-config 填 <code>sharding_config</code> 字段，用 <strong>DTensor placement</strong></p>
 <p>⚠️ 这说明"模型与并行解耦"不是某一家的独家发明，而是 2024 年之后的<strong>行业共识方向</strong>。</p>
 <h3 id="55-ptd-p">5.5 ✅ 并行维度的排列顺序（又一次印证 PTD-P）</h3>
@@ -907,9 +1014,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 <div class="codehilite"><pre><span></span><code><span class="p">(</span><span class="s2">&quot;pp&quot;</span><span class="p">,</span> <span class="s2">&quot;dp_replicate&quot;</span><span class="p">,</span> <span class="s2">&quot;dp_shard&quot;</span><span class="p">,</span> <span class="s2">&quot;cp&quot;</span><span class="p">,</span> <span class="s2">&quot;tp&quot;</span><span class="p">),</span>
 </code></pre></div>
 
-<p>★★★ <strong><code>tp</code> 在最里层，<code>pp</code> 在最外层</strong>——和 <a href="Megatron-LM拆解.html">Megatron <code>parallel_state.py</code> 的排布完全一致</a>，<br />
-也就是<a href="分布式训练入门/附-速查表.html">速查表 D 章</a>那条因果链：<br />
-<strong>通信越频繁的并行方式，排得越靠内层（越可能落在同一台机器的 NVLink 上）。</strong></p>
+<p>★★★ <strong><code>tp</code> 在最里层，<code>pp</code> 在最外层</strong>——和 <a href="Megatron-LM拆解.html">Megatron <code>parallel_state.py</code> 的排布完全一致</a>，也就是<a href="分布式训练入门/附-速查表.html">速查表 D 章</a>那条因果链：<strong>通信越频繁的并行方式，排得越靠内层（越可能落在同一台机器的 NVLink 上）。</strong></p>
 <p>两个独立团队、两套完全不同的代码，得出同一个顺序——这是这条规律最强的证据。</p>
 <h3 id="56">5.6 ⚠️ 边界</h3>
 <div class="codehilite"><pre><span></span><code>★ 谁适合走这条线：
@@ -981,35 +1086,81 @@ schedule.py    494      topology.py 472      p2p.py 182
 <table>
 <thead>
 <tr>
-<th>配置</th>
+<th>模型</th>
+<th>卡数</th>
+<th>并行配置</th>
 <th>数字</th>
 <th>出处</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>30B MoE，128 GPU</td>
+<td>30B MoE（基于 Qwen3-30B-A3B）</td>
+<td>128</td>
+<td>3D（FSDP+SP+EP）</td>
 <td><strong>2,800+ tokens/sec/GPU</strong>，支持 <strong>160K</strong> 上下文</td>
-<td>✅ 2508.02317</td>
+<td>✅ 2508.02317 摘要</td>
 </tr>
 <tr>
-<td>7B 模型</td>
+<td><strong>Qwen2-VL 7B</strong></td>
+<td>128</td>
+<td>FSDP + SP</td>
 <td><strong>192K</strong> 上下文，<strong>MFU 61.5%</strong></td>
-<td>✅ 2508.02317</td>
+<td>✅ 2508.02317 第 8 页</td>
 </tr>
 <tr>
-<td>72B 模型</td>
+<td><strong>Qwen2-VL 72B</strong></td>
+<td>128</td>
+<td>FSDP + SP</td>
 <td><strong>96K</strong> 上下文，<strong>MFU 54.82%</strong></td>
-<td>✅ 2508.02317</td>
+<td>✅ 2508.02317 第 8-9 页</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
+<p>⚠️ <strong>上一版这张表没写模型和卡数，是个隐患</strong> —— 只说"7B 模型"会让人误以为是某个通用 7B 基座。✅ 回溯论文第 8 页原文，这两行都是 <strong>Qwen2-VL</strong>（一个视觉-语言多模态模型）在 <strong>128 卡</strong>上、<strong>逐步加大序列并行度</strong>测出来的，正文原句是 <em>"Figures 4-5 show results of training Qwen2-VL on 8 and 128 GPUs"</em>。★ 是多模态模型这一点很关键：VeOmni 的卖点本来就是全模态，拿它的多模态成绩去和纯文本框架的 MFU 比，本身就不同题。</p>
 <p>✅ 论文原文：<em>"VeOmni can support up to </em><em>192K context length</em><em> for training the </em><em>7B</em><em> model with an </em><em>MFU of 61.5%</em><em> and </em><em>96K</em><em> context length for training the </em><em>72B</em><em> model with an </em><em>MFU of 54.82%</em><em>."</em></p>
-<p>⚠️ <strong>读这组数字要注意</strong>：61.5% 是很高的 MFU（对照 <a href="分布式训练入门/12-并行策略组合与MFU.html">12 章</a> 的档位表，&gt;55% 已属优秀），<br />
-但它是在 <strong>7B 小模型 + 超长上下文</strong>这个特定配置下测的。<br />
-★ 长上下文场景下注意力占比高、矩阵大，本身就容易跑出高 MFU，<br />
-和 MegaScale 的 55.2%（175B / 12288 卡）<strong>不是同一个难度的题目</strong>，不能直接比大小。</p>
+<p>⚠️ <strong>读这组数字要注意</strong>：61.5% 是很高的 MFU（对照 <a href="分布式训练入门/12-并行策略组合与MFU.html">12 章</a> 的档位表，&gt;55% 已属优秀），但它是在 <strong>Qwen2-VL 7B + 192K 超长上下文 + 128 卡</strong>这个特定配置下测的。★ 长上下文场景下注意力占比高、矩阵大，本身就容易跑出高 MFU。</p>
+<p>⚠️ <strong>拿它去比 MegaScale 的 55.2% 是不成立的</strong>，两边的"题目难度"差得很远 —— 把配置条件并排列出来就一目了然：</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>VeOmni 61.5%</th>
+<th>MegaScale 55.2%</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型</td>
+<td>Qwen2-VL <strong>7B</strong>（多模态）</td>
+<td>标准 transformer <strong>175B</strong>（纯文本）</td>
+</tr>
+<tr>
+<td>卡数</td>
+<td><strong>128</strong></td>
+<td><strong>12,288</strong>（多 96 倍）</td>
+</tr>
+<tr>
+<td>上下文</td>
+<td>192K（超长）</td>
+<td>常规</td>
+</tr>
+<tr>
+<td>global batch</td>
+<td>随 SP 度变化</td>
+<td>✅ 固定 6144</td>
+</tr>
+<tr>
+<td>对照基线</td>
+<td>无（自报绝对值）</td>
+<td>✅ 对 Megatron-LM <strong>1.34×</strong>（同规模下 Megatron 为 41.2%）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>卡数是这里最关键的一栏</strong>：MegaScale 论文自己说明了原因 —— global batch 固定时，卡越多每卡 local batch 越小、计算通信比越差，MFU 必然下滑（它自己从 3072 卡的 59.1% 一路降到 12,288 卡的 55.2%）。⇒ <strong>在 128 卡上跑出 61.5%，和在 12,288 卡上跑出 55.2%，后者难得多。</strong> 这正是 §9 第三条那句"MFU 几乎不可直接横向比较"最好的例子。</p>
 </blockquote>
 <h3 id="64">6.4 ✅ 技术栈（源码走查）</h3>
 <div class="codehilite"><pre><span></span><code>veomni/distributed/
@@ -1024,7 +1175,8 @@ schedule.py    494      topology.py 472      p2p.py 182
 
 ★ 技术选型的共同点：【尽量用 PyTorch 原生的东西】
   FSDP2 是原生的、DTensor 是原生的、DCP 是原生的。
-  ⇒ 好处是和 PyTorch 生态兼容、代码量可控（20.9 万行，比 Megatron 少）
+  ⇒ 好处是和 PyTorch 生态兼容、代码量可控
+    （✅ 15.7 万行 / 156,722 行，约为 Megatron 24.1 万行的 65%）
   ⇒ ⚠️ 代价是 TP 这类需要精细控制的策略，不如 Megatron 做得深
 </code></pre></div>
 
@@ -1032,7 +1184,8 @@ schedule.py    494      topology.py 472      p2p.py 182
 <div class="codehilite"><pre><span></span><code>✅ 已支持：FSDP2 / HSDP / Ulysses SP（含异步）/ EP / GroupGemm(Liger-Kernel)
 ✅ 硬件：NVIDIA、AMD ROCm、昇腾 NPU 三种都支持
 ✅ 与 HuggingFace Transformers 兼容
-✅ 论文已被 AAAI 2026 接收
+⚠️ &quot;论文已被 AAAI 2026 接收&quot; —— 本次**无法从 papers/ 下的 arXiv PDF 核实**
+   （该 PDF 正文里没有出现 AAAI 字样），当作待确认信息看待
 ✅ 已支持 DeepSeek-V4（DSA/mHC 默认走 eager，SM90+ 可选 TileLang 后端）
 
 ⚠️ RL 后训练在 README 里列为【upcoming】，路线是接 veRL
@@ -1047,8 +1200,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 <hr />
 <h2 id="7-verl-hybridflowrl">7 · ★★★ veRL (HybridFlow)：RL 后训练的答案（源码走查）</h2>
 <blockquote>
-<p><strong>RL</strong>（Reinforcement Learning，强化学习）后训练：模型先"生成"一批回答，<br />
-打分之后再用这些分数去"训练"自己。所以它同时需要<strong>推理引擎</strong>和<strong>训练引擎</strong>。</p>
+<p><strong>RL</strong>（Reinforcement Learning，强化学习）后训练：模型先"生成"一批回答，打分之后再用这些分数去"训练"自己。所以它同时需要<strong>推理引擎</strong>和<strong>训练引擎</strong>。</p>
 <p><strong>本节只走查 veRL 一家。</strong> RL 框架的<strong>横向调研</strong>（18 个开源框架 + 5 套前沿模型自研系统、同步→全异步的架构主轴、权重同步七档传输、训推一致性、slime 与 OpenRLHF 源码走查）见独立目录 → <a href="../强化学习训练框架/">../强化学习训练框架/</a></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>✅ 核心洞察（2409.19256 原文）：
@@ -1125,12 +1277,8 @@ schedule.py    494      topology.py 472      p2p.py 182
 </tr>
 </tbody>
 </table>
-<p>★★★ <strong>这是本文最值得记住的一个比例</strong>：<br />
-论文标题里的那个机制（hybrid controller）在代码里只有 <strong>2,247 行</strong>，<br />
-而它协调的 workers 有 <strong>23,797 行</strong>——<strong>十倍以上的差距</strong>。</p>
-<p>⇒ 这本身就是这套设计的论据：<br />
-<strong>上面（节点之间）变化多、数量少 ⇒ 用薄薄一层灵活的协调代码；<br />
-下面（节点内部）变化少、数量多 ⇒ 用厚重但高效的现成框架。</strong></p>
+<p>★★★ <strong>这是本文最值得记住的一个比例</strong>：论文标题里的那个机制（hybrid controller）在代码里只有 <strong>2,247 行</strong>，而它协调的 workers 有 <strong>23,797 行</strong>——<strong>十倍以上的差距</strong>。</p>
+<p>⇒ 这本身就是这套设计的论据：<strong>上面（节点之间）变化多、数量少 ⇒ 用薄薄一层灵活的协调代码；下面（节点内部）变化少、数量多 ⇒ 用厚重但高效的现成框架。</strong></p>
 <h3 id="72-2247">7.2 ★★★ 那 2,247 行到底在干什么</h3>
 <p>核心只有两处。</p>
 <p><strong>第一处：<code>verl/single_controller/base/decorator.py</code> 的 <code>@register</code>。</strong><br />
@@ -1139,42 +1287,62 @@ schedule.py    494      topology.py 472      p2p.py 182
              <span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">materialize_futures</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
 </code></pre></div>
 
-<p>预置的分发模式（第 40-45 行）一共 6 种：</p>
+<p>预置的分发模式在 <code>init_predefined_dispatch_mode()</code>（第 38 行起）里逐个注册，✅ <strong>一共 8 种</strong>：</p>
 <table>
 <thead>
 <tr>
 <th>模式</th>
+<th style="text-align: right;">行号</th>
 <th>含义</th>
 </tr>
 </thead>
 <tbody>
 <tr>
+<td><code>RANK_ZERO</code></td>
+<td style="text-align: right;">39</td>
+<td>只发给 0 号 worker</td>
+</tr>
+<tr>
 <td><code>ONE_TO_ALL</code></td>
+<td style="text-align: right;">40</td>
 <td>同一份参数广播给所有 worker（如"加载模型"）</td>
 </tr>
 <tr>
 <td><code>ALL_TO_ALL</code></td>
+<td style="text-align: right;">41</td>
 <td>原样透传</td>
 </tr>
 <tr>
 <td><code>DP_COMPUTE</code></td>
+<td style="text-align: right;">42</td>
 <td>按数据并行度把 batch 切开</td>
 </tr>
 <tr>
 <td><code>DP_COMPUTE_PROTO</code></td>
+<td style="text-align: right;">43</td>
 <td>同上，但走 <code>DataProto</code> 协议并自动 padding</td>
 </tr>
 <tr>
 <td><code>DP_COMPUTE_PROTO_WITH_FUNC</code></td>
+<td style="text-align: right;">44</td>
 <td>同上，外加把一个函数一起广播</td>
 </tr>
 <tr>
 <td><code>DP_COMPUTE_METRIC</code></td>
+<td style="text-align: right;">45</td>
 <td>切开算、收回来聚合指标</td>
+</tr>
+<tr>
+<td><code>DIRECT_ROLLOUT_METHOD</code></td>
+<td style="text-align: right;">47</td>
+<td>★ 专为 vLLM 的 <code>ExternalRayDistributedExecutor</code> 开的特例</td>
 </tr>
 </tbody>
 </table>
-<p>最简单的 <code>ONE_TO_ALL</code> 实现只有 3 行（第 120-123 行），一眼能读完：</p>
+<blockquote>
+<p>⚠️ <strong>本文上一版写"一共 6 种"，漏了两个</strong>：漏掉的是首尾那两个 —— <code>RANK_ZERO</code>（第 39 行）和 <code>DIRECT_ROLLOUT_METHOD</code>（第 47 行）。上一版引用的"第 40-45 行"恰好只框住中间那 6 个，所以数错了。★ 最后一个尤其值得留意：源码里它上面有一行注释写着 <em>"This is a special dispatch mode for vllm ExternalRayDistributedExecutor"</em> —— 一个为单个推理引擎开的后门，正好印证 §7.5 那句"难点在训练侧和推理侧的接缝上"。</p>
+</blockquote>
+<p>最简单的 <code>ONE_TO_ALL</code>，函数体只有 3 行（第 120-123 行，含 <code>def</code>），一眼能读完：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dispatch_one_to_all</span><span class="p">(</span><span class="n">worker_group</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
     <span class="n">args</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">([</span><span class="n">arg</span><span class="p">]</span> <span class="o">*</span> <span class="n">worker_group</span><span class="o">.</span><span class="n">world_size</span> <span class="k">for</span> <span class="n">arg</span> <span class="ow">in</span> <span class="n">args</span><span class="p">)</span>
     <span class="n">kwargs</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="p">[</span><span class="n">v</span><span class="p">]</span> <span class="o">*</span> <span class="n">worker_group</span><span class="o">.</span><span class="n">world_size</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
@@ -1197,10 +1365,8 @@ schedule.py    494      topology.py 472      p2p.py 182
 </code></pre></div>
 
 <p>★★★ <strong>这 19 行就是"单控制器"和"多控制器"之间的全部胶水。</strong><br />
-主进程调用 <code>actor_wg.update_actor(batch)</code> 时看起来像调用一个普通函数，<br />
-实际发生的是：切数据 → 广播给 N 个 Ray worker 并行执行 → 等待 → 汇总。</p>
-<p>⚠️ 全仓一共 <strong>51 处</strong> <code>@register(...)</code>——也就是说整套 RL 流程里<br />
-需要跨"中心 ↔ worker"边界的操作只有 51 个。<strong>接口面很小，这是它能保持轻量的原因。</strong></p>
+主进程调用 <code>actor_wg.update_actor(batch)</code> 时看起来像调用一个普通函数，实际发生的是：切数据 → 广播给 N 个 Ray worker 并行执行 → 等待 → 汇总。</p>
+<p>⚠️ 全仓一共 <strong>51 处</strong> <code>@register(...)</code>——也就是说整套 RL 流程里需要跨"中心 ↔ worker"边界的操作只有 51 个。<strong>接口面很小，这是它能保持轻量的原因。</strong></p>
 <h3 id="73">7.3 ✅ 效果：主循环读起来像单机程序</h3>
 <p><code>verl/trainer/ppo/ray_trainer.py</code>（1,823 行）的主循环，顺序如下（行号实测）：</p>
 <table>
@@ -1260,8 +1426,7 @@ schedule.py    494      topology.py 472      p2p.py 182
    ⇒ 这是 [14 章 §14.3](分布式训练入门/14-RL训练框架.md) 那条因果链的解法。
 </code></pre></div>
 
-<p>★ <strong>源码给出了论文里没有的细节</strong>：训练→推理的权重同步已经独立成一个模块<br />
-<code>verl/checkpoint_engine/</code>，并且提供了 <strong>6 种后端</strong>：</p>
+<p>★ <strong>源码给出了论文里没有的细节</strong>：训练→推理的权重同步已经独立成一个模块<code>verl/checkpoint_engine/</code>，并且提供了 <strong>6 种后端</strong>：</p>
 <table>
 <thead>
 <tr>
@@ -1301,8 +1466,7 @@ schedule.py    494      topology.py 472      p2p.py 182
 <span class="n">metrics</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_engine</span><span class="o">.</span><span class="n">send_weights</span><span class="p">(</span><span class="n">per_tensor_param</span><span class="p">,</span> <span class="n">global_steps</span><span class="o">=</span><span class="n">global_steps</span><span class="p">)</span>
 </code></pre></div>
 
-<p>★★ <strong><code>delta_checkpoint_engine</code> 值得单独注意</strong>：它意味着有人已经把<br />
-"每步都要把几百 GB 权重从训练侧搬到推理侧"这件事优化到了<strong>只传增量</strong>。<br />
+<p>★★ <strong><code>delta_checkpoint_engine</code> 值得单独注意</strong>：它意味着有人已经把"每步都要把几百 GB 权重从训练侧搬到推理侧"这件事优化到了<strong>只传增量</strong>。<br />
 这是论文发表之后才长出来的工程，只能在源码里看到。</p>
 <h3 id="75">7.5 ✅ 推理引擎接入</h3>
 <p><code>verl/workers/rollout/</code> 支持三种推理引擎（实测行数）：</p>
@@ -1332,11 +1496,52 @@ schedule.py    494      topology.py 472      p2p.py 182
 </tr>
 </tbody>
 </table>
-<p>★ 每接一个推理引擎要写近 3,000 行——这个数字本身说明<br />
-<a href="分布式训练入门/14-RL训练框架.html">14 章那条"RL 框架真正的难点在训练侧和推理侧的接缝上"</a>不是空话。</p>
-<div class="codehilite"><pre><span></span><code>✅ 报告收益：1.53× ~ 20.57× 吞吐提升
+<p>★ 每接一个推理引擎要写近 3,000 行——这个数字本身说明<a href="分布式训练入门/14-RL训练框架.html">14 章那条"RL 框架真正的难点在训练侧和推理侧的接缝上"</a>不是空话。</p>
+<div class="codehilite"><pre><span></span><code>✅ 报告收益：1.53× ~ 20.57× 吞吐提升（2409.19256 摘要与第 8 节）
 ⚠️ 这个跨度有 13 倍，说明【提升多少完全取决于基线卡在哪一环】。
    ★ 看到这类数字，要去正文找&quot;和什么比&quot;。
+</code></pre></div>
+
+<p>⚠️ <strong>这个区间不带配置条件就等于没有信息量。</strong> ✅ 回溯论文正文（第 11-12 页）后，它的真实含义是：</p>
+<table>
+<thead>
+<tr>
+<th>这个数字</th>
+<th>实际是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>区间怎么来的</td>
+<td><strong>3 个算法</strong>（PPO / ReMax / Safe-RLHF）× <strong>4 个模型规模</strong>（7B / 13B / 34B / 70B）× <strong>8–128 卡</strong>，所有组合里的最小值和最大值</td>
+</tr>
+<tr>
+<td>和谁比</td>
+<td>三个基线：<strong>DeepSpeed-Chat / OpenRLHF / NeMo-Aligner</strong>（不是和 Megatron 比）</td>
+</tr>
+<tr>
+<td>上界 20.57×</td>
+<td>34B PPO 对 <strong>NeMo-Aligner</strong> —— ⚠️ 是对三个基线里最慢的那个</td>
+</tr>
+<tr>
+<td>下界 1.53×</td>
+<td>7B ReMax、<strong>128 卡</strong>对 <strong>OpenRLHF</strong> —— ⚠️ 卡多、模型小时优势最薄</td>
+</tr>
+<tr>
+<td>论文自报的<strong>平均</strong></td>
+<td>对 DeepSpeed-Chat <strong>3.67×</strong>、对 OpenRLHF <strong>3.25×</strong>、对 NeMo-Aligner <strong>12.52×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 所以正确的引用方式是：
+   &quot;veRL 相对三个同类 RLHF 框架平均快 3.25×~12.52×，
+    具体倍数取决于算法、模型规模和卡数&quot;
+   而不是 &quot;veRL 快 20 倍&quot;。
+
+⚠️ 还有一条论文自己点明的规律值得记住：
+   ★ 卡越多、模型越小，veRL 的优势越小（下界 1.53× 就出现在 7B / 128 卡）。
+     原因论文写了：global batch 固定时，卡越多每卡的 local batch 越小，
+     GPU 会吃不饱 —— 这时候瓶颈已经不是框架编排了。
 </code></pre></div>
 
 <h3 id="76-verl">7.6 ★★★ 最有说服力的一处发现：veRL 把另外四家都接了进来</h3>
@@ -1382,60 +1587,78 @@ schedule.py    494      topology.py 472      p2p.py 182
 </tr>
 </tbody>
 </table>
-<p><code>verl/workers/engine/spec.py</code> 里每一个都是<strong>可选依赖</strong>（第 28-69 行的模式）：</p>
+<p><code>verl/workers/engine/__init__.py</code> 里每一个都是<strong>可选依赖</strong>（第 26-69 行，六个同构的 try/except 块）：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">try</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">.torchtitan</span><span class="w"> </span><span class="kn">import</span> <span class="n">TorchTitanEngine</span><span class="p">,</span> <span class="n">TorchTitanEngineWithLMHead</span>
-<span class="k">except</span> <span class="o">...</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+
+    <span class="n">__all__</span> <span class="o">+=</span> <span class="p">[</span><span class="s2">&quot;TorchTitanEngine&quot;</span><span class="p">,</span> <span class="s2">&quot;TorchTitanEngineWithLMHead&quot;</span><span class="p">]</span>
+<span class="k">except</span> <span class="ne">ImportError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
     <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;torchtitan engine is not available: </span><span class="si">{</span><span class="n">e</span><span class="si">!r}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">stacklevel</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">TorchTitanEngine</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">TorchTitanEngineWithLMHead</span> <span class="o">=</span> <span class="kc">None</span>
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>本文上一版把这段写成了 <code>spec.py</code>，是错的。</strong> <code>verl/workers/engine/spec.py</code> 确实存在（12 KB），但里面是<strong>权重导出规格</strong>（<code>get_per_tensor_param_delta_shard</code> 那套 HF 坐标转换声明），跟可选依赖无关。✅ 六个 <code>try/except</code> 在 <code>__init__.py</code>：torchtitan 块起于第 26 行，六条 <code>warnings.warn</code> 分别在第 32、41、50、60、69 行（<code>grep -n "engine is not available" verl/workers/engine/__init__.py</code> 可复核）。</p>
+</blockquote>
 <p>⇒ 装了哪个就能用哪个，没装就只是发个警告，不影响其它后端。</p>
-<p>★★★ <strong>这一发现直接印证了 [§0 和 §10 ⑦ 那句"真实架构是组合使用，不是二选一"</strong>——<br />
-它不是一个主张，而是 veRL 源码里<strong>六个并列的目录</strong>。</p>
+<p>★★★ <strong>这一发现直接印证了 [§0 和 §10 ⑦ 那句"真实架构是组合使用，不是二选一"</strong>——它不是一个主张，而是 veRL 源码里<strong>六个并列的目录</strong>。</p>
 <p>对初学者最有用的读法是这样理解这几家的关系：</p>
-<div class="codehilite"><pre><span></span><code>       veRL（RL 的编排层：谁先谁后、数据怎么流）
-              │  ← 通过 workers/engine/ 接入
-   ┌──────┬───┴───┬─────────┬──────────┐
-   ▼      ▼       ▼         ▼          ▼
-Megatron  FSDP  VeOmni  TorchTitan  MindSpeed
-    （具体怎么把模型切到多卡上算）
+<div class="codehilite"><pre><span></span><code>            veRL  ——  RL 的编排层
+                      （谁先谁后、数据怎么流）
+                        |
+                        |  通过 workers/engine/ 接入，六个可选后端
+                        |
+   +----------+---------+---------+------------+-----------+
+   |          |         |         |            |           |
+Megatron    FSDP     VeOmni  TorchTitan   AutoModel   MindSpeed
+
+        （这一层：具体怎么把模型切到多卡上算，行数见上表）
 </code></pre></div>
 
-<p>⚠️ <strong>所以"选 veRL 还是选 Megatron"本身是个伪问题</strong>——<br />
-veRL 解决的是"RL 流程怎么编排"，Megatron 解决的是"一次前反向怎么在多卡上算"，<br />
-它们在同一个系统里是<strong>上下层关系</strong>，不是竞品关系。<br />
+<p>⚠️ <strong>所以"选 veRL 还是选 Megatron"本身是个伪问题</strong>——veRL 解决的是"RL 流程怎么编排"，Megatron 解决的是"一次前反向怎么在多卡上算"，它们在同一个系统里是<strong>上下层关系</strong>，不是竞品关系。<br />
 真正互斥的是同一层内部的选择：Megatron vs FSDP vs VeOmni vs TorchTitan。</p>
 <hr />
 <h2 id="8">8 · ★★ 该怎么选：一张决策图</h2>
-<div class="codehilite"><pre><span></span><code>                    你在做什么？
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-      预训练          后训练/RL         微调/中小规模
-        │                │                │
-        │                ▼                ▼
-        │            veRL              FSDP / TorchTitan
-        │        (+ 底层用 Megatron       ★ 代码好读，够用
-        │           或 FSDP)
-        │
-        ▼
-   模型结构标准吗？
-        │
-   ┌────┴────┐
-  是         否（多模态 / 非标准注意力 / 要频繁试新结构）
-   │          │
-   ▼          ▼
-Megatron    VeOmni
-★ 生态最全   ★ 接模型成本最低
-            ★ 长上下文友好
-   │
-   ▼
-显存够吗？
-   │
-  不够 ──→ 叠加 DeepSpeed 的卸载能力
-           ⚠️ 但先确认是不是并行策略没配好（[12 章](分布式训练入门/12-并行策略组合与MFU.md)）
+<p><strong>读法</strong>：从"你在做什么"开始，一路往下选。缩进越深表示问得越细，每个叶子给出结论。</p>
+<div class="codehilite"><pre><span></span><code>问题 1：你在做什么？
+|
++-- 做微调 / 中小规模（几十到几百卡）
+|     =&gt; 选 FSDP / TorchTitan
+|        ★ 代码好读（并行逻辑仅 1.1 万行），够用
+|
++-- 做后训练 / RL
+|     =&gt; 选 veRL
+|        ★ 它是编排层，底层还要再选一个（Megatron / FSDP / VeOmni / TorchTitan）
+|        ⚠️ 所以这不是&quot;veRL 还是 Megatron&quot;，而是&quot;veRL 加哪一个&quot;（见 7.6）
+|
++-- 做预训练
+      |
+      +-- 问题 2：模型结构标准吗？
+            |
+            +-- 标准（标准 Transformer 的小改动）
+            |     =&gt; 选 Megatron-LM
+            |        ★ 生态最全、万卡验证最充分、能搜到答案的概率最高
+            |     |
+            |     +-- 问题 3：显存够吗？
+            |           |
+            |           +-- 够    =&gt; 就这样，别加东西
+            |           |
+            |           +-- 不够  =&gt; 先按顺序试这三步：
+            |                        (1) 调并行策略（TP/PP/ZeRO 级别、重计算）
+            |                        (2) 还不够，再开 DeepSpeed 的卸载
+            |                        ⚠️ 顺序别颠倒：卸载换的是&quot;能不能跑&quot;，
+            |                           不是&quot;跑得快&quot;（见 2.1 设计点 ④）
+            |
+            +-- 不标准（多模态 / 非标准注意力 / 要频繁试新结构）
+                  =&gt; 选 VeOmni
+                     ★ 接模型成本最低（并行策略单独声明，模型不改）
+                     ★ 长上下文友好
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ 上面"显存不够"那一步的顺序是本文最想强调的一条经验：<strong>MFU 低或显存不够，八成不是框架的问题，而是并行策略没配好</strong>。先走一遍 <a href="分布式训练入门/12-并行策略组合与MFU.html">12 章 §12.5</a> 的排查清单（重计算是不是开成了 full、TP 是不是跨机了、气泡是不是太大、数据管道跟不跟得上），再考虑引入卸载或换框架。</p>
+</blockquote>
 <hr />
 <h2 id="9">9 · ★ 五条容易被忽略的实践经验</h2>
 <div class="codehilite"><pre><span></span><code>① ★★ 换框架很少能解决性能问题
@@ -1479,6 +1702,9 @@ Megatron    VeOmni
 <h2 id="10">10 · 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>① 五家框架都在回答同样的五个问题（切法/通信/显存/容错/数据），
    差别在【策略覆盖度、开箱性能、可扩展性、易用性】的取舍。
+   ★★ 而真正能用来选型的，是 §2.1 那张【设计点 / 换来什么 / 代价】表 ——
+     功能勾选清单（&quot;谁支持 TP&quot;）几乎没有决策价值，
+     因为它把&quot;有&quot;和&quot;有且好用&quot;画成同一个勾，还把代价全藏起来了。
 
 ② Megatron-LM：并行最全、验证最充分，代价是复杂度和&quot;模型与并行耦合&quot;。
 
@@ -1493,8 +1719,11 @@ Megatron    VeOmni
    因为并行原语全部借自上游 PyTorch。
 
 ⑤ ★★ VeOmni：把并行策略从模型里拆成独立的 parallel_plan.py，
-   ✅ 源码实证 —— DeepSeek-V3 的 EP 策略只有 10 行声明。
+   ✅ 源码实证 —— DeepSeek-V3 的 EP 策略只有 10 行声明，
+   且 veomni/models/ 下有 7 个模型自带 parallel_plan.py。
    适合多模态、长上下文、需要频繁接入新模型结构的场景。
+   ⚠️ 它的 MFU 61.5% 是 Qwen2-VL 7B / 128 卡 / 192K 的成绩，
+     别拿去和万卡规模的数字比大小（§6.3）。
 
 ⑥ veRL：RL 后训练的事实标准，核心是【混合控制器 + 3D-HybridEngine】。
    ✅ 源码实证 —— single_controller/ 只有 2,247 行，而它协调的 workers/ 有 23,797 行。
@@ -1519,7 +1748,32 @@ Megatron    VeOmni
    均来自上述五份本地源码，
    引用的行号已逐条用 sed -n &quot;${ln}p&quot; 回查核对。
 
+⚠️ 本次复核在上一版里查出并已修正 5 处源码/数据错误，列在这里以便追溯：
+   ① §6.4 VeOmni 代码量写成&quot;20.9 万行&quot;，实为 156,722 行（15.7 万），
+      与 §2.2 表格自相矛盾 —— 已改。
+   ② §7.6 可选依赖的 try/except 写成在 spec.py，
+      实际在 verl/workers/engine/__init__.py 第 26-69 行 —— 已改文件名。
+      （spec.py 确实存在，但装的是权重导出规格，内容无关。）
+   ③ §5.1 TorchTitan 整仓写成 458 文件 / 145,890 行，
+      该口径误含版本库内部目录下的一个 .py；排除后为 457 / 145,423 —— 已改。
+      ★ 主包 374 / 119,882 不受影响，按目录的统计全部无变化。
+   ④ §7.2 分发模式写成&quot;一共 6 种&quot;，实为 8 种
+      （漏了第 39 行的 RANK_ZERO 和第 47 行的 DIRECT_ROLLOUT_METHOD）—— 已改。
+   ⑤ §4.2 的 ZeroStageEnum 代码块里有三行 &quot;# ZeRO-x&quot; 注释是本文加的、
+      源码中并不存在 —— 已换成逐字原文并加说明。
+   ★ 教训：这 5 处里有 3 处（①③④）是【同一文档内部数字对不上】，
+     不需要翻源码就能发现。⇒ 核对时先做一遍内部一致性自查，性价比最高。
+
 ✅ 所有性能数字标注了论文编号，均回溯自 papers/ 下的 PDF 一手正文。
+
+⚠️ 本次为三处性能数字补齐了【配置条件】—— 缺了条件的倍数几乎等于没有信息量：
+   · Megatron-3 的 &quot;54.2% vs 42.1%&quot;：530B 模型 / 2240 张 A100（§3）
+     ★ 并说明论文原文的 &quot;29% faster&quot; 是吞吐口径，
+       换成时间是【减少 22.3%】，不是 29%。
+   · veRL 的 &quot;1.53×~20.57×&quot;：3 个算法 × 4 个模型规模 × 8-128 卡，
+     对 3 个基线；论文自报平均 3.25×~12.52×（§7.5）。
+   · VeOmni 的 &quot;MFU 61.5%&quot;：Qwen2-VL 7B / 128 卡 / 192K 上下文（§6.3），
+     并列表说明它为何不能和 MegaScale 的 55.2%（175B / 12,288 卡）比大小。
 
 ⚠️ 唯一的口径差异：DeepSpeed 用的是 PyPI 官方源码包 v0.19.5，
    不是 git commit（仓库历史 &gt;150 MB，多次克隆超时）。

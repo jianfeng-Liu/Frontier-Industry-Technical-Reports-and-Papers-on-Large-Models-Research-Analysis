@@ -256,117 +256,469 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="11-gpu">1.1 先认识主角：GPU</h2>
-<p><strong>GPU</strong>（<strong>G</strong>raphics <strong>P</strong>rocessing <strong>U</strong>nit，图形处理器）现在早就不只是画图的了，它是训练大模型的唯一主力硬件。你只需要记住它的<strong>三个数字</strong>：</p>
-<div class="codehilite"><pre><span></span><code>以 NVIDIA H100（2022 年发布，2024–2026 年的主流训练卡）为例：
-
-  ① 显存容量    80 GB          ← 「能装多少东西」
-  ② 显存带宽    3.35 TB/s      ← 「装的东西搬进搬出有多快」
-  ③ 算力        ~989 TFLOP/s   ← 「算得有多快」（BF16 稠密算力）
-                                  ⚠️ 官方标称含稀疏加速时是两倍，
-                                     训练一般用稠密数，本教程一律用稠密数
-</code></pre></div>
-
+<p><strong>GPU</strong>（<strong>G</strong>raphics <strong>P</strong>rocessing <strong>U</strong>nit，图形处理器）现在早就不只是画图的了，它是训练大模型的唯一主力硬件。本教程从头到尾只拿一款卡当标尺：<strong>NVIDIA H100 SXM5</strong>（2022 年发布，2024–2026 年训练集群的主力）。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>指标</th>
+<th>H100 SXM5</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>显存容量（HBM3）</td>
+<td><strong>80 GB</strong></td>
+<td>「能装多少东西」</td>
+</tr>
+<tr>
+<td>②</td>
+<td>显存带宽</td>
+<td><strong>3.35 TB/s</strong></td>
+<td>「装的东西搬进搬出有多快」</td>
+</tr>
+<tr>
+<td>③</td>
+<td>BF16 <strong>稠密</strong>算力</td>
+<td><strong>989 TFLOP/s</strong></td>
+<td>「算得有多快」</td>
+</tr>
+<tr>
+<td>—</td>
+<td>FP32 算力（不走 Tensor Core）</td>
+<td>67 TFLOP/s</td>
+<td>对比用：比 ③ 慢约 15 倍</td>
+</tr>
+<tr>
+<td>—</td>
+<td>屋脊点 = ③ ÷ ②</td>
+<td><strong>295 FLOP/Byte</strong></td>
+<td>每从显存搬 1 字节，至少要算 295 次才不亏</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>📌 <strong>TFLOP/s</strong> = <strong>T</strong>era <strong>FLOP</strong>s per <strong>s</strong>econd，每秒万亿次浮点运算。<br />
-<strong>FLOP</strong> = <strong>FL</strong>oating-point <strong>OP</strong>eration，一次浮点运算（一次加法或一次乘法算一次）。<br />
-989 TFLOP/s 就是「每秒能做 989 万亿次乘加」。</p>
+<p>📌 <strong>TFLOP/s</strong> = <strong>T</strong>era <strong>FLOP</strong>s per <strong>s</strong>econd，每秒万亿次浮点运算。<strong>FLOP</strong> = <strong>FL</strong>oating-point <strong>OP</strong>eration，一次浮点运算（一次加法或一次乘法各算一次）。989 TFLOP/s 就是「每秒能做 989 万亿次乘加」。<br />
+📌 <strong>HBM</strong> = <strong>H</strong>igh <strong>B</strong>andwidth <strong>M</strong>emory，高带宽显存，就是俗称的「显存」。<strong>SXM</strong> 是 NVIDIA 的服务器板载封装形态，对应的 PCIe 插卡版本参数更低（HBM2e，2.0 TB/s），本教程不用它。<br />
+📌 <strong>BF16</strong> = <strong>B</strong>rain <strong>F</strong>loating Point 16，一种 16 位浮点格式，每个数 2 字节，是现在训练的主流（<a href="10-混合精度与FP8.html">10 章</a>细讲）。</p>
+<p>⚠️ <strong>别把稀疏算力当稠密用。</strong> NVIDIA 官方表里 BF16 有 <strong>989</strong> 和 <strong>1979</strong> 两个数字，1979 是「结构化稀疏」下的值（要求权重满足 2:4 稀疏模式），常规训练用不上。<strong>本教程一律用稠密值 989 TFLOP/s。</strong> 看到别人算出的 MFU 特别低，先检查他分母是不是用了 1979。</p>
+<p>⚠️ <strong>GB 和 GiB 要分清。</strong> 厂商标称的「80 GB」实际是 80 GiB = 80 × 2³⁰ ≈ 85.9 × 10⁹ 字节，<code>nvidia-smi</code> 上常见报数是 81,559 MiB（≈ 79.6 GiB），差的那点被驱动、CUDA 上下文和 ECC 占掉了。<strong>本教程一律用十进制（1 GB = 10⁹ 字节）算账，并把单卡容量按 80 GB 取整</strong> —— 这个口径略偏保守，真机上你只会比算出来的稍宽裕一点，不会更紧。</p>
 </blockquote>
 <p><strong>这三个数字里，① 显存容量是本教程前半部分的全部矛盾来源。</strong></p>
 <hr />
 <h2 id="12">1.2 第一个坎：装不下</h2>
-<h3 id="70b">一个 70B 模型有多大</h3>
-<p><strong>70B</strong> = 700 亿个参数（<strong>B</strong> = <strong>B</strong>illion，十亿）。每个参数是一个数。</p>
-<div class="codehilite"><pre><span></span><code>    假设每个数用 BF16 存（2 个字节，10 章会讲什么是 BF16）：
+<h3 id="121">1.2.1 先把一个参数的开销拆开</h3>
+<p>训练一个模型，<strong>每个参数</strong>都要在显存里留下好几份东西。下一章会逐项论证为什么每一份都不能省，这里先把结论拿来用：</p>
+<table>
+<thead>
+<tr>
+<th>存什么</th>
+<th>精度</th>
+<th>字节/参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>权重（计算用的副本）</td>
+<td>BF16</td>
+<td>2</td>
+</tr>
+<tr>
+<td>梯度</td>
+<td>BF16</td>
+<td>2</td>
+</tr>
+<tr>
+<td>FP32 主权重（更新在它上面做）</td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td>Adam 一阶动量 <strong>m</strong></td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td>Adam 二阶动量 <strong>v</strong></td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>★ 16</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>Adam</strong> = <strong>Ada</strong>ptive <strong>M</strong>oment estimation，自适应矩估计，现在最主流的优化器（<a href="02-显存去哪了.html">02 章 §2.2</a> 讲它为什么要记两个动量）。<br />
+📌 <strong>B</strong> = <strong>B</strong>illion，十亿。所以 <strong>70B</strong> = 700 亿个参数。注意 <strong>B 数的是"个数"，不是"字节"</strong> —— 这一点在 <a href="03-通信原语.html">03 章 §3.3</a> 会变成一个真正的坑。</p>
+</blockquote>
+<h3 id="122">1.2.2 逐步算：从参数量到"要几张卡"</h3>
+<p><strong>把上面那 16 字节代进去，一步一步算</strong>（BF16 混合精度 + AdamW，1 GB = 10⁹ 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>1.5B</th>
+<th>7B</th>
+<th>70B</th>
+<th>405B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 参数量 Ψ（<strong>个</strong>）</td>
+<td>—</td>
+<td>1.5×10⁹</td>
+<td>7×10⁹</td>
+<td>70×10⁹</td>
+<td>405×10⁹</td>
+</tr>
+<tr>
+<td>② BF16 权重</td>
+<td>Ψ × 2 字节</td>
+<td>3 GB</td>
+<td>14 GB</td>
+<td>140 GB</td>
+<td>810 GB</td>
+</tr>
+<tr>
+<td>③ BF16 梯度</td>
+<td>Ψ × 2 字节</td>
+<td>3 GB</td>
+<td>14 GB</td>
+<td>140 GB</td>
+<td>810 GB</td>
+</tr>
+<tr>
+<td>④ FP32 主权重</td>
+<td>Ψ × 4 字节</td>
+<td>6 GB</td>
+<td>28 GB</td>
+<td>280 GB</td>
+<td>1620 GB</td>
+</tr>
+<tr>
+<td>⑤ Adam 动量 <strong>m</strong></td>
+<td>Ψ × 4 字节</td>
+<td>6 GB</td>
+<td>28 GB</td>
+<td><strong>280 GB</strong></td>
+<td>1620 GB</td>
+</tr>
+<tr>
+<td>⑥ Adam 动量 <strong>v</strong></td>
+<td>Ψ × 4 字节</td>
+<td>6 GB</td>
+<td>28 GB</td>
+<td><strong>280 GB</strong></td>
+<td>1620 GB</td>
+</tr>
+<tr>
+<td>⑦ 优化器状态小计</td>
+<td>④+⑤+⑥ = Ψ × 12 字节</td>
+<td>18 GB</td>
+<td>84 GB</td>
+<td><strong>840 GB</strong></td>
+<td>4860 GB</td>
+</tr>
+<tr>
+<td>⑧ <strong>模型状态合计</strong></td>
+<td>②+③+⑦ = Ψ × 16 字节</td>
+<td><strong>24 GB</strong></td>
+<td><strong>112 GB</strong></td>
+<td><strong>★ 1120 GB</strong></td>
+<td><strong>★ 6480 GB</strong></td>
+</tr>
+<tr>
+<td>⑨ 光装 ⑧ 要几张 80 GB 卡</td>
+<td>⑧ ÷ 80，向上取整</td>
+<td>1 张</td>
+<td>2 张</td>
+<td><strong>14 张</strong></td>
+<td><strong>81 张</strong></td>
+</tr>
+<tr>
+<td>⑩ 还要再加激活值</td>
+<td>见 <a href="02-显存去哪了.html">§2.3</a></td>
+<td>+几 GB</td>
+<td>+几十 GB</td>
+<td>+几百 GB</td>
+<td>+上千 GB</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>⑤ 和 ⑥ 是两项，各 4 字节/参数，不能合成一项。</strong> 这是这张账上最常见的错误：把 Adam 状态整个写成 4 字节/参数（漏了一半），或者写成 8 字节/参数（漏了 FP32 主权重）。<strong>70B 的 m 是 280 GB，v 也是 280 GB，两个加起来 560 GB，再加 FP32 主权重 280 GB，优化器状态一共 840 GB。</strong> 漏掉一半会把 1120 GB 算成 600 GB 左右，然后得出"8 张卡够了"这种完全错误的结论。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 一张 H100 只有 80 GB。
 
-        70 × 10^9 个参数 × 2 字节 = 140 × 10^9 字节 = 140 GB
-
-    而一张 H100 只有 80 GB。
-
-    ★ 光是【把权重放进去】就已经装不下了。
-</code></pre></div>
-
-<p><strong>而且这还只是权重。</strong> 训练的时候你还需要：</p>
-<div class="codehilite"><pre><span></span><code>    ① 权重            140 GB     ← 模型本身
-    ② 梯度            140 GB     ← 每个参数对应一个梯度
-    ③ 优化器状态      840 GB     ← Adam 每个参数要存 3 个额外的数（02 章细讲）
-    ④ 激活值          ？？ GB     ← 前向过程中的所有中间结果，和 batch、序列长度成正比
-    ─────────────────────────
-    总计            &gt; 1120 GB    ★ 需要至少 14 张 H100 才装得下，而且还没算 ④
+      70B 模型：光是【把权重放进去】就要 140 GB —— 已经装不下
+                连梯度和优化器状态一起算 1120 GB —— 差 14 倍
+                再算上激活值 —— 差 20 倍（下一章会把这个数算出来）
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>这就是第一个、也是最硬的动机</strong>：<br />
 <strong>不是"多张卡训得快"，而是"一张卡根本训不了"。</strong> 快是第二位的，装得下是第一位的。</p>
 </blockquote>
-<h3 id="_1">推理为什么没这么惨</h3>
-<p><strong>你可能见过"单卡跑 70B 模型"的说法。那是【推理】，不是【训练】。</strong></p>
-<div class="codehilite"><pre><span></span><code>    推理只需要 ①权重（还能量化到 4 bit，只要 35 GB）
-    训练需要   ①+②+③+④，是推理的【8 倍以上】
-
-    ★ 训练和推理的显存需求完全不是一个量级。
-</code></pre></div>
-
+<h3 id="123">1.2.3 推理为什么没这么惨</h3>
+<p><strong>你可能见过"单卡跑 70B 模型"的说法。那是【推理】，不是【训练】。</strong> 推理不做反向传播，所以 ②③④⑤⑥ 里只剩权重一项：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>权重</th>
+<th>梯度</th>
+<th>优化器状态</th>
+<th>小计（70B）</th>
+<th>相对训练</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练</strong>（BF16 + AdamW）</td>
+<td>140 GB</td>
+<td>140 GB</td>
+<td>840 GB</td>
+<td><strong>1120 GB</strong></td>
+<td>1×</td>
+</tr>
+<tr>
+<td><strong>推理</strong>（BF16）</td>
+<td>140 GB</td>
+<td>—</td>
+<td>—</td>
+<td><strong>140 GB</strong></td>
+<td><strong>1/8</strong></td>
+</tr>
+<tr>
+<td><strong>推理</strong>（INT4 量化）</td>
+<td>35 GB</td>
+<td>—</td>
+<td>—</td>
+<td><strong>35 GB</strong></td>
+<td><strong>1/32</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 上表都没算「激活值」和推理侧的 <strong>KV cache</strong>（键值缓存，随并发量和上下文长度增长）。加上它们，两边都会变大，但<strong>训练比推理贵 8 倍以上</strong>这个量级关系不变。</p>
+</blockquote>
 <hr />
 <h2 id="13">1.3 第二个坎：太慢</h2>
 <p><strong>就算装得下，时间也扛不住。</strong></p>
-<h3 id="_2">训练要算多少次</h3>
-<p>有一个非常好用的经验公式（这是这个领域的通用估算式）：</p>
+<h3 id="131-6n">1.3.1 那个 6N 是怎么来的</h3>
+<p>有一个非常好用的经验公式：</p>
 <p>$$\text{总计算量} \approx 6 \times \Psi \times D$$</p>
 <ul>
-<li>$\Psi$ = 参数量</li>
+<li>$\Psi$ = 参数量（<strong>个</strong>）</li>
 <li>$D$ = 训练用的 token 总数</li>
-<li><strong>6 是怎么来的</strong>：前向每个参数每个 token 要做 1 次乘 + 1 次加 = 2 FLOP；反向大约是前向的 2 倍 = 4 FLOP；合起来 6。</li>
 </ul>
-<div class="codehilite"><pre><span></span><code>    举例：训一个 70B 模型，喂 15 T token（15 × 10^12 个）
-
-        6 × 70×10^9 × 15×10^12 = 6.3 × 10^24 FLOP
-
-    一张 H100 满打满算 989 × 10^12 FLOP/s：
-
-        6.3×10^24 ÷ 989×10^12 = 6.4 × 10^9 秒 ≈ 202 年   ⚠️ 我的估算
-
-    ★ 而且这是【理论峰值】。真实能跑到峰值的 40~55% 就很不错了（12 章讲 MFU）。
-      按 45% 算 → 约 450 年。
-</code></pre></div>
-
+<p><strong>6 拆开是三份，每份 2</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>每 token 每参数的 FLOP</th>
+<th>为什么是 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前向：<code>y = W x</code></td>
+<td><strong>2</strong></td>
+<td>每个权重参与 1 次乘 + 1 次加</td>
+</tr>
+<tr>
+<td>反向①：算<strong>输入</strong>的梯度 <code>dx = Wᵀ dy</code></td>
+<td><strong>2</strong></td>
+<td>又是一次同样规模的矩阵乘</td>
+</tr>
+<tr>
+<td>反向②：算<strong>权重</strong>的梯度 <code>dW = dy xᵀ</code></td>
+<td><strong>2</strong></td>
+<td>再一次同样规模的矩阵乘</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>★ 6</strong></td>
+<td>所以「反向大约是前向的 2 倍」</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>所以 10,000 张卡不是"豪华配置"，是"唯一能在合理时间内训完的配置"</strong>：<br />
-450 年 ÷ 10,000 张 ≈ <strong>16 天</strong>。这才是能接受的数字。</p>
+<p>⚠️ <strong>6N 里【不含】优化器。</strong> 优化器的开销是 <strong>per-step per-parameter</strong>，不随 token 数增长——每步每个参数十来次浮点运算就够了。代入 70B、global batch 16M token：这一步的模型计算是 <code>6 × 70×10⁹ × 16×10⁶ ≈ 6.7×10¹⁸</code> FLOP，优化器大约 <code>70×10⁹ × 10 = 7×10¹¹</code> FLOP，<strong>占比约一千万分之一</strong>。把优化器算进 6N 是概念错误，把它当成性能瓶颈更是。</p>
+<p>⚠️ <strong>6N 还漏了注意力里的两个矩阵乘</strong>：<code>QKᵀ</code>（算注意力分数）和 <code>PV</code>（用分数加权 V）。这两个的规模和<strong>序列长度</strong>有关，跟参数量无关，所以 6Ψ 这个式子抓不住它们。补全后是：</p>
 </blockquote>
-<h3 id="_3">✅ 真实数字做个校准</h3>
+<p>$$\text{每 token 计算量} \approx 6\Psi + 12 \cdot L \cdot s \cdot h$$</p>
+<ul>
+<li>$L$ = 层数，$s$ = 序列长度，$h$ = hidden size</li>
+<li>12 = 2（<code>QKᵀ</code>）+ 2（<code>PV</code>）前向共 4，反向 ×2 再 +8，合计 12</li>
+<li>⚠️ 这一项没有扣掉<strong>因果掩码</strong>（decoder 只看左边，实际只需算一半），所以它是个<strong>上界</strong>。Megatron 系列论文的公式也是这么写的。</li>
+</ul>
+<h3 id="132-70b">1.3.2 逐步算：70B 模型要训多久</h3>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 设定</td>
+<td>70B 模型，15T token；L=80，s=4096，h=8192</td>
+<td>—</td>
+</tr>
+<tr>
+<td>② 权重部分</td>
+<td>6 × 70×10⁹ × 15×10¹²</td>
+<td>6.30 × 10²⁴ FLOP</td>
+</tr>
+<tr>
+<td>③ 注意力补项（每 token）</td>
+<td>12 × 80 × 4096 × 8192</td>
+<td>3.22 × 10¹⁰ FLOP</td>
+</tr>
+<tr>
+<td>④ 注意力部分</td>
+<td>③ × 15×10¹²</td>
+<td>4.83 × 10²³ FLOP</td>
+</tr>
+<tr>
+<td>⑤ <strong>总计算量</strong></td>
+<td>② + ④</td>
+<td><strong>6.78 × 10²⁴ FLOP</strong>（比 6ΨD 多 7.7%）</td>
+</tr>
+<tr>
+<td>⑥ 单卡<strong>理论峰值</strong>耗时</td>
+<td>⑤ ÷ 989×10¹²</td>
+<td>6.86 × 10⁹ 秒 ≈ <strong>217 年</strong></td>
+</tr>
+<tr>
+<td>⑦ 按 40% MFU 的现实耗时</td>
+<td>⑥ ÷ 0.40</td>
+<td>⚠️ ≈ <strong>543 年</strong></td>
+</tr>
+<tr>
+<td>⑧ 换成 10,000 张卡</td>
+<td>⑦ ÷ 10,000</td>
+<td>≈ <strong>20 天</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>MFU</strong> = <strong>M</strong>odel <strong>FLOPs</strong> <strong>U</strong>tilization，模型算力利用率 = 「模型本身必须做的运算」÷「这段时间里硬件理论上能做的运算」。它衡量的是<strong>买来的算力有多少真的落在模型上</strong>（<a href="12-并行策略组合与MFU.html">12 章</a> 细讲怎么算）。<strong>引用任何 MFU 数字都必须带上硬件平台和规模</strong>——比如 PaLM 论文报的 46.2% 是在 <strong>6144 块 TPU v4</strong> 上取得的，不是 GPU，不能拿来直接比。</p>
+<p>🔑 <strong>所以 10,000 张卡不是"豪华配置"，是"唯一能在合理时间内训完的配置"。</strong> 217 年和 20 天的差别，就是这一整本教程存在的理由。</p>
+</blockquote>
+<h3 id="133">1.3.3 ✅ 用真实数字做个校准</h3>
 <p><strong>Llama 3.1 405B 的公开数字</strong>（TorchTitan 论文 §1 引用，<a href="../papers/TorchTitan-arXiv-2410.06511.pdf">papers/TorchTitan-arXiv-2410.06511.pdf</a>）：</p>
 <blockquote>
 <p>✅ 原文：<em>"Llama 3.1 (405B parameters, 15T tokens, 30.84M GPU hours, 16K H100 GPUs)"</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    30.84 M GPU 小时 ÷ 16,000 张卡 = 1,928 小时 ≈ 80 天
-
-    ★ 这是真实世界的量级：405B 模型 + 16,000 张 H100 + 80 天。
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 墙钟时间</td>
+<td>30.84×10⁶ GPU 小时 ÷ 16,000 张卡</td>
+<td>1,928 小时 ≈ <strong>80 天</strong></td>
+</tr>
+<tr>
+<td>② 总 GPU 秒</td>
+<td>30.84×10⁶ × 3600</td>
+<td>1.11 × 10¹¹ GPU·秒</td>
+</tr>
+<tr>
+<td>③ 这些卡的理论总算力</td>
+<td>989×10¹² × ②</td>
+<td>1.10 × 10²⁶ FLOP</td>
+</tr>
+<tr>
+<td>④ 模型真正需要的算力</td>
+<td>6ΨD = 6 × 405×10⁹ × 15×10¹²</td>
+<td>3.65 × 10²⁵ FLOP</td>
+</tr>
+<tr>
+<td>⑤ 反推 MFU</td>
+<td>④ ÷ ③</td>
+<td>⚠️ <strong>≈ 33%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 这个 33% 是我从<strong>总 GPU 小时</strong>反推的，分母里含了故障重启、checkpoint 写盘、数据加载、评测等<strong>全部</strong>损耗，所以会明显低于论文报告的稳态 MFU。稳态数字请以 Llama 3 原论文为准（本仓 <a href="../papers/">papers/</a> 里没有这一篇，我没有核对过）。<strong>这里要记住的只有量级：真实世界跑得出的 MFU 在 30%–55% 之间，不是 100%。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 这就是真实世界的量级：405B 模型 + 16,000 张 H100 + 80 天。
 </code></pre></div>
 
 <hr />
 <h2 id="14">1.4 于是问题变成了：切什么</h2>
-<p><strong>既然一张卡装不下，就要把东西分到多张卡上。</strong> 问题是——<strong>分什么？</strong></p>
-<p>一次训练迭代里，一共只有这么几样东西：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│                    一次训练迭代里有什么                        │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│   数据：  一个 batch，B 条样本，每条 L 个 token               │
-│           ↓  能切 B      → 数据并行 DP        （04 章）       │
-│           ↓  能切 L      → 上下文并行 CP      （08 章）       │
-│                                                              │
-│   模型：  l 层，每层几个大矩阵                                │
-│           ↓  能切 层     → 流水线并行 PP      （07 章）       │
-│           ↓  能切 矩阵   → 张量并行 TP        （06 章）       │
-│           ↓  能切 专家   → 专家并行 EP        （09 章，MoE）  │
-│                                                              │
-│   状态：  梯度、优化器状态                                    │
-│           ↓  能切 状态   → ZeRO / FSDP        （05 章）       │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-</code></pre></div>
-
-<p><strong>★ 这张图就是整个第二部分的目录。</strong> 每一章讲一种切法。</p>
+<p><strong>既然一张卡装不下，就要把东西分到多张卡上。</strong> 问题是——<strong>分什么？</strong> 一次训练迭代里，一共只有三类东西可切：</p>
+<table>
+<thead>
+<tr>
+<th>一次迭代里有什么</th>
+<th>能切的那一维</th>
+<th>切了以后叫</th>
+<th>在哪一章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数据</strong>：一个 batch，B 条样本，每条 s 个 token</td>
+<td>切 <strong>B</strong>（样本条数）</td>
+<td><strong>DP</strong> 数据并行</td>
+<td><a href="04-数据并行DP.html">04</a></td>
+</tr>
+<tr>
+<td></td>
+<td>切 <strong>s</strong>（序列长度）</td>
+<td><strong>CP</strong> 上下文并行</td>
+<td><a href="08-序列并行与上下文并行.html">08</a></td>
+</tr>
+<tr>
+<td><strong>模型</strong>：L 层，每层几个大矩阵</td>
+<td>切 <strong>L</strong>（层）</td>
+<td><strong>PP</strong> 流水线并行</td>
+<td><a href="07-流水线并行PP.html">07</a></td>
+</tr>
+<tr>
+<td></td>
+<td>切 <strong>矩阵的行 / 列</strong></td>
+<td><strong>TP</strong> 张量并行</td>
+<td><a href="06-张量并行TP.html">06</a></td>
+</tr>
+<tr>
+<td></td>
+<td>切 <strong>专家</strong>（只有 MoE 才有）</td>
+<td><strong>EP</strong> 专家并行</td>
+<td><a href="09-专家并行EP.html">09</a></td>
+</tr>
+<tr>
+<td><strong>状态</strong>：梯度、优化器状态、参数</td>
+<td>按参数编号切成 N 份</td>
+<td><strong>ZeRO / FSDP</strong></td>
+<td><a href="05-ZeRO与FSDP.html">05</a></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 缩写：<strong>DP</strong> = <strong>D</strong>ata <strong>P</strong>arallelism；<strong>CP</strong> = <strong>C</strong>ontext <strong>P</strong>arallelism；<strong>PP</strong> = <strong>P</strong>ipeline <strong>P</strong>arallelism；<strong>TP</strong> = <strong>T</strong>ensor <strong>P</strong>arallelism；<strong>EP</strong> = <strong>E</strong>xpert <strong>P</strong>arallelism；<strong>MoE</strong> = <strong>M</strong>ixture <strong>o</strong>f <strong>E</strong>xperts，混合专家；<strong>ZeRO</strong> = <strong>Ze</strong>ro <strong>R</strong>edundancy <strong>O</strong>ptimizer，零冗余优化器；<strong>FSDP</strong> = <strong>F</strong>ully <strong>S</strong>harded <strong>D</strong>ata <strong>P</strong>arallel，全分片数据并行。</p>
+</blockquote>
+<p><strong>★ 这张表就是整个第二部分的目录。</strong> 每一章讲一种切法，而<strong>判断"该用哪一种"的依据，是下一章那张显存账</strong>——你得先知道是哪一项装不下，才知道该切哪一维。</p>
 <hr />
 <h2 id="15">1.5 天下没有免费的午餐</h2>
 <p><strong>每一种切法，都要付一样的代价：通信。</strong></p>
@@ -389,44 +741,136 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p><strong>而现在做到了什么程度？</strong>（MegaScale 论文，<a href="../papers/MegaScale-10000-GPUs-arXiv-2402.15627.pdf">papers/MegaScale-10000-GPUs-arXiv-2402.15627.pdf</a>）：</p>
 <blockquote>
-<p>✅ 原文：<em>"MegaScale achieves 55.2% Model FLOPs Utilization (MFU) when training a 175B LLM model on 12,288 GPUs"</em></p>
+<p>✅ 原文：<em>"MegaScale achieves 55.2% Model FLOPs Utilization (MFU) when training a 175B LLM model on 12,288 GPUs, improving the MFU by 1.34× compared to Megatron-LM."</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    12,288 张卡，55.2% 的算力真正用在了模型的计算上。
+<div class="codehilite"><pre><span></span><code>    12,288 张 GPU，55.2% 的算力真正用在了模型的计算上。
     ★ 这就是当前工业界的水位线。12 章会讲 MFU 具体怎么算。
 </code></pre></div>
 
+<blockquote>
+<p>📌 <strong>⚠️「加速 X 倍」和「时间减少 X%」是两回事，别混着读。</strong> 论文里的 "1.34× improvement" 意思是<strong>同样的活少花 25% 的时间</strong>，不是"快了 134%"，也不是"省了 34% 时间"。换算表：</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>论文说「加速 N 倍」</th>
+<th>实际「时间减少」= 1 − 1/N</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.34×</td>
+<td><strong>25.4%</strong></td>
+</tr>
+<tr>
+<td>1.5×</td>
+<td>33.3%</td>
+</tr>
+<tr>
+<td>2×</td>
+<td>50%</td>
+</tr>
+<tr>
+<td><strong>2.5×</strong></td>
+<td><strong>60%</strong></td>
+</tr>
+<tr>
+<td>4×</td>
+<td>75%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 反过来最容易错：<strong>看到「时间减少 60%」要读成「加速 2.5 倍」</strong>，不是 1.6 倍。这两个数字在做容量规划时会差出一倍多的机器。</p>
+</blockquote>
 <hr />
 <h2 id="16-cpu">1.6 一个容易搞混的问题：为什么不用 CPU 内存</h2>
-<p><strong>"服务器内存有 2 TB，为什么不把模型放内存里？"</strong></p>
-<div class="codehilite"><pre><span></span><code>    因为【带宽】差太多：
+<p><strong>"服务器内存有 2 TB，为什么不把模型放内存里？"</strong> —— <strong>因为带宽差太多。</strong></p>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>带宽（<strong>统一按单向</strong>）</th>
+<th>比 HBM3 慢几倍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPU 显存 HBM3（卡内）</td>
+<td>3,350 GB/s</td>
+<td>1×（基准）</td>
+</tr>
+<tr>
+<td>NVLink 4.0（卡 ↔ 卡，同机）</td>
+<td>450 GB/s</td>
+<td>7.4×</td>
+</tr>
+<tr>
+<td>CPU 内存 DDR5（8 通道，CPU 自己访问）</td>
+<td>⚠️ 实测约 200 GB/s</td>
+<td>17×</td>
+</tr>
+<tr>
+<td>InfiniBand 400 Gb/s（跨机）</td>
+<td>50 GB/s</td>
+<td>67×</td>
+</tr>
+<tr>
+<td><strong>PCIe 5.0 ×16（GPU ↔ CPU 内存）</strong></td>
+<td><strong>63 GB/s 理论</strong>，⚠️ 实测约 50 GB/s</td>
+<td><strong>★ 53×（理论）</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这张表统一成了「单向」口径，因为混口径是这一带最容易犯的错</strong>：NVLink 常被标成 <strong>900 GB/s</strong>，那是<strong>双向聚合</strong>（同时发 450 + 收 450）；拿 900 当"我要发出 X 字节要多久"的分母，结果会乐观一倍。同理 IB 的 <strong>400 Gb/s</strong> 里 <strong>Gb 是比特</strong>，÷ 8 才是 50 <strong>GB</strong>/s（字节）。详见 <a href="03-通信原语.html">§3.1</a>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 数据从 CPU 内存搬到 GPU 上，走的是全表最窄的那根管子（PCIe）。
 
-        GPU 显存 (HBM)     3.35 TB/s      ← H100
-        CPU 内存 (DDR5)    ~0.4 TB/s      ← 差 8 倍
-        PCIe 5.0 (卡↔内存)  ~0.06 TB/s     ← ★ 差 55 倍
+      举个数：70B 的 BF16 权重 140 GB，从内存灌进显存一次
+              140 GB ÷ 50 GB/s ≈ 2.8 秒
 
-    ★ 数据从 CPU 内存搬到 GPU 上，走的是最窄的那根管子（PCIe）。
-      模型每一层都要搬一次的话，GPU 会 99% 的时间在等数据。
+      而一步训练的计算时间通常只有几百毫秒。
+      → 每层都要来回搬的话，GPU 会 99% 的时间在等数据。
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>但这条路不是完全没用</strong>：<strong>ZeRO-Offload</strong> 和 <strong>ZeRO-Infinity</strong> 这两篇论文就是专门做这件事的（05 章会提），它们的定位是<strong>"用速度换可行性"</strong>——在只有少量卡的时候，让原本跑不了的模型能跑起来。<strong>工业界大规模训练不用它。</strong></p>
+<p>📌 <strong>但这条路不是完全没用</strong>：<strong>ZeRO-Offload</strong>（<a href="../papers/ZeRO-Offload-arXiv-2101.06840.pdf">papers/ZeRO-Offload-arXiv-2101.06840.pdf</a>）和 <strong>ZeRO-Infinity</strong>（<a href="../papers/ZeRO-Infinity-arXiv-2104.07857.pdf">papers/ZeRO-Infinity-arXiv-2104.07857.pdf</a>）这两篇论文就是专门做这件事的（<a href="05-ZeRO与FSDP.html">05 章 §5.6</a> 会提），它们的定位是<strong>"用速度换可行性"</strong>——在只有少量卡的时候，让原本跑不了的模型能跑起来。<strong>工业界大规模训练不用它。</strong></p>
 </blockquote>
 <hr />
 <h2 id="17">1.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① 一张 H100 = 80 GB 显存 / 3.35 TB/s 带宽 / ~989 TFLOP/s 算力
-② 训练一个 70B 模型至少要 1120 GB 显存 —— ★ 一张卡装不下，这是第一动机
-   训练显存 ≈ 推理显存的 8 倍以上（多了梯度、优化器状态、激活）
-③ 总计算量 ≈ 6 × 参数量 × token 数
-   → 70B × 15T token ≈ 6.3×10^24 FLOP，单卡要几百年 —— 这是第二动机
-   ✅ 真实校准：Llama 3.1 405B = 16K 张 H100 × 80 天
-④ 能切的东西只有六样：batch / 序列 / 层 / 矩阵 / 专家 / 优化器状态
+<div class="codehilite"><pre><span></span><code>① 一张 H100 SXM5 = 80 GB 显存 / 3.35 TB/s 带宽 / 989 TFLOP/s BF16 稠密算力
+   ⚠️ 1979 是稀疏值，别当稠密用；80 GB 是标称值，本教程按十进制保守取整
+
+② ★★ 16 字节/参数 ★★ = 权重 2 + 梯度 2 + FP32 主权重 4 + Adam m 4 + Adam v 4
+   ⚠️ m 和 v 是【两项】，各 4 字节 —— 漏一半是这张账上最常见的错
+   → 70B 模型 = 1120 GB 模型状态，光这一项就要 14 张 H100
+   → 405B 模型 = 6480 GB，要 81 张
+   ★ 这是第一动机：不是&quot;多卡更快&quot;，而是&quot;单卡根本训不了&quot;
+   训练显存 ≈ BF16 推理的 8 倍、INT4 推理的 32 倍
+
+③ 计算量 ≈ 6Ψ + 12·L·s·h（每 token）
+     6 = 前向 2 + 反向算输入梯度 2 + 反向算权重梯度 2
+     ⚠️ 不含优化器（优化器是 per-step per-parameter，占比约千万分之一）
+     ⚠️ 12·L·s·h 是注意力的 QKᵀ 和 PV，跟参数量无关，只跟序列长度有关
+   → 70B × 15T token ≈ 6.8×10²⁴ FLOP
+     单卡理论峰值 217 年，按 40% MFU 是 543 年 —— 这是第二动机
+   ✅ 真实校准：Llama 3.1 405B = 16K 张 H100 × 80 天，反推 MFU ⚠️≈33%
+   ⚠️ 引用 MFU 必须带硬件平台（PaLM 的 46.2% 是 6144 块 TPU v4，不是 GPU）
+
+④ 能切的东西只有六样：batch / 序列 / 层 / 矩阵 / 专家 / 模型状态
    → 对应 DP / CP / PP / TP / EP / ZeRO，就是第二部分的六章
+
 ⑤ ★ 每一种切法的代价都是【通信】。全部工程都在打「让传和算同时发生」
    ✅ 2018 年 128 卡就丢掉一半算力；2024 年 12,288 卡能保住 55.2%
-⑥ CPU 内存不能救场：PCIe 带宽比显存带宽窄 55 倍
+   ⚠️「加速 1.34 倍」= 时间减少 25.4%，不是 34%；「时间减少 60%」= 加速 2.5 倍
+
+⑥ CPU 内存不能救场：PCIe 5.0 ×16 单向 63 GB/s，比 HBM3 窄 53 倍
+   ⚠️ 所有带宽数字先统一口径：NVLink 900 是双向聚合，单向 450；
+      IB 400 Gb/s ÷ 8 = 50 GB/s
 </code></pre></div>
 
-<p><strong>下一章讲全教程最重要的一件事：那 1120 GB 到底是怎么算出来的。</strong> 这张账本你记住了，后面每一种并行"省了什么"就都是一句话的事。</p>
+<p><strong>下一章讲全教程最重要的一件事：那 1120 GB 的每一个字节到底花在哪。</strong> 这张账本你记住了，后面每一种并行"省了什么"就都是一句话的事。</p>
 <hr />
 <blockquote>
 <p><a href="README.html">目录</a> ｜ 下一章 → <a href="02-显存去哪了.html">02 显存去哪了</a></p>

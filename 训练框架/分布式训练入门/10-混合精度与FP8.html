@@ -252,22 +252,35 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="10-fp8">10 · 混合精度与 FP8</h1>
 <blockquote>
 <p><strong>这一章开始换一类思路</strong>：前面六章都在讲"把东西切开分给多张卡"。<strong>这一章和下一章讲的是"不切，也能省"</strong>——本章把每个数字变小，下一章干脆不存。<br />
-读完你应该能回答：为什么"直接全用 FP16"会训崩？那三根救命稻草（master 权重 / loss scaling / FP32 累加）各救的是什么？BF16 和 FP16 到底差在哪，为什么现在都用 BF16？FP8 的 E4M3 和 E5M2 为什么要有两种？</p>
+读完你应该能回答：为什么"直接全用 FP16"会训崩？那三根救命稻草（master 权重 / loss scaling / FP32 累加）各救的是什么？BF16 和 FP16 到底差在哪，为什么现在都用 BF16？FP8 的 E4M3 和 E5M2 为什么要有两种？<strong>以及最反直觉的一条：为什么用了半精度，模型状态的显存一个字节都没省？</strong></p>
 </blockquote>
 <hr />
 <h2 id="101">10.1 先建立一个浮点数的直觉</h2>
-<p><strong>一个浮点数分三段</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ┌───┬─────────────┬────────────────────┐
-    │符号│   指数 E     │      尾数 M         │
-    └───┴─────────────┴────────────────────┘
-      1位    决定【范围】        决定【精度】
+<h3 id="1011">10.1.1 一个浮点数分三段</h3>
+<p><strong>浮点数不是"小数点固定在某一位"，而是"科学计数法"</strong>：先记一个有效数，再记一个"小数点往哪挪几位"的指数。</p>
+<div class="codehilite"><pre><span></span><code>    一个浮点数 = (−1)^S × 1.M × 2^(E − bias)
 
-    ★★ 记住这一句就够了：
-       ★ 指数位 = 能表示多大/多小的数（动态范围）
-       ★ 尾数位 = 能分辨多细的差别（精度）
-       ★ 两者【互相抢】那有限的几个 bit
+    FP32   S│EEEEEEEE│MMMMMMMMMMMMMMMMMMMMMMM      1+8+23 = 32 bit
+    BF16   S│EEEEEEEE│MMMMMMM                      1+8+7  = 16 bit
+    FP16   S│EEEEE   │MMMMMMMMMM                   1+5+10 = 16 bit
+    E4M3   S│EEEE    │MMM                          1+4+3  =  8 bit
+    E5M2   S│EEEEE   │MM                           1+5+2  =  8 bit
+           ▲    ▲        ▲
+           │    │        └ M 尾数：决定【精度】—— 同一个数量级内部能分成几档
+           │    └ E 指数：决定【范围】—— 能表示多大 / 多小
+           └ S 符号
 </code></pre></div>
 
+<div class="codehilite"><pre><span></span><code>    ★★ 记住这三句就够了：
+       ★ 指数位 = 能表示多大 / 多小的数（动态范围）
+       ★ 尾数位 = 能分辨多细的差别（精度）
+       ★ 总位数是死的，所以两者【互相抢】那有限的几个 bit
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>隐含位（implicit leading 1）</strong>：正规数的有效数总是写成 <code>1.M</code>，那个开头的 1 不用存，白送一位。<strong>所以"有效数的位数 = 尾数位 + 1"</strong>——这一条下面马上要用到，它是本节最容易出错的地方。</p>
+</blockquote>
+<h3 id="1012">10.1.2 五种格式的具体量纲</h3>
 <table>
 <thead>
 <tr>
@@ -275,8 +288,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <th>总位</th>
 <th>指数</th>
 <th>尾数</th>
-<th>范围</th>
-<th>精度</th>
+<th>有效数位（含隐含位）</th>
+<th>★ 十进制有效位</th>
+<th>最小正规数</th>
+<th>最大正规数</th>
 </tr>
 </thead>
 <tbody>
@@ -285,57 +300,154 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>32</td>
 <td>8</td>
 <td>23</td>
-<td>~10⁻³⁸ ~ 10³⁸</td>
-<td>很高</td>
-</tr>
-<tr>
-<td><strong>FP16</strong>（半精度）</td>
-<td>16</td>
-<td><strong>5</strong></td>
-<td><strong>10</strong></td>
-<td>~6×10⁻⁵ ~ 65504</td>
-<td>较高</td>
+<td>24 bit</td>
+<td>≈ 7.2 位</td>
+<td>1.18×10⁻³⁸</td>
+<td>3.40×10³⁸</td>
 </tr>
 <tr>
 <td><strong>BF16</strong>（brain float）</td>
 <td>16</td>
 <td><strong>8</strong></td>
 <td><strong>7</strong></td>
-<td>✅ <strong>和 FP32 一样</strong></td>
-<td>低</td>
+<td>8 bit</td>
+<td><strong>≈ 2.4 位</strong></td>
+<td>1.18×10⁻³⁸</td>
+<td>3.39×10³⁸</td>
+</tr>
+<tr>
+<td><strong>FP16</strong>（半精度）</td>
+<td>16</td>
+<td><strong>5</strong></td>
+<td><strong>10</strong></td>
+<td>11 bit</td>
+<td>≈ 3.3 位</td>
+<td>6.10×10⁻⁵</td>
+<td>65504</td>
 </tr>
 <tr>
 <td><strong>FP8-E4M3</strong></td>
 <td>8</td>
 <td>4</td>
 <td>3</td>
-<td>±448</td>
-<td>很低</td>
+<td>4 bit</td>
+<td><strong>≈ 1.2 位</strong></td>
+<td>0.015625</td>
+<td><strong>448</strong></td>
 </tr>
 <tr>
 <td><strong>FP8-E5M2</strong></td>
 <td>8</td>
 <td>5</td>
 <td>2</td>
-<td>±57344</td>
-<td>极低</td>
+<td>3 bit</td>
+<td><strong>≈ 0.9 位</strong></td>
+<td>6.10×10⁻⁵</td>
+<td><strong>57344</strong></td>
+</tr>
+<tr>
+<td>对照：<strong>INT8</strong></td>
+<td>8</td>
+<td>—</td>
+<td>—</td>
+<td>8 bit 定点</td>
+<td>≈ 2.4 位</td>
+<td>—</td>
+<td>127 × scale</td>
 </tr>
 </tbody>
 </table>
+<p><strong>"十进制有效位"这一列是这么算的</strong>：有效数有 k 个 bit，就能分辨 2ᵏ 档，换成十进制是 <code>log₁₀(2ᵏ)</code> 位。</p>
+<div class="codehilite"><pre><span></span><code>    FP32：log₁₀(2²⁴) = 7.2 位
+    BF16：log₁₀(2⁸)  = 2.4 位
+    E4M3：log₁₀(2⁴)  = 1.2 位     ← 3 位尾数 + 1 位隐含 = 4 bit
+    E5M2：log₁₀(2³)  = 0.9 位
+    INT8：log₁₀(2⁸)  = 2.4 位
+</code></pre></div>
+
 <blockquote>
-<p>📌 <strong>BF16</strong> = <strong>B</strong>rain <strong>F</strong>loating point 16，由 Google Brain 提出。<strong>它的设计取舍非常清晰：把 FP32 的 8 位指数原样搬过来，全部的削减都从尾数里出。</strong></p>
+<p>⚠️ <strong>一个流传很广的说法是"E4M3 有 3 位有效数字、E5M2 有 2 位"——这是把"尾数的 bit 数"直接念成了"十进制位数"。</strong> 正确的说法是 <strong>E4M3 ≈ 1.2 位十进制、E5M2 ≈ 0.9 位</strong>。差了两倍多，不是小事：<strong>E5M2 连"一位十进制有效数字"都不到</strong>，它存的基本只是一个数量级。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★★ 一句话对比 FP16 和 BF16 ★★
+<div class="codehilite"><pre><span></span><code>    ★★★ 这张表里最该盯住的两行对比 ★★★
 
-    FP16：范围小、精度高  →  ⚠️ 容易【溢出/下溢】，要靠 loss scaling 救
-    BF16：范围大、精度低  →  ✅ 几乎不会溢出，但小数点后能记的位数少
+      BF16  十进制有效位 ≈ 2.4     动态范围 和 FP32 一样宽（指数 8 位）
+      INT8  十进制有效位 ≈ 2.4     动态范围 只有 127 倍（定点，靠外挂 scale 撑）
+        → ★ 精度一样，差别全在【范围】
 
-    → ★ 训练最怕的是&quot;数溢出变成 inf/0&quot;（直接崩），
-      而不怕&quot;精度差一点&quot;（梯度本来就有噪声）
+      E4M3  十进制有效位 ≈ 1.2     动态范围 ≈ 2¹⁵
+        → ★★ 比 INT8 的精度还低一半！
+
+    ⟹ 🔑 所以请把这句话钉住：★★【FP8 赢在动态范围，不赢在精度】★★
+       谁要是说&quot;FP8 比 INT8 准&quot;，让他先看这一列。
+</code></pre></div>
+
+<h3 id="1013">10.1.3 同一个数在五种格式里长什么样</h3>
+<p><strong>光看位数没感觉，代一个具体的数进去</strong>。取 x = 0.1（一个二进制里存不下的无限循环小数）：</p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>1.0 附近相邻两个可表示数的间隔</th>
+<th>0.1 实际被存成</th>
+<th>相对误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FP32</strong></td>
+<td>2⁻²³ ≈ 1.19×10⁻⁷</td>
+<td>0.100000001490116</td>
+<td>+0.0000015%</td>
+</tr>
+<tr>
+<td><strong>FP16</strong></td>
+<td>2⁻¹⁰ ≈ 9.77×10⁻⁴</td>
+<td>0.0999755859375</td>
+<td>−0.024%</td>
+</tr>
+<tr>
+<td><strong>BF16</strong></td>
+<td>2⁻⁷ = <strong>7.81×10⁻³</strong></td>
+<td>0.10009765625</td>
+<td>+0.098%</td>
+</tr>
+<tr>
+<td><strong>E4M3</strong></td>
+<td>2⁻³ = <strong>0.125</strong></td>
+<td>0.1015625</td>
+<td><strong>+1.6%</strong></td>
+</tr>
+<tr>
+<td><strong>E5M2</strong></td>
+<td>2⁻² = <strong>0.25</strong></td>
+<td>0.09375</td>
+<td><strong>−6.25%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 第二列（1.0 附近的间隔）比第四列更值得记住，
+      因为【权重更新】这件事全靠它 —— §10.2 稻草一马上要用。
+
+      BF16 在 1.0 附近的刻度是 0.0078。
+      ★★ 也就是说：BF16 眼里，1.0 和 1.007 是【同一个数】。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>BF16</strong> = <strong>B</strong>rain <strong>F</strong>loating point 16，由 Google Brain 提出。<strong>它的设计取舍非常清晰：把 FP32 的 8 位指数原样搬过来，全部的削减都从尾数里出。</strong> 所以 BF16 和 FP32 之间互转永远不会溢出，只会掉精度——这个性质在工程上极其省心。</p>
+</blockquote>
+<h3 id="1014-fp16-bf16">10.1.4 FP16 和 BF16，一句话定胜负</h3>
+<div class="codehilite"><pre><span></span><code>    FP16：范围小、精度高  →  ⚠️ 容易【溢出 / 下溢】，要靠 loss scaling 救
+    BF16：范围大、精度低  →  ✅ 几乎不会溢出，代价是小数点后能记的位数少
+
+    → ★ 训练最怕的是&quot;数溢出变成 inf / 0&quot;（一步就崩），
+      而不怕&quot;精度差一点&quot;（梯度本来就有噪声，差 0.1% 无所谓）
     → ★★ 所以现在大模型训练几乎【全部用 BF16】★★
 </code></pre></div>
 
-<p>✅ <strong>FP8-E4M3 的最大值是 448、E5M2 是 57344</strong>——这是论文 Table 1 的精确数字：<em>"Max normal ... E4M3: 1.75 × 2⁸ = 448 ... E5M2: 1.75 × 2¹⁵ = 57,344"</em>。</p>
+<p>✅ <strong>E4M3 的最大值 448、E5M2 的 57344 是论文 Table 1 的精确数字</strong>：<em>"Max normal ... E4M3: 1.75 × 2⁸ = 448 ... E5M2: 1.75 × 2¹⁵ = 57,344"</em>（<a href="../papers/FP8-Formats-for-Deep-Learning-arXiv-2209.05433.pdf">papers/FP8-Formats-for-Deep-Learning-arXiv-2209.05433.pdf</a>）。</p>
+<blockquote>
+<p>📌 <strong>想看更细的数值层面推导</strong>——448 那个 1.75 是怎么来的、次正规数的边界在哪、E4M3 和 INT8 在同一个张量上逐点的误差对比表——去隔壁算子目录：<a href="../../大模型算子开发/06-量化算子.html">大模型算子开发 06 章 §6.5.1～§6.5.2</a>。<strong>本章不重复那些推导，只用它的结论。</strong></p>
+</blockquote>
 <hr />
 <h2 id="102-fp16">10.2 为什么不能"直接全用 FP16"</h2>
 <p><strong>这是 2017 年那篇奠基论文（<a href="../papers/Mixed-Precision-Training-arXiv-1710.03740.pdf">papers/Mixed-Precision-Training-arXiv-1710.03740.pdf</a>）要回答的问题。</strong></p>
@@ -343,38 +455,99 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>✅ 论文摘要开门见山：<br />
 <em>"Since FP16 format has a narrower dynamic range than FP32, we introduce </em><em>three techniques</em><em> to prevent model accuracy loss: </em><em>maintaining a master copy of weights in FP32</em><em>, </em><em>loss-scaling</em><em> that minimizes gradient values becoming zeros, and </em><em>FP16 arithmetic with accumulation in FP32</em><em>."</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★★ 三根救命稻草，各救一个不同的病 ★★
+<div class="codehilite"><pre><span></span><code>    ★★ 三根救命稻草，各救一个【不同的】病 ★★
+
+      稻草一  FP32 master 权重  → 救「小更新被舍入吃掉」   （病在 optimizer step）
+      稻草二  loss scaling      → 救「小梯度下溢成 0」     （病在 backward）
+      稻草三  FP32 累加         → 救「长求和误差堆积」     （病在 GEMM 内部）
+
+    ★ 三个病发生在训练一步的三个不同位置，所以三根稻草【缺一不可】。
 </code></pre></div>
 
 <h3 id="fp32-master">稻草一：FP32 master 权重 —— 救"更新被吃掉"</h3>
 <blockquote>
 <p>✅ 原文：<em>"we recommend </em><em>maintaining a single-precision copy of weights that accumulates the gradients after each optimizer step</em><em> (this copy is rounded to half-precision for the forward- and back-propagation)."</em></p>
 </blockquote>
-<p><strong>这个病 <a href="02-显存去哪了.html">02 章 §2.2</a> 已经算过一遍了，这里给出它的出处</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ★ 权重 1.0，这一步的更新量是 0.00001
+<p><strong>这个病 <a href="02-显存去哪了.html">02 章 §2.2</a> 已经算过一遍了，这里用 §10.1.3 那张间隔表把它逐步推演完整</strong>。设权重 w 从 1.0 开始，每一步的更新量是 +0.00001（训练后期这个量级很常见），BF16 在 1.0 附近的刻度是 <strong>0.0078125</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>训练步</th>
+<th>① 有 master：FP32 累加值</th>
+<th>① 转成 BF16 给前向用</th>
+<th>② 无 master：纯 BF16 权重</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>1.000000</td>
+<td>1.0</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>1</td>
+<td>1.000010</td>
+<td>1.0</td>
+<td>1.0 + 0.00001 → <strong>舍回 1.0</strong></td>
+</tr>
+<tr>
+<td>100</td>
+<td>1.001000</td>
+<td>1.0</td>
+<td><strong>1.0</strong></td>
+</tr>
+<tr>
+<td>390</td>
+<td>1.003900</td>
+<td>1.0</td>
+<td><strong>1.0</strong></td>
+</tr>
+<tr>
+<td><strong>391</strong></td>
+<td>1.003910</td>
+<td>★ <strong>1.0078125</strong>（跨过半个刻度，跳档了）</td>
+<td><strong>1.0</strong></td>
+</tr>
+<tr>
+<td>1000</td>
+<td>1.010000</td>
+<td>1.0078125</td>
+<td><strong>1.0</strong></td>
+</tr>
+<tr>
+<td>10000</td>
+<td>1.100000</td>
+<td>1.1015625</td>
+<td>⚠️ <strong>还是 1.0</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 两列的差别只有一句话 ★★★
 
-      FP32 里：1.0 + 0.00001 = 1.00001    ✅ 记得住
-      BF16 里：★ 1.0 附近相邻两个可表示数差 ≈ 0.0078
-              → 1.0 + 0.00001 【四舍五入回 1.0】
-              → ★★ 这一步的更新【完全消失了】★★
+      ① 有 master：每一步都真的加进去了，只是【暂时看不见】——
+                   攒够半个刻度（0.0039）就会跳一档，一分钱没丢。
+      ② 无 master：每一步加完【立刻】舍回去，钱当场就没了，
+                   攒一万步也还是 1.0。★ 这叫&quot;更新静默消失&quot;。
 
-    → 训练后期更新量普遍很小，如果全用低精度，
-      ★ 大量更新会被静默地吃掉，模型就是不收敛
+    → 🔑 差别不在&quot;精度低&quot;，而在【误差会不会累积】。
+      舍入本身不可怕，可怕的是每一步都从同一个点重新舍。
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ★ 解法：权重存【两份】
 
       FP32 master 副本  ← 优化器在这上面更新（累加不丢）
-            ↓ 每步转成
-      BF16 工作副本     ← 前向/反向用这个（快、省带宽）
+            ↓ 每步舍入成
+      BF16 工作副本     ← 前向 / 反向用这个（快、省带宽）
 
     ⚠️ 代价：这就是 [02 章](02-显存去哪了.md) 那张 16 字节/参数账单里
-       &quot;FP32 master 4 字节&quot;那一项的来源。
+       &quot;FP32 master 4 字节&quot;那一项的来源。§10.5 会把这笔账算到底。
 </code></pre></div>
 
 <h3 id="loss-scaling-0">稻草二：Loss Scaling —— 救"小梯度下溢成 0"</h3>
-<div class="codehilite"><pre><span></span><code>    ★ 病因：梯度普遍很小，FP16 的最小正规数是 6×10⁻⁵
-      → 大量梯度直接【下溢成 0】，反向传播断掉
+<div class="codehilite"><pre><span></span><code>    ★ 病因：梯度普遍很小。FP16 的最小正规数是 6.10×10⁻⁵，
+      再往下还有一段【次正规数】撑到 2⁻²⁴ ≈ 5.96×10⁻⁸，然后就是 0。
+      → 大量梯度直接【下溢成 0】，反向传播在那里断掉
 
     ★ 药方（简单得令人叫绝）：
 
@@ -384,84 +557,274 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         → 数学上完全等价，一点没变
 </code></pre></div>
 
+<p><strong>代两个具体的数进去走一遍</strong>（FP16，最小次正规数 5.96×10⁻⁸，最大值 65504）：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>原始梯度 g</th>
+<th>×S 之后</th>
+<th>FP16 能不能存</th>
+<th>÷S 还原</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>下溢，不缩放</strong></td>
+<td>2.0×10⁻⁸</td>
+<td>—（S=1）</td>
+<td>❌ 比半个最小次正规数（2.98×10⁻⁸）还小 → <strong>舍成 0</strong></td>
+<td>0</td>
+<td>⚠️ <strong>梯度丢失</strong></td>
+</tr>
+<tr>
+<td><strong>下溢，S = 1024</strong></td>
+<td>2.0×10⁻⁸</td>
+<td>2.048×10⁻⁵</td>
+<td>✅ 落在次正规区，存成 2.0504×10⁻⁵</td>
+<td>2.002×10⁻⁸</td>
+<td>✅ <strong>救回来了</strong>（误差 0.1%）</td>
+</tr>
+<tr>
+<td><strong>正常梯度，S = 1024</strong></td>
+<td>1.5</td>
+<td>1536</td>
+<td>✅</td>
+<td>1.5</td>
+<td>✅ 毫发无伤</td>
+</tr>
+<tr>
+<td><strong>溢出，S 开太大</strong></td>
+<td>1.5</td>
+<td>1.5 × 65536 = <strong>98304</strong></td>
+<td>❌ 超过 65504 → <strong>inf</strong></td>
+<td>NaN</td>
+<td>⚠️ <strong>整步作废</strong></td>
+</tr>
+<tr>
+<td><strong>溢出后自动降档</strong></td>
+<td>1.5</td>
+<td>1.5 × 32768 = 49152</td>
+<td>✅</td>
+<td>1.5</td>
+<td>✅ S 减半后恢复</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 上面最后两行就是【动态 loss scaling】的工作原理 ★★
+
+      S 从一个很大的值开始（Megatron 默认 2³² = 4294967296）
+        → 这一步出现 inf / NaN：★ 丢弃这一步，S 减半，重来
+        → 连续 N 步都正常：      S 翻倍，试探更大的范围
+
+    ★ 它自动收敛到&quot;尽可能大、但还不溢出&quot;的那个 S ——
+      本质是在【下溢】和【溢出】之间自动找平衡点。
+</code></pre></div>
+
 <blockquote>
-<p>✅ 论文原文：<em>"Gradients must be unscaled before weight update to maintain the update magnitudes as in FP32 training. It is simplest to perform this unscaling </em><em>right after the backward pass but before gradient clipping</em><em> or any other gradient-related computations, ensuring that </em><em>no hyper-parameters (such as gradient clipping threshold, weight decay, etc.) have to be adjusted</em><em>."</em></p>
+<p>✅ 论文原文（顺序很关键）：<em>"Gradients must be unscaled before weight update to maintain the update magnitudes as in FP32 training. It is simplest to perform this unscaling </em><em>right after the backward pass but before gradient clipping</em><em> or any other gradient-related computations, ensuring that </em><em>no hyper-parameters (such as gradient clipping threshold, weight decay, etc.) have to be adjusted</em><em>."</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★ 注意这个&quot;先 unscale 再裁剪&quot;的顺序 —— 顺序错了，
-      梯度裁剪的阈值就全乱了。这是一个真实的踩坑点。
+<div class="codehilite"><pre><span></span><code>    ★ 盯住&quot;先 unscale、再裁剪&quot;这个顺序 ——
+      顺序错了，梯度裁剪的阈值会被放大 S 倍，裁剪等于没开。
+      这是一个真实的踩坑点。
 
     ✅ 论文用过的 S 范围：&quot;scaling factors ranging from 8 to 32K
        (many networks did not require a scaling factor)&quot;
 </code></pre></div>
 
-<p><strong>实践中用的是【动态 loss scaling】</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    S 从一个大值开始
-      → 如果这一步出现了 inf/NaN：★ 丢弃这一步，S 减半，重来
-      → 如果连续 N 步都正常：S 翻倍，试探更大的范围
-
-    ★ 自动找到&quot;尽可能大但不溢出&quot;的那个 S
-</code></pre></div>
-
 <blockquote>
-<p>🔑 <strong>★ BF16 基本不需要 loss scaling</strong>——因为它的指数位和 FP32 一样宽，下溢风险极低。<strong>这是 BF16 取代 FP16 的最大工程理由：少一整套需要调试的机制。</strong></p>
+<p>🔑 <strong>★ BF16 基本不需要 loss scaling</strong>——因为它的指数位和 FP32 一样宽（见 §10.1.2 那张表，最小正规数同为 1.18×10⁻³⁸），下溢风险极低。<strong>这是 BF16 取代 FP16 的最大工程理由：少一整套需要调试、还会"丢弃整步"的机制。</strong></p>
 </blockquote>
 <h3 id="fp32">稻草三：FP32 累加 —— 救"长求和的误差堆积"</h3>
 <blockquote>
 <p>✅ 原文：<em>"we use </em><em>half-precision arithmetic that accumulates into single-precision outputs</em><em>, which are converted to half-precision before storing to memory."</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★ 病因：矩阵乘是【很长的一串加法】
-      d = 8192 的一行内积 = 8192 个数连加
+      h = 8192 的一行内积 = 8192 个乘积连加
 
-      如果每加一次都存回低精度 → 每次都有舍入误差 → ★ 误差累积 8192 次
+      如果每加一次都存回低精度 → 每次都有舍入误差
+      → ★ 误差累积 8192 次，而且是【同向】累积（舍入有偏）
 
     ★ 药方：★★ 乘法用低精度（快），累加器用 FP32（准）★★
       算完整行，最后再转回 BF16 存回显存
 
     📌 这正是 GPU Tensor Core 的硬件行为：
-       输入 BF16 → 内部 FP32 累加 → 输出可选 BF16/FP32
+       输入 BF16 → 内部 FP32 累加 → 输出可选 BF16 / FP32
        → ★ 这一条【不需要你做任何事】，硬件已经替你做了
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>但"硬件替你做了"这句话在 FP8 上就不成立了。</strong> Hopper 的 FP8 Tensor Core 累加器只有 <strong>14 bit</strong> 精度，K = 4096 的矩阵乘最大相对误差能到 <strong>2%</strong>——DeepSeek-V3 为此专门每 128 个元素就把部分和搬到 CUDA Core 上用 FP32 累加一次。<strong>很多"FP8 训练发散了"的案例，根子在累加器而不在格式。</strong> 细节见 <a href="../../大模型算子开发/06-量化算子.html">大模型算子开发 06 章 §6.5.3</a>。</p>
+</blockquote>
 <h3 id="_1">✅ 总收益</h3>
 <blockquote>
 <p>原文：<em>"This </em><em>nearly halves memory requirements</em><em> and, on recent GPUs, </em><em>speeds up arithmetic</em><em>."</em><br />
 <em>"half-precision arithmetic throughput on recent GPUs is </em><em>2× to 8× higher</em><em> than single-precision"</em></p>
+<p>⚠️ <strong>"nearly halves memory requirements" 这句话在今天要打个大折扣</strong>——它说的是 2017 年 SGD 时代的账。<strong>换成 Adam，模型状态一个字节都省不下来</strong>，§10.5 会逐项摆出来。</p>
 </blockquote>
 <hr />
 <h2 id="103">10.3 混合精度的完整一步</h2>
-<div class="codehilite"><pre><span></span><code>    ┌─ 显存里常驻 ────────────────────────────────┐
-    │  BF16 权重     2 字节/参数   ← 前向反向用     │
-    │  FP32 master   4 字节/参数   ← ★ 优化器更新用 │
-    │  Adam m, v     8 字节/参数                    │
-    └──────────────────────────────────────────────┘
+<p><strong>先看常驻显存里有哪几份东西</strong>（每个参数）：</p>
+<table>
+<thead>
+<tr>
+<th>住在显存里的</th>
+<th>精度</th>
+<th>字节/参数</th>
+<th>谁用它</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工作权重</td>
+<td>BF16</td>
+<td>2</td>
+<td>前向 / 反向的矩阵乘</td>
+</tr>
+<tr>
+<td>梯度</td>
+<td>BF16</td>
+<td>2</td>
+<td>反向的产物，要 all-reduce</td>
+</tr>
+<tr>
+<td><strong>FP32 master 权重</strong></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>★ 只有优化器碰它</td>
+</tr>
+<tr>
+<td>Adam 一阶动量 m</td>
+<td>FP32</td>
+<td>4</td>
+<td>优化器</td>
+</tr>
+<tr>
+<td>Adam 二阶动量 v</td>
+<td>FP32</td>
+<td>4</td>
+<td>优化器</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>16</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>一步训练按顺序走一遍</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① BF16 权重 ──前向──&gt; loss
+         └ Tensor Core 内部是 FP32 累加（稻草三，自动）
 
-    一步训练：
-      ① BF16 权重 → 前向（Tensor Core 内部 FP32 累加）→ loss
-      ② loss × S（★ 仅 FP16 需要，BF16 通常省略）
-      ③ 反向 → BF16 梯度
-      ④ ★ 梯度 ÷ S 还原  →  再做梯度裁剪
-      ⑤ 梯度转 FP32，在 ★FP32 master★ 上做 Adam 更新
-      ⑥ FP32 master → 舍入成 BF16，供下一步用
+    ② loss × S
+         └ ★ 仅 FP16 需要；BF16 通常直接跳过（稻草二）
 
-    ★ 注意 ④⑤ 的顺序：先还原、再裁剪、再更新。
+    ③ 反向 ──&gt; BF16 梯度
+         └ 这里是下溢最容易发生的地方
+
+    ④ 梯度 ÷ S 还原
+         └ ★★ 必须在裁剪【之前】，否则阈值全乱
+
+    ⑤ 梯度裁剪（clip by global norm）
+
+    ⑥ 梯度转 FP32，在 FP32 master 上做 Adam 更新
+         └ 稻草一：累加发生在这一步，必须是 FP32
+
+    ⑦ FP32 master ──舍入──&gt; BF16 工作权重，供下一步用
+         └ ★ 每一步都从 master 重新舍入，而不是在 BF16 上接着改
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★ 整条流程里最容易写错的两处 ★★
+
+      ⚠️ 把 ④⑤ 写反（先裁剪再 unscale）→ 梯度裁剪静默失效
+      ⚠️ 把 ⑦ 写成&quot;在 BF16 权重上就地更新&quot;→ 退化成 §10.2 那张表的第三列
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>和 <a href="05-ZeRO与FSDP.html">05 章</a> 的联系</strong>：ZeRO 切的正是 ⑤ 里那些 FP32 的东西（master 权重 + m + v = 12 字节里的大头）。<strong>"混合精度制造了这些额外副本，ZeRO 负责把它们切开"——两章讲的是同一笔账的两面。</strong></p>
+<p>📌 <strong>和 <a href="05-ZeRO与FSDP.html">05 章</a> 的联系</strong>：ZeRO 切的正是第 ⑥ 步碰的那三样 FP32 东西（master 4 + m 4 + v 4 = 12 字节）。<strong>"混合精度制造了这些额外副本，ZeRO 负责把它们切开"——两章讲的是同一笔账的两面。</strong></p>
 </blockquote>
 <hr />
 <h2 id="104-fp8">10.4 再往下走一格：FP8</h2>
 <p><strong>BF16 已经是现在的默认。下一步是 FP8（H100 起硬件支持）。</strong></p>
-<h3 id="_2">为什么要两种格式</h3>
+<h3 id="1041-h100">10.4.1 先把 H100 的峰值摆正（一个特别容易踩的坑）</h3>
+<table>
+<thead>
+<tr>
+<th>精度</th>
+<th>跑在哪</th>
+<th><strong>稠密</strong>峰值</th>
+<th>2:4 稀疏峰值</th>
+<th>屋脊点（÷ 3.35 TB/s）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FP32</td>
+<td>CUDA Core</td>
+<td><strong>67 TFLOPS</strong></td>
+<td>—</td>
+<td>20 FLOP/Byte</td>
+</tr>
+<tr>
+<td>BF16 / FP16</td>
+<td>Tensor Core</td>
+<td><strong>989 TFLOPS</strong></td>
+<td>⚠️ 1979 TFLOPS</td>
+<td><strong>295 FLOP/Byte</strong></td>
+</tr>
+<tr>
+<td>FP8（E4M3 / E5M2）</td>
+<td>Tensor Core</td>
+<td><strong>1979 TFLOPS</strong></td>
+<td>3958 TFLOPS</td>
+<td><strong>591 FLOP/Byte</strong></td>
+</tr>
+<tr>
+<td>INT8</td>
+<td>Tensor Core</td>
+<td>1979 TOPS</td>
+<td>3958 TOPS</td>
+<td>591 OP/Byte</td>
+</tr>
+</tbody>
+</table>
+<p><strong>硬件另一半</strong>：H100 SXM5 = <strong>80 GB HBM3</strong>（⚠️ 十进制 GB，换成二进制是 <strong>74.5 GiB</strong>，<code>nvidia-smi</code> 报的就是后者）/ <strong>3.35 TB/s</strong> 显存带宽。</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️★★ 1979 这个数在表里出现了两次，含义完全不同 ★★
+
+      BF16 行的 1979 = 【2:4 稀疏】峰值，要求权重每 4 个里恰好有 2 个是 0
+      FP8  行的 1979 = 【稠密】峰值，不要求任何稀疏
+
+    ⟹ 把 BF16 的 1979 当稠密值用，会把屋脊点算成 1979 / 3.35 = 591，
+       ★ 而 591 其实是【FP8】的屋脊点。
+       后果：所有 BF16 kernel 的算术强度都会被拿去和一个高一倍的门槛比，
+       于是本来 compute bound 的东西全被误判成 memory bound，
+       优化方向整个反掉。
+
+    ✅ 训练场景请一律用【稠密】值：BF16 989，FP8 1979。
+</code></pre></div>
+
 <blockquote>
-<p>✅ FP8 论文（<a href="../papers/FP8-Formats-for-Deep-Learning-arXiv-2209.05433.pdf">papers/FP8-Formats-for-Deep-Learning-arXiv-2209.05433.pdf</a>）：<br />
-<em>"an 8-bit floating point (FP8) binary interchange format consisting of two encodings - </em><em>E4M3</em><em> (4-bit exponent and 3-bit mantissa) and </em><em>E5M2</em><em> (5-bit exponent and 2-bit mantissa)."</em><br />
+<p>📌 <strong>屋脊点</strong>（ridge point）= 峰值算力 ÷ 显存带宽，单位 FLOP/Byte。<strong>算术强度高于它 → 卡在算力上；低于它 → 卡在搬运上。</strong> 完整讲法在 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发 02 章</a>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 所以 FP8 能带来的【算力上限】提升是：1979 / 989 = 恰好 2 倍。
+
+    ⚠️ 但端到端一定【明显低于】2 倍，因为：
+       ① 训练时间里 GEMM 不是 100%（还有通信、归一化、softmax、优化器）
+       ② 那些留在高精度的算子一点没变快
+       ③ 多出来的量化 / 反量化、scale 计算本身要花时间
+</code></pre></div>
+
+<h3 id="1042">10.4.2 为什么要两种格式</h3>
+<blockquote>
+<p>✅ FP8 论文：<em>"an 8-bit floating point (FP8) binary interchange format consisting of two encodings - </em><em>E4M3</em><em> (4-bit exponent and 3-bit mantissa) and </em><em>E5M2</em><em> (5-bit exponent and 2-bit mantissa)."</em><br />
 <em>"The </em><em>recommended use of FP8 encodings is E4M3 for weight and activation tensors, and E5M2 for gradient tensors.</em><em>"</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★★ 为什么要分工？回到 §10.1 那句&quot;指数抢尾数&quot;★★
 
-    权重、激活：数值范围比较集中  →  ★ 拿位数换【精度】→ E4M3（尾数 3 位）
-    梯度：      跨好几个数量级    →  ★ 拿位数换【范围】→ E5M2（指数 5 位）
+    权重、激活：数值范围比较集中  →  ★ 拿位数换【精度】→ E4M3（尾数 3 位，±448）
+    梯度：      跨好几个数量级    →  ★ 拿位数换【范围】→ E5M2（指数 5 位，±57344）
 
     → ★ 这不是两个竞争标准，是【一套里的两个分工】
 </code></pre></div>
@@ -470,62 +833,204 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>✅ 论文还解释了 E4M3 的一个小设计：<em>"While E5M2 follows IEEE 754 conventions for representation of special values, </em><em>E4M3's dynamic range is extended by not representing infinities</em><em> and having only one mantissa bit-pattern for NaNs."</em><br />
 ⚠️ <strong>翻译</strong>：E4M3 只有 4 位指数，范围本来就紧张，<strong>干脆把"无穷大"这个编码省下来当普通数字用</strong>——省出来的位置让最大值从 256 提到了 448。</p>
 </blockquote>
-<h3 id="loss-scaling">缩放：loss scaling 的升级版</h3>
+<h3 id="1043-loss-scaling">10.4.3 缩放：loss scaling 的升级版</h3>
 <blockquote>
 <p>✅ 原文：<em>"Higher precision values need to be multiplied with a scaling factor prior to their casting to FP8... This is </em><em>very similar to the purpose loss-scaling serves in mixed-precision training with FP16</em><em>. However, some networks require </em><em>per-tensor scaling factors</em><em> as FP8 dynamic range is not sufficient to cover the union of all tensors' important values."</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★ FP16 时代：全模型【一个】 loss scale 就够
     ★ FP8 时代：★★ 每个张量【各自】一个 scale ★★
-      因为 8 位的范围太窄，不同层的数值分布差异已经装不进同一个窗口了
+      因为 8 位的窗口太窄（E4M3 动态范围只有 2¹⁵），
+      不同层的数值分布已经装不进同一个窗口了
 
-    ⚠️ 这就是工程复杂度的来源：要维护成百上千个 scale，
-       还要用历史最大值（amax history）来动态更新它们。
+    ⚠️ 这就是工程复杂度的来源：要维护成百上千个 scale。
+       NVIDIA 这条路线用【历史最大值 amax history】延迟更新它们，
+       ★ 而 DeepSeek-V3 走了另一条路（下一节），这是两条不同的技术路线。
 </code></pre></div>
 
-<h3 id="_3">✅ 效果</h3>
+<h3 id="1044">10.4.4 ✅ 论文验证到什么程度</h3>
 <blockquote>
 <p><em>"We show that </em><em>FP8 training matches FP16 or bfloat16 training results</em><em> for a variety of tasks and neural network model architectures and sizes, </em><em>without changing any model or optimizer hyperparameters</em><em>. Our study includes the training of very large language models, </em><em>up to 175B parameters</em><em>."</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★ &quot;不用改任何超参&quot; 是这篇论文最有价值的一句话 ——
       意味着 FP8 可以当成一个纯粹的加速开关来用。
 
-    ⚠️ 但注意论文的范围：它验证的是【GEMM 用 FP8】，
+    ⚠️ 但注意论文的适用范围：它验证的是【GEMM 用 FP8】，
        ★ 不是&quot;整个训练全 FP8&quot;。master 权重、优化器状态、
          归一化、softmax 这些【依然是高精度】。
 </code></pre></div>
 
+<h3 id="1045-deepseek-v3-fp8">10.4.5 ⚠️ DeepSeek-V3 的 FP8：四个被写反最多的事实</h3>
+<p><strong>DeepSeek-V3 是第一个把 FP8 训练完整披露到工程细节的超大规模模型，也因此成了二手资料写错最多的地方。逐条对照</strong>（口径全部来自 <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 技术报告</a> §3.3 与 §3.5.2）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>❌ 常见的错误说法</th>
+<th>✅ 论文实际写的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>注意力（QKᵀ、PV）也用 FP8</td>
+<td><strong>attention 算子保持原精度</strong>，压根没进 FP8</td>
+</tr>
+<tr>
+<td>②</td>
+<td>权重激活 E4M3、梯度 E5M2</td>
+<td><strong>所有张量一律 E4M3</strong>——这正是它和 NVIDIA 方案最大的区别</td>
+</tr>
+<tr>
+<td>③</td>
+<td>scale 用历史最大值的 EMA，隔几步更新一次</td>
+<td><strong>在线（online）逐 tile / block 当场算 max</strong>，就是为了避开延迟缩放的问题</td>
+</tr>
+<tr>
+<td>④</td>
+<td>PPL 差 &lt; 0.02% / 提速 1.6× / 省显存 30%</td>
+<td><strong>论文里没有这三个数</strong>。论文给的是 <strong>相对 BF16 基线的 loss 相对误差始终 &lt; 0.25%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ✅ 走 FP8（E4M3）的：
+       └─ 三个主 GEMM：Fprop（前向）、Dgrad（对输入求梯度）、Wgrad（对权重求梯度）
+
+    ✅ 保持 BF16 / FP32 的：
+       ├─ 嵌入层、输出头
+       ├─ MoE 门控（路由是离散决策，一点噪声就翻转）
+       ├─ 归一化算子（LayerNorm / RMSNorm）
+       ├─ ★ 注意力算子      ← 就是上表第 ① 条
+       └─ 主权重、权重梯度、优化器状态
+
+    ✅ 量化粒度（都是在线算的）：
+       ├─ 激活：1 × 128 的 tile    —— 每个 token 的每 128 个通道一个 scale
+       └─ 权重：128 × 128 的 block —— 每 128 输入通道 × 128 输出通道一个 scale
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong><a href="附-速查表.html">附-速查表 F3</a> 里"E4M3 用于前向，E5M2 用于反向梯度"那一行说的是 NVIDIA 这条推荐路线</strong>（§10.4.2），<strong>不是 DeepSeek-V3 的做法</strong>。两条路线并存，看资料时先确认它在讲哪一条。</p>
+<p>📌 <strong>完整版</strong>（为什么必须自己做 FP32 累加、DeepGEMM 为什么要自己写、E5M6 那个特例）在 <a href="../../大模型算子开发/06-量化算子.html">大模型算子开发 06 章 §6.5.3</a>。<strong>本章不重复，只取"训练框架该怎么配"这一面。</strong></p>
+</blockquote>
 <hr />
 <h2 id="105">10.5 ⚠️ 一个必须澄清的常见误解</h2>
 <div class="codehilite"><pre><span></span><code>    ❌ 误解：&quot;用了 BF16，显存就减半了&quot;
 
-    ✅ 真相：回到 [02 章 §2.2](02-显存去哪了.md) 那张账单 ——
+    ✅ 真相：★★ 模型状态一个字节都没省，开错开关还会变多 ★★
+</code></pre></div>
 
-       纯 FP32 训练：   参数 4 + 梯度 4 + m 4 + v 4        = 16 字节
-       混合精度训练：   BF16 参数 2 + BF16 梯度 2
-                        + ★FP32 master 4★ + m 4 + v 4      = 16 字节
+<h3 id="1051">10.5.1 把账逐项摆出来</h3>
+<p><strong>同一个优化器（Adam）下，三种配置的逐项对比</strong>（单位：字节 / 参数）：</p>
+<table>
+<thead>
+<tr>
+<th>存什么</th>
+<th>① 纯 FP32 + Adam</th>
+<th>② 混合精度 + Adam（教科书版）</th>
+<th>③ 混合精度 + FP32 梯度缓冲</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>计算用的权重</td>
+<td>FP32 <strong>4</strong></td>
+<td>BF16 <strong>2</strong></td>
+<td>BF16 <strong>2</strong></td>
+</tr>
+<tr>
+<td>梯度</td>
+<td>FP32 <strong>4</strong></td>
+<td>BF16 <strong>2</strong></td>
+<td>FP32 <strong>4</strong></td>
+</tr>
+<tr>
+<td>FP32 master 权重</td>
+<td>—（权重本身就是 FP32）</td>
+<td><strong>4</strong></td>
+<td><strong>4</strong></td>
+</tr>
+<tr>
+<td>Adam 一阶动量 m</td>
+<td>FP32 <strong>4</strong></td>
+<td>FP32 <strong>4</strong></td>
+<td>FP32 <strong>4</strong></td>
+</tr>
+<tr>
+<td>Adam 二阶动量 v</td>
+<td>FP32 <strong>4</strong></td>
+<td>FP32 <strong>4</strong></td>
+<td>FP32 <strong>4</strong></td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>★ 16</strong></td>
+<td><strong>★ 16</strong></td>
+<td><strong>⚠️ 18</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 直觉错在哪？把加减法列出来就清楚了 ★★★
 
-       ★★ 模型状态一个字节都没省 ★★
+      直觉：  &quot;4 字节变 2 字节，所以 16 → 8&quot;
 
-    ✅ 真正省的是：
-       ① 激活（那是大头，而且全是 BF16）
-       ② 通信量（梯度 all-reduce 传的是 BF16，直接减半）
-       ③ 计算速度（Tensor Core，2~8×）
+      实际：  权重 4 → 2        −2   ✅ 直觉对的那部分
+              梯度 4 → 2        −2   ✅
+              ★ 凭空多出一份 FP32 master   +4   ❌ 直觉完全没算到
+              m、v 还是 FP32              ±0   （本来就有，没变）
+              ────────────────────────────────
+              净变化 = −2 −2 +4 + 0 =  ★ 0 ★
 
-    → ★ 混合精度主要是【加速】技术，其次才是省显存技术。
+    ⟹ 🔑 半精度省下来的那 4 个字节，被 master 权重【原地吃掉了】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 第 ③ 列才是真正反直觉的那一栏：
+
+      打开 --grad-reduce-in-fp32（很多生产配置的默认），
+      梯度缓冲变回 FP32 → 16 变 18，★ 用了半精度反而比纯 FP32 更费显存。
+
+      70B 模型：16 字节 → 1120 GB
+                18 字节 → 1260 GB    ★ 多出 140 GB，相当于 1.75 张 H100 的全部显存
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>顺带解释一个 Megatron 参数</strong>：<code>--grad-reduce-in-fp32</code>。梯度 all-reduce 时用 FP32 更稳（多卡求和会放大舍入误差），但通信量翻倍。✅ Megatron MoE 文档明确把关掉它列为一项优化：<em>"</em><em>BF16 Gradient Reduce</em><em> | Reduces gradients in BF16 instead of FP32 for better performance"</em>。<strong>这是一个典型的"稳定性 ↔ 速度"旋钮。</strong></p>
+<p>⚠️ <strong>别拿"12 字节"来做这个对照</strong>。这个数字在两个完全不同的地方出现，非常容易串：<br />
+```<br />
+    12 字节之一：SGD + 动量的纯 FP32 账（权重 4 + 梯度 4 + 动量 4）<br />
+                 ★ 那是【另一个优化器】，不能拿来和 Adam 的 16 比</p>
+<div class="codehilite"><pre><span></span><code>12 字节之二：混合精度里那三项 FP32（master 4 + m 4 + v 4）
+             ★ 那是 16 里面的【一部分】，正是 ZeRO 要切的东西
+
+⟹ 要比就在【同一个优化器】下比。Adam 对 Adam：16 vs 16，平手。
+</code></pre></div>
+
+<p>```</p>
+</blockquote>
+<h3 id="1052">10.5.2 那到底省在哪</h3>
+<div class="codehilite"><pre><span></span><code>    ✅ ① 激活值 —— 真正的大头，而且【全是 BF16，实打实减半】
+          [02 章 §2.3](02-显存去哪了.md) 那个 s=4096 的例子里，
+          激活 520 GB 和模型状态 1120 GB 是同一量级 —— 这一半是真省的。
+
+    ✅ ② 通信量 —— 梯度 all-reduce 传的是 BF16，字节数直接减半
+          （前提是别开 --grad-reduce-in-fp32）
+
+    ✅ ③ 计算速度 —— Tensor Core：FP32 67 TFLOPS → BF16 989 TFLOPS，
+          ★ 这才是混合精度真正的卖点，差了近 15 倍
+
+    → ★★ 所以请这样定位它：【混合精度首先是加速技术，其次才是省显存技术】★★
+      而省下来的那点显存，还全在激活和通信上，不在模型状态上。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>顺带解释那个开关</strong>：<code>--grad-reduce-in-fp32</code>。梯度 all-reduce 时用 FP32 更稳（几千张卡求和会放大舍入误差），但<strong>通信量翻倍、显存多 2 字节/参数</strong>。✅ Megatron MoE 文档明确把关掉它列为一项优化：<em>"</em><em>BF16 Gradient Reduce</em><em> | Reduces gradients in BF16 instead of FP32 for better performance"</em>。<strong>这是一个典型的"稳定性 ↔ 速度 / 显存"三角旋钮。</strong></p>
 </blockquote>
 <hr />
 <h2 id="106-megatron">10.6 挂回 Megatron</h2>
 <div class="codehilite"><pre><span></span><code>--bf16<span class="w">                          </span><span class="c1"># ★ 现在的默认选择</span>
 --fp16<span class="w">                          </span><span class="c1"># 老配置，需要配 loss scaling</span>
-<span class="w">  </span>--loss-scale<span class="w"> </span><span class="m">0</span><span class="w">                </span><span class="c1">#   0 = 动态 loss scaling</span>
-<span class="w">  </span>--initial-loss-scale<span class="w"> </span><span class="m">4294967296</span>
---grad-reduce-in-fp32<span class="w">           </span><span class="c1"># §10.5 那个稳定性/速度旋钮</span>
+<span class="w">  </span>--loss-scale<span class="w"> </span><span class="m">0</span><span class="w">                </span><span class="c1">#   0 = 动态 loss scaling（§10.2 稻草二那张表）</span>
+<span class="w">  </span>--initial-loss-scale<span class="w"> </span><span class="m">4294967296</span><span class="w">   </span><span class="c1"># = 2^32，从很大开始往下试探</span>
+--grad-reduce-in-fp32<span class="w">           </span><span class="c1"># §10.5 那个&quot;16 变 18&quot;的旋钮</span>
 --use-precision-aware-optimizer<span class="w"> </span><span class="c1"># ✅ 源码 README：优化器状态也可以用 BF16 存</span>
---fp8-format<span class="w"> </span>hybrid<span class="w">             </span><span class="c1"># ★ &quot;hybrid&quot; = §10.4 的 E4M3/E5M2 分工</span>
+--fp8-format<span class="w"> </span>hybrid<span class="w">             </span><span class="c1"># ★ &quot;hybrid&quot; = §10.4.2 的 E4M3 / E5M2 分工</span>
 --fp8-param-gather<span class="w">              </span><span class="c1"># ✅ 文档：&quot;parameter all-gather in FP8,</span>
 <span class="w">                                </span><span class="c1">#    reducing overhead by 50%&quot;</span>
 </code></pre></div>
@@ -542,33 +1047,49 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="107">10.7 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>① ★ 浮点数：指数位管【范围】，尾数位管【精度】，两者抢有限的 bit
-   FP16：范围小精度高 → 会溢出，要 loss scaling
-   BF16：★ 指数位和 FP32 一样宽 → 几乎不溢出，精度换来的
+   ★ 有效数位 = 尾数位 + 1（隐含位），十进制有效位 = log₁₀(2^有效数位)
+   FP32 7.2 位 ｜ BF16 2.4 位 ｜ FP16 3.3 位 ｜ E4M3 1.2 位 ｜ E5M2 0.9 位
+   ⚠️ &quot;E4M3 有 3 位有效数字&quot;是把 bit 数念成十进制位了，实际只有 1.2 位
+   → ★★ FP8 的十进制精度【比 INT8 还低一半】，它赢的是动态范围 ★★
+
+② ★ FP16 vs BF16：BF16 指数位和 FP32 一样宽 → 几乎不溢出，代价是精度
    → ★★ 训练怕&quot;溢出崩掉&quot;胜过怕&quot;精度差一点&quot;，所以现在全用 BF16 ★★
 
-② ★ 混合精度的三根稻草（✅ 2017 论文原文三件套）：
-   ① FP32 master 权重 → 救&quot;小更新被舍入吃掉&quot;（1.0+0.00001 回到 1.0）
-   ② loss scaling     → 救&quot;小梯度下溢成 0&quot;；★ 先 unscale 再裁剪
-                        ✅ 论文用过 8 ~ 32K；BF16 基本不需要
-   ③ FP32 累加        → 救&quot;长求和误差堆积&quot;；★ Tensor Core 自动做
+③ ★ 混合精度的三根稻草（✅ 2017 论文原文三件套），各治一个位置的病：
+   ① FP32 master 权重 → optimizer step：救&quot;小更新被舍入吃掉&quot;
+      ★ 关键不是精度低，是【误差会不会累积】——见 §10.2 那张 391 步的表
+   ② loss scaling     → backward：救&quot;小梯度下溢成 0&quot;
+      ★ 顺序必须是【先 unscale 再裁剪】；✅ 论文用过 8 ~ 32K；BF16 基本不需要
+   ③ FP32 累加        → GEMM 内部：救&quot;长求和误差堆积&quot;；★ Tensor Core 自动做
+      ⚠️ 到了 FP8 这条就不自动了：Hopper 的 FP8 累加器只有 14 bit
 
-③ ✅ 收益：&quot;nearly halves memory requirements&quot;，算术吞吐 2×~8×
+④ ★ H100 SXM5 稠密峰值：FP32 67 / BF16 989 / FP8 1979 TFLOPS，
+   80 GB HBM3（= 74.5 GiB）/ 3.35 TB/s，屋脊点 BF16 295、FP8 591
+   ⚠️★ BF16 也能标 1979，但那是【2:4 稀疏】值；当稠密用会把屋脊点算成 591
 
-④ ★ FP8 有两种格式，是【分工】不是竞争：
-   ✅ E4M3（±448）给权重/激活 —— 要精度
-   ✅ E5M2（±57344）给梯度   —— 要范围
+⑤ ★ FP8 有两种格式，是【分工】不是竞争：
+   ✅ E4M3（±448）给权重 / 激活 —— 要精度
+   ✅ E5M2（±57344）给梯度      —— 要范围
    ⚠️ E4M3 把&quot;无穷大&quot;编码省下来当数字用，把上限从 256 抬到 448
    ★ scaling 从&quot;全局一个&quot;升级成 ★每个张量一个★
-   ✅ &quot;matches FP16 or bfloat16 ... without changing any hyperparameters&quot;，
-      验证到 175B；⚠️ 但只是 GEMM 用 FP8，不是全流程
+   ✅ &quot;matches FP16 or bfloat16 ... without changing any hyperparameters&quot;，验证到 175B
+   ⚠️ 但只是 GEMM 用 FP8，不是全流程
 
-⑤ ★★ 最常见的误解：混合精度【不省模型状态】
-   纯 FP32 = 16 字节/参数，混合精度 = 2+2+4+4+4 = ★ 还是 16 字节 ★
-   真正省的是：激活、通信量、计算时间
+⑥ ⚠️ DeepSeek-V3 的 FP8，四个最常被写反的点：
+   ① 注意力【保持原精度】，不是 FP8
+   ② 所有张量【一律 E4M3】，不是&quot;梯度用 E5M2&quot;
+   ③ scale 是【在线逐 tile / block 当场算】，不是 EMA 延迟更新
+   ④ 论文口径是【相对 loss 误差 &lt; 0.25%】；
+      ⚠️ &quot;PPL &lt; 0.02% / 提速 1.6× / 省显存 30%&quot; 论文里【没有】，别引用
+
+⑦ ★★ 最常见的误解：混合精度【不省模型状态】
+   Adam 对 Adam：纯 FP32 = 16 字节，混合精度 = 2+2+4+4+4 = ★ 还是 16 ★
+   ⚠️ 开 --grad-reduce-in-fp32 变 18 字节，★ 比纯 FP32 还多 ★
+   真正省的只有：激活（减半）、通信量（减半）、计算时间（67 → 989 TFLOPS）
    → ★ 它主要是【加速】技术
 </code></pre></div>
 
-<p><strong>下一章讲最后一种"不切也能省"的办法</strong>，也是最"反直觉"的一种：<strong>干脆不存激活，要用的时候现算</strong>。</p>
+<p><strong>下一章讲最后一种"不切也能省"的办法</strong>，也是最"反直觉"的一种：<strong>干脆不存激活，要用的时候现算</strong>。而且你会看到，在某些情况下它连时间都不用赔。</p>
 <hr />
 <blockquote>
 <p><a href="09-专家并行EP.html">← 09 专家并行 EP</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="11-重计算与激活优化.html">11 重计算与激活优化</a></p>

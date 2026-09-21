@@ -251,26 +251,31 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="09-ep">09 · 专家并行 EP</h1>
 <blockquote>
+<p><strong>一句话</strong>：专家之间天生互不相干，所以干脆一张卡放几个专家、<strong>让 token 飞过去找专家</strong>；代价是每层多两次 <strong>all-to-all</strong>，而这两次通信又碎又躺在关键路径上，能吃掉三到四成的训练时间。</p>
 <p><strong>这一章的目标</strong>：讲清最后一种切法。它和前四种不一样——<strong>前四种对任何模型都适用，EP 只对 MoE 模型适用</strong>。<br />
-读完你应该能回答：MoE 为什么必须要一种新的并行方式？all-to-all 为什么是 EP 的心脏也是它的痛处？"容量因子"和"丢 token"是怎么回事？为什么说 EP 是"从 DP 里借卡"？</p>
-<p>📌 <strong>EP</strong> = <strong>E</strong>xpert <strong>P</strong>arallel，专家并行。<br />
-📌 <strong>MoE</strong> = <strong>M</strong>ixture <strong>o</strong>f <strong>E</strong>xperts，专家混合。如果你完全不知道 MoE 是什么，先读隔壁的 <a href="../../业界模型技术报告/大模型架构入门/10-MoE.html">../../业界模型技术报告/大模型架构入门/10-MoE.md</a>，那里从零讲起。本章只需要你知道下面这一句。</p>
+读完你应该能回答：MoE 为什么必须要一种新的并行方式？all-to-all 到底在搬什么、搬多少、要多久？「容量因子」和「丢 token」是怎么回事？为什么说 EP 是「从 DP 里借卡」？</p>
+<p>📖 <strong>EP</strong>（<strong>E</strong>xpert <strong>P</strong>arallelism，专家并行）——把不同的<strong>专家</strong>放到不同的 GPU 上，每张卡只存自己那几个专家的权重。<br />
+📖 <strong>MoE</strong>（<strong>M</strong>ixture <strong>o</strong>f <strong>E</strong>xperts，混合专家）——把 transformer 里的 FFN 层换成一排「专家」，每个 token 只激活其中少数几个。如果你完全不知道 MoE 是什么，先读隔壁的 <a href="../../业界模型技术报告/大模型架构入门/10-MoE.html">../../业界模型技术报告/大模型架构入门/10-MoE.md</a>，那里从零讲起。本章只需要你知道下面这一句。<br />
+📖 <strong>All-to-All</strong>（全交换）——每张卡都要给其他每一张卡发一份数据、同时从其他每一张卡收一份。见 <a href="03-通信原语.html">03 章 §3.2 ⑤</a>。<br />
+📖 <strong>Top-K 路由</strong>——路由器给每个 token 打分，取分数最高的 K 个专家。<strong>本章后面所有通信公式里那个最容易漏掉的 <code>× K</code>，就是它。</strong></p>
+<p>🔑 <strong>本章统一的硬件口径</strong>（和 <a href="06-张量并行TP.html">06 章</a> 一致）：<strong>NVLink 标称 900 GB/s 是【双向聚合】，算单向发送只能用 450 GB/s</strong>；<strong>IB 每卡 400 Gb/s ÷ 8 = 50 GB/s</strong>（Gb 是比特）；H100 SXM5 BF16 <strong>稠密</strong>峰值 <strong>989 TFLOP/s</strong>（⚠️ 1979 是稀疏值）。单位一律 <strong>1 GB = 10⁹ 字节</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="91-moe">9.1 一句话回顾 MoE，以及它给系统出的难题</h2>
-<div class="codehilite"><pre><span></span><code>    普通 Transformer 层：         MoE 层：
+<div class="codehilite"><pre><span></span><code>    普通 Transformer 层                MoE 层
 
-        每个 token                    每个 token
-            ↓                             ↓
-      【唯一的一个 FFN】            ★【路由器】选 top-k 个专家
-            ↓                        ↓        ↓
-          输出                    专家3      专家17     （共 256 个专家）
-                                     ↓        ↓
-                                  加权求和 → 输出
+      每个 token                        每个 token
+          ▼                                 ▼
+    【唯一的一个 FFN】              ★【路由器 Router】打分，选 Top-K 个专家
+          ▼                                 ▼
+        输出                    ├── 专家 3   （算一遍这个 token）
+                                └── 专家 17  （算一遍这个 token）
+                                        ▼
+                             按路由权重加权求和 ──► 输出
 
-    ★ 参数量：256 个专家 → 参数是普通 FFN 的 256 倍
-    ★ 计算量：每个 token 只走 k=8 个 → 计算只有 8 倍
-    → ★★ 参数量暴涨但计算量不涨，这就是 MoE 的全部卖点 ★★
+                            （候选池里一共 256 个专家）
+
+    ★★ 参数量暴涨但计算量不涨，这就是 MoE 的全部卖点 ★★
 </code></pre></div>
 
 <blockquote>
@@ -278,11 +283,66 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 - <strong>GShard</strong>（<a href="../papers/GShard-arXiv-2006.16668.pdf">papers/GShard-arXiv-2006.16668.pdf</a>）：<em>"scale up multilingual neural machine translation Transformer model with Sparsely-Gated Mixture-of-Experts </em><em>beyond 600 billion parameters</em><em>... trained on </em><em>2048 TPU v3 accelerators in 4 days</em><em>"</em><br />
 - <strong>Switch Transformer</strong>（<a href="../papers/Switch-Transformers-arXiv-2101.03961.pdf">papers/Switch-Transformers-arXiv-2101.03961.pdf</a>）：<em>"pre-training up to </em><em>trillion parameter models</em><em>... and achieve a </em><em>4x speedup over the T5-XXL model</em><em>"</em>，并且 <em>"up to </em><em>7x increases in pre-training speed</em><em> with the same computational resources"</em></p>
 </blockquote>
-<h3 id="_1">★ 但这给系统出了一个前四章都解决不了的难题</h3>
-<div class="codehilite"><pre><span></span><code>    问题：256 个专家的参数放不下（这是 [02 章](02-显存去哪了.md) 的&quot;病&quot;①②③）
+<h3 id="moe-moe">⚠️ 先把「涨多少倍」说准：粗粒度 MoE 和细粒度 MoE 差得很远</h3>
+<p><strong>很多文章随口说「256 个专家 = 参数 ×256、计算 ×8」——这只在「每个专家都和原来那个 FFN 一样大」时才成立。</strong> 现在主流的做法（DeepSeek 起）是把专家做<strong>细</strong>，账完全不一样：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>稠密 FFN</th>
+<th>粗粒度 MoE（Mixtral 8×7B）</th>
+<th>细粒度 MoE（DeepSeek-V3）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>专家个数</td>
+<td>1</td>
+<td>8</td>
+<td>✅ <strong>256 个路由专家 + 1 个共享专家</strong></td>
+</tr>
+<tr>
+<td>每个专家的 FFN 中间维</td>
+<td>—</td>
+<td>14336（和稠密一样大）</td>
+<td>✅ <strong>2048</strong>（只有 V3 稠密层 18432 的 1/9）</td>
+</tr>
+<tr>
+<td>每个 token 激活几个</td>
+<td>1</td>
+<td>Top-2</td>
+<td>✅ <strong>Top-8</strong>（外加必走的 1 个共享专家）</td>
+</tr>
+<tr>
+<td>FFN <strong>参数量</strong>相对稠密</td>
+<td>1×</td>
+<td><strong>8×</strong></td>
+<td>⚠️ <strong>约 28.6×</strong></td>
+</tr>
+<tr>
+<td>FFN <strong>激活计算量</strong>相对稠密</td>
+<td>1×</td>
+<td><strong>2×</strong></td>
+<td>⚠️ <strong>约 1.0×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 最后一格值得停一下（我的验算）：
+      V3 每个 token 激活 8 个路由专家 + 1 个共享专家 = 9 个
+      9 × 2048 = 18432  ——  ★ 正好等于 V3 稠密层的 FFN 中间维
 
-    ❌ 用 TP 切？ 每个专家的矩阵本来就不大，切成 8 份后每份太小
-                  → GPU 算小矩阵效率极低（[06 章](06-张量并行TP.md) 讲过）
+   ⟹ V3 的 MoE 层和它自己的稠密层，【每 token 的 FFN 计算量几乎一模一样】，
+      但参数多了近 29 倍。这才是「细粒度 MoE」真正在赚的东西。
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>共享专家</strong>（Shared Expert）——每个 token 都必走、不需要路由的那个专家。DeepSeek 的设计，用来承载「所有 token 都需要的通用知识」，让路由专家专心去做分化。<strong>它在 §9.3 还会再出现一次——它给系统层送了一个可以填的空隙。</strong></p>
+</blockquote>
+<h3 id="_1">★ 这给系统出了一个前四章都解决不了的难题</h3>
+<div class="codehilite"><pre><span></span><code>    问题：256 个专家的参数放不下（这是 [02 章](02-显存去哪了.md) 的「病」①②③）
+
+    ❌ 用 TP 切？ 每个专家的矩阵本来就不大（V3 是 7168 × 2048），
+                  切成 8 份后每份太小 → GPU 算小矩阵效率极低（[06 章](06-张量并行TP.md)）
                   → 而且通信次数 × 256
     ❌ 用 PP 切？ 专家是【同一层内】的并列关系，不是前后关系，切不了
     ❌ 用 ZeRO？  可以，但每次前向都要 all-gather 全部 256 个专家的参数
@@ -290,35 +350,49 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
     ★★ 关键观察：专家之间是【天然独立】的 ★★
        专家 3 和专家 17 各算各的，中间没有任何交互
-    → ✅ 那就一张卡放几个专家，让【token 去找专家】，而不是【专家来找 token】
+    ⟹ ✅ 那就一张卡放几个专家，让【token 去找专家】，而不是【专家来找 token】
 </code></pre></div>
 
 <hr />
 <h2 id="92-ep-token">9.2 EP 的机制：让 token 出差</h2>
-<div class="codehilite"><pre><span></span><code>    EP=4，8 个专家：
-
-    ┌────────┬────────┬────────┬────────┐
-    │  卡0   │  卡1   │  卡2   │  卡3   │
-    │ 专家0,1│ 专家2,3│ 专家4,5│ 专家6,7│
-    └────────┴────────┴────────┴────────┘
-
-    但★每张卡手里的 token 是不一样的★（它们来自不同的 DP 分片/序列分片），
-    而这些 token 被路由器分配给了【散落在各张卡上】的专家。
-
-    → 于是每张卡都要&quot;把自己的 token 寄给对应的卡，同时收别人寄来的 token&quot;
-    → ★★ 这正是 [03 章 §3.2](03-通信原语.md) 讲的 all-to-all ★★
-</code></pre></div>
-
+<p><strong>先把「谁在哪」摆清楚。</strong> 取 EP=4、8 个专家，一张卡放 2 个：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>卡 0</th>
+<th>卡 1</th>
+<th>卡 2</th>
+<th>卡 3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>这张卡存哪些专家</td>
+<td><strong>E0, E1</strong></td>
+<td><strong>E2, E3</strong></td>
+<td><strong>E4, E5</strong></td>
+<td><strong>E6, E7</strong></td>
+</tr>
+<tr>
+<td>这张卡手上有哪些 token</td>
+<td>t0, t1</td>
+<td>t2, t3</td>
+<td>t4, t5</td>
+<td>t6, t7</td>
+</tr>
+</tbody>
+</table>
+<p><strong>但★每张卡手里的 token 是不一样的★</strong>（它们来自不同的 DP 分片 / 序列分片），<strong>而这些 token 被路由器分配给了【散落在各张卡上】的专家。</strong> 于是每张卡都要「把自己的 token 寄给对应的卡，同时收别人寄来的 token」——<strong>这正是 <a href="03-通信原语.html">03 章 §3.2 ⑤</a> 讲的 all-to-all。</strong></p>
 <h3 id="_2">完整的四步</h3>
 <div class="codehilite"><pre><span></span><code>    ① 路由（Router）
-       每张卡本地算：我的每个 token 该去哪几个专家
-       → 得到 expert_indices
+       每张卡本地算：我的每个 token 该去哪 K 个专家
+       ⟹ 得到 expert_indices。★ 纯本地计算，不需要通信
 
     ② ★ Dispatch：all-to-all #1
        按目的地把 token 重新打包，全体交换
-       &quot;卡0 手里所有要去专家 4 的 token&quot; → 发给卡2
-       ↓
-       ★ 交换完，每张卡手里都是【属于自己专家的】token
+       「卡0 手里所有要去 E4 的 token」 ──► 发给卡2
+       ⟹ ★ 交换完，每张卡手里都是【属于自己专家的】token
 
     ③ 专家计算
        每张卡本地跑自己那几个专家的 FFN
@@ -326,19 +400,334 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
     ④ ★ Combine：all-to-all #2
        把结果原路寄回去，每个 token 回到它原来的卡
-       ↓
-       按路由权重加权求和 → 输出
+       ⟹ 按路由权重加权求和 ──► 输出
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    形状变化（[08 章](08-序列并行与上下文并行.md) 那种&quot;换切法&quot;的思路又来了）：
+<div class="codehilite"><pre><span></span><code>    形状变化（[08 章](08-序列并行与上下文并行.md) 那种「换切法」的思路又来了）：
 
-    dispatch 前： 每张卡 = 【1/N 的 token】 × 【全部专家的候选】
+    dispatch 前： 每张卡 = 【1/EP 的 token】 × 【全部专家的候选】
     dispatch 后： 每张卡 = 【全部卡来的 token】 × 【1/EP 的专家】
 
-    ★ 和 Ulysses 的&quot;切序列 ⇄ 切头&quot;是同一种把戏：
+    ★ 和 Ulysses 的「切序列 ⇄ 切头」是同一种把戏：
       换一个维度来切，好让本地能独立计算。
 </code></pre></div>
 
+<h3 id="921-4-8-tokentop-28">9.2.1 ★★ 逐卡推演：4 张卡、8 个 token、Top-2、8 个专家</h3>
+<p><strong>这一节小到可以用纸笔全部验算。把它看懂，all-to-all 就懂了。</strong></p>
+<p><strong>第一步：路由器给出结果。</strong> 这一步纯本地，不通信：</p>
+<table>
+<thead>
+<tr>
+<th>token</th>
+<th>它在哪张卡上</th>
+<th>路由器选中的 2 个专家</th>
+<th>这 2 个专家在哪张卡上</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>t0</td>
+<td>卡 0</td>
+<td>E0, E5</td>
+<td>卡 0, 卡 2</td>
+</tr>
+<tr>
+<td>t1</td>
+<td>卡 0</td>
+<td>E3, E6</td>
+<td>卡 1, 卡 3</td>
+</tr>
+<tr>
+<td>t2</td>
+<td>卡 1</td>
+<td>E0, E5</td>
+<td>卡 0, 卡 2</td>
+</tr>
+<tr>
+<td>t3</td>
+<td>卡 1</td>
+<td>E2, E5</td>
+<td>卡 1, 卡 2</td>
+</tr>
+<tr>
+<td>t4</td>
+<td>卡 2</td>
+<td>E1, E5</td>
+<td>卡 0, 卡 2</td>
+</tr>
+<tr>
+<td>t5</td>
+<td>卡 2</td>
+<td>E5, E7</td>
+<td>卡 2, 卡 3</td>
+</tr>
+<tr>
+<td>t6</td>
+<td>卡 3</td>
+<td>E0, E3</td>
+<td>卡 0, 卡 1</td>
+</tr>
+<tr>
+<td>t7</td>
+<td>卡 3</td>
+<td>E4, E5</td>
+<td>卡 2, 卡 2</td>
+</tr>
+</tbody>
+</table>
+<p><strong>8 个 token × Top-2 = 16 个「路由事件」</strong>，后面简称 <strong>16 个副本</strong>。⚠️ <strong>注意 t7：它的两个专家落在同一张卡上</strong>，所以卡 3 要给卡 2 发<strong>两份</strong> t7。</p>
+<p><strong>第二步：把上表折叠成一张「发送矩阵」。</strong> 行 = 发送方，列 = 接收方，格子里是「要发几个副本」：</p>
+<table>
+<thead>
+<tr>
+<th>发送方 ＼ 接收方</th>
+<th>→ 卡 0</th>
+<th>→ 卡 1</th>
+<th>→ 卡 2</th>
+<th>→ 卡 3</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>卡 0 发</strong></td>
+<td><strong>1</strong></td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>卡 1 发</strong></td>
+<td>1</td>
+<td><strong>1</strong></td>
+<td>2</td>
+<td>0</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>卡 2 发</strong></td>
+<td>1</td>
+<td>0</td>
+<td><strong>2</strong></td>
+<td>1</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>卡 3 发</strong></td>
+<td>1</td>
+<td>1</td>
+<td><strong>2</strong></td>
+<td><strong>0</strong></td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>列和</strong></td>
+<td><strong>4</strong></td>
+<td><strong>3</strong></td>
+<td><strong>7</strong></td>
+<td><strong>2</strong></td>
+<td><strong>16</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>逐格验算的办法</strong>：比如「卡 3 → 卡 2」那格的 2，来自 t7 的两个副本（E4 和 E5 都在卡 2）；比如「卡 2 的列和 7」，是 E4 收到 t7（1 个）+ E5 收到 t0、t2、t3、t4、t5、t7（6 个）= 7 ✓。<strong>加粗的对角线格子 = 本来就在自己身上、不用上网的副本。</strong></p>
+<div class="codehilite"><pre><span></span><code>    三个立刻能读出来的事实：
+
+    ① 对角线 = 本地留下，不用发
+       对角线之和 = 1 + 1 + 2 + 0 = 4
+       真正上网的 = 16 − 4 = 12，占 75%
+       ★ 理论值（均匀路由时）= 1 − 1/EP = 1 − 1/4 = 75%，严丝合缝 ✓
+
+    ② ★ 行和一定相等（都是 2 token × Top-2 = 4），因为每张卡的 token 数和 K 都一样
+       ★ 列和一定不等（4, 3, 7, 2），因为专家的热度不一样  ← 这就是 §9.4 的负载不均
+
+    ③ 每张卡「发出」和「收到」的量不一样（扣掉对角线后）：
+       卡0 发 3 收 3   卡1 发 3 收 2   卡2 发 2 收 5   卡3 发 4 收 2
+       ⟹ ★ All-to-All 是【不对称】的，这一点和 All-Reduce 很不一样
+</code></pre></div>
+
+<p><strong>第三步：Dispatch 前后，每张卡手上到底是什么。</strong> 这是本节最值得盯着看的一张图：</p>
+<div class="codehilite"><pre><span></span><code>    Dispatch 之前 —— 每张卡手上是「自己负责的 token」
+
+      卡 0  ├── t0   t1                （2 个 H 维向量）
+      卡 1  ├── t2   t3
+      卡 2  ├── t4   t5
+      卡 3  ├── t6   t7
+
+              ▼▼▼  All-to-All #1（Dispatch）：12 个副本跨卡飞行  ▼▼▼
+
+    Dispatch 之后 —— 每张卡手上是「自己的专家要算的 token」，已按专家分好段
+
+      卡 0  ├── E0 段（3 行）: t0  t2  t6
+            └── E1 段（1 行）: t4
+      卡 1  ├── E2 段（1 行）: t3
+            └── E3 段（2 行）: t1  t6
+      卡 2  ├── E4 段（1 行）: t7
+            └── E5 段（6 行）: t0  t2  t3  t4  t5  t7
+      卡 3  ├── E6 段（1 行）: t1
+            └── E7 段（1 行）: t5
+
+      每张卡的行数：4、3、7、2  —— ★ 正是上面那张表的列和 ✓
+</code></pre></div>
+
+<p><strong>★★ 看懂这张图，all-to-all 就懂了</strong>：它做的事情，就是把数据的「分组方式」<strong>从「按 token 属于谁」换成「按 token 要去哪个专家」</strong>。搬的是 token 的激活向量（每个 H 个数），<strong>一个字节的计算都不做</strong>。</p>
+<p><strong>第四步：本地算专家。</strong> 现在每张卡上是 2 个<strong>形状不同</strong>的矩阵乘：卡 0 是 M=3 和 M=1，卡 2 是 M=1 和 M=6。<strong>这个「参差不齐」就是 §9.6 GroupedGEMM 要解决的问题</strong>，而且它的参差程度<strong>由上一步的通信结果决定，编译期完全不可知</strong>。</p>
+<p><strong>第五步：Combine。</strong> 结果沿原路飞回去（同样 12 个副本，方向反过来），再按路由权重加权求和：</p>
+<div class="codehilite"><pre><span></span><code>    卡 0 收回 t0 的两份结果（本地 E0 算的、卡 2 的 E5 算的）
+      ⟹ t0 的输出 = w(t0,E0) × o_E0(t0) + w(t0,E5) × o_E5(t0)
+
+    ★★ 一层 MoE = 两次 All-to-All，中间夹一个 GroupedGEMM ★★
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⚠️ 顺手把负载不均也看一眼（§9.4 会展开）：
+       四张卡要算的行数是 4、3、7、2，平均 4，最大 7
+       ⟹ 整步由卡 2 决定 ⟹ 有效利用率 = 4 ÷ 7 = ★ 只有 57%
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>想看更大一点的例子</strong>（16 个 token、把 ragged GEMM 的浪费也一起算出来），去 <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> <strong>§8.3.1</strong>。那一章是从<strong>算子</strong>视角写的，本章不重复它。</p>
+</blockquote>
+<h3 id="922-top-k">9.2.2 ⚠️ 通信量公式：千万别漏掉 <code>× Top-K</code></h3>
+<div class="codehilite"><pre><span></span><code>    记：
+      t    每张卡本地的 token 数
+      K    Top-K 的 K
+      H    隐藏维度
+      b    每个元素的字节数（BF16 = 2，FP8 = 1）
+      EP   参与专家并行的卡数
+
+    ★★ 每张卡 Dispatch 要发出的字节数：
+
+        t × K × H × b × (1 − 1/EP)
+        ▲   ▲           ▲
+      本地  ⚠️ 每个      减掉「本来就落在自己卡上」的那部分
+      token  token 要
+             复制成 K 份
+
+    Combine 的量和 Dispatch 一样（同样多的副本原路返回），所以：
+
+    ★ 一层 MoE、每张卡的 all-to-all 总字节 ≈ 2 × t × K × H × b × (1 − 1/EP)
+</code></pre></div>
+
+<blockquote>
+<p>⚠️⚠️ <strong>那个 <code>× K</code> 是全公式最常被漏掉的一项，漏了会把通信量算小 8 倍</strong>（V3 的 K=8）。直觉上很容易以为「一个 token 就发一份」，但 Top-K 路由意味着<strong>同一个 token 的激活向量要被复制 K 份、发往 K 个不同的目的地</strong>。</p>
+</blockquote>
+<p><strong>用 §9.2.1 的小例子验一下</strong>：t = 2，K = 2，EP = 4 → <code>2 × 2 × (1 − 1/4)</code> = <strong>3 个副本</strong>。实际四张卡发出 3、3、2、4，<strong>平均 12 ÷ 4 = 3</strong> ✓ 公式对上了（单卡的偏差来自路由不均匀）。</p>
+<h3 id="923-deepseek-v3-all-to-all">9.2.3 换成真实规模：DeepSeek-V3 训练时这两次 all-to-all 有多贵</h3>
+<p><strong>配置</strong>（✅ 模型维度来自 V3 技术报告；⚠️ 每卡 token 数是举例，取的是 DeepEP 官方 benchmark 的设定）：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每卡 token 数 t</td>
+<td>4096（⚠️ 举例）</td>
+</tr>
+<tr>
+<td>隐藏维度 H</td>
+<td>✅ 7168</td>
+</tr>
+<tr>
+<td>Top-K</td>
+<td>✅ 8</td>
+</tr>
+<tr>
+<td>每元素字节 b</td>
+<td>2（BF16）</td>
+</tr>
+<tr>
+<td>EP</td>
+<td>✅ 64（V3 训练配置，横跨 8 台机）</td>
+</tr>
+<tr>
+<td>MoE 层数</td>
+<td>✅ 58（共 61 层，前 3 层是稠密 FFN）</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>在算什么</th>
+<th>式子</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>本卡这步的 token 数</td>
+<td>—</td>
+<td>4096</td>
+</tr>
+<tr>
+<td>②</td>
+<td>⚠️ <strong>每个 token 复制成 Top-K 份</strong></td>
+<td>4096 × <strong>8</strong></td>
+<td><strong>32768 份</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td>一份多大</td>
+<td>H × b = 7168 × 2</td>
+<td>14.3 KB</td>
+</tr>
+<tr>
+<td>④</td>
+<td>全部发出去</td>
+<td>32768 × 14.3 KB</td>
+<td>470 MB</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>扣掉本来就落在本卡的</td>
+<td>× (1 − 1/64)</td>
+<td><strong>462 MB</strong> ← Dispatch</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>Combine 原路返回</td>
+<td>× 2</td>
+<td><strong>925 MB / 层（前向）</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>58 个 MoE 层</td>
+<td>× 58</td>
+<td><strong>53.6 GB / 卡（前向）</strong></td>
+</tr>
+<tr>
+<td>⑧</td>
+<td>反向同构再来一遍</td>
+<td>× 2</td>
+<td>⚠️ <strong>约 107 GB / 卡 / step</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 我的估算。★★ 这 107 GB 走哪条线，差一个数量级：
+
+    假设 1：全部关在机内（NVLink 450 GB/s 单向）
+        107 GB ÷ 450 GB/s = ★ 238 ms                 ← 还能忍
+
+    假设 2：EP=64 横跨 8 台机，均匀路由 ⟹ 1/8 留机内、7/8 跨机
+        机内 13.4 GB ÷ 450 GB/s =    30 ms
+        跨机 93.9 GB ÷  50 GB/s = 1878 ms
+        合计 ≈ ★★ 1.9 秒 / step                      ← 完全不可接受
+
+    ⟹ ★ 这就是 DeepSeek-V3 必须同时做三件事的原因：
+       ① ✅ 节点受限路由（Node-Limited Routing）：一个 token 最多只去 M=4 台机
+       ② ✅ 用 FP8 做 dispatch（b 从 2 变 1）⟹ 通信量直接减半
+       ③ ✅ DeepEP 这类专用 kernel + 通算重叠（§9.3）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>和 06 章对照着看</strong>：TP 的通信量是 <code>2(TP−1)/TP × b×s×h×2</code>，<strong>和 Top-K 无关</strong>；EP 的通信量带一个 <code>× K</code>，<strong>但只搬被路由到的那 K 份</strong>。⚠️ 哪个便宜取决于并行度：<strong>并行度 p 超过 K 之后 EP 才开始划算</strong>，完整推导见 <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> <strong>§8.4.3</strong>（结论是 <code>EP 通信量 / TP 通信量 = K / p</code>）。</p>
+</blockquote>
 <hr />
 <h2 id="93-all-to-allep">9.3 ⚠️ all-to-all：EP 的心脏，也是它的病灶</h2>
 <div class="codehilite"><pre><span></span><code>    ★ all-to-all 是所有通信原语里【最难受】的一个：
@@ -350,6 +739,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        专家计算必须等 dispatch 全部完成才能开始
        —— 不像 DP 的梯度 all-reduce 可以和反向计算重叠
     ④ 跨机器时尤其惨：走 [03 章](03-通信原语.md) 那条 50 GB/s 的网络
+       （§9.2.3 那个「238 ms vs 1.9 s」就是这一条的数字版）
+    ⑤ ⚠️ 它还【不对称】：发出和收到的量不一样（§9.2.1 事实 ③），
+       没法像 all-reduce 那样套一个整齐的环形算法
 </code></pre></div>
 
 <blockquote>
@@ -357,7 +749,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <em>"</em><em>EP All-to-All can consume 30-40% of training time without optimization.</em><em> These features hide or reduce EP communication overhead."</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★★ 30~40% 的训练时间花在一个通信原语上 ★★
-    → 这就是为什么 MoE 训练框架的一大半工作量都在优化 all-to-all
+    ⟹ 这就是为什么 MoE 训练框架的一大半工作量都在优化 all-to-all
 </code></pre></div>
 
 <p><strong>Megatron 给的两个对策</strong>（✅ 同一份文档的表格）：</p>
@@ -385,13 +777,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>🔑 <strong>第二条特别巧妙，值得拆开讲</strong>：<br />
 ```<br />
-现在的 MoE 大多有【共享专家】（每个 token 都必走的那个 FFN，不需要路由）。<br />
+现在的 MoE 大多有【共享专家】（§9.1 那个每个 token 都必走、不需要路由的 FFN）。<br />
 ★ 共享专家的计算【不依赖 all-to-all 的结果】<br />
-→ 那就在 token 满天飞的时候，顺手把共享专家算了<br />
-→ ★ 白赚一段重叠时间</p>
+⟹ 那就在 token 满天飞的时候，顺手把共享专家算了<br />
+⟹ ★ 白赚一段重叠时间</p>
 <p>这是个典型例子：★ 模型架构的一个设计（共享专家），<br />
   意外地给系统层送了一个可以填的空隙。<br />
 ```</p>
+<p>📌 <strong>还有一条更新的路子</strong>：Megatron 现在支持把 dispatcher 换成 DeepSeek 开源的 <strong>DeepEP</strong>（✅ README：<code>--moe-token-dispatcher-type flex --moe-flex-dispatcher-backend deepep</code>，说明是 <em>"Removes redundant tokens during cross-node communication, fuses intra/inter-node communication into single kernel"</em>）。<strong>它正是 §9.2.3 里「跨机 1.9 秒」那个问题的工程解。</strong></p>
 </blockquote>
 <hr />
 <h2 id="94-moe">9.4 ★ 负载不均：MoE 独有的麻烦</h2>
@@ -399,9 +792,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ★ EP 不是：★★ 工作量由路由器【运行时】决定 ★★
 
     理想：      256 个专家各分到 1/256 的 token
-    现实：      专家 7 分到 20%，专家 200 分到 0.01%
-                → 卡2 忙死，其余卡空转等它
-                → ★ 整个 step 的速度 = 最慢那张卡的速度
+    现实：      §9.2.1 那四个列和 —— 4、3、7、2
+                ⟹ 卡 2 忙死，其余卡空转等它
+                ⟹ ★ 整个 step 的速度 = 最慢那张卡的速度 = 有效利用率 4/7 = 57%
 </code></pre></div>
 
 <h3 id="token">对策一：容量因子 + 丢 token（老办法）</h3>
@@ -418,7 +811,7 @@ $$\text{expert capacity} = \left(\frac{\text{tokens per batch}}{\text{number of 
                     （算力和显存被浪费）
 
     ★★ 为什么非要固定坑位？因为 GPU 的矩阵乘要【定形状】的张量 ★★
-       ——这是一个纯粹由硬件逼出来的妥协，不是算法上想要的。
+       —— 这是一个纯粹由硬件逼出来的妥协，不是算法上想要的。
 </code></pre></div>
 
 <blockquote>
@@ -435,43 +828,72 @@ $$\text{expert capacity} = \left(\frac{\text{tokens per batch}}{\text{number of 
 <div class="codehilite"><pre><span></span><code>    ★ 核心想法：不要强行把不等长的东西 pad 成等长，
       而是把它表示成一个【块稀疏矩阵】，写专门的 kernel 直接算。
 
-    → 一个 token 都不丢，也不 pad
-    → ✅ Megatron 现在默认就是 dropless（源码 README：
+    ⟹ 一个 token 都不丢，也不 pad
+    ⟹ ✅ Megatron 现在默认就是 dropless（源码 README：
         &quot;Token dropless MoE (dMoE) - Advanced routing without token dropping&quot;）
 </code></pre></div>
 
+<blockquote>
+<p>✅ <strong>DeepSeek-V3 也是一个 token 都不丢</strong>，而且训练和推理都不丢——V3 技术报告明确写了这一条。<strong>⚠️ 这一点常被写反</strong>，很多二手资料把「MoE 一定要丢 token」当成常识，那是 2021 年 Switch Transformer 时代的事了。</p>
+</blockquote>
 <h3 id="_3">对策三：从算法侧治本 —— 负载均衡损失</h3>
-<div class="codehilite"><pre><span></span><code>    ★ 上面两条都是&quot;系统侧忍受不均衡&quot;，还有一条是&quot;算法侧不让它不均衡&quot;：
+<div class="codehilite"><pre><span></span><code>    ★ 上面两条都是「系统侧忍受不均衡」，还有一条是「算法侧不让它不均衡」：
 
-    在损失函数里加一项，惩罚&quot;专家使用率不均匀&quot;
-      → Megatron: --moe-router-load-balancing-type aux_loss
-                  --moe-aux-loss-coeff 1e-2
+    在损失函数里加一项，惩罚「专家使用率不均匀」
+      ⟹ Megatron: --moe-router-load-balancing-type aux_loss
+                   --moe-aux-loss-coeff 1e-2
 
     ⚠️ 但这一项会和主损失【打架】（为了均衡而牺牲了路由质量）
-    → 新一代做法是 aux-loss-free：不加损失项，只调一个偏置
-      （DeepSeek-V3 起的主流做法，见隔壁
-       [../../业界模型技术报告/大模型架构入门/10-MoE.md](../../业界模型技术报告/大模型架构入门/10-MoE.md)）
+    ⟹ 新一代做法是 aux-loss-free：不加损失项，只调一个偏置
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>这一节是全教程里"系统和算法耦合最紧"的地方</strong>：负载均衡既是一个训练目标问题，也是一个调度问题，两边都得管。</p>
+<p>📖 <strong>无辅助损失负载均衡</strong>（<strong>Auxiliary-Loss-Free Load Balancing</strong>）——✅ DeepSeek-V3 技术报告 §2.1.2 的做法，现在的主流。<strong>它有三个细节几乎每次都被写错，这里一条条钉住</strong>：</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ① ★ 偏置只影响「选谁」，不影响「贡献多少」
+
+       原始亲和度分数    s_i = sigmoid(x · w_i)
+       选专家时用        s_i + b_i     ⟹ 取 Top-8    ← b_i 只在这里出现
+       加权求和时用      s_i（归一化后）              ← b_i 不出现
+
+       ★ 这个分离是整个设计的精髓：b_i 能改变「谁被选中」，
+         但不会污染「被选中的专家贡献多少」，
+         所以不会像辅助损失那样直接扭曲模型的输出。
+
+    ② ⚠️⚠️ b_i 在【训练时每一个 step 更新】，【推理时固定】
+       （不走梯度，是一条规则）：
+           专家 i 这一步超载了  ⟹  b_i −= γ   （降低它的入选概率）
+           专家 i 这一步欠载了  ⟹  b_i += γ   （提高它的入选概率）
+           γ 是「偏置更新速度」，一个超参
+
+       ⚠️ 很多资料写反成「训练时固定、推理时更新」——那是错的，
+          而且是一个会直接误导实现的错误。推理时 b_i 跟着权重一起发布。
+
+    ③ ⚠️ V3 【并非完全不用】辅助损失
+       它保留了一项权重极小的【序列级】辅助损失（sequence-wise auxiliary loss），
+       用来防止单条序列内部出现极端倾斜。
+       ★ &quot;Auxiliary-Loss-Free&quot; 指的是不用【全局的】负载均衡辅助损失。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这一节是全教程里「系统和算法耦合最紧」的地方</strong>：负载均衡既是一个训练目标问题，也是一个调度问题，两边都得管。<strong>推理侧还有第三种解法</strong>（门控已经固定了，只能从部署上想办法：给热门专家做副本，即 EPLB），见 <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> <strong>§8.5.5</strong>。</p>
 </blockquote>
 <hr />
-<h2 id="95-ep-dp">9.5 ★ EP 在并行体系里的位置：它是从 DP 里"借"卡</h2>
+<h2 id="95-ep-dp">9.5 ★ EP 在并行体系里的位置：它是从 DP 里「借」卡</h2>
 <p><strong>这是初学者最容易困惑的一点。回忆 <a href="README.html">README</a> 那条铁律</strong>：</p>
 <p>$$TP \times PP \times CP \times DP = N$$</p>
 <p><strong>EP 在哪儿？答案是：EP 不在这条式子里，它是在 DP 的那部分卡上【再切一刀】。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ★ 一个直观的理解：
 
-    模型的注意力部分（稠密）  →  用 TP / PP / CP / DP，照旧
-    模型的专家部分（稀疏）    →  这些卡换一个身份，重新编组成 EP
+    模型的注意力部分（稠密）  ⟹  用 TP / PP / CP / DP，照旧
+    模型的专家部分（稀疏）    ⟹  这些卡换一个身份，重新编组成 EP
 
     ★★ 同一批 GPU，在【注意力层】和【专家层】用【两套不同的分组方式】★★
 </code></pre></div>
 
 <blockquote>
-<p>✅ 这在 Megatron 源码里写得非常清楚——<a href="../源码/Megatron-LM/megatron/core/parallel_state.py">../源码/Megatron-LM/megatron/core/parallel_state.py</a> 第 51–54 行的注释原文：<br />
-```</p>
+<p>✅ 这在 Megatron 源码里写得非常清楚——<a href="../源码/Megatron-LM/megatron/core/parallel_state.py">../源码/Megatron-LM/megatron/core/parallel_state.py</a> 的注释原文：<br />
+```python</p>
 <h1 id="_expert-prefix-in-group-name-means-its-used-for-expert-layer-in-moe-models">_EXPERT prefix in group name means it's used for expert layer in MoE models.</h1>
 <h1 id="_expert_model-denotes-expert-parallelism-which-splits-number-of-experts-across-the-group">_EXPERT_MODEL denotes expert parallelism which splits number of experts across the group.</h1>
 <h1 id="_expert_tensor-denotes-tensor-parallelism-of-expert-which-splits-tensor-across-the-group">_EXPERT_TENSOR denotes tensor parallelism of expert which splits tensor across the group.</h1>
@@ -479,7 +901,7 @@ $$\text{expert capacity} = \left(\frac{\text{tokens per batch}}{\text{number of 
 <p>```<br />
 ✅ 同文件另一处注释：<em>"CP is only included in default RankGenerator, and </em><em>EP only in expert RankGenerator</em><em>."</em></p>
 <p><code>★ 有【两套 RankGenerator】—— 一套给稠密层，一套给专家层。
-  这就是"同一批卡两套分组"在代码里的样子。</code></p>
+  这就是「同一批卡两套分组」在代码里的样子。</code></p>
 </blockquote>
 <p><strong>所以 MoE 训练里有一组独立的旋钮</strong>：</p>
 <table>
@@ -493,20 +915,219 @@ $$\text{expert capacity} = \left(\frac{\text{tokens per batch}}{\text{number of 
 <tbody>
 <tr>
 <td><code>--expert-model-parallel-size</code></td>
-<td>EP 度：专家分到几张卡上</td>
+<td><strong>EP 度</strong>：专家分到几张卡上</td>
 <td>1</td>
 </tr>
 <tr>
 <td><code>--expert-tensor-parallel-size</code></td>
-<td><strong>ETP</strong>：专家【内部】还要不要再 TP 切</td>
+<td><strong>ETP</strong>（<strong>E</strong>xpert <strong>T</strong>ensor <strong>P</strong>arallel）：专家【内部】还要不要再 TP 切</td>
 <td>✅ 同 TP（源码文档：<em>"Recommended to set to 1 for fine-grained MoE models"</em>）</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>📌 ✅ <strong>为什么细粒度 MoE 推荐 ETP=1</strong>：现在的 MoE 专家越做越小（DeepSeek 那种 256 个小专家），本来就小的矩阵再 TP 切一刀会更碎，得不偿失。<strong>这和 <a href="06-张量并行TP.html">06 章</a> 说的"TP 切太细会让矩阵变小、效率下降"是同一个道理。</strong></p>
+<p>📌 ✅ <strong>为什么细粒度 MoE 推荐 ETP=1</strong>：现在的 MoE 专家越做越小（V3 的专家是 7168 × 2048），本来就小的矩阵再 TP 切一刀会更碎，得不偿失。<strong>这和 <a href="06-张量并行TP.html">06 章</a> 说的「TP 切太细会让矩阵变小、效率下降」是同一个道理。</strong></p>
 </blockquote>
-<h3 id="readme-mixtral-87b">✅ 一个真实的配置（源码 README 里的 Mixtral 8×7B 例子）</h3>
+<h3 id="deepseek-v3">✅ DeepSeek-V3 的真实配置（本仓库多次写错，这里钉死）</h3>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>配置</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练</strong></td>
+<td><strong>2048 张 H800</strong>；<strong>EP = 64</strong>（横跨 8 台机）、<strong>PP = 16</strong>、ZeRO-1 式 DP、★ <strong>TP = 1</strong></td>
+<td>✅ V3 技术报告 §3.1</td>
+</tr>
+<tr>
+<td><strong>推理 Prefill</strong></td>
+<td>最小部署单元 4 机 32 卡；注意力部分 TP4 + DP8，MoE 部分 <strong>EP32</strong>，每卡 9 个路由专家 + 1 个共享专家（含 32 个冗余专家）</td>
+<td>✅ V3 技术报告 §3.4 / 开源周 Day 6</td>
+</tr>
+<tr>
+<td><strong>推理 Decode</strong></td>
+<td>最小部署单元 18 机 144 卡；MoE 部分 <strong>EP144</strong>，每卡 2 个路由专家 + 1 个共享专家</td>
+<td>✅ 开源周 Day 6 博客</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>Decode 那一行有两个官方数字，别搞混</strong>：V3 技术报告写的是 <strong>40 机 320 卡、EP320</strong>（每卡 1 个专家）；两个月后的开源周博客写的是 <strong>18 机 144 卡、EP144</strong>。<strong>两个都是官方的，对应不同时期的部署，引用时要说明出处。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 这张表里最该记住的三件事：
+
+    ① TP = 1  —— ✅ V3 训练完全不用张量并行。
+       ⚠️ 官方给的理由是 H800 的 NVLink 带宽受限（论文口径单向 160 GB/s，
+          H100 是 450），TP 的每层两次 all-reduce 太贵。
+       ★ 对照 06 章 §6.4.2：TP 在带宽不够时，并行效率会塌得非常快。
+
+    ② ★ 注意力部分和 MoE 部分用【不同的并行策略】
+       （Prefill：注意力 TP4 + DP8，MoE EP32）
+       ⟹ 并行策略不必全模型统一，这一点新手常常想不到。
+
+    ③ ✅ 训练和推理【都不丢 token】（§9.4），用的是无辅助损失的偏置法，
+       偏置【训练时每 step 更新、推理时固定】。
+</code></pre></div>
+
+<h3 id="ep">⚠️ 和推理侧对照着看：EP 组的构造方式不一样</h3>
+<p><strong>这两边很容易互相矛盾，先把差别摆出来：</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练（Megatron-LM）</th>
+<th>推理（vLLM）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>rank 排布顺序（近 → 远）</td>
+<td>TP → CP → <strong>EP</strong> → DP → PP</td>
+<td>TP → PCP → <strong>PP</strong> → DP → ExternalDP</td>
+</tr>
+<tr>
+<td>EP 组怎么来的</td>
+<td>★ 在 <strong>DP 那部分卡</strong>上再切一刀，走<strong>独立的 expert RankGenerator</strong></td>
+<td>★ 把 <strong>DP × PCP × TP 三个维度合并</strong>，等价于「同一个 PP 段内的所有卡」</td>
+</tr>
+<tr>
+<td>PP 和 DP 谁离得近</td>
+<td>★ <strong>DP 比 PP 近</strong></td>
+<td>★ <strong>PP 比 DP 近</strong>（对调了）</td>
+</tr>
+<tr>
+<td>为什么不一样</td>
+<td>训练的 DP 要做梯度 all-reduce，很贵，必须放近</td>
+<td>推理的 DP <strong>不通信</strong>（各副本独立生成），成本几乎为零，可以放远</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>不是谁写错了</strong>：同一批维度名，在训练和推理里<strong>成本模型完全不同</strong>，所以最优排布顺序<strong>正好相反</strong>。训练侧的排布顺序见 <a href="12-并行策略组合与MFU.html">12 章 §12.8</a>，推理侧的完整对照见 <a href="../../推理框架/推理优化入门/06-推理中的并行策略.html">../../推理框架/推理优化入门/06-推理中的并行策略.md</a>（§6.0 和 §6.3 ④）。<strong>读那一章时看到「顺序反了」不要慌，那是对的。</strong></p>
+</blockquote>
+<hr />
+<h2 id="96-groupedgemm">9.6 一个绕不开的工程细节：GroupedGEMM</h2>
+<div class="codehilite"><pre><span></span><code>    ★ 问题：§9.2.1 第四步那个「参差不齐」。
+      每张卡上有 2 个专家，M 分别是 3 和 1；真实规模下是几十个专家、
+      每个专家几百到几千行不等 —— 而且每一步都不一样。
+
+    朴素做法：每个专家跑一次小矩阵乘 ⟹ 8 次独立的 kernel 启动
+      → 每次都有固定开销（kernel launch overhead）
+      → 每个矩阵又都不大，GPU 根本没吃饱
+      → ★ 大量时间浪费在「启动」而不是「计算」上
+</code></pre></div>
+
+<blockquote>
+<p>✅ 源码 README 的说明：<em>"</em><em>Grouped GEMM</em><em> | Batches multiple expert GEMM operations into a single kernel call, improving GPU utilization | <code>--moe-grouped-gemm</code>"</em><br />
+以及问题描述：<em>"Fine-grained MoE produces </em><em>many small operations that can underutilize GPU resources</em><em>. These optimizations reduce kernel launch overhead and improve GPU utilization."</em></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ GroupedGEMM = 把 N 个「形状不同的小矩阵乘」塞进【一次】kernel 调用
+    ⟹ 这是 MoE 能高效跑起来的必需品，不是可选优化
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>GEMM</strong>（<strong>GE</strong>neral <strong>M</strong>atrix <strong>M</strong>ultiply，通用矩阵乘法）——GPU 上所有线性层最终都归结成 GEMM 调用。<br />
+📖 <strong>Ragged</strong>（参差 / 不等长）——形容 MoE 里那批矩阵：每个专家拿到的 token 数不一样，所以 M 维长短不齐。</p>
+<p>🔑 <strong>它为什么难写、三条实现路线各浪费多少</strong>，在 <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> <strong>§8.2</strong> 有完整的算子级推演（含 permute / unpermute 的开销）。本章只需要知道「它必须存在」。</p>
+</blockquote>
+<hr />
+<h2 id="97-ep">9.7 ⚠️ EP 的账：它省什么、不省什么</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>效果</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ 省</td>
+<td>专家部分的<strong>参数 + 梯度 + 优化器状态 ÷ EP</strong></td>
+<td>MoE 模型 90%+ 的参数都在专家里，所以这个 ÷ 非常值钱</td>
+</tr>
+<tr>
+<td>❌ 不省</td>
+<td>注意力部分</td>
+<td>那部分靠 TP / PP / ZeRO</td>
+</tr>
+<tr>
+<td>❌ 不省</td>
+<td>激活</td>
+<td>那部分靠 SP / CP / 重计算，见 <a href="08-序列并行与上下文并行.html">08</a>、<a href="11-重计算与激活优化.html">11</a> 章</td>
+</tr>
+<tr>
+<td>⚠️ 反而增加</td>
+<td>dispatch 之后每张卡手上的 token <strong>变多了</strong>（§9.2.1：4、3、7、2 行，本来每卡只有 2 个 token）</td>
+<td>★ 专家部分的激活显存可能【涨】</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 三条代价：
+
+    ① 每层两次 all-to-all —— ✅ 未优化时占 30~40% 训练时间
+       ⚠️ §9.2.3 的估算：V3 规模下若全部跨机，可以慢到 1.9 s/step
+    ② 负载不均，速度由最慢的卡决定（§9.2.1 那个 57%）
+    ③ ★ 强烈建议 EP 组【放在机内】走 NVLink
+       —— 和 [06 章](06-张量并行TP.md) 的 TP 抢同一批高速链路，
+          ★ 这就是 [12 章](12-并行策略组合与MFU.md) 那个「配比选择」问题最难的一块
+</code></pre></div>
+
+<p><strong>用显存反过来验一下 EP 值不值</strong>（✅ V3 维度，⚠️ 我的算术）：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>每卡的路由专家权重（一层，BF16）</th>
+<th>58 层合计</th>
+<th>80 GB 卡装得下吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不切</td>
+<td>22.5 GB</td>
+<td>1305 GB</td>
+<td>❌ 差 16 倍</td>
+</tr>
+<tr>
+<td>切 8 份（EP=8）</td>
+<td>2.82 GB</td>
+<td>163 GB</td>
+<td>❌ 还差一倍</td>
+</tr>
+<tr>
+<td>✅ 切 64 份（<strong>V3 的 EP=64</strong>）</td>
+<td><strong>352 MB</strong></td>
+<td><strong>20.4 GB</strong></td>
+<td>✅（还要留给激活和优化器状态）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   验算：一个专家 = 3 × 7168 × 2048 = 44.0 M 参数
+         256 个路由专家 = 11.27 B 参数，BF16 = 22.5 GB  ← 一层！
+   ⟹ ★ 不用 EP，MoE 根本无法训练。这不是优化，是准入条件。
+</code></pre></div>
+
+<hr />
+<h2 id="98">9.8 挂回源码</h2>
+<div class="codehilite"><pre><span></span><code>    megatron/core/transformer/moe/
+        router.py              ← ① 路由：算 top-k（§9.2 第一步）
+        token_dispatcher.py    ← ★ ②④ 两次 all-to-all 都在这里
+        experts.py             ← ③ 专家计算（含 GroupedGEMM，§9.6）
+        moe_layer.py           ← 把四步串起来
+        moe_utils.py           ← permute / unpermute 等辅助
+        README.md              ← ✅ 本章大量引用的官方文档
+
+    megatron/core/parallel_state.py
+        ← ★ §9.5 那「两套 RankGenerator」的实现
+</code></pre></div>
+
+<p><strong>一个真实的配置</strong>（✅ 源码 README 里的 Mixtral 8×7B 例子）：</p>
 <div class="codehilite"><pre><span></span><code>--num-experts<span class="w"> </span><span class="m">8</span>
 --expert-model-parallel-size<span class="w"> </span><span class="m">8</span><span class="w">        </span><span class="c1"># ★ 8 个专家分到 8 张卡，一卡一个</span>
 --moe-router-topk<span class="w"> </span><span class="m">2</span><span class="w">                   </span><span class="c1"># 每个 token 走 2 个专家</span>
@@ -517,92 +1138,60 @@ $$\text{expert capacity} = \left(\frac{\text{tokens per batch}}{\text{number of 
 </code></pre></div>
 
 <hr />
-<h2 id="96-groupedgemm">9.6 一个绕不开的工程细节：GroupedGEMM</h2>
-<div class="codehilite"><pre><span></span><code>    ★ 问题：每张卡上有 8 个专家，就要跑 8 次小矩阵乘。
-
-    8 次独立的 kernel 启动
-      → 每次都有固定开销（kernel launch overhead）
-      → 每个矩阵又都不大，GPU 根本没吃饱
-      → ★ 大量时间浪费在&quot;启动&quot;而不是&quot;计算&quot;上
-</code></pre></div>
-
-<blockquote>
-<p>✅ 源码 README 的说明：<em>"</em><em>Grouped GEMM</em><em> | Batches multiple expert GEMM operations into a single kernel call, improving GPU utilization | <code>--moe-grouped-gemm</code>"</em><br />
-以及问题描述：<em>"Fine-grained MoE produces </em><em>many small operations that can underutilize GPU resources</em><em>. These optimizations reduce kernel launch overhead and improve GPU utilization."</em></p>
-</blockquote>
-<div class="codehilite"><pre><span></span><code>    ★ GroupedGEMM = 把 N 个&quot;形状不同的小矩阵乘&quot;塞进【一次】kernel 调用
-    → 这是 MoE 能高效跑起来的必需品，不是可选优化
-</code></pre></div>
-
-<blockquote>
-<p>📌 <strong>GEMM</strong> = <strong>GE</strong>neral <strong>M</strong>atrix <strong>M</strong>ultiply，通用矩阵乘法。GPU 上所有线性层最终都归结成 GEMM 调用。</p>
-</blockquote>
-<hr />
-<h2 id="97-ep">9.7 ⚠️ EP 的账：它省什么、不省什么</h2>
-<div class="codehilite"><pre><span></span><code>    ✅ 省：专家部分的【参数 + 梯度 + 优化器状态】÷ EP
-       —— 而 MoE 模型 90%+ 的参数都在专家里，所以这个 ÷ 非常值钱
-
-    ❌ 不省：注意力部分（那部分靠 TP/PP/ZeRO）
-    ❌ 不省：激活（那部分靠 SP/CP/重计算，见 [08](08-序列并行与上下文并行.md)、[11](11-重计算与激活优化.md) 章）
-    ⚠️ 反而增加：dispatch 之后每张卡手里的 token 变多了
-       → ★ 专家部分的激活显存反而可能【涨】
-
-    ⚠️ 代价：
-       ① 两次 all-to-all，占 30~40% 训练时间（未优化时）
-       ② 负载不均，速度由最慢的卡决定
-       ③ ★ 强烈建议 EP 组【放在机内】走 NVLink
-          —— 和 [06 章](06-张量并行TP.md) 的 TP 抢同一批高速链路，
-             ★ 这就是 12 章那个&quot;配比选择&quot;问题最难的一块
-</code></pre></div>
-
-<hr />
-<h2 id="98">9.8 挂回源码</h2>
-<div class="codehilite"><pre><span></span><code>    megatron/core/transformer/moe/
-        router.py              ← ① 路由：算 top-k
-        token_dispatcher.py    ← ★ ②④ 两次 all-to-all 都在这里
-        experts.py             ← ③ 专家计算（含 GroupedGEMM）
-        moe_layer.py           ← 把四步串起来
-        moe_utils.py           ← permute / unpermute 等辅助
-        README.md              ← ✅ 本章大量引用的官方文档
-
-    megatron/core/parallel_state.py
-        ← ★ §9.5 那&quot;两套 RankGenerator&quot;的实现
-</code></pre></div>
-
-<hr />
 <h2 id="99">9.9 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>① ★ EP 是唯一一种【只对特定架构（MoE）有意义】的并行方式
-   MoE：参数量 ×256，计算量 ×8 —— 参数涨而计算不涨
+   ⚠️ 「参数 ×256 计算 ×8」只对粗粒度 MoE 成立；
+      ✅ 细粒度的 DeepSeek-V3 是【参数 ×28.6、计算 ×1.0】
+      （9 个激活专家 × 中间维 2048 = 18432 = 它自己稠密层的中间维）
    ✅ GShard 600B / 2048 TPU / 4 天；✅ Switch 万亿参数 / 比 T5-XXL 快 4 倍
 
 ② ★ 为什么前四种不够：TP 把小专家切得更碎、PP 切不动并列关系、
    ZeRO 要 all-gather 全部 256 个专家但只用 8 个（白搬 32 倍）
-   → 关键观察：★ 专家之间天然独立 → 一卡放几个专家，让 token 去找专家
+   ⟹ 关键观察：★ 专家之间天然独立 → 一卡放几个专家，让 token 去找专家
 
 ③ EP 四步：路由 → ★all-to-all dispatch → 本地专家计算 → ★all-to-all combine
    ★ 和 Ulysses 是同一种把戏：换一个维度切，好让本地能独立算
+   ★ §9.2.1 那个 4 卡 / 8 token / Top-2 的小例子可以全部手算：
+     发送矩阵列和 4、3、7、2；对角线 4 个不上网；上网 12/16 = 75% = 1 − 1/EP ✓
 
-④ ⚠️ all-to-all 是心脏也是病灶：碎、延迟主导、★在关键路径上
+④ ⚠️⚠️ 通信量公式，★ 千万别漏掉 × Top-K：
+     单向 = t × K × H × b × (1 − 1/EP)
+     一层合计 ≈ 2 × 单向（Combine 原路返回）
+   ⚠️ 我的估算（V3 规模，t=4096, K=8, H=7168, BF16, EP=64, 58 层）：
+     ≈ 107 GB / 卡 / step
+     全机内 450 GB/s ⟹ 238 ms；7/8 跨机 50 GB/s ⟹ ★ 1.9 s ← 差 8 倍
+   ⟹ 所以 V3 要节点受限路由（M=4）+ FP8 dispatch + DeepEP
+
+⑤ ⚠️ all-to-all 是心脏也是病灶：碎、延迟主导、★在关键路径上、还不对称
    ✅ Megatron 官方文档：&quot;EP All-to-All can consume 30-40% of training time&quot;
    对策：微批 FWD-BWD 合并重叠；★ 用【共享专家】的计算去填 all-to-all 的空隙
 
-⑤ ★ 负载不均是 MoE 独有的（前四种切得一样大，EP 由路由器运行时决定）
+⑥ ★ 负载不均是 MoE 独有的（前四种切得一样大，EP 由路由器运行时决定）
    老办法：容量因子 + 丢 token
      ✅ Switch 定义：capacity = (tokens/experts) × capacity_factor
      ✅ MegaBlocks 一针见血：&quot;force a tradeoff between model quality and
         hardware efficiency ... drop tokens or waste computation on padding&quot;
    新办法：★ dropless（块稀疏 kernel），一个不丢也不 pad
      ✅ MegaBlocks：比 Tutel 快 40%，比 Megatron-LM 快 2.4×
-   算法侧：负载均衡损失 → 现在流行 aux-loss-free
+     ✅ DeepSeek-V3【训练和推理都不丢 token】
+   算法侧：负载均衡损失 → ✅ 现在流行无辅助损失的偏置法
+     ⚠️ 三个最常被写错的点：偏置只影响「选谁」不影响「权重」；
+        ★ 偏置【训练时每 step 更新、推理时固定】（不是反过来）；
+        V3 仍保留一项极小的【序列级】辅助损失
 
-⑥ ★★ EP 不在 TP×PP×CP×DP=N 这条式子里，它是在 DP 那部分卡上再切一刀
+⑦ ★★ EP 不在 TP×PP×CP×DP=N 这条式子里，它是在 DP 那部分卡上再切一刀
    ✅ 源码有【两套 RankGenerator】：一套给稠密层，一套给专家层
    ✅ 细粒度 MoE 推荐 ETP=1（专家本来就小，再切更碎）
+   ✅ DeepSeek-V3 真实配置：训练 2048 张 H800 / EP=64 / PP=16 / ★TP=1；
+      推理 Prefill EP32（4 机 32 卡）、Decode EP144（18 机 144 卡）
+   ⚠️ 推理侧 EP 组的构造方式和训练侧不同，rank 排布顺序也正好相反 —— 见 §9.5 末
 
-⑦ GroupedGEMM：把很多个小矩阵乘塞进一次 kernel 调用 —— MoE 的必需品
+⑧ GroupedGEMM：把很多个形状不同的小矩阵乘塞进一次 kernel 调用 —— MoE 的必需品
 
-⑧ ⚠️ EP 只省专家部分的模型状态；激活反而可能涨；EP 组要放机内，
+⑨ ⚠️ EP 只省专家部分的模型状态；激活反而可能涨；EP 组要放机内，
    ★ 会和 TP 抢同一批 NVLink
+   ✅ 但它是准入条件不是优化：V3 一层 256 个专家 = 22.5 GB，
+      不切根本放不下（58 层 1305 GB）
 </code></pre></div>
 
 <p><strong>五种切法到此讲完。</strong> 接下来两章讲<strong>另一类完全不同的思路</strong>：<strong>不切，也能省</strong>——<a href="10-混合精度与FP8.html">10 章</a>把每个数字变小，<a href="11-重计算与激活优化.html">11 章</a>干脆不存、要用时再算。</p>

@@ -256,52 +256,110 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="21">2.1 显存里只有四样东西</h2>
-<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────┐
-│                  训练时 GPU 显存里的四样东西                     │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│  ①  参数     parameters      模型本身的权重                     │
-│  ②  梯度     gradients       每个参数对应一个，反向传播算出来的  │
-│  ③  优化器状态 optimizer states  Adam 给每个参数额外记的账       │
-│  ④  激活值   activations     前向过程中每一层的中间结果          │
-│                                                                │
-│  ★ ①②③ 合称【模型状态 model states】，大小【只和参数量有关】   │
-│  ★ ④   是唯一一个【和 batch、序列长度有关】的项                 │
-│    → 这个区别非常重要，它决定了哪一种并行能省哪一项              │
-└────────────────────────────────────────────────────────────────┘
+<p><strong>训练时 GPU 显存里装的东西，可以完整地分成四类，没有第五类</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>名字</th>
+<th>英文</th>
+<th>是什么</th>
+<th>大小取决于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>参数</strong></td>
+<td>parameters</td>
+<td>模型本身的权重</td>
+<td><strong>参数量</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>梯度</strong></td>
+<td>gradients</td>
+<td>每个参数对应一个，反向传播算出来的</td>
+<td><strong>参数量</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>优化器状态</strong></td>
+<td>optimizer states</td>
+<td>Adam 给每个参数额外记的账</td>
+<td><strong>参数量</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>激活值</strong></td>
+<td>activations</td>
+<td>前向过程中每一层的中间结果</td>
+<td><strong>batch × 序列长度 × 层数</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ ①②③ 合称【模型状态 model states】—— 大小【只和参数量有关】
+    ★ ④   是唯一一个【和 batch、序列长度有关】的项，和参数量【无关】
+
+    ⟹ 这个区别是本章最重要的一句话。
+       它决定了「哪一种并行能省哪一项」，也决定了
+       你显存爆了的时候该开哪个开关（§2.5 那张路线图）。
 </code></pre></div>
 
 <blockquote>
 <p>✅ ZeRO 论文（<a href="../papers/ZeRO-Memory-Optimizations-Trillion-Parameter-arXiv-1910.02054.pdf">papers/ZeRO-...-arXiv-1910.02054.pdf</a>）就是这么分的，原文：<br />
 <em>"For large models, the majority of the memory is occupied by model states which include the optimizer states (such as momentum and variances in Adam), gradients, and parameters."</em><br />
 <em>"The remaining memory is consumed by activation, temporary buffers and unusable fragmented memory, which we refer to collectively as residual states."</em></p>
+<p>📌 <strong>本章的单位约定</strong>：1 GB = 10⁹ 字节（十进制，方便心算）。⚠️ 厂商标称的显存「80 GB」其实是 80 GiB = 80 × 2³⁰ ≈ 85.9 × 10⁹ 字节，<code>nvidia-smi</code> 上常见报数是 81,559 MiB。<strong>本教程按 80 GB 取整，口径偏保守</strong>——真机上只会比算出来的稍宽裕，不会更紧。</p>
 </blockquote>
 <hr />
 <h2 id="22-12316">2.2 先算 ①②③：那个著名的「16 字节/参数」</h2>
-<h3 id="bf16">为什么不能全用 BF16</h3>
+<h3 id="221-bf16">2.2.1 为什么不能全用 BF16</h3>
 <p><strong>你可能会想：既然 BF16 是 2 字节，那 70B 参数就是 140 GB，为什么还要 FP32？</strong></p>
 <blockquote>
-<p>📌 <strong>先解释三个格式</strong>（10 章会详细讲，这里只要知道字节数）：<br />
-- <strong>FP32</strong> = <strong>32-bit F</strong>loating <strong>P</strong>oint，单精度浮点，<strong>4 字节</strong>，精度高<br />
-- <strong>FP16</strong> = 半精度浮点，<strong>2 字节</strong><br />
-- <strong>BF16</strong> = <strong>B</strong>rain <strong>F</strong>loating Point 16，另一种半精度，<strong>2 字节</strong>，是现在训练的主流</p>
+<p>📌 <strong>先解释三个格式</strong>（<a href="10-混合精度与FP8.html">10 章</a>会详细讲，这里只要记住字节数）：<br />
+- <strong>FP32</strong> = <strong>32-bit F</strong>loating <strong>P</strong>oint，单精度浮点，<strong>4 字节</strong>，23 位尾数，精度高<br />
+- <strong>FP16</strong> = 半精度浮点，<strong>2 字节</strong>，10 位尾数<br />
+- <strong>BF16</strong> = <strong>B</strong>rain <strong>F</strong>loating Point 16，另一种半精度，<strong>2 字节</strong>，只有 <strong>7 位尾数</strong>（换来了和 FP32 一样宽的指数范围），是现在训练的主流</p>
 </blockquote>
-<p><strong>答案是：参数更新那一步会"更新丢失"。</strong></p>
-<div class="codehilite"><pre><span></span><code>    举例：一个权重值 w = 1.0，学习率很小，这一步的更新量是 0.00001
-
-        用 BF16 存 w：BF16 只有 8 位尾数，在 1.0 附近能分辨的最小间隔约 0.0078
-        1.0 + 0.00001  →  ★ 四舍五入回 1.0，什么都没发生
-
-    ★ 训练几万步，每一步的更新都被吃掉了 → 模型根本不动
-</code></pre></div>
-
+<p><strong>答案是：如果权重只有 BF16 一份，参数更新那一步会「更新丢失」。</strong></p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>发生了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 当前权重</td>
+<td><code>w = 1.0</code></td>
+</tr>
+<tr>
+<td>② 这一步该更新多少</td>
+<td><code>lr × g = 0.00001</code></td>
+</tr>
+<tr>
+<td>③ BF16 在 1.0 附近能分辨的最小间隔</td>
+<td>⚠️ 约 <strong>0.0078</strong>（= 2⁻⁷）</td>
+</tr>
+<tr>
+<td>④ 于是 <code>1.0 + 0.00001</code> 存回 BF16</td>
+<td><strong>四舍五入回 1.0，什么都没发生</strong></td>
+</tr>
+<tr>
+<td>⑤ 训练几万步</td>
+<td>★ 每一步的更新都被吃掉 → <strong>模型根本不动</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>✅ 混合精度训练论文（<a href="../papers/Mixed-Precision-Training-arXiv-1710.03740.pdf">papers/Mixed-Precision-Training-arXiv-1710.03740.pdf</a>）就是为了解决这个问题提出的：<br />
 ✅ 原文：<em>"we maintain a single-precision copy of weights that accumulates the gradients after each optimizer step"</em><br />
-—— <strong>额外留一份 FP32 的"主权重"（master weights），更新在它上面做。</strong></p>
+—— <strong>额外留一份 FP32 的"主权重"（master weights），更新在它上面做，算的时候再转成 BF16 用。</strong></p>
 </blockquote>
-<h3 id="_1">那张账本</h3>
-<p><strong>于是一个参数需要存这些东西</strong>（BF16 混合精度 + Adam 优化器，这是 2024–2026 年的绝对主流配置）：</p>
+<h3 id="222">2.2.2 那张账本</h3>
+<p><strong>于是一个参数需要存这些东西</strong>（BF16 混合精度 + AdamW，这是 2024–2026 年的绝对主流配置）：</p>
 <table>
 <thead>
 <tr>
@@ -332,7 +390,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><strong>FP32 主权重</strong></td>
 <td>FP32</td>
 <td><strong>4</strong></td>
-<td>更新在它上面做，避免更新丢失</td>
+<td>更新在它上面做，避免 §2.2.1 的更新丢失</td>
 </tr>
 <tr>
 <td>③b</td>
@@ -360,17 +418,162 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="codehilite"><pre><span></span><code>    ★★★  每个参数 16 字节  ★★★
 
     这个数字请背下来。它是分布式训练所有讨论的起点。
+</code></pre></div>
 
-        70B 模型  →  70×10^9 × 16 = 1120 GB      ← 01 章那个数就是这么来的
-        405B 模型 →  405×10^9 × 16 = 6480 GB     ← 需要 81 张 H100 才装得下模型状态
+<blockquote>
+<p>⚠️ <strong>③b 和 ③c 是【两项】，各 4 字节，不能合并。</strong> 这是整本账上最高频的错误。真实案例：某篇笔记把 70B 的「Adam 状态」整个写成 280 GB（只算了一个动量），于是模型状态被算成 600 GB 左右，进而得出"8 张 H100 够了"——<strong>实际要 14 张</strong>。正确的拆法见下一小节 ⑤⑥ 两行。</p>
+<p>⚠️ <strong>16 不是唯一的口径，但它是默认口径。</strong> 几个常见变体：</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>字节/参数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16 权重 + BF16 梯度 + FP32（主权重 / m / v）</td>
+<td><strong>16</strong></td>
+<td>★ 本教程默认，最主流</td>
+</tr>
+<tr>
+<td>同上，但梯度用 <strong>FP32 缓冲区累加</strong></td>
+<td><strong>18</strong></td>
+<td>⚠️ 不少框架（含 Megatron-LM 的常见配置）这么干，为了数值稳定</td>
+</tr>
+<tr>
+<td>SGD + momentum（只有一个动量，没有 v）</td>
+<td>12</td>
+<td>2 + 2 + 4 + 4；大模型预训练很少用</td>
+</tr>
+<tr>
+<td>Muon（只需要一个动量）</td>
+<td>12</td>
+<td>见本节末尾</td>
+</tr>
+</tbody>
+</table>
+<h3 id="223">2.2.3 ★ 代入真实规模，逐步算出来</h3>
+<p><strong>把 16 字节按项拆开，代进不同的模型规模</strong>（1 GB = 10⁹ 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>1.5B</th>
+<th>7B</th>
+<th>13B</th>
+<th>70B</th>
+<th>405B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 参数量 Ψ（<strong>个</strong>）</td>
+<td>—</td>
+<td>1.5×10⁹</td>
+<td>7×10⁹</td>
+<td>13×10⁹</td>
+<td>70×10⁹</td>
+<td>405×10⁹</td>
+</tr>
+<tr>
+<td>② 参数（BF16）</td>
+<td>Ψ × 2</td>
+<td>3 GB</td>
+<td>14 GB</td>
+<td>26 GB</td>
+<td><strong>140 GB</strong></td>
+<td>810 GB</td>
+</tr>
+<tr>
+<td>③ 梯度（BF16）</td>
+<td>Ψ × 2</td>
+<td>3 GB</td>
+<td>14 GB</td>
+<td>26 GB</td>
+<td><strong>140 GB</strong></td>
+<td>810 GB</td>
+</tr>
+<tr>
+<td>④ FP32 主权重</td>
+<td>Ψ × 4</td>
+<td>6 GB</td>
+<td>28 GB</td>
+<td>52 GB</td>
+<td><strong>280 GB</strong></td>
+<td>1620 GB</td>
+</tr>
+<tr>
+<td>⑤ Adam <strong>m</strong></td>
+<td>Ψ × 4</td>
+<td>6 GB</td>
+<td>28 GB</td>
+<td>52 GB</td>
+<td><strong>280 GB</strong></td>
+<td>1620 GB</td>
+</tr>
+<tr>
+<td>⑥ Adam <strong>v</strong></td>
+<td>Ψ × 4</td>
+<td>6 GB</td>
+<td>28 GB</td>
+<td>52 GB</td>
+<td><strong>280 GB</strong></td>
+<td>1620 GB</td>
+</tr>
+<tr>
+<td>⑦ 优化器状态小计</td>
+<td>④+⑤+⑥ = Ψ × 12</td>
+<td>18 GB</td>
+<td>84 GB</td>
+<td>156 GB</td>
+<td><strong>★ 840 GB</strong></td>
+<td>4860 GB</td>
+</tr>
+<tr>
+<td>⑧ <strong>模型状态合计</strong></td>
+<td>②+③+⑦ = Ψ × 16</td>
+<td><strong>24 GB</strong></td>
+<td><strong>112 GB</strong></td>
+<td><strong>208 GB</strong></td>
+<td><strong>★★ 1120 GB</strong></td>
+<td><strong>★★ 6480 GB</strong></td>
+</tr>
+<tr>
+<td>⑨ 装下 ⑧ 要几张 80 GB 卡</td>
+<td>⑧ ÷ 80，向上取整</td>
+<td>1</td>
+<td>2</td>
+<td>3</td>
+<td><strong>14</strong></td>
+<td><strong>81</strong></td>
+</tr>
+<tr>
+<td>⑩ ⑧ 里「模型本身」占比</td>
+<td>② ÷ ⑧</td>
+<td>12.5%</td>
+<td>12.5%</td>
+<td>12.5%</td>
+<td><strong>12.5%</strong></td>
+<td>12.5%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 第 ⑩ 行是全表最值得盯的一行：不管模型多大，比例永远是 2/16 = 12.5%。
+
+      你买了一张 80 GB 的卡，
+        其中只有 10 GB 装的是「模型」，
+        另外 70 GB 全是「训练这件事本身的开销」。
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>反直觉但关键的一点</strong>：<strong>优化器状态（12 字节）比模型本身（2 字节）大 6 倍。</strong><br />
-你花 80 GB 显存，只有 10 GB 是"模型"，70 GB 是"训练这件事的开销"。<br />
-<strong>★ ZeRO 的全部立意就在这一行：这 12 字节，凭什么每张卡都存一份？</strong></p>
+<strong>★ ZeRO 的全部立意就在这一行：这 12 字节，凭什么每张卡都存一份？</strong>（<a href="05-ZeRO与FSDP.html">05 章</a>）</p>
 </blockquote>
-<h3 id="adam">Adam 为什么要记两个动量</h3>
+<h3 id="224-adam">2.2.4 Adam 为什么要记两个动量</h3>
 <blockquote>
 <p>📌 <strong>Adam</strong> = <strong>Ada</strong>ptive <strong>M</strong>oment estimation，自适应矩估计（<a href="../papers/Adam-Optimizer-arXiv-1412.6980.pdf">papers/Adam-Optimizer-arXiv-1412.6980.pdf</a>，Kingma &amp; Ba 2014）。</p>
 </blockquote>
@@ -379,11 +582,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                     ❌ 不同参数的梯度量级差几个数量级，一个学习率不够用
 
     Adam：
-        m ← β₁·m + (1−β₁)·g          一阶动量：梯度的滑动平均 → 平滑噪声
-        v ← β₂·v + (1−β₂)·g²         二阶动量：梯度平方的滑动平均 → 度量&quot;这个参数梯度多大&quot;
-        w ← w − lr · m̂ / (√v̂ + ε)    ★ 除以 √v：梯度大的参数步子迈小点，反之亦然
+        m ← β₁·m + (1−β₁)·g        一阶动量：梯度的滑动平均 → 平滑噪声
+        v ← β₂·v + (1−β₂)·g²       二阶动量：梯度平方的滑动平均 → 度量&quot;这个参数梯度多大&quot;
+        w ← w − lr · m̂ / (√v̂ + ε)  ★ 除以 √v：梯度大的参数步子迈小点，反之亦然
 
-    ★ 所以每个参数要额外记 m 和 v 两个数 —— 这就是那 8 字节的来源。
+    ★ m 和 v 都是【每个参数一个 FP32 数】 —— 这就是那 8 字节的来源。
+      它们和参数一一对应，所以 70B 模型的 m 是 280 GB，v 也是 280 GB。
 </code></pre></div>
 
 <blockquote>
@@ -392,52 +596,307 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="23-4">2.3 再算 ④：激活值</h2>
-<p><strong>激活值 = 前向过程中，所有"反向传播还要用到"的中间结果。</strong></p>
-<h3 id="_2">为什么要留着</h3>
+<p><strong>激活值 = 前向过程中，所有"反向传播还要用到"的中间结果。</strong> 它是四项里唯一一个<strong>和参数量无关</strong>的，也是唯一一个<strong>你能用超参数直接调</strong>的。</p>
+<h3 id="231">2.3.1 为什么必须留着</h3>
 <div class="codehilite"><pre><span></span><code>    前向：  x  →[层1]→  a₁  →[层2]→  a₂  →[层3]→  loss
 
-    反向：  要算「层2 的权重梯度」，链式法则告诉你需要用到【层2 的输入 a₁】
+    反向：  要算「层2 的权重梯度」dW₂ = dy₂ · a₁ᵀ
+            → 链式法则里明摆着要用到【层2 的输入 a₁】
             → ★ 所以 a₁ 在前向算完后【不能扔】，要留到反向用完为止
 
-    ★ 一个 100 层的网络，就要同时留着 100 层的中间结果。
+    ★ 一个 80 层的网络，前向跑完时，80 层的中间结果全都还在显存里躺着。
+      这就是为什么激活值和【层数】成正比。
 </code></pre></div>
 
-<h3 id="_3">它的大小和什么有关</h3>
-<p><strong>★ 这是全章最关键的一个区别</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ①②③ 模型状态：  大小 = 参数量 × 16      ← 和 batch、序列长度【无关】
-    ④   激活值：     大小 ∝ b × L × d × l    ← 和参数量【无关】！
-
-        b = micro-batch size（一次前向喂几条）
-        L = 序列长度
-        d = hidden size
-        l = 层数
-</code></pre></div>
-
+<h3 id="232">2.3.2 它的大小和什么有关</h3>
+<p><strong>★ 这是全章最关键的一个对比</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>大小公式</th>
+<th>和参数量有关吗</th>
+<th>和 batch / 序列长度有关吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①②③ <strong>模型状态</strong></td>
+<td>参数量 × 16 字节</td>
+<td>✅ 正比</td>
+<td>❌ <strong>完全无关</strong></td>
+</tr>
+<tr>
+<td>④ <strong>激活值</strong></td>
+<td>∝ s × b × h × L</td>
+<td>❌ <strong>完全无关</strong></td>
+<td>✅ 正比甚至超线性</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>📌 记号（和 <a href="README.html">README</a> 的全局约定一致）：<strong>s</strong> = 序列长度，<strong>b</strong> = micro-batch size（一次前向喂几条），<strong>h</strong> = hidden size（隐藏层宽度），<strong>a</strong> = 注意力头数，<strong>L</strong> = 层数。</p>
 <p>✅ Megatron 第三篇论文（<a href="../papers/Megatron-3-Reducing-Activation-Recomputation-arXiv-2205.05198.pdf">papers/Megatron-3-...-arXiv-2205.05198.pdf</a>）用一整节推导了这个公式。它的变量表（Table 1，原文）：<br />
 <code>s = sequence length, b = microbatch size, h = hidden dimension size, a = number of attention heads, L = number of transformer layers, t = tensor parallel size, p = pipeline parallel size, v = vocabulary size</code></p>
 </blockquote>
-<p><strong>不带任何优化时，一层 transformer 的激活值大约是</strong>：</p>
-<p>$$\text{每层激活} \approx s\,b\,h\,\left(34 + 5\frac{a\,s}{h}\right) \text{字节}$$</p>
-<div class="codehilite"><pre><span></span><code>    ★ 注意括号里第二项 5·a·s/h ：它带一个【额外的 s】
-      → 这一项来自注意力矩阵（[b, a, s, s]，那个 s² 的东西）
-      → ★ 序列长度翻倍，这一项翻【四】倍
+<p><strong>不做任何优化时，一层 transformer 的激活值是</strong>：</p>
+<p>$$\text{每层激活} = s\,b\,h\left(34 + 5\frac{a\,s}{h}\right)\ \text{字节}$$</p>
+<p><strong>这个式子要拆成两项来看，它们的脾气完全不同</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>来自哪里</th>
+<th>随 s 怎么变</th>
+<th>重算它贵不贵</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>34</strong></td>
+<td>各个线性层的输入、LayerNorm、dropout mask 等</td>
+<td><strong>线性</strong>（sbh 里那个 s）</td>
+<td>⚠️ 贵，要重做矩阵乘</td>
+</tr>
+<tr>
+<td><strong>5·a·s/h</strong></td>
+<td>注意力分数矩阵 <code>[b, a, s, s]</code>，即 <code>QKᵀ</code>、softmax、softmax dropout、<code>PV</code></td>
+<td>★ <strong>平方</strong>（sbh 里一个 s，括号里又一个 s）</td>
+<td>✅ 便宜，每个元素只有几次运算</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 序列长度翻倍时：
+         34 那一项   → 翻 2 倍
+         5as/h 那一项 → 翻 4 倍
+         合起来      → 介于 2 和 4 倍之间，s 越大越接近 4 倍
 
-    举例（⚠️ 我按上式代入的估算）：
-      s=4096, b=1, h=8192, a=64, L=80 层
-
-        单层 ≈ 4096×1×8192 × (34 + 5×64×4096/8192)
-             = 33.6M × (34 + 160) = 33.6M × 194 ≈ 6.5 GB
-        80 层 ≈ 520 GB       ★★ 比 70B 的模型状态（1120 GB）小，但也是同一量级
+    ⟹ 这就是长上下文训练困难的【全部来源】。
 </code></pre></div>
 
+<h3 id="233-70b">2.3.3 ★ 逐步代入：70B 模型一层激活是多少</h3>
+<p><strong>配置</strong>：Llama-2-70B 的形状，h = 8192，a = 64，L = 80 层，s = 4096，b = 1。</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 注意力项系数</td>
+<td>5 × a × s ÷ h = 5 × 64 × 4096 ÷ 8192</td>
+<td><strong>160</strong></td>
+</tr>
+<tr>
+<td>② 括号总系数</td>
+<td>34 + 160</td>
+<td><strong>194</strong></td>
+</tr>
+<tr>
+<td>③ 基础块 s·b·h</td>
+<td>4096 × 1 × 8192</td>
+<td>33.55 × 10⁶</td>
+</tr>
+<tr>
+<td>④ <strong>每层激活</strong></td>
+<td>③ × ② = 33.55×10⁶ × 194</td>
+<td><strong>6.51 GB</strong></td>
+</tr>
+<tr>
+<td>⑤ 其中「34 项」</td>
+<td>33.55×10⁶ × 34</td>
+<td>1.14 GB（占 17.5%）</td>
+</tr>
+<tr>
+<td>⑥ 其中「注意力项」</td>
+<td>33.55×10⁶ × 160</td>
+<td><strong>5.37 GB（占 82.5%）</strong></td>
+</tr>
+<tr>
+<td>⑦ <strong>80 层合计</strong></td>
+<td>④ × 80</td>
+<td>⚠️ <strong>≈ 521 GB</strong></td>
+</tr>
+<tr>
+<td>⑧ 对比模型状态</td>
+<td>521 ÷ 1120</td>
+<td>是模型状态的 <strong>0.47 倍</strong>，同一量级</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ ⑦ 是我按论文公式代入算的，不是任何真实系统的披露值。它是<strong>上界</strong>：没开重计算、没开 TP/SP、micro-batch 只有 1。真实训练里这一项会被 <a href="11-重计算与激活优化.html">11 章</a> 的重计算和 <a href="08-序列并行与上下文并行.html">08 章</a> 的 SP 砍掉一大半。</p>
+</blockquote>
+<h3 id="234-batch">2.3.4 ★★ 缩放表：改 batch 和序列长度，激活值怎么动</h3>
+<p><strong>固定 h=8192, a=64, L=80, b=1，只动序列长度 s</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>s（序列长度）</th>
+<th>5as/h</th>
+<th>括号系数</th>
+<th>每层激活</th>
+<th><strong>80 层合计</strong></th>
+<th>比上一行涨了</th>
+<th>注意力项占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1,024</td>
+<td>40</td>
+<td>74</td>
+<td>0.62 GB</td>
+<td><strong>50 GB</strong></td>
+<td>—</td>
+<td>54%</td>
+</tr>
+<tr>
+<td>2,048</td>
+<td>80</td>
+<td>114</td>
+<td>1.91 GB</td>
+<td><strong>153 GB</strong></td>
+<td>3.1×</td>
+<td>70%</td>
+</tr>
+<tr>
+<td>4,096</td>
+<td>160</td>
+<td>194</td>
+<td>6.51 GB</td>
+<td><strong>521 GB</strong></td>
+<td>3.4×</td>
+<td>82%</td>
+</tr>
+<tr>
+<td>8,192</td>
+<td>320</td>
+<td>354</td>
+<td>23.8 GB</td>
+<td><strong>1,901 GB</strong></td>
+<td>3.6×</td>
+<td>90%</td>
+</tr>
+<tr>
+<td>16,384</td>
+<td>640</td>
+<td>674</td>
+<td>90.5 GB</td>
+<td><strong>7,237 GB</strong></td>
+<td>3.8×</td>
+<td>95%</td>
+</tr>
+<tr>
+<td>32,768</td>
+<td>1,280</td>
+<td>1,314</td>
+<td>352.7 GB</td>
+<td><strong>28,218 GB</strong></td>
+<td>3.9×</td>
+<td><strong>97%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 读这张表的三件事：
+
+    ① 序列从 4K 到 32K（8 倍），激活从 521 GB 到 28,218 GB（★ 54 倍）
+       —— 不是 8 倍，因为 s 出现在两个位置上
+
+    ② 「涨了几倍」这一列从 3.1 一路爬向 4.0
+       —— s 越大，平方那一项越占主导，越接近纯 4 倍
+
+    ③ 最后一列：s = 32K 时，97% 的激活显存是注意力分数矩阵
+       ⟹ 所以 FlashAttention 和选择性重计算专治这一项（11 章）
+       ⟹ 所以上下文并行 CP 要切的是 s 这一维（08 章）
+</code></pre></div>
+
+<p><strong>固定 s=4096，只动 micro-batch b</strong>（这一维是<strong>严格线性</strong>的，因为 b 只出现一次）：</p>
+<table>
+<thead>
+<tr>
+<th>b（micro-batch）</th>
+<th>每层激活</th>
+<th>80 层合计</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>6.51 GB</td>
+<td>521 GB</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>13.0 GB</td>
+<td>1,042 GB</td>
+<td>正好 2 倍</td>
+</tr>
+<tr>
+<td>4</td>
+<td>26.0 GB</td>
+<td>2,084 GB</td>
+<td>正好 4 倍</td>
+</tr>
+<tr>
+<td>8</td>
+<td>52.1 GB</td>
+<td>4,168 GB</td>
+<td>正好 8 倍</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>🔑 <strong>两个直接推论，请记住</strong>：<br />
-<code>① 激活值可以靠【减小 micro-batch】来压 —— 但会拖慢（GPU 吃不饱）
-② 激活值随序列长度【超线性】增长 —— ★ 这就是长上下文训练的全部困难
+<code>① 激活值可以靠【减小 micro-batch】线性地压下去 —— 但会拖慢
+   （每个 kernel 处理的数据少了，GPU 吃不饱，见 12 章的调参顺序）
+② 激活值随序列长度【超线性】增长，趋近平方 —— ★ 长上下文训练的全部困难
    → 08 章的上下文并行 CP 就是专门治这一项的</code></p>
 </blockquote>
-<h3 id="_4">✅ 一张真实的图</h3>
+<h3 id="235-521-gb">2.3.5 提前剧透：这 521 GB 能砍到多少</h3>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>每层激活公式</th>
+<th>代入 s=4096,b=1,80 层</th>
+<th>相对基线</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>什么都不做</td>
+<td>$sbh(34 + 5as/h)$</td>
+<td><strong>521 GB</strong></td>
+<td>100%</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>选择性重计算</strong>（只重算注意力那块）</td>
+<td>$sbh \times 34$</td>
+<td><strong>91 GB</strong></td>
+<td><strong>17.5%</strong></td>
+<td>✅ 仅 +2.7% 算力</td>
+</tr>
+<tr>
+<td>完全重计算</td>
+<td>$sbh \times 2$</td>
+<td><strong>5.4 GB</strong></td>
+<td>1.0%</td>
+<td>⚠️ +30~40% 算力</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ 选择性重计算的 "70% 显存换 2.7% 算力" 是 Megatron-3 论文对 GPT-3 配置报的原文数字，详见 <a href="11-重计算与激活优化.html">§11.3</a>。上表是我拿同一套公式代入 70B 形状算的（⚠️ 我的估算）。<strong>结论是一样的：激活值这一项是可以用很小的算力代价换掉一大半的，而模型状态那 1120 GB 不行。</strong></p>
+</blockquote>
+<h3 id="236">2.3.6 ✅ 一张真实的图</h3>
 <p>Megatron 第三篇论文的 Figure 1 画的就是这件事：</p>
 <blockquote>
 <p>✅ 原文：<em>"Figure 1 shows the memory required for four model configurations ranging from 22 billion parameters to 1 trillion parameters... It can be seen that for all these cases, the required memory for the baseline cases is above the 80GB memory provided by an NVIDIA A100 GPU."</em><br />
@@ -445,26 +904,92 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="24">2.4 一张完整的账本</h2>
-<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────────────────┐
-│              70B 模型，BF16 + AdamW，一张卡上的账（举例）             │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ① 参数     BF16    70B × 2  =  140 GB   ┐                         │
-│  ② 梯度     BF16    70B × 2  =  140 GB   ├─ 模型状态 1120 GB        │
-│  ③ 优化器   FP32    70B × 12 =  840 GB   ┘   ★ 和 batch 无关        │
-│                                                                     │
-│  ④ 激活值   BF16    ≈ 520 GB（s=4096,b=1,80层）  ⚠️ 我的估算        │
-│                     ★ 和参数量无关，和 b×L 成正比                    │
-│  ─────────────────────────────────────────────                     │
-│  总计       ≈ 1640 GB                                               │
-│                                                                     │
-│  一张 H100 = 80 GB  →  ★ 差 20 倍                                   │
-└─────────────────────────────────────────────────────────────────────┘
+<p><strong>70B 模型，BF16 + AdamW，s=4096，b=1，80 层，一张卡上的账</strong>（举例，1 GB = 10⁹ 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>项目</th>
+<th>精度</th>
+<th>算式</th>
+<th>大小</th>
+<th>取决于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>参数</td>
+<td>BF16</td>
+<td>70×10⁹ × 2</td>
+<td>140 GB</td>
+<td>参数量</td>
+</tr>
+<tr>
+<td>②</td>
+<td>梯度</td>
+<td>BF16</td>
+<td>70×10⁹ × 2</td>
+<td>140 GB</td>
+<td>参数量</td>
+</tr>
+<tr>
+<td>③</td>
+<td>优化器状态</td>
+<td>FP32</td>
+<td>70×10⁹ × 12</td>
+<td>840 GB</td>
+<td>参数量</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>①②③ 模型状态小计</strong></td>
+<td></td>
+<td>70×10⁹ × 16</td>
+<td><strong>1,120 GB</strong></td>
+<td>★ 和 batch 无关</td>
+</tr>
+<tr>
+<td>④</td>
+<td>激活值</td>
+<td>BF16</td>
+<td>⚠️ 见 §2.3.3</td>
+<td>≈ 521 GB</td>
+<td>★ 和参数量无关</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>总计</strong></td>
+<td></td>
+<td></td>
+<td><strong>≈ 1,641 GB</strong></td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td>一张 H100 = 80 GB</td>
+<td></td>
+<td>1641 ÷ 80</td>
+<td>★ <strong>差 20.5 倍</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 两个&quot;差 20 倍&quot;的部分，性质完全不同，必须分开看：
+
+      模型状态 1120 GB  →  只能【切】（ZeRO / TP / PP / EP）
+                          ★ 减 batch、减序列长度对它一点用都没有
+
+      激活值    521 GB  →  能【切】也能【换】
+                          切：SP / CP      换：重计算（算力换显存）
+                          还能直接【调小】：减 micro-batch、减序列长度
+
+    ⟹ 诊断第一步永远是：先搞清楚爆的是哪一项。
 </code></pre></div>
 
 <hr />
 <h2 id="25">2.5 ★ 每种并行到底省哪一项（全教程的路线图）</h2>
-<p><strong>把这张表和上面的账本对起来看，整个教程的结构就清楚了：</strong></p>
+<p><strong>把这张表和 §2.4 的账本对起来看，整个教程的结构就清楚了：</strong></p>
 <table>
 <thead>
 <tr>
@@ -539,7 +1064,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>❌</td>
 <td>❌</td>
 <td>✅ 补上 TP 漏掉的</td>
-<td>换成 all-gather+reduce-scatter</td>
+<td>换成 all-gather + reduce-scatter</td>
 </tr>
 <tr>
 <td><strong>CP</strong> 上下文并行</td>
@@ -575,7 +1100,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>❌</td>
 <td>❌</td>
 <td>✅✅ 最狠</td>
-<td>多做一次前向（+30% 算力）</td>
+<td>多做一次前向（+2.7% ~ +40% 算力）</td>
 </tr>
 </tbody>
 </table>
@@ -593,47 +1118,85 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="26">2.6 一个必须澄清的误解</h2>
 <p><strong>"我加了 8 张卡做数据并行，显存就够了吧？"</strong> —— <strong>不对。</strong></p>
+<table>
+<thead>
+<tr>
+<th>卡数（朴素 DP）</th>
+<th>每卡模型状态</th>
+<th>全集群模型状态</th>
+<th>每卡省了吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>1,120 GB</td>
+<td>1,120 GB</td>
+<td>—</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>1,120 GB</strong></td>
+<td>8,960 GB</td>
+<td>❌ 一点没省</td>
+</tr>
+<tr>
+<td>64</td>
+<td><strong>1,120 GB</strong></td>
+<td>71,680 GB</td>
+<td>❌ 一点没省</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ★★ 朴素数据并行【每张卡都存一份完整的模型状态】★★
 
-        8 张卡 × 每张 1120 GB = 8960 GB，一点没省，只是复制了 8 份
+        它只是把同一份账【复制】了 N 遍，不是【切开】
 
-    → 它只省了【激活值】（因为每张卡的 batch 变小了）
-    → ★ 这正是 ZeRO 那篇论文的出发点，原文：
+    → 它唯一省的是【激活值】（因为每张卡分到的 batch 变小了）
+    → ★ 这正是 ZeRO 那篇论文的出发点
 </code></pre></div>
 
 <blockquote>
 <p>✅ <em>"Basic data parallelism (DP) does not reduce memory per device, and runs out of memory for models with more than 1.4B parameters on current generation of GPUs with 32 GB memory."</em><br />
 ✅ <em>"DP replicates the entire model states across all data parallel process resulting in redundant memory consumption"</em></p>
 <p>🔑 <strong>「redundant memory consumption」（冗余的显存消耗）这个词就是 ZeRO 名字的来源</strong>：<br />
-<strong>ZeRO = Ze</strong>ro <strong>R</strong>edundancy <strong>O</strong>ptimizer，零冗余优化器。<strong>05 章就讲它怎么把这个冗余削掉。</strong></p>
+<strong>ZeRO = Ze</strong>ro <strong>R</strong>edundancy <strong>O</strong>ptimizer，零冗余优化器。<strong><a href="05-ZeRO与FSDP.html">05 章</a>就讲它怎么把这个冗余削掉。</strong></p>
 </blockquote>
 <hr />
 <h2 id="27">2.7 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>① 显存里只有四样东西：参数 / 梯度 / 优化器状态 / 激活值
-   ★ 前三样合称【模型状态】，只和参数量有关
-   ★ 第四样【激活值】只和 batch×序列长度×层数有关，和参数量无关
+   ★ 前三样合称【模型状态】，只和参数量有关，和 batch 无关
+   ★ 第四样【激活值】只和 s×b×h×L 有关，和参数量无关
      → 这个区别决定了「什么病该吃什么药」
 
 ② ★★ 16 字节/参数 ★★   （BF16 混合精度 + AdamW）
-     参数 BF16   2
-     梯度 BF16   2
-     FP32 主权重 4    ← 不留它，小的更新会被四舍五入吃掉
-     Adam m      4
-     Adam v      4
-   → 70B 模型 = 1120 GB 模型状态，光这一项就要 14 张 H100
-   ★ 优化器状态（12B）是模型本身（2B）的 6 倍 —— ZeRO 的全部立意在此
+     参数 BF16    2
+     梯度 BF16    2
+     FP32 主权重  4    ← 不留它，小的更新会被四舍五入吃掉
+     Adam m       4    ┐ ⚠️ 这是【两项】，各 4 字节
+     Adam v       4    ┘    漏掉一项会把 1120 GB 算成 600 GB
+   → 70B  = 1120 GB 模型状态，光这一项就要 14 张 H100
+     405B = 6480 GB，要 81 张
+   ★ 不管模型多大，「模型本身」永远只占 2/16 = 12.5%
+   ★ 优化器状态（12 字节）是模型本身（2 字节）的 6 倍 —— ZeRO 的全部立意在此
+   ⚠️ 梯度用 FP32 缓冲区累加的实现是 18 字节/参数，不是 16
 
-③ 激活值 ≈ s·b·h·(34 + 5·a·s/h) 字节/层  ✅ Megatron-3 论文
-   ★ 括号第二项带额外的 s → 序列长度翻倍，这一项翻【四】倍
-   → 这是长上下文训练困难的全部来源，08 章的 CP 专治此项
+③ 激活值 = s·b·h·(34 + 5·a·s/h) 字节/层    ✅ Megatron-3 论文
+     34 项      ← 线性于 s，重算贵
+     5as/h 项   ← ★ 平方于 s，重算便宜、体积巨大
+   ★ 代入 70B 形状（h=8192,a=64,L=80,s=4096,b=1）⚠️ ≈ 521 GB
+   ★ 缩放规律：b 翻倍 → 严格 2 倍；s 翻倍 → 3~4 倍（越长越接近 4）
+     s = 4K → 32K，激活从 521 GB 涨到 28,218 GB，★ 54 倍
+   → 长上下文训练困难的全部来源，08 章的 CP、11 章的重计算专治此项
 
-④ ★ 朴素数据并行【一点显存都不省】，它复制而不是切分
+④ ★ 朴素数据并行【一点模型状态都不省】，它复制而不是切分
    → ZeRO = Zero Redundancy Optimizer，名字就是冲着这个冗余来的
 
 ⑤ §2.5 那张表是全教程的路线图，遇到不知道该用哪种并行时回来查
+   ★ 用之前先诊断：爆的是【模型状态】还是【激活值】？药方完全不同
 </code></pre></div>
 
-<p><strong>下一章讲通信原语</strong>——在讲怎么切之前，得先知道"切开之后卡和卡之间到底怎么对话"。</p>
+<p><strong>下一章讲通信原语</strong>——在讲怎么切之前，得先知道"切开之后卡和卡之间到底怎么对话"，以及<strong>那些通信量公式里的 Ψ 到底数的是"个数"还是"字节数"</strong>（⚠️ 这是个真会让人算错一倍的坑）。</p>
 <hr />
 <blockquote>
 <p><a href="01-为什么需要分布式训练.html">← 01 为什么需要分布式训练</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="03-通信原语.html">03 通信原语</a></p>

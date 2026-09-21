@@ -3,16 +3,29 @@
 # 05 · ZeRO 与 FSDP：把冗余切掉
 
 > **这一章的目标**：讲清一个非常朴素、但威力巨大的想法。
-> 读完你应该能回答：ZeRO 三个阶段各切了什么、各省多少？为什么 stage 1 和 2 是"白赚"？stage 3 那 1.5 倍通信量是怎么来的？以及 FSDP 和 ZeRO-3 到底是不是一回事？
+> 读完你应该能回答：ZeRO 三个阶段各切了什么、每卡各省多少 GB？为什么 stage 1 和 2 是"白赚"？stage 3 那多出来的 1 个 Ψ 到底是哪一次通信？以及 FSDP 和 ZeRO-3 到底是不是一回事？
 
 > 📌 **ZeRO** = **Ze**ro **R**edundancy **O**ptimizer，零冗余优化器。DeepSpeed 的核心技术。
 > 📌 **FSDP** = **F**ully **S**harded **D**ata **P**arallel，完全分片数据并行。PyTorch 官方的等价实现。
+
+> ⚠️★ **进门先看一眼口径**（[04 章 §4.0](04-数据并行DP.md) / [03 章 §3.3.0](03-通信原语.md) 已经立过规矩，本章全程照用）：
+> ```
+>   显存账：Ψ = 参数的【个数】     → 每卡模型状态 = 16 × Ψ 字节
+>   通信账：Ψ = 一份梯度的【字节数】→ 普通 DP 每卡发送 2Ψ
+>
+>   换算：  通信口径的 Ψ = 参数个数 × 2 字节（BF16）
+>           7B  模型 → Ψ = 14 GB
+>           70B 模型 → Ψ = 140 GB
+>
+>   ⚠️ 本章会出现「每卡 16Ψ 字节」和「通信量 2Ψ」两种写法，
+>      它们的 Ψ 不是一个东西。每张表都会标明用的是哪一套。
+> ```
 
 ---
 
 ## 5.1 那个朴素的问题
 
-**回忆 [04 章](04-数据并行DP.md)：N 张卡做数据并行，每张卡上的模型状态是完全一样的。**
+**回忆 [04 章 §4.3](04-数据并行DP.md)：N 张卡做数据并行，每张卡上的模型状态是完全一样的。**
 
 ```
     卡0：参数 P、梯度 G、优化器状态 O
@@ -30,47 +43,187 @@
 
 > 🔑 **一句话**：**把"复制"换成"切分"，缺的部分用通信临时补上。**
 
+```
+    ★ 这里有个必须先摆明的前提：ZeRO 切的是【数据并行组内部】的冗余。
+
+      它不改变「每张卡都要处理不同的样本」这件事，
+      也不改变「四份模型逐比特一致」这个结论（04 章 §4.1）——
+      ★ ZeRO 只是重新分配「谁负责保管哪一段」，
+        以及「谁负责更新哪一段」。
+
+    ⟹ 所以 ZeRO 不是第六种并行，它是【数据并行的一种省显存实现】。
+       这也是为什么 DeepSpeed 把普通 DP 叫做 "ZeRO stage 0"。
+```
+
 ---
 
 ## 5.2 三个阶段
 
-**回忆 [02 章](02-显存去哪了.md)那 16 字节：参数 2 + 梯度 2 + 优化器 12。ZeRO 分三步把它们切掉。**
+**回忆 [02 章 §2.2](02-显存去哪了.md) 那 16 字节：参数 2 + 梯度 2 + 优化器 12。ZeRO 分三步把它们切掉。**
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  基线（普通 DP）：每卡 16 Ψ 字节                                       │
-│  ████████████████  参数2 ▏梯度2 ▏───────── 优化器 12 ─────────       │
-├──────────────────────────────────────────────────────────────────────┤
-│  ZeRO-1（Pos）：只切【优化器状态】                                     │
-│  █████▏░░░░░░░░░░   参数2 ▏梯度2 ▏优化器 12/N                        │
-│  → 每卡 4 + 12/N 字节        ★ N=64 时 ≈ 4.2 字节，省了 3.8 倍       │
-├──────────────────────────────────────────────────────────────────────┤
-│  ZeRO-2（Pos+g）：再切【梯度】                                         │
-│  ███▏░░░░░░░░░░░░   参数2 ▏梯度 2/N ▏优化器 12/N                     │
-│  → 每卡 2 + 14/N 字节        ★ N=64 时 ≈ 2.2 字节，省了 7.3 倍       │
-├──────────────────────────────────────────────────────────────────────┤
-│  ZeRO-3（Pos+g+p）：连【参数】也切                                     │
-│  ▏░░░░░░░░░░░░░░░   全部 16/N                                        │
-│  → 每卡 16/N 字节            ★★ N=64 时 = 0.25 字节，省了 64 倍 ★★   │
-└──────────────────────────────────────────────────────────────────────┘
+    ★ 三个阶段的官方名字（论文里的下标写法，读论文会碰到）：
+
+      ZeRO-1 = P_os       os = optimizer states           只切优化器状态
+      ZeRO-2 = P_os+g     g  = gradients                  再切梯度
+      ZeRO-3 = P_os+g+p   p  = parameters                 连参数也切
+
+    ★★ 顺序不是随便定的：【谁在一步里被用到的时间最短，就先切谁】
+         优化器状态：只在 optimizer.step() 那一瞬间用到   → 最好切
+         梯度：      反向产出后到 step 之前用到           → 次之
+         参数：      整个前向 + 整个反向都要用            → 最难切
+```
+
+### 5.2.1 ★★ 每卡显存逐项摊开（本章最该看懂的一张表）
+
+**配置（⚠️ 我构造的算例，为了让每个数都能自己验算）**：
+
+```
+    模型   7B 参数（Ψ = 7×10^9 个），32 层，h = 4096
+    精度   BF16 混合精度 + AdamW      ⟹ 16 字节/参数（02 章那张账本）
+    并行   纯数据并行 N 张卡，先看 N = 8
+    激活   micro-batch b = 1，s = 4096，开【选择性重计算】
+           ⚠️ 我按 [02 章 §2.3.5](02-显存去哪了.md) 那个 34·s·b·h 公式代入：
+              34 × 4096 × 1 × 4096 × 32 层 = 1.83×10^10 字节 ≈ 18.3 GB/卡
+```
+
+> ⚠️ 这张表的 Ψ 是**参数个数**口径（Ψ = 7×10⁹）。单位一律 GB（十进制，1 GB = 10⁹ 字节）。
+
+| 每卡存什么 | 字节/参数 | **ZeRO-0**（普通 DP） | **ZeRO-1** 切优化器 | **ZeRO-2** 再切梯度 | **ZeRO-3** 再切参数 |
+|---|---|---|---|---|---|
+| ① BF16 权重 | 2 | 14 | 14 | 14 | **14/8 = 1.75** |
+| ② BF16 梯度 | 2 | 14 | 14 | **14/8 = 1.75** | **1.75** |
+| ③a FP32 主权重 | 4 | 28 | **28/8 = 3.5** | **3.5** | **3.5** |
+| ③b Adam 动量 m | 4 | 28 | **3.5** | **3.5** | **3.5** |
+| ③c Adam 动量 v | 4 | 28 | **3.5** | **3.5** | **3.5** |
+| **①②③ 模型状态合计** | 16 | **112 GB** | **38.5 GB** | **26.25 GB** | **14 GB** |
+| ④ 激活值（⚠️ 估算） | — | 18.3 | 18.3 | 18.3 | 18.3 |
+| **★ 每卡总计** | | **130.3 GB** | **56.8 GB** | **44.6 GB** | **32.3 GB** |
+| 一张 80 GB H100 装得下吗 | | ❌ 差 50 GB | ✅ | ✅ | ✅ |
+
+```
+    ★ 三条验算（自己拿计算器过一遍，这一节就吃透了）：
+
+      ZeRO-1：参数 2Ψ + 梯度 2Ψ + 优化器 12Ψ/N = 4Ψ + 12Ψ/8
+              = 28 + 10.5 = 38.5 GB     ✅ 表里对上
+      ZeRO-2：参数 2Ψ + (梯度 2Ψ + 优化器 12Ψ)/N = 2Ψ + 14Ψ/8
+              = 14 + 12.25 = 26.25 GB   ✅
+      ZeRO-3：16Ψ/N = 112/8 = 14 GB     ✅
+
+    ★★ 注意第 ④ 行：四列【完全一样】。
+       ZeRO 一点都不碰激活值 —— 它切的是「模型状态」这三样。
+       ⟹ 所以「激活装不下」的时候加 ZeRO 是无效处方，
+          该找的是重计算 / SP / CP（[02 章 §2.5](02-显存去哪了.md) 那张路线图）。
+```
+
+### 5.2.2 卡越多，省得越狠（但三个阶段的曲线形状完全不同）
+
+**同一个 7B 模型，把 N 从 1 拉到 1024，只看【模型状态】那一行**：
+
+| N（数据并行度） | ZeRO-0 = 16Ψ | ZeRO-1 = 4Ψ + 12Ψ/N | ZeRO-2 = 2Ψ + 14Ψ/N | ZeRO-3 = 16Ψ/N |
+|---|---|---|---|---|
+| 1 | 112 GB | 112 GB | 112 GB | 112 GB |
+| 8 | 112 GB | 38.5 GB | 26.25 GB | 14 GB |
+| 64 | 112 GB | **29.3 GB** | **15.5 GB** | **1.75 GB** |
+| 1024 | 112 GB | 28.1 GB | 14.1 GB | **0.11 GB** |
+| N → ∞ | 112 GB | ★ **28 GB**（撞底） | ★ **14 GB**（撞底） | ★ **0**（不撞底） |
+
+```
+    ★★ 这张表最重要的信息是最后一行：
+
+      ZeRO-1 有地板：4Ψ = 28 GB   ← 参数 2Ψ + 梯度 2Ψ 一直没切，加多少卡都在
+      ZeRO-2 有地板：2Ψ = 14 GB   ← 参数 2Ψ 一直没切
+      ZeRO-3 没有地板：16Ψ/N → 0  ← ★ 三样全切了，卡多一倍就再省一半
+
+    ⟹ 🔑 所以选阶段的判断标准非常机械：
+         「2Ψ（一份 BF16 参数）你装得下吗？」
+            装得下 → ZeRO-2 就够了，别碰 ZeRO-3（§5.3 会讲它的代价）
+            装不下 → ★ 只有 ZeRO-3（或者上 TP/PP，§5.7）
 ```
 
 > ✅ **论文原文，逐字对上**：
 > *"When enabled cumulatively: 1) Optimizer State Partitioning (Pos): 4x memory reduction, same communication volume as DP; 2) Add Gradient Partitioning (Pos+g): 8x memory reduction, same communication volume as DP; 3) Add Parameter Partitioning (Pos+g+p): Memory reduction is linear with DP degree Nd. For example, splitting across 64 GPUs (Nd = 64) will yield a 64x memory reduction."*
 
 ```
-    ★ 论文说的 "4x / 8x"，就是我上面算的 16→4 和 16→2（N 很大时）。
-      两个数完全对得上。
+    ★ 论文说的 "4x / 8x"，就是上表 N→∞ 那一行：
+        16Ψ → 4Ψ  是 4 倍
+        16Ψ → 2Ψ  是 8 倍
+        16Ψ → 16Ψ/64 是 64 倍
+      ✅ 三个数完全对得上。
+
+    ⚠️ 但注意「4x」是【N 无穷大时的极限】。N = 8 时只有 112/38.5 = 2.9 倍。
+       论文给的是上界，不是你手上那 8 张卡的实际收益。
 ```
 
-> ✅ 论文的结论句：*"With all three stages enabled, ZeRO can train a trillion-parameter model on just 1024 NVIDIA GPUs."*
+**✅ 拿论文自己的 Table 1 反过来验算我们的公式**（这是最硬的一次对账）：
+
+> ✅ 论文 Table 1 给的是 **7.5B** 模型、K=12 的每卡显存（GB）：
+>
+> | Nd | P_os | P_os+g | P_os+g+p |
+> |---|---|---|---|
+> | 1 | 120 | 120 | 120 |
+> | 64 | 31.4 | 16.6 | 1.88 |
+> | 1024 | 30.1 | 15.1 | 0.12 |
+
+```
+    用我们的公式代进 7.5B（Ψ = 7.5×10^9）：
+
+      Nd=1    ：16Ψ = 7.5 × 16 = 120 GB                   ✅ 对上
+      Nd=64   ：4Ψ + 12Ψ/64  = 30 + 1.41  = 31.4 GB       ✅ 对上
+                2Ψ + 14Ψ/64  = 15 + 1.64  = 16.6 GB       ✅ 对上
+                16Ψ/64       = 120/64     = 1.875 GB      ✅ 对上（论文写 1.88）
+      Nd=1024 ：4Ψ + 12Ψ/1024 = 30 + 0.088 = 30.1 GB      ✅ 对上
+                16Ψ/1024      = 0.117 GB                  ✅ 对上（论文写 0.12）
+
+    ★★ 六个数六个对上 —— 说明「16 字节/参数」这本账和论文用的是同一套。
+```
+
+> ✅ 论文那个著名的结论句：*"With all three stages enabled, ZeRO can train a trillion-parameter model on just 1024 NVIDIA GPUs."*
 > ```
 > ★ 验算：1T 参数 × 16 字节 = 16 TB ÷ 1024 张 = 15.6 GB/卡
->   ✅ 论文自己也算了这笔账：
->      "A trillion-parameter model with an optimizer like Adam in 16-bit precision
->       requires approximately 16 terabytes (TB) of memory... 16TB divided by
->       1024 is 16GB, which is well within a reasonable bound for a GPU"
+> ✅ 论文自己也算了这笔账：
+>    "A trillion-parameter model with an optimizer like Adam in 16-bit precision
+>     requires approximately 16 terabytes (TB) of memory... 16TB divided by
+>     1024 is 16GB, which is well within a reasonable bound for a GPU"
+> ⚠️ 注意这只算了【模型状态】。1T 模型的激活值还要另外想办法（11 章）。
 > ```
+
+### 5.2.3 ★★ 通信量账：省显存的价钱在这里
+
+**上面每一格省下的 GB，都不是白来的。把每个阶段「每卡每步要搬多少字节」列出来，兑换率就显形了。**
+
+> ⚠️ 这张表的 Ψ 是**字节数**口径：7B 模型的一份 BF16 梯度（或一份 BF16 参数）= **14 GB**。
+
+| 阶段 | 梯度怎么归约 | 参数要不要 all-gather | **每卡每步发送** | 代进 7B | 同机 NVLink 单向 450 GB/s | 跨机 IB 50 GB/s |
+|---|---|---|---|---|---|---|
+| **ZeRO-0** | All-Reduce（2Ψ） | 不需要（从没切过） | **2Ψ** | 28 GB | 0.062 s | 0.56 s |
+| **ZeRO-1** | All-Reduce（2Ψ） | 不需要 | **2Ψ** | 28 GB | 0.062 s | 0.56 s |
+| **ZeRO-2** | Reduce-Scatter（Ψ） | 要，1 次（step 末尾） | **Ψ + Ψ = 2Ψ** | 28 GB | 0.062 s | 0.56 s |
+| **ZeRO-3** | Reduce-Scatter（Ψ） | 要，2 次（前向 + 反向） | ★ **Ψ + Ψ + Ψ = 3Ψ** | **42 GB** | 0.093 s | 0.84 s |
+
+**把显存和通信并排放，「兑换率」一眼可见**（N = 8，7B）：
+
+| 从 → 到 | 每卡省下的显存 | 每卡多传的字节 | 兑换率 |
+|---|---|---|---|
+| ZeRO-0 → ZeRO-1 | **省 73.5 GB** | **0**（一分钱不多） | ★★ 白赚 |
+| ZeRO-1 → ZeRO-2 | **省 12.25 GB** | **0** | ★★ 白赚 |
+| ZeRO-2 → ZeRO-3 | 省 12.25 GB | ⚠️ **多传 14 GB** | 大约 1 : 1 |
+
+```
+    ★★★ 这三行就是全章的结论 ★★★
+
+      ZeRO-1、ZeRO-2 ——「省显存」这一栏有数，「多传」那一栏是 0
+        ⟹ 没有任何理由不开。✅ 论文原文两次强调 "same communication volume as DP"。
+
+      ZeRO-3 ——「省 12 GB 显存」换「多传 14 GB」
+        ⟹ 这是一笔【真实的交易】，要看你缺哪一样。
+        ⚠️ 而且下一节会讲：这多出来的 14 GB 比它看起来更贵，
+           因为它趴在【前向的关键路径】上，不像梯度通信能藏进反向计算。
+
+    ★ N 越大，ZeRO-3 越划算：N=64 时它省 13.8 GB，仍然只多传 14 GB。
+      通信量【完全不随 N 变化】（2Ψ→3Ψ 都是与 N 无关的常数），
+      而省下的显存随 N 逼近满额的 2Ψ。
+```
 
 ---
 
@@ -78,7 +231,7 @@
 
 **这是全章最需要想明白的地方。参数都切碎了，前向传播怎么做？**
 
-### ZeRO-1、ZeRO-2：参数没切，正常算
+### 5.3.1 ZeRO-1、ZeRO-2：参数没切，正常算
 
 ```
     参数完整地在每张卡上  →  前向、反向都和普通 DP 一模一样  ✅
@@ -86,42 +239,49 @@
     只有【最后一步】不同：
 
       普通 DP：  All-Reduce 梯度（每卡拿到完整梯度）→ 每卡都做完整的更新
-      ZeRO-2：   Reduce-Scatter 梯度（每卡只拿 1/N 段）→ 每卡只更新自己那 1/N 段
+      ZeRO-2：   Reduce-Scatter 梯度（每卡只拿 1/N 段）
+                 → 每卡只更新自己那 1/N 段参数
                  → 再 All-Gather 更新后的参数，让每卡重新拥有完整参数
 
-    ★★ 回忆 03 章那个恒等式：All-Reduce = Reduce-Scatter + All-Gather
+    ★★ 回忆 [03 章 §3.2](03-通信原语.md) 那个恒等式：
+       All-Reduce = Reduce-Scatter + All-Gather
        → ZeRO-2 只是把这一个 all-reduce【拆成了两半】，中间插了一次更新
        → ★ 通信总量【完全没变】，还是 2Ψ
 ```
 
-> 🔑 **★★ 这就是为什么 ZeRO-1 / ZeRO-2 是"白赚"：省 4 倍 / 8 倍显存，通信量一分钱不多花。**
-> ✅ 论文原文两次强调 *"same communication volume as DP"*。
->
-> **实践建议：ZeRO-1 和 ZeRO-2 应该是默认开启的，没有理由不开。**
+**把两者的时间轴并排放，差别只有一处**：
 
+| 时刻 | 普通 DP（ZeRO-0） | ZeRO-2 |
+|---|---|---|
+| 反向算完某一层 | 该层梯度进桶 | 同 |
+| 桶满 | **All-Reduce**（Ψ + Ψ） | **Reduce-Scatter**（Ψ）★ 只做前一半 |
+| 反向结束 | 每卡有完整梯度 | 每卡只有 1/N 段梯度 |
+| optimizer.step() | 每卡更新**全部**参数（★ N 张卡做了 N 遍同样的算术） | ★ 每卡只更新**自己那 1/N 段** |
+| step 之后 | 什么也不用做 | **All-Gather** 参数（Ψ）★ 补上后一半 |
+| **每卡通信合计** | **2Ψ** | **2Ψ**（一样） |
+
+> 🔑 **★★ 这就是为什么 ZeRO-1 / ZeRO-2 是"白赚"：省 4 倍 / 8 倍显存，通信量一分钱不多花。**
+> **实践建议：ZeRO-1 和 ZeRO-2 应该是默认开启的，没有理由不开。**
+> ★ 顺带一个常被忽略的好处：优化器计算本身也被切成了 1/N —— 原来 N 张卡在**重复做同一道算术题**，现在每张卡只做 1/N 道。AdamW 的 step 是访存密集的，这一项在小模型上省下的时间是可以量出来的。
 
 #### ★★ 追问：凭什么"每卡只更新 1/N"就够了？
 
-这句话听起来太便宜了——**优化器凭什么可以只看一段参数就把它更新对？**
-答案藏在 Adam 的更新公式里，值得单独拆开看：
+**这句话听起来太便宜了——优化器凭什么可以只看一段参数就把它更新对？** 答案藏在 Adam 的更新公式里，值得单独拆开看：
 
 ```
     Adam 对【第 i 个参数】做的事：
 
-      m[i] ← β₁·m[i] + (1−β₁)·g[i]           动量
-      v[i] ← β₂·v[i] + (1−β₂)·g[i]²          二阶动量
-      θ[i] ← θ[i] − lr · m̂[i] / (√v̂[i] + ε)   更新
+      m[i] ← β₁·m[i] + (1−β₁)·g[i]            一阶动量
+      v[i] ← β₂·v[i] + (1−β₂)·g[i]²           二阶动量
+      θ[i] ← θ[i] − lr · m̂[i] / (√v̂[i] + ε)    更新
 
     ★★ 通读一遍，注意一件事：等号右边【只出现下标 i】。
        没有 g[j]、没有 sum、没有任何跨参数的项。
 ```
 
 > 🔑 **这就是 ZeRO 能成立的全部数学基础：优化器更新是【逐元素】的（element-wise）。**
->
-> 名词解释：**逐元素**——每个参数的新值只依赖它自己的旧值和它自己的梯度，
-> 参数之间互不相干。
-> ⟹ 所以把参数切成 N 段、每卡负责一段，**算出来的结果和单卡完全一致**，
->    不是近似，是**逐比特相同**（⚠️ 忽略浮点归约顺序带来的差异）。
+> 📌 **逐元素**——每个参数的新值只依赖它自己的旧值和它自己的梯度，参数之间互不相干。
+> ⟹ 所以把参数切成 N 段、每卡负责一段，**算出来的结果和单卡完全一致**，不是近似，是**逐比特相同**（⚠️ 忽略浮点归约顺序带来的差异，见 [13 章 §13.7](13-断点续训与容错.md)）。
 
 **还有一个更容易被忽略的时序问题**：
 
@@ -141,12 +301,18 @@
        它切的是"谁来算"，不是"要传什么"。
 ```
 
-> ⚠️ **反例提醒**：如果优化器不是逐元素的，这套就不成立。
-> 比如需要看整层参数矩阵的二阶方法（K-FAC、Shampoo 这类），
-> 切开之后就必须额外通信才能算对。
-> ★ ZeRO 的"白赚"是**建立在 Adam/SGD 这类逐元素优化器之上的**，不是普适定理。
+> ⚠️ **反例提醒（这个"白赚"不是普适定理）**：如果优化器不是逐元素的，整套推理就不成立。
+> ```
+>   ✅ 成立：SGD、SGD+momentum、Adam、AdamW、RMSProp  —— 全是逐元素
+>   ❌ 不成立：K-FAC、Shampoo 这类要看【整层参数矩阵】的二阶方法
+>              → 切开之后必须额外通信才能算对
+>   ⚠️ 半成立：需要【全局范数】的操作，比如梯度裁剪 clip_grad_norm_
+>              → 全局范数 = 各段范数平方和再开方
+>              → ★ 需要一次额外的 all-reduce，但只传【1 个标量】，
+>                可以忽略不计。框架已经替你做了。
+> ```
 
-### ZeRO-3：参数切了，需要临时拼
+### 5.3.2 ZeRO-3：参数切了，需要临时拼
 
 ```
     前向传播，算到第 k 层时：
@@ -156,71 +322,114 @@
         ③ ★ 立刻把不属于自己的那部分【扔掉】             ← 释放显存
         ④ 走到第 k+1 层，重复
 
-    反向传播时同理，再 All-Gather 一次。
+    反向传播时同理，走到第 k 层又要 All-Gather 一次
+    （因为前向已经把它扔了）。
 
     ★ 任何时刻，显存里只有【一层】的完整参数，其余全是碎片。
 ```
 
+**用一个 4 卡 / 4 层的具体例子走一遍**（每层参数被切成 4 片，卡 i 常驻保管第 i 片）：
+
+| 时刻 | 卡0 手上的完整参数 | 通信动作 | 显存峰值里的参数部分 |
+|---|---|---|---|
+| 开局 | 无 | — | 4 层 × 1/4 片 = **1 层的量** |
+| 前向 第1层 | 第1层（全 4 片） | All-Gather 第1层 | 1 层碎片 + **1 层完整** |
+| 前向 第2层 | 第2层 | 扔掉第1层 → All-Gather 第2层 | 同上（★ 不累积） |
+| 前向 第3层 | 第3层 | 扔掉第2层 → All-Gather 第3层 | 同上 |
+| 前向 第4层 | 第4层 | 扔掉第3层 → All-Gather 第4层 | 同上 |
+| 反向 第4层 | 第4层 | （刚用过，可能还在手上） | 同上 |
+| 反向 第3层 | 第3层 | ★ **再 All-Gather 一次**第3层 | 同上 |
+| 反向 第2层 | 第2层 | 再 All-Gather 第2层 | 同上 |
+| 反向 第1层 | 第1层 | 再 All-Gather 第1层 | 同上 |
+
+```
+    ★★ 读这张表要抓住两点：
+
+      ① 第四列全程不变 ⟹ 显存峰值和层数【无关】，只和「最大的那一层」有关。
+         ✅ FSDP 论文把这个性质写成了公式（下面引）。
+      ② 「反向 第k层」那几行都要【再拼一次】
+         ⟹ 这就是 ZeRO-3 比 ZeRO-2 多出来的那一个 Ψ（下一小节算清楚）。
+```
+
 > ✅ FSDP 论文（[papers/PyTorch-FSDP-arXiv-2304.11277.pdf](../papers/PyTorch-FSDP-arXiv-2304.11277.pdf)）把这件事说得很清楚：
 > *"This approach ensures that FSDP only needs to materialize parameters from one unit at a time, which significantly reduces peak memory consumption."*
-
-**通信量账**：
-
-```
-    前向 All-Gather 参数：       Ψ
-    反向 All-Gather 参数：       Ψ    ← ★ 多出来的就是这一次
-    反向 Reduce-Scatter 梯度：   Ψ
-    ────────────────────────────────
-    合计  3Ψ    vs  普通 DP 的 2Ψ
-
-    ★ 贵 1.5 倍的通信，换 N 倍的显存。
-
-#### ★★ 这笔账很容易算错：为什么是 3Ψ，不是 4Ψ
-
-**一个几乎人人都会踩的坑**：
-
-```
-    ✗ 错误的算法：
-       「普通 DP 是 2Ψ，ZeRO-3 又加了前向和反向两次 all-gather，
-         所以是 2Ψ + 2Ψ = 4Ψ」
-
-    ⟹ ★ 错在哪？错在【以为只是往上加】。
-       ZeRO-3 不只是加，它还【删掉】了一样东西。
-```
-
-**正确的算法是「一删两增」**：
-
-```
-    起点：普通 DP = 2Ψ
-          （回忆 03 章：All-Reduce = Reduce-Scatter Ψ + All-Gather Ψ）
-
-    ┌──────────────────────────────────────────────────────────┐
-    │  ★ 一删：  −Ψ   删掉梯度 All-Reduce 里的 All-Gather 那半  │
-    │  ★ 两增：  +Ψ   前向 All-Gather 参数                      │
-    │            +Ψ   反向 All-Gather 参数                      │
-    └──────────────────────────────────────────────────────────┘
-                    2Ψ − Ψ + Ψ + Ψ = 3Ψ   ✅
-```
-
-> 🔑 **★★★ 那个 −Ψ 是全章最容易漏掉的一项，也是最能说明问题的一项。**
 >
-> **为什么可以删？** 因为 ZeRO-3 的参数**本来就是切片状态**：
+> ✅ 而且给了显存峰值的式子（把 Ψ 切成 N 个单元、分片度 F）：
+> *"the peak parameter memory contribution is in O(Σψᵢ/F + maxψᵢ)"*
 > ```
->     ZeRO-2：每卡更新完自己那 1/N 段参数
->             ⟹ ★ 必须 All-Gather 一次，把完整参数拼回每张卡
->                （因为下一轮前向需要完整参数）
+>     Σψᵢ/F  = 常驻的那些碎片（= 16Ψ/N 里的参数部分）
+>     max ψᵢ = ★ 临时拼起来的【最大那一个单元】
 >
->     ZeRO-3：每卡更新完自己那 1/N 段参数
->             ⟹ ★★ 就这样放着，不拼！
->                （因为下一轮前向【本来就要逐层临时 all-gather】）
+>   ✅ 论文接着点出这就是那个取舍：
+>      "Finer-grained FlatParameter construction decreases peak memory
+>       but may decrease throughput by requiring more collectives."
+>   ⟹ ★ 包得越细，max ψᵢ 越小（省显存），但集合通信次数越多（慢）。
+>      这正是 §5.5 那句「一层 transformer 包一次」在权衡的东西。
 > ```
-> ⟹ **ZeRO-3 把"更新后拼回参数"这一次通信，合并进了"前向逐层拼参数"里。**
-> ⟹ ★ 所以两次前/反向 all-gather 里，**有一次是"白拿"的**——
->    它顶替了原本就要付的那一次。
->
-> **这也是为什么 ZeRO-3 的代价是 1.5 倍而不是 2 倍。**
 
-⚠️ **但账面便宜不等于实际便宜**（这点比数字更重要）：
+### 5.3.3 ★★ 通信量逐笔账：3Ψ 是怎么来的
+
+> ⚠️ 本小节的 Ψ 是**字节数**口径（7B → Ψ = 14 GB）。
+
+**先把一步训练里所有的通信逐笔列出来**（ZeRO-3，L 层）：
+
+| 发生在哪 | 干什么 | 原语 | 每卡搬多少 |
+|---|---|---|---|
+| 前向 每层之前 | 把这一层的参数从 N 卡凑齐 | All-Gather | Ψ/L 每层 |
+| 前向 每层之后 | 扔掉别人的碎片 | **无通信** | 0 |
+| （前向 L 层求和） | | | **Ψ** |
+| 反向 每层之前 | 再凑一次（前向已扔） | All-Gather | Ψ/L 每层 |
+| （反向 L 层求和） | | | **Ψ** |
+| 反向 算出梯度后 | 归约 + 每卡只留自己那段 | Reduce-Scatter | **Ψ** |
+| optimizer.step() 之后 | ★ **什么都不做**（不拼回去） | **无通信** | **0** |
+| **每卡每步合计** | | | ★★ **3Ψ** |
+
+```
+    代进 7B：3Ψ = 3 × 14 GB = 42 GB    vs   普通 DP 的 2Ψ = 28 GB
+    ⟹ ★ 贵 1.5 倍的通信，换 N 倍的显存。
+```
+
+#### ⚠️★ 两个几乎人人都会踩的坑
+
+**坑一：「ZeRO-3 的通信量和 ZeRO-2 一样，都是 2Ψ」** —— **错。把两边的账并排放就清楚了**：
+
+| | 梯度 Reduce-Scatter | 参数 All-Gather · 前向 | 参数 All-Gather · 反向 | 参数 All-Gather · step 后 | 合计 |
+|---|---|---|---|---|---|
+| **ZeRO-2** | Ψ | 不需要（参数一直是完整的） | 不需要 | **Ψ** | **2Ψ** |
+| **ZeRO-3** | Ψ | **Ψ** | ★ **Ψ** | 不需要（就让它碎着） | **3Ψ** |
+
+```
+    ★★ 一对一比下来，真相是这样的：
+
+      ZeRO-2 的「step 后那次 all-gather」  ←→  ZeRO-3 的「前向逐层 all-gather」
+        ⟹ 这两个是【一换一】，不加也不减。
+           ZeRO-2 是「提前把参数备齐」，ZeRO-3 是「用到再说」，
+           同样传 Ψ，只是时机不同。
+
+      ⟹ ★★★ 所以真正【多出来】的，只有【反向那一次 all-gather】。★★★
+         它是新增的，因为前向用完就把参数扔了，反向不得不再拼一遍。
+
+    ⟹ 🔑 一句话：ZeRO-3 = ZeRO-2 + 一次反向 all-gather = 2Ψ + Ψ = 3Ψ
+```
+
+**坑二：「普通 DP 是 2Ψ，ZeRO-3 加了前向和反向两次 all-gather，所以 2Ψ + 2Ψ = 4Ψ」** —— **也错**。从普通 DP 出发要记「一删两增」：
+
+| | 变化 | 为什么 |
+|---|---|---|
+| 起点 · 普通 DP | **2Ψ** | All-Reduce = Reduce-Scatter Ψ + All-Gather Ψ（[03 章 §3.2](03-通信原语.md)） |
+| ★ 一删 | **−Ψ** | 删掉梯度 All-Reduce 里的 All-Gather 那半 —— 每卡只要自己那段梯度 |
+| ★ 两增 | **+Ψ** | 前向逐层 All-Gather 参数 |
+| | **+Ψ** | 反向逐层 All-Gather 参数 |
+| **合计** | 2Ψ − Ψ + Ψ + Ψ = ★ **3Ψ** ✅ | |
+
+> 🔑 **★★★ 那个 −Ψ 是最容易漏掉的一项。** 漏了它就会算成 4Ψ，把 ZeRO-3 的代价高估 33%。
+
+> ✅ 这笔账不是我推的，论文 §7.2 是逐句这么写的：
+> *"instead of an all-reduce, ZeRO only requires a scatter-reduce operation on the gradients, incurring communication volume of Ψ."*（← 就是那个「一删」）
+> *"The total communication volume is thus Ψ×Nd/Nd = Ψ. In other words, we reschedule the parameter all-gather by spreading it across the entire forward propagation... Note however that this all-gather needs to happen once again for the backward propagation in the reverse order."*（← 就是那「两增」）
+> *"The total volume is therefore 3Ψ which is 1.5x compared to the baseline."*
+
+#### ⚠️ 但账面便宜不等于实际便宜（这点比数字更重要）
 
 ```
     ★ 3Ψ 和 2Ψ 的差距是【总量】上的 1.5 倍，
@@ -234,56 +443,101 @@
                        ⟹ 第 k 层的参数没拼完，第 k 层就【不能开始算】
                        ⟹ 只能靠"提前一层预取"来藏（prefetch），
                           藏得住藏不住取决于【单层计算时间 vs 单层通信时间】
+```
 
+**把它量化一下**（⚠️ 我的算例，7B / 32 层 / N=8 / b=1 / s=4096）：
+
+```
+    单层参数量 ≈ 7×10^9 / 32 = 2.19×10^8 个 → BF16 = 0.44 GB
+    单层 all-gather 要搬（每卡）≈ 0.44 × (N−1)/N = 0.38 GB
+
+      走机内 NVLink 单向 450 GB/s：0.38 ÷ 450 = ★ 0.85 ms
+      走跨机 IB      50 GB/s    ：0.38 ÷ 50  = ★ 7.6 ms
+
+    单层【前向】计算（用 04 章 §4.4.3 的公式，只取前向那几项）：
+      每卡 token = 4096（b=1, s=4096）
+      单层单 token 前向 = 2 × 2.19×10^8（权重）+ 4 × 4096 × 4096（注意力）
+                        = 4.38×10^8 + 0.67×10^8 = 5.05×10^8 FLOPs
+      单层前向 = 5.05×10^8 × 4096 = 2.07×10^12 FLOPs
+      时间 = 2.07×10^12 ÷ (989×10^12 × 0.45) = ★ 4.7 ms
+      ★ 单层【反向】的计算量是前向的 2 倍 ⟹ 约 9.3 ms
+
+    ⟹ 机内 NVLink：0.85 ms 通信 vs 4.7 ms 前向计算
+                    → ✅ 预取一层就完全藏住了，前向反向都藏得住
+    ⟹ 跨机 IB：    7.6 ms 通信 vs 4.7 ms 前向计算
+                    → ❌ 前向藏不住，每层露出 ≈ 2.9 ms，32 层 ≈ 0.09 s/步
+                    → ✅ 反向那次反而藏得住（9.3 ms 计算 > 7.6 ms 通信）
+       ★★ 这就解释了一个反直觉的现象：ZeRO-3 的痛点在【前向】，
+          而不是在那个"多出来的反向 all-gather"上 ——
+          因为前向的计算量只有反向的一半，能用来掩盖通信的时间也只有一半。
+```
+
+```
     ⟹ ⚠️（我的判断）所以实践中 ZeRO-3 的减速常常【超过】1.5 倍这个账面值，
        尤其是小模型 / 慢网络 —— 因为单层计算太快，来不及掩盖 all-gather。
-    ⟹ 🔑 反过来说，模型越大、层越厚、网络越快，ZeRO-3 越划算。
-
+    ⟹ 🔑 反过来说：模型越大（单层计算越重）、网络越快，ZeRO-3 越划算。
+       ★ 这个结论 §5.7 会被 Megatron-2 的实测数字再确认一遍。
 ```
 
 > 🔑 **所以 ZeRO-3 的取舍很清楚**：
 > ```
-> ✅ 用它：模型状态实在装不下，或者你只有单一维度的并行可用
+> ✅ 用它：2Ψ（一份 BF16 参数）实在装不下，或者你只有单一维度的并行可用
 > ⚠️ 慎用：通信量涨 1.5 倍，而且 all-gather 在【前向的关键路径】上
 >          （不像 DP 的梯度通信可以完全藏在反向计算里）
 > ```
 
+### 5.3.4 ★★ 把三个阶段的 All-Gather 摆在一条时间轴上
 
-### ★★ 把三个阶段的 All-Gather 摆在一条时间轴上
+**前面分开讲了三个阶段，但最容易混淆的是"那次 all-gather 到底发生在什么时候"。** 把它们并排放，一眼就清楚了：
 
-前面分开讲了三个阶段，但**最容易混淆的是"那次 all-gather 到底发生在什么时候"**。
-把它们并排放，一眼就清楚了：
+| | 梯度归约用什么 | **参数 All-Gather 在哪** | 次数/步 | 每次多大 | 能否和计算重叠 |
+|---|---|---|---|---|---|
+| **普通 DP** | All-Reduce（2Ψ） | ★ 不需要（参数从没被切） | 0 | — | — |
+| **ZeRO-1** | All-Reduce（2Ψ） | ★ 不需要 | 0 | — | — |
+| **ZeRO-2** | Reduce-Scatter（Ψ） | ★ **优化器 step 的最后**，一次性拼回全部参数 | **1** | **Ψ** | ⚠️ 难（夹在步与步之间） |
+| **ZeRO-3** | Reduce-Scatter（Ψ） | ★★ **前向每层之前 + 反向每层之前** | **2L** | **Ψ/L** | ✅ 可预取，但在关键路径 |
 
-| | 梯度归约用什么 | **参数 All-Gather 在哪** | 次数 | 能否和计算重叠 |
-|---|---|---|---|---|
-| **普通 DP** | All-Reduce (2Ψ) | ★ 不需要（参数从没被切） | 0 | — |
-| **ZeRO-1** | All-Reduce (2Ψ) | ★ 不需要 | 0 | — |
-| **ZeRO-2** | Reduce-Scatter (Ψ) | ★ **优化器 step 的最后**，一次性拼回全部参数 | 1 次/步 | ⚠️ 难（在步与步之间） |
-| **ZeRO-3** | Reduce-Scatter (Ψ) | ★★ **前向每一层之前 + 反向每一层之前** | 2×L 次/步 | ✅ 可预取，但在关键路径 |
+```
+    ★★ 读这张表最该注意的是「次数」和「每次多大」这两列：
 
-> ★★ **读这张表最该注意的是"次数"那一列**：
-> ```
->     ZeRO-2：1 次大的  ⟹ 一次传 Ψ，★ 带宽利用率高，但【完全无法重叠】
->                          （此刻前向还没开始，没有计算可以拿来掩盖）
->     ZeRO-3：2L 次小的 ⟹ 每次传 Ψ/L，★ 可以和前一层的计算重叠
->                          ⚠️ 但小消息多 ⟹ 通信【延迟】开销被放大 L 倍
-> ```
-> 🔑 **同样是 Ψ 的通信量，切成多少块、在什么时候发，性能可以差好几倍。**
-> ⟹ ★ 这正是 FSDP 里 `reshard_after_forward`、DeepSpeed 里
->    `stage3_prefetch_bucket_size` 这类参数在调的东西。
+      ZeRO-2：1 次大的  ⟹ 一次传 Ψ，★ 带宽利用率高，但【完全无法重叠】
+                           （此刻前向还没开始，没有计算可以拿来掩盖）
+      ZeRO-3：2L 次小的 ⟹ 每次传 Ψ/L，★ 可以和前一层的计算重叠
+                           ⚠️ 但消息变小 ⟹ 单次带宽利用率下降，
+                              而且调度次数多了 2L 倍
+
+    🔑 同样是 Ψ 的通信量，切成多少块、在什么时候发，性能可以差好几倍。
+    ⟹ ★ 这正是 FSDP 的 reshard_after_forward、DeepSpeed 的
+       stage3_prefetch_bucket_size 这类参数在调的东西（§5.4 / §5.5）。
+```
+
+```
+    ★★ 一个能反过来验证 §5.3.3 那笔账的开关：
+
+      FSDP 的 reshard_after_forward = False（旧名 SHARD_GRAD_OP）
+        ⟹ 前向用完【不扔】参数，一直留到反向用完
+        ⟹ ★ 反向那次 all-gather 就不需要了
+        ⟹ 通信量 3Ψ − Ψ = 2Ψ，显存换回来一份完整参数 2Ψ
+        ⟹ ✅ 于是它的显存和通信画像正好等于 ZeRO-2
+             （TorchTitan 官方文档就是这么对应的，见 §5.4 那张映射表）
+
+      ⟹ 🔑 这从工程上印证了：ZeRO-3 多出来的那个 Ψ，
+         就是【反向的那次 all-gather】，一分不多一分不少。
+```
 
 **✅ 源码实证：这两个时间点在代码里长这样**
 
-（DeepSpeed `v0.19.5`，见 [源码/DeepSpeed/](../源码/DeepSpeed/)）
+（以下来自本仓库存的 DeepSpeed 官方源码包 `v0.19.5`，见 [源码/DeepSpeed/](../源码/DeepSpeed/)）
 
 ```python
 # ── ZeRO-2：all-gather 在 step() 的末尾 ──────────────────────
-# ✅ deepspeed/runtime/zero/stage_1_and_2.py:2367-2370
+# ✅ deepspeed/runtime/zero/stage_1_and_2.py:2367-2375
 #    （所在函数 step() 从 L2253 开始）
 self.timers(OPTIMIZER_ALLGATHER_TIMER).start()
 # Gather the updated weights from everyone.
 # Then all partitions of the model parameters are updated and ready for next round forward.
 all_gather_dp_groups(groups_flat=self.bit16_groups_flat, ...)
+self.timers(OPTIMIZER_ALLGATHER_TIMER).stop()
 ```
 
 ```
@@ -296,43 +550,102 @@ all_gather_dp_groups(groups_flat=self.bit16_groups_flat, ...)
 ```python
 # ── ZeRO-3：all-gather 挂在每个子模块的前后 ──────────────────
 # ✅ deepspeed/runtime/zero/parameter_offload.py
-def pre_sub_module_forward_function(self, sub_module):    # L525  ★ 进这层前：拼
+def pre_sub_module_forward_function(self, sub_module):     # L525  ★ 进这层前：拼
     ...
-def post_sub_module_forward_function(self, sub_module):   # L549  ★ 出这层后：放
+def post_sub_module_forward_function(self, sub_module):    # L549  ★ 出这层后：放
     ...
-def pre_sub_module_backward_function(self, sub_module):   # L567  ★ 反向前：再拼一次
+def pre_sub_module_backward_function(self, sub_module):    # L567  ★ 反向前：再拼一次
+    ...
+def post_sub_module_backward_function(self, sub_module):   # L588  ★ 反向后：再放
+    ...
 ```
 
-> 🔑 **对照 §5.5 讲的 hook 机制**：
-> 这三个函数就是被 `register_forward_pre_hook` / `register_forward_hook`
-> 挂上去的（`parameter_offload.py:353/357`）。
-> ⟹ ★★ **"每层临时拼回来"这句话，在源码里就是这三个函数。**
-
----
+> 🔑 **对照 §5.5 讲的 hook 机制**：这四个函数都是被 PyTorch 的 hook 【间接】触发的，注册点全在同一个文件里：
+> ```
+>   ✅ parameter_offload.py:439  register_forward_pre_hook(_pre_forward_module_hook)
+>                                 → 回调里调 pre_sub_module_forward_function（L354 处）
+>   ✅ parameter_offload.py:442  register_forward_hook(_post_forward_module_hook)
+>                                 → 回调里调 post_sub_module_forward_function（L397 处）
+>   ✅ parameter_offload.py:481 / :522  反向那两个
+>     ⚠️ 注意它们注册的也是【forward hook】—— DeepSpeed 的做法是在前向时
+>        把一个自定义 autograd Function 包在输出张量上，等反向流到这里再触发。
+>        （调用点在 L456 / L489）
+> ```
+> ⟹ ★★ **"每层临时拼回来"这句话，在源码里就是这四个函数。**
+> ⟹ ★ 而 `pre_sub_module_backward_function`（L567）的存在，就是 §5.3.3 那个「多出来的 Ψ」在代码里的样子。
 
 ---
 
 ## 5.4 ZeRO-3 和 FSDP 是一回事吗
 
-**思想上：是。工程上：不是同一份代码。**
+**思想上：是。工程上：不是同一份代码，而且细节差得比你想的多。**
 
-| | **ZeRO-3** | **FSDP** |
-|---|---|---|
-| 出处 | DeepSpeed（微软），2019 | PyTorch 官方，2023 |
-| 论文 | [arXiv:1910.02054](../papers/ZeRO-Memory-Optimizations-Trillion-Parameter-arXiv-1910.02054.pdf) | [arXiv:2304.11277](../papers/PyTorch-FSDP-arXiv-2304.11277.pdf) |
-| 切分单位 | 按参数张量切 | 按 **FlatParameter**（一组模块的参数拍平成一个大张量）切 |
-| 集成度 | 外挂库，需要 `deepspeed.initialize()` | ★ **PyTorch 原生**，和 autograd / 显存分配器深度耦合 |
-| 现状 | 仍广泛用于 RLHF 等场景 | ★ 新项目的默认选择；FSDP2 基于 `DTensor` 重写 |
+| | **ZeRO-3**（DeepSpeed） | **FSDP1** | **FSDP2**（`fully_shard`） |
+|---|---|---|---|
+| 出处 / 年份 | 微软，2019 | PyTorch 官方，2023 | PyTorch 官方，2024 起 |
+| 论文 | [arXiv:1910.02054](../papers/ZeRO-Memory-Optimizations-Trillion-Parameter-arXiv-1910.02054.pdf) | [arXiv:2304.11277](../papers/PyTorch-FSDP-arXiv-2304.11277.pdf) | 同 FSDP1 论文 + `DTensor` 重写 |
+| 切分单位 | 按**参数张量** | 按 **FlatParameter**（一组模块的参数拍平成一个 1D 大张量再切） | ★ **按原始参数**，每个参数是一个 `DTensor` |
+| `model.named_parameters()` 看到什么 | ⚠️ 被换成带 `ds_shape` / `ds_status` 等属性的占位张量，形状不是原形状 | ⚠️ 看不到原参数名（被拍平进 FlatParameter 了） | ✅ **参数名不变**，值是分片的 `DTensor` |
+| 集成度 | 外挂库，要 `deepspeed.initialize()` | PyTorch 原生，`nn.Module` 包装器 | ★ 原生，**不再是包装器**（原地改类） |
+| `state_dict()` | 要专门的转换工具 | 全量 state dict（要通信汇总） | ★ **分片 state dict，零通信** |
+| 现状 | 仍广泛用于 RLHF 等场景 | 维护中，新项目不再推荐 | ★ 新项目的默认选择（TorchTitan 用它） |
 
-> ✅ FSDP 论文强调它的差异化在于"原生集成"：
+> ⚠️ **一个已经过时、但到处还在传的说法**：「FSDP 按 FlatParameter 切」。这只对 **FSDP1** 成立。
+> ✅ TorchTitan 官方文档（[../源码/TorchTitan/docs/fsdp.md](../源码/TorchTitan/docs/fsdp.md)）原文：
+> *"FSDP2 always 'uses the original parameters' since there is no more `FlatParameter`, removing the need for `use_orig_params`."*
+> ⟹ ★ 这不是措辞问题：FlatParameter 拍平之后参数名和形状都变了，优化器和梯度裁剪看到的是一个大张量；FSDP2 换成 `DTensor` 之后，**优化器看到的还是原来那些参数**，只是每个都带了分片信息。
+
+### 5.4.1 ★★ 配置项的对照表（这张表能省很多调参时间）
+
+**「FSDP 的哪个设置 = ZeRO 的哪个 stage」在官方文档里是有明确对应的**：
+
+> ✅ 下表逐行来自 TorchTitan 官方文档（[../源码/TorchTitan/docs/fsdp.md](../源码/TorchTitan/docs/fsdp.md)）的 FSDP1 / FSDP2 / DeepSpeed 映射表：
+
+| FSDP1 | FSDP2 | **等价于 DeepSpeed 的** | 这一档在干什么 |
+|---|---|---|---|
+| `FULL_SHARD` | 1D `mesh` + `reshard_after_forward=True` | ★ **ZeRO-3** | 前向用完就扔，反向再拼 → 通信 3Ψ |
+| `SHARD_GRAD_OP` | 1D `mesh` + `reshard_after_forward=False` | ★ **ZeRO-2** | 前向用完不扔 → 省掉反向那次 all-gather → 通信 2Ψ |
+| `HYBRID_SHARD` | 2D `mesh` + `reshard_after_forward=True` | **MiCS** | 机内分片、机间复制（见下） |
+| `_HYBRID_SHARD_ZERO2` | 2D `mesh` + `reshard_after_forward=False` | （无对应） | 上面两者的组合 |
+| （无） | `reshard_after_forward=8`（整数） | **ZeRO++ hpZ** | 前向后只"重新分片到机内 8 卡"，反向的 all-gather 就只走 NVLink |
+
+```
+    ★★ 这张表把 §5.3.3 那笔账变成了一个【可以一个字改掉】的开关：
+
+        reshard_after_forward = True   → 3Ψ，显存最省
+        reshard_after_forward = False  → 2Ψ，多占 2Ψ 字节的完整参数
+
+    ★ 最后一行那个整数写法特别值得注意（✅ 文档说它还是实验性的）：
+      ✅ 原文："parameters are resharded to a smaller world size after forward
+               (e.g. reshard_after_forward=8 can mean intra-node) so that the
+               backward all-gather is over a smaller world size."
+      ⟹ ★ 它在"省显存"和"通信要走多远"之间开了一个中间档：
+         反向那次 all-gather 只在机内 8 卡做 ⟹ 走 NVLink（450 GB/s），
+         不走跨机 IB（50 GB/s）—— 正好治 §5.3.3 算出来的那个"跨机藏不住"。
+```
+
+> 📌 **HSDP** = **H**ybrid **S**harded **D**ata **P**arallel，混合分片数据并行。**机内分片，机间复制。**
+> ✅ FSDP 论文给了它的通信分解式：
+> *"For gradient reduction, the single reduce-scatter over all ranks becomes a reduce-scatter within each of the sharded groups followed by an all-reduce within each of the replicated groups"*
+> ✅ 以及它的动机：*"Hybrid sharding can take advantage of datacenter locality for accelerated training and can reduce cross host traffic"*
+> ```
+>     ★ 直觉：全局 512 卡全分片 ⟹ all-gather 要横跨 64 台机器（慢网络）
+>             改成"机内 8 卡分片 + 机间 64 份复制"
+>             ⟹ all-gather 只在机内（NVLink），机间只剩梯度 all-reduce（可重叠）
+>     ⚠️ 代价：显存只省 8 倍而不是 512 倍。
+>     ⟹ 这是"用显存换通信距离"，和 ZeRO-3 的方向正好相反。
+> ```
+
+> ✅ FSDP 论文强调它相对 DeepSpeed 的差异化在于"原生集成"：
 > *"FSDP has been closely co-designed with several key PyTorch core components including Tensor implementation, dispatcher system, and CUDA memory caching allocator, to provide non-intrusive user experiences and high training efficiency."*
 >
 > ✅ 效果：*"FSDP is capable of achieving comparable performance to Distributed Data Parallel while providing support for significantly larger models with near-linear scalability in terms of TFLOPS."*
 > ✅ 实验规模：*"utilizing up to 512 80GB A100 GPUs"*
 
-> 📌 **一个容易踩的坑**：FSDP 论文提到显存碎片问题——
+> 📌 **一个容易踩的坑**：FSDP 论文专门提到了显存碎片问题——
+> ✅ *"Frequent memory defragmentations can significantly slow down training"*
 > ✅ *"operating near GPU memory capacity significantly increases the chance to trigger defragmentations"*
-> **实践含义**：把显存用到 99% 反而会变慢（CUDA 分配器要整理碎片）。**留 5~10% 余量是常规做法。** ⚠️ 具体留多少论文没给数字，这是我的经验判断。
+> **实践含义**：把显存用到 99% 反而会变慢（CUDA caching allocator 要整理碎片）。**留 5~10% 余量是常规做法。** ⚠️ 具体留多少论文没给数字，这是我的经验判断。
 
 ---
 
@@ -352,68 +665,85 @@ for batch in loader:
     model.step()                # ★ 不是 optimizer.step()
 
 
-# ── PyTorch FSDP（FSDP2 / DTensor 风格）─────────────
+# ── PyTorch FSDP2（fully_shard / DTensor 风格）─────────────
 from torch.distributed.fsdp import fully_shard
 for layer in model.layers:
     fully_shard(layer)          # ★ 每一层是一个"分片单元"
-fully_shard(model)
+fully_shard(model)              # ★ 最外面再包一次，兜住不在任何 layer 里的参数
 # 之后就和普通训练一样：loss.backward(); optimizer.step()
 ```
 
-> 🔑 **"每一层包一次"这个写法很重要**：它决定了 §5.3 里"一次 all-gather 拼多大一块"。
+> 🔑 **「每一层包一次」这个写法很重要**：它决定了 §5.3 里「一次 all-gather 拼多大一块」，也就是 §5.3.2 那个 `max ψᵢ`。
 > ```
-> 包得太细（每个 Linear 包一次）→ 通信次数太多，延迟开销大
+> 包得太细（每个 Linear 包一次）→ 集合通信次数太多，每次消息太小，带宽跑不满
 > 包得太粗（整个模型包一次）    → 等于没切，显存峰值又回去了
 > ★ 一层 transformer 包一次是标准做法
+> ✅ FSDP 论文原话："Finer-grained FlatParameter construction decreases peak
+>    memory but may decrease throughput by requiring more collectives."
 > ```
 
----
+> 📌 **`fully_shard` 的四个参数**（✅ 签名来自 [../源码/TorchTitan/docs/fsdp.md](../源码/TorchTitan/docs/fsdp.md)）：
+> ```
+>   mesh                    在哪些卡上切（1D = FSDP，2D = HSDP）
+>   reshard_after_forward   ★ True=ZeRO-3 / False=ZeRO-2 / 整数=ZeRO++ hpZ（§5.4.1）
+>   mp_policy               混合精度策略
+>   offload_policy          要不要往 CPU 卸载（§5.6）
+> ★ 就这四个 —— FSDP2 刻意把 FSDP1 那一长串参数砍掉了大半。
+> ```
 
-### ✅ 源码实证：ZeRO-1 和 ZeRO-2 在代码里只差一个布尔值
+### ✅ 源码实证一：ZeRO-1 和 ZeRO-2 在代码里只差一个布尔值
 
-上面那句"改这一个数字就换阶段"，在源码里比你想的还要字面。
-（以下来自本地实测的 DeepSpeed 官方源码包 `v0.19.5`，见 [源码/DeepSpeed/](../源码/DeepSpeed/)）
+**上面那句"改这一个数字就换阶段"，在源码里比你想的还要字面。**（以下来自本仓库存的 DeepSpeed 官方源码包 `v0.19.5`，见 [源码/DeepSpeed/](../源码/DeepSpeed/)）
 
-`deepspeed/runtime/zero/` 目录长这样：
+`deepspeed/runtime/zero/` 目录长这样（✅ 行数是实测的）：
 
-```
-stage_1_and_2.py    3,153 行   ← ZeRO-1 和 ZeRO-2 共用这一个文件
-stage3.py           3,857 行   ← ZeRO-3 是完全独立的另一套
-partition_parameters.py 2,520 行  ← ZeRO-3 专用
-```
+| 文件 | 行数 | 服务于 |
+|---|---|---|
+| `stage_1_and_2.py` | 3,153 | ★ ZeRO-1 **和** ZeRO-2 共用这一个文件 |
+| `stage3.py` | 3,857 | ZeRO-3 是完全独立的另一套 |
+| `partition_parameters.py` | 2,520 | ZeRO-3 专用（构造期就把参数切碎） |
+| `parameter_offload.py` | — | ZeRO-3 专用（运行期挂 hook，§5.3.4） |
 
 `stage_1_and_2.py:222-223`：
 
 ```python
+# ZeRO stage 1 (False) or 2 (True)
 self.partition_gradients = partition_grads
 self.zero_stage_string = "ZeRO-2" if partition_grads else "ZeRO-1"
 ```
 
-⇒ ★★ **连"我是几阶段"这个名字，都是这个布尔值现算出来的。**
-这正好印证了 §5.2 的说法：ZeRO-2 只是在 ZeRO-1 基础上"顺手把梯度也切了"，
-而 ZeRO-3 是换一整套做法（约 7,700 行新代码）—— 因为参数被切之后，
-前向传播本身就得改（§5.3 讲的"临时拼回来"）。
+```
+    ⇒ ★★ 连"我是几阶段"这个名字，都是这个布尔值现算出来的。
 
-★ 这也解释了一个实践现象：**很多团队停在 ZeRO-2**。
-不是不知道 ZeRO-3 更省显存，而是它的通信量和踩坑面确实是另一个量级。
+    这正好印证了 §5.2 的说法：
+      ZeRO-2 只是在 ZeRO-1 基础上"顺手把梯度也切了"，共用一套代码；
+      而 ZeRO-3 是换一整套做法（stage3 + partition_parameters 合计约 6,400 行新代码）
+      —— 因为参数被切之后，【前向传播本身就得改】（§5.3.2 讲的"临时拼回来"）。
 
-**另外，ZeRO-3 是怎么做到"你的模型代码一行都不用改"的？** 两个 PyTorch 原生机制：
+    ★ 这也解释了一个实践现象：很多团队停在 ZeRO-2。
+      不是不知道 ZeRO-3 更省显存，而是它的通信量（§5.2.3）和踩坑面
+      确实是另一个量级。
+```
+
+### ✅ 源码实证二：ZeRO-3 怎么做到"你的模型代码一行都不用改"
+
+**两个 PyTorch 原生机制**：
 
 ```python
-# ① 构造期：参数刚创建出来就切碎（partition_parameters.py:1026 官方示例）
+# ① 构造期：参数刚创建出来就切碎
+#    （✅ partition_parameters.py:1026，这是官方 docstring 里的第一个示例）
 with deepspeed.zero.Init():
     model = MyLargeModel()          # ★ 模型从未在任何一张卡上完整存在过
 
 # ② 运行期：用 hook 在每层前后自动"拼回来 / 放掉"
-#    （parameter_offload.py:439-442）
+#    （✅ parameter_offload.py:439 / :442）
 module.register_forward_pre_hook(_pre_forward_module_hook)   # 进这层前拼
 module.register_forward_hook(_post_forward_module_hook)      # 出这层后放
 ```
 
-> 名词解释：**hook（钩子）**——
-> PyTorch 允许你在某个模块 forward 之前/之后自动插入一段函数，
-> 模型作者不知情，也不用配合。
+> 📌 **hook（钩子）**——PyTorch 允许你在某个模块 forward 之前/之后自动插入一段函数，模型作者不知情，也不用配合。
 > ⇒ ★ 这就是 DeepSpeed "接入成本极低"的技术来源。
+> ★ ① 那一步也值得单独强调：**没有它，7B 模型在初始化那一刻就会 OOM**——因为 `MyLargeModel()` 默认会在一张卡上把 14 GB 权重完整造出来，然后才轮到你去切。`zero.Init()` 让它一出生就是碎的。
 
 ---
 
@@ -421,52 +751,133 @@ module.register_forward_hook(_post_forward_module_hook)      # 出这层后放
 
 **如果卡实在太少，还有两条"用速度换可行性"的路**：
 
-| 论文 | 做什么 | 定位 |
+| 论文 | 把什么放到哪 | 定位 |
 |---|---|---|
-| **ZeRO-Offload**（[arXiv:2101.06840](../papers/ZeRO-Offload-arXiv-2101.06840.pdf)） | 把优化器状态和优化器计算**放到 CPU 内存**上 | 单卡/少卡也能训大模型 |
-| **ZeRO-Infinity**（[arXiv:2104.07857](../papers/ZeRO-Infinity-arXiv-2104.07857.pdf)） | 再往下一层，**用 NVMe 固态硬盘**当显存 | 极限情况 |
+| **ZeRO-Offload**（[arXiv:2101.06840](../papers/ZeRO-Offload-arXiv-2101.06840.pdf)） | 优化器状态和**优化器计算**放到 **CPU 内存**上 | 单卡/少卡也能训大模型 |
+| **ZeRO-Infinity**（[arXiv:2104.07857](../papers/ZeRO-Infinity-arXiv-2104.07857.pdf)） | 再往下一层，用 **NVMe 固态硬盘**当显存 | 极限情况 |
 
-> 🔑 **回忆 [01 章 §1.6](01-为什么需要分布式训练.md)：PCIe 带宽比显存带宽窄 55 倍。**
+```
+    ★ 为什么"优化器状态"是第一个被卸载的候选？回忆 §5.2 那个排序：
+
+      优化器状态 12 字节/参数（占 16 的 75%）—— ★ 最大的一块
+      而且它【只在 optimizer.step() 那一瞬间被用到】—— ★ 用得最少
+      ⟹ 又大又闲，正是该被赶到慢存储上去的那一项。
+```
+
+> 🔑 **回忆 [01 章 §1.6](01-为什么需要分布式训练.md) 那张带宽表：PCIe 5.0 ×16 单向 63 GB/s（⚠️ 实测约 50），比 HBM3 的 3,350 GB/s 窄 53 倍。**
 > **所以这两条路一定是慢的。它们的价值不是"更快"，是"原本跑不了的现在能跑"。**
 > ⚠️ **工业界大规模训练不用它们。** 但如果你想在 1~2 张卡上微调一个大模型，它们是标准答案。
+
+```
+    ⚠️ 一个容易被忽略的连带代价：优化器计算也一起搬到 CPU 了。
+       AdamW 的 step 是【逐元素、访存密集】的（§5.3.1）。
+       在 GPU 上它被 3,350 GB/s 的 HBM 喂着，在 CPU 上只有 ~200 GB/s 的 DDR5。
+    ⟹ ★ 所以 offload 之后，优化器那一步会从"几乎看不见"变成"能看见的一段"。
+       ⚠️ 具体拖慢多少取决于 CPU 核数和内存通道数，这是我的判断，不是论文数字。
+```
 
 ---
 
 ## 5.7 ⚠️ ZeRO 和 TP 是什么关系
 
-**这是一个常见困惑：ZeRO-3 都省 64 倍了，为什么还要张量并行？**
+**这是一个常见困惑：ZeRO-3 都省 N 倍了，为什么还要张量并行？**
 
 > ✅ ZeRO 论文自己也问了这个问题：*"ZeRO and MP: Since ZeRO eliminates the memory inefficiency in DP, it is natural to ask: Do we still need MP, and when?"*
->
-> ✅ 但 Megatron 第二篇论文（[papers/Megatron-2-...-arXiv-2104.04473.pdf](../papers/Megatron-2-PTD-P-Efficient-Large-Scale-Training-arXiv-2104.04473.pdf)）给了实测答案：
-> *"We also compared to ZeRO, and found that our approach outperforms ZeRO-3 by 70% for models with 175 and 530 billion parameters due to less cross-node communication."*
+
+**Megatron 第二篇论文（[papers/Megatron-2-...-arXiv-2104.04473.pdf](../papers/Megatron-2-PTD-P-Efficient-Large-Scale-Training-arXiv-2104.04473.pdf)）给了实测答案。它的 Table 2 值得整张抄下来，因为这是全章唯一一组真实数字。**
+
+> ✅ 下表逐格来自论文 Table 2，175B GPT-3 架构，**global batch 固定 1536**：
+
+| 方案 | 卡数 | micro-batch | 每卡实测 TFLOP/s | 训 300B token 要几天 |
+|---|---|---|---|---|
+| ZeRO-3（**不带任何模型并行**） | 384 | 4 | 144 | 90 |
+| ZeRO-3 | 768 | 2 | **88** | 74 |
+| ZeRO-3 | 1536 | 1 | **44** | 74 |
+| **PTD-P**（TP×PP 合计 96） | 384 | 1 | 153 | 84 |
+| **PTD-P** | 768 | 1 | **149** | **43** |
+| **PTD-P** | 1536 | 1 | **141** | **23** |
 
 ```
-    ★ 关键词是 "less cross-node communication"（更少的跨机通信）
+    ★★★ 先看 ZeRO-3 那三行：144 → 88 → 44 ★★★
 
-    回忆 03 章：跨机带宽比机内 NVLink 慢 18 倍。
+      每卡吞吐几乎【每加倍卡数就腰斩一次】。为什么？
+        ⚠️ 注意 micro-batch 那一列：4 → 2 → 1
+        因为 global batch 被固定住了（04 章 §4.5 那个天花板！），
+        卡数翻倍 ⟹ 每卡分到的活减半 ⟹ 单层计算时间减半
+        ⟹ ★ 而 all-gather 的量【一点没变】（§5.2.3：3Ψ 与 N 无关）
+        ⟹ ★★ 于是"藏得住"迅速变成"藏不住" —— 正是 §5.3.3 算出来的那个失效模式。
+
+    ★ 再看 PTD-P 那三行：153 → 149 → 141，几乎不掉。
+      因为它是靠 TP×PP 把模型切开的，micro-batch 一直是 1，
+      每卡的活不随卡数变化。
+```
+
+**那个被反复引用的「70%」，是在【某一个特定点】上量出来的**：
+
+| 对比点 | ZeRO-3 | PTD-P | 吞吐提升 | ★ 换算成「时间减少」 |
+|---|---|---|---|---|
+| 384 卡 | 144 | 153 | +6% | 5.9% |
+| **768 卡** | 88 | 149 | ★ **+69%** ≈ 70% | **41%** |
+| 1536 卡 | 44 | 141 | **+220%**（3.2 倍） | 69% |
+
+> ✅ 论文摘要/引言里的那句话是：*"We also compared to ZeRO, and found that our approach outperforms ZeRO-3 by 70% for models with 175 and 530 billion parameters due to less cross-node communication."*
+>
+> ✅ 但正文 §5.2 把条件写清楚了：*"With fewer GPUs and a microbatch size of 4, PTD-P results in 6% and 24% higher throughput for the 175- and 530-billion-parameter models respectively... For example, by **doubling the number of GPUs (keeping the batch size the same)**, PTD-P outperforms ZeRO-3 by 70% for both models."*
+
+```
+    ⚠️★ 所以「PTD-P 比 ZeRO-3 快 70%」这句话必须带三个条件，缺一个就是误引：
+
+      ① 是在【卡数翻倍、global batch 不变】这个点上量的
+         —— 在最小规模上只有 6%（175B）/ 24%（530B），
+            在最大规模上是 220%（3.2 倍）。70% 不是一个常数。
+      ② ZeRO-3 这一组是【完全不带模型并行】跑的
+         ✅ 论文明确留了这句：
+            "We note that we have only considered ZeRO-3 without tensor
+             parallelism. ZeRO-3 can be combined with model parallelism to
+             potentially improve its scaling behavior."
+         ⟹ ★ 所以这不是"ZeRO 输给 TP"，是"纯 ZeRO-3 输给 TP+PP+DP 的组合"。
+      ③ 「快 70%」说的是【吞吐】。换成【时间】是减少 41%，不是减少 70%。
+         ✅ 论文的"天数"列自己就对上了：74 天 → 43 天，减少 42%。
+         ★ 这两个数永远差一次取倒数，换算表见 [01 章 §1.5](01-为什么需要分布式训练.md)。
+```
+
+### 5.7.1 为什么会差这么多：通信要走多远
+
+```
+    ★ 论文的归因关键词是 "less cross-node communication"（更少的跨机通信）
+
+    回忆 [03 章 §3.1](03-通信原语.md)：同口径（单向÷单向）下
+      机内 NVLink 450 GB/s  vs  跨机 InfiniBand 50 GB/s  ⟹ ★ 差 9 倍
+      ⚠️（常见的"差 18 倍"是拿 900 的双向数除 50 的单向数，混了口径）
 
     ZeRO-3 的 all-gather 是在【整个数据并行组】上做的
       → 数据并行组通常横跨很多台机器
-      → ★ 每一层的参数 all-gather 都要走慢速网络
+      → ★ 每一层的参数 all-gather 都要走那条慢 9 倍的线
+      → 而且它在【前向的关键路径】上（§5.3.3）
 
     TP 的 all-reduce 只在【一台机器内】做（8 张卡）
       → 走 NVLink
 
-    ⚠️ 我的理解：这就是那 70% 差距的主要来源。论文归因于 "cross-node
-       communication"，但没有拆解出各部分占比。
+    ⚠️ 我的理解：这就是那 70%（乃至 220%）差距的主要来源。
+       论文归因于 "cross-node communication"，但没有拆解各部分占比。
 ```
 
 > 🔑 **实践上的结论（这也是工业界的标准配方）**：
 > ```
 >   按【通信要走多远】排：
 >
->     机器内 8 卡之间：  TP（张量并行）    ← 高频通信，必须走 NVLink
->     若干台机器之间：  PP（流水线并行）  ← 低频通信，能忍受慢网络
+>     机器内 8 卡之间：  TP（张量并行）    ← 高频阻塞通信，必须走 NVLink
+>     若干台机器之间：  PP（流水线并行）  ← 低频异步 P2P，能忍受慢网络
 >     整个集群铺开：    DP + ZeRO-1       ← ★ 只切优化器状态，白赚，不加通信
 >
->   ★ 注意最后一行：大规模训练里 ZeRO 常常【只开到 stage 1】，
->     因为参数和梯度已经被 TP/PP 切掉了，不需要 ZeRO 再切一次。
+>   ★★ 注意最后一行：大规模训练里 ZeRO 常常【只开到 stage 1】。
+>      为什么？因为参数和梯度已经被 TP/PP 切掉了 —— ZeRO 不需要再切一次。
+>      ✅ Megatron 里这个开关就叫 --use-distributed-optimizer（[12 章 §12.8](12-并行策略组合与MFU.md)）。
+>
+>   ⟹ 🔑 一句话选择题：
+>        只有一个维度可用（比如只会 DP）→ ZeRO-3 / FSDP
+>        能组合 TP+PP                    → TP+PP + ZeRO-1
+>        中间态（想少跨机）              → HSDP / reshard_after_forward=8（§5.4.1）
 > ```
 
 > ⚠️ **一个必须提前说清的措辞陷阱**（否则读到 12 章一定会打架）：
@@ -496,32 +907,67 @@ module.register_forward_hook(_post_forward_module_hook)      # 出这层后放
 ```
 ① ZeRO = Zero Redundancy Optimizer。想法极朴素：
    ★ 数据并行的 N 张卡存着完全一样的模型状态 —— 把"复制"换成"切分"
+   ★ 它不是第六种并行，是【数据并行的一种省显存实现】（普通 DP = stage 0）
 
-② 三个阶段（✅ 论文原文数字）：
-   ZeRO-1  切优化器状态   4× 显存节省   通信量【不变】  ★ 白赚
-   ZeRO-2  再切梯度       8× 显存节省   通信量【不变】  ★ 白赚
-   ZeRO-3  再切参数       N× 显存节省   通信量 2Ψ→3Ψ   ⚠️ 贵 1.5 倍
-   ✅ 三阶段全开：1024 张卡可训 1T 参数模型（论文自己算的 16TB÷1024=16GB）
+② ★★ 三个阶段的每卡显存（7B，Ψ=7×10^9 个，16 字节/参数，N 卡）★★
+   ZeRO-0  16Ψ         = 112 GB      基线
+   ZeRO-1  4Ψ + 12Ψ/N  = 38.5 GB     切优化器状态   ★ 地板 4Ψ = 28 GB
+   ZeRO-2  2Ψ + 14Ψ/N  = 26.25 GB    再切梯度       ★ 地板 2Ψ = 14 GB
+   ZeRO-3  16Ψ/N       = 14 GB       再切参数       ★ 没有地板，N↑ 就一直降
+   （上面第三列是 N=8 的值）
+   ✅ 用 7.5B 代进公式，六个数和论文 Table 1 全部对上
+   🔑 选阶段的机械判据：「2Ψ（一份 BF16 参数）你装得下吗？」装得下就别碰 ZeRO-3
 
-③ ★ ZeRO-1/2 为什么白赚：
+③ ★★ 通信量与兑换率（Ψ 换成【字节】口径，7B → Ψ = 14 GB）★★
+   ZeRO-0/1  all-reduce 梯度                    = 2Ψ = 28 GB
+   ZeRO-2    reduce-scatter Ψ + step 后 all-gather Ψ = 2Ψ = 28 GB
+   ZeRO-3    前向 AG Ψ + 反向 AG Ψ + RS Ψ        = 3Ψ = 42 GB
+   ⟹ ZeRO-0→1 省 73.5 GB / 多传 0     ★★ 白赚
+      ZeRO-1→2 省 12.25 GB / 多传 0    ★★ 白赚
+      ZeRO-2→3 省 12.25 GB / 多传 14 GB ⚠️ 约 1:1 的真实交易
+   ✅ 论文两次强调 ZeRO-1/2 "same communication volume as DP"
+
+④ ★ ZeRO-1/2 为什么白赚：
    All-Reduce = Reduce-Scatter + All-Gather（03 章那个恒等式）
    → ZeRO-2 只是把这一个 all-reduce 拆成两半，中间插一次局部更新
-   → 通信总量一分钱没多花
+   → 数学基础：★ 优化器更新是【逐元素】的（Adam 公式右边只有下标 i）
+   ⚠️ 对 K-FAC / Shampoo 这类二阶方法【不成立】，不是普适定理
 
-④ ★ ZeRO-3 怎么工作：算到第 k 层才 all-gather 第 k 层的参数，
-   用完立刻扔掉 → 任何时刻显存里只有【一层】的完整参数
-   代价：前向 Ψ + 反向 Ψ + 梯度 Ψ = 3Ψ，且在关键路径上
+⑤ ★★ ZeRO-3 的 3Ψ，两个坑都别踩 ★★
+   ❌「和 ZeRO-2 一样 2Ψ」——错。ZeRO-3 = ZeRO-2 + 【反向那一次 all-gather】
+      （前向那次只是顶替了 ZeRO-2 在 step 末尾的那次，一换一）
+   ❌「2Ψ + 两次 AG = 4Ψ」——错。要记「一删两增」：2Ψ − Ψ + Ψ + Ψ = 3Ψ
+      那个 −Ψ 是删掉梯度 all-reduce 的后半截，最容易漏
+   ⚠️ 而且 3Ψ 里的前向 AG 在【关键路径】上，不像 DP 的梯度通信能藏进反向
+      → 7B/32 层算例：机内 0.85 ms 通信 vs 5.9 ms 计算 ✅ 藏得住
+                      跨机 7.6 ms 通信 vs 5.9 ms 计算 ❌ 藏不住
+      → 🔑 模型越大、网络越快，ZeRO-3 越划算
 
-⑤ FSDP ≈ PyTorch 原生版的 ZeRO-3，思想相同、代码不同
-   差异在"和 autograd / 显存分配器深度耦合"
+⑥ FSDP ≈ PyTorch 原生版的 ZeRO-3，但要分清版本：
+   FSDP1 按 FlatParameter（拍平的大张量）切
+   ★ FSDP2 已经【没有 FlatParameter 了】，按原始参数切，每个是一个 DTensor
+     ✅ TorchTitan 文档："there is no more FlatParameter"
+   ★★ 配置映射（✅ 官方文档原表）：
+       reshard_after_forward=True  ≡ ZeRO-3（3Ψ）
+       reshard_after_forward=False ≡ ZeRO-2（2Ψ）  ← 反过来印证了 ⑤
+       2D mesh                     ≡ HSDP / MiCS（机内分片、机间复制）
+       reshard_after_forward=8     ≡ ZeRO++ hpZ（反向 AG 只走机内 NVLink）
    ⚠️ 坑：显存用到 99% 会触发碎片整理反而变慢，留 5~10% 余量
 
-⑥ ZeRO-Offload / ZeRO-Infinity：往 CPU 内存 / NVMe 上放
-   ★ 定位是"用速度换可行性"，工业界大规模训练不用
+⑦ ZeRO-Offload / ZeRO-Infinity：往 CPU 内存 / NVMe 上放
+   ★ 先卸载优化器状态，因为它"又大（12/16）又闲（只在 step 用）"
+   ⚠️ PCIe 5.0 ×16 单向 63 GB/s，比 HBM3 窄 53 倍（01 章 §1.6）
+   → 定位是"用速度换可行性"，工业界大规模训练不用
 
-⑦ ★★ 为什么有了 ZeRO-3 还要 TP：
-   ✅ Megatron-2 实测：PTD-P 比 ZeRO-3 快 70%（175B 和 530B 模型上）
-   ✅ 归因："less cross-node communication"
+⑧ ★★ 为什么有了 ZeRO-3 还要 TP（✅ Megatron-2 Table 2 实测）★★
+   175B、global batch 固定 1536，每卡 TFLOP/s：
+     ZeRO-3（无模型并行）  384卡 144 → 768卡 88 → 1536卡 44   ★ 腰斩两次
+     PTD-P（TP×PP=96）     384卡 153 → 768卡 149 → 1536卡 141  ★ 几乎不掉
+   ⚠️ 那句「快 70%」的三个条件，缺一个就是误引：
+     ① 只在「卡数翻倍、batch 不变」这个点成立（最小规模只有 6%，最大规模 220%）
+     ② ZeRO-3 那组是【完全不带模型并行】跑的，论文自己留了这句话
+     ③ 「快 70%」是【吞吐】；换成【时间】是减少 41%（论文天数列 74→43，对上）
+   ✅ 归因："less cross-node communication"（机内外同口径差 9 倍，03 章 §3.1）
    → 标准配方：机内 TP + 机间 PP + 铺满集群的 DP/ZeRO-1
 ```
 

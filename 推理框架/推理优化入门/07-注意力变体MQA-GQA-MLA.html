@@ -251,19 +251,39 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong>一句话</strong>：02 章的公式里，<code>KV 头数</code> 是唯一一个<strong>模型结构可以自由改小</strong>的因子。这三个变体就是三种改法，一个比一个激进。</p>
 </blockquote>
 <hr />
-<h2 id="71">7.1 回到那个公式</h2>
-<div class="codehilite"><pre><span></span><code>    KV Cache = 2 × 层数 × ★KV头数★ × 头维度 × 精度 × 长度 × 并发
+<h2 id="71">7.1 回到那个公式，并且把它写对</h2>
+<div class="codehilite"><pre><span></span><code>    KV Cache = 2 × 层数 × ★KV头数★ × 头维度 × 每元素字节数 × 长度 × 并发
                           ↑
               ★ 层数、头维度是模型能力的一部分，动了就伤质量
-                精度是 09 章的事
-                长度和并发是用户给的
+                精度是 09 章的事（KV 存成 FP8）
+                长度和并发是用户给的，你说了不算
               ⟹ ★★ 只剩「KV 头数」这一个可以在结构上做文章
 </code></pre></div>
 
-<p>标准注意力（MHA）里，<strong>有多少个查询头，就有多少个 KV 头</strong>：</p>
+<p><strong>⚠️ 在往下走之前，先堵住一个最常见的算错方式</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 到处都能看到的简化写法：
+
+       每 token 每层 = 2 × d_model × 每元素字节数
+                           ↑ Llama-3-8B 的 d_model = 4096
+                     = 2 × 4096 × 2 = 16 KiB/层 = 512 KiB/token
+
+    ★ 这个式子只在 MHA 下成立。
+      因为 MHA 时恰好有  n_kv_heads × head_dim = d_model。
+
+      Llama-3-8B 是 GQA-8：n_kv_heads × head_dim = 8 × 128 = 1024 ≠ 4096
+      ⟹ 用 d_model 去套，会把 128 KiB 算成 512 KiB，★★ 整整高估 4 倍。
+         KV 头切得越狠，高估得越离谱（MQA 会高估 32 倍）。
+
+    ⟹ 通式只有一条，别记简化版：
+
+       每 token 每层字节 = 2 × n_kv_heads × head_dim × 每元素字节数
+                           ↑        ↑
+                    K 和 V 各一份  ★ 是【KV 头数】，不是 Query 头数
+</code></pre></div>
+
+<p><strong>标准注意力（MHA）里，有多少个查询头，就有多少个 KV 头</strong>：</p>
 <blockquote>
-<p>📖 <strong>MHA</strong>（<strong>M</strong>ulti-<strong>H</strong>ead <strong>A</strong>ttention，多头注意力）——原始 Transformer 的做法。<br />
-32 个头 ⟹ 32 组 Q、32 组 K、32 组 V。</p>
+<p>📖 <strong>MHA</strong>（<strong>M</strong>ulti-<strong>H</strong>ead <strong>A</strong>ttention，多头注意力）——原始 Transformer 的做法。32 个头 ⟹ 32 组 Q、32 组 K、32 组 V。</p>
 </blockquote>
 <p><strong>关键观察</strong>：Q 是<strong>当前这一个 token</strong> 算出来的，用完就扔；K、V 却要<strong>存下来给未来所有 token 用</strong>。</p>
 <div class="codehilite"><pre><span></span><code>    ★★ 所以 Q 有多少头无所谓，K、V 有多少头才要命。
@@ -308,43 +328,87 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     Q:  [Q1 Q2 Q3 Q4][Q5 Q6 Q7 Q8] ... [Q29 Q30 Q31 Q32]
           └───┬────┘  └───┬────┘         └────┬─────┘
     KV:      KV1          KV2                 KV8
-             ★ 8 组 KV
+             ★ 一共 8 组 KV
 
-    ⟹ KV Cache 缩小 4 倍（32/8）
+    ⟹ KV Cache 缩小 4 倍（32 ÷ 8）
     ⟹ ★ 质量损失远小于 MQA
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ★★ GQA 是一个【连续的旋钮】，两端就是另外两种：
-       组数 = 头数（32）  ⟹ 退化成 MHA（不省）
-       组数 = 1           ⟹ 退化成 MQA（省到极限）
-       组数 = 8           ⟹ 现在几乎所有主流开源模型的选择
+       KV 组数 = 头数（32）  ⟹ 退化成 MHA（一点不省）
+       KV 组数 = 1           ⟹ 退化成 MQA（省到极限）
+       KV 组数 = 8           ⟹ 现在几乎所有主流开源模型的选择
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>论文的两个关键贡献</strong>（GQA 论文）：<br />
-① <strong>uptraining（升级训练）</strong>——已经训好的 MHA 模型，可以把每组的 K、V 做<strong>均值池化</strong>合并，<br />
-再用<strong>原训练数据的一小部分</strong>继续训一下，就能转成 GQA。<strong>不用从头重训。</strong><br />
-② 实验表明 GQA 在质量上<strong>接近 MHA</strong>，速度上<strong>接近 MQA</strong>。</p>
+<p>✅ <strong>论文的两个关键贡献</strong>（GQA 论文）：① <strong>uptraining（升级训练）</strong>——已经训好的 MHA 模型，可以把每组的 K、V 做<strong>均值池化</strong>合并，再用<strong>原训练数据的一小部分</strong>继续训一下，就能转成 GQA，<strong>不用从头重训</strong>；② 实验表明 GQA 在质量上<strong>接近 MHA</strong>，速度上<strong>接近 MQA</strong>。</p>
 </blockquote>
-<p><strong>这就是 02 章 Llama-3-8B 那个数字的来源</strong>：</p>
+<p><strong>这就是 02 章 Llama-3-8B 那个 128 KiB 的来源</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    Llama-3-8B：32 个注意力头，★ 但只有 8 个 KV 头（GQA，组大小 4）
-    ⟹ 每 token 128 KB   ← 如果是 MHA，会是 512 KB
+
+    每 token 每层 = 2 × 8 × 128 × 2 字节 = 4096 字节 = 4 KiB
+    每 token 全模型 = 4 KiB × 32 层     = ★ 128 KiB
+                                           如果是 MHA，会是 512 KiB
 </code></pre></div>
 
-<p><strong>GQA 带来的一个副作用</strong>，06 章提过：</p>
-<div class="codehilite"><pre><span></span><code>    ⚠️ ★ TP 数不能超过 KV 头数。
-       Llama-3-8B 只有 8 个 KV 头 ⟹ TP 最大 8。
-       想 TP=16？某些卡分不到 KV 头，只能复制 KV，白费显存。
-    ⟹ ★★ 省 KV 和 切并行，在这里【打架】。这不是 bug，是真实的设计张力。
+<p><strong>GQA 带来的一个副作用</strong>，06 章提过，这里把它算成表：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ★ TP（张量并行）是按【头】切的，所以 TP 数不能超过 KV 头数。
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th>TP</th>
+<th>Llama-3-8B 的 8 个 KV 头怎么分</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>每卡 8 个</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>2</td>
+<td>每卡 4 个</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>4</td>
+<td>每卡 2 个</td>
+<td>正常</td>
+</tr>
+<tr>
+<td><strong>8</strong></td>
+<td>每卡 1 个</td>
+<td>★ <strong>刚好用满，这是上限</strong></td>
+</tr>
+<tr>
+<td>16</td>
+<td>分不动了，只能<strong>每 2 张卡存同一个 KV 头</strong></td>
+<td>⚠️ KV 显存白白翻倍，并发反而下降</td>
+</tr>
+<tr>
+<td>32</td>
+<td>每 4 张卡存同一个</td>
+<td>⚠️ KV 显存 ×4</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 省 KV 和 切并行，在这里【打架】。这不是 bug，是真实的设计张力。
+</code></pre></div>
+
+<blockquote>
+<p>★ 06 章的 <strong>DCP</strong>（Decode Context Parallel，解码上下文并行）就是来补这个洞的：TP 超过 KV 头数之后，改成在<strong>序列维</strong>上再切 KV，而不是继续复制。见 <a href="06-推理中的并行策略.html">06 章 §6.4</a>。</p>
+</blockquote>
 <hr />
 <h2 id="74-mla">7.4 MLA：换一条路——压缩，而不是共享</h2>
 <blockquote>
 <p>📖 <strong>MLA</strong>（<strong>M</strong>ulti-head <strong>L</strong>atent <strong>A</strong>ttention，多头潜在注意力）<br />
 ✅ 论文 arXiv 2405.04434（<code>papers/DeepSeek-V2-MLA-arXiv-2405.04434.pdf</code>），DeepSeek，2024</p>
 </blockquote>
-<p>MQA/GQA 的思路是<strong>「少存几份」</strong>。MLA 的思路完全不同：<strong>「存一个压缩过的东西，用的时候再解压」</strong>。</p>
+<p>MQA / GQA 的思路是<strong>「少存几份」</strong>。MLA 的思路完全不同：<strong>「存一个压缩过的东西，用的时候再解压」</strong>。</p>
 <div class="codehilite"><pre><span></span><code>    ★★ MLA 的核心：
        不存 K 和 V，★ 只存一个【低维的潜在向量 c】。
        需要 K、V 时，用两个矩阵把 c 【投影回去】。
@@ -354,8 +418,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
            c_t ──[解压矩阵 W_V]──► V_t
 </code></pre></div>
 
+<blockquote>
+<p>★ <strong>注意这里发生了一件结构性的事</strong>：MLA 存的 <code>c_t</code> <strong>没有「头」这个维度了</strong>。前三种变体都在数「几个 KV 头」，MLA 直接把这一维取消掉了。这一点在 §7.7 会变成一个大后果。</p>
+</blockquote>
 <p><strong>看起来只是把开销从「存」挪到了「算」——但有一个漂亮的技巧让这笔账变得免费</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    ★★★ 矩阵吸收（absorption）：
+
        注意力要算 Q · Kᵀ = Q · (c · W_K)ᵀ = ★ (Q · W_Kᵀ) · cᵀ
                                               └────┬────┘
                                         ★ 这一部分和 c 无关，
@@ -372,87 +440,314 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="codehilite"><pre><span></span><code>    ✅ KV Cache 减少 93.3%       （≈ 缩小 15 倍）
     ✅ 最大生成吞吐提升到 5.76 倍
     ✅ 训练成本省 42.5%
-    ★ 而且论文强调质量【更强】，不是持平——因为 MLA 不像 MQA 那样牺牲表达能力，
-      它只是换了个存储形式。
+
+    ⚠️ 但要看清这三个数的【对照基准是 DeepSeek 67B】——
+       一个 95 层、64 个 KV 头的 MHA 模型，不是 §7.6 表里的任何一行。
+       别拿它去验证别的算式。
+
+    ★ 而且论文强调质量【更强】，不是持平——因为 MLA 不像 MQA 那样牺牲
+      表达能力，它只是换了个存储形式。
 </code></pre></div>
 
 <p><strong>一个必须提的麻烦：位置编码。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ⚠️ 现代模型用 RoPE（Rotary Position Embedding，旋转位置编码），
        它要对 K 做一个和【位置有关】的旋转。
-       ⟹ 旋转矩阵夹在中间，上面那个「吸收」技巧就【失效】了。
+       ⟹ 旋转矩阵夹在 Q 和 c 中间，上面那个「吸收」技巧就【失效】了。
 
     ★ DeepSeek 的解法：把每个头的维度【劈成两半】
-       一半走压缩路径（不带 RoPE）   → 存在 c 里
-       一半单独存、带 RoPE           → 额外存一小段（论文叫 decoupled RoPE）
-    ⟹ 这就是为什么 MLA 的实现里，KV Cache 是【两段拼起来】的
+       一半走压缩路径（不带 RoPE）   → 压进潜向量 c 里，DeepSeek 取 512 维
+       一半单独存、带 RoPE           → 额外存一小段，DeepSeek 取 64 维
+                                       （论文叫 decoupled RoPE，解耦 RoPE）
+
+    ⟹ ★ 这就是为什么 MLA 的 KV Cache 是【两段拼起来】的：512 + 64 = 576 维
+       下一节那张表里 MLA 那一行的数字，就是从这两个数来的。
 </code></pre></div>
 
 <hr />
-<h2 id="75">7.5 三者对比</h2>
-<div class="codehilite"><pre><span></span><code>┌────────┬──────────────┬────────────┬────────────────────────┐
-│        │  KV 缩小倍数   │  质量      │  代表模型               │
-├────────┼──────────────┼────────────┼────────────────────────┤
-│  MHA   │  1×（基准）   │  基准      │  GPT-3、Llama-1        │
-│  MQA   │  ★ 头数倍     │ ⚠️ 明显下降 │  PaLM、Falcon          │
-│  GQA   │  ★ 4~8×      │ ✅ 接近 MHA │ ★ Llama-2/3、Qwen、    │
-│        │              │            │  Mistral（事实标准）    │
-│  MLA   │ ✅ ~15×       │ ✅ 论文称更强│ ★ DeepSeek-V2/V3       │
-│        │  (93.3%)     │            │                        │
-└────────┴──────────────┴────────────┴────────────────────────┘
+<h2 id="75-token">7.5 四种变体，把每 token 的字节数逐个算出来</h2>
+<p><strong>用同一个模型配置</strong>，把四种变体并排算完——这一节是全章的核心。</p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>取值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>层数 L</td>
+<td>32</td>
+</tr>
+<tr>
+<td>Query 头数</td>
+<td>32</td>
+</tr>
+<tr>
+<td>head_dim</td>
+<td>128</td>
+</tr>
+<tr>
+<td>d_model</td>
+<td>4096（= 32 × 128）</td>
+</tr>
+<tr>
+<td>精度</td>
+<td>BF16 = 2 字节</td>
+</tr>
+<tr>
+<td>留给 KV Cache 的显存</td>
+<td>56 GiB（单张 H100，同 02 / 05 章口径）</td>
+</tr>
+</tbody>
+</table>
+<p>套通式 <code>每 token 每层 = 2 × n_kv_heads × head_dim × 字节数</code>：</p>
+<table>
+<thead>
+<tr>
+<th>变体</th>
+<th>KV 头数</th>
+<th>每 token <strong>每层</strong></th>
+<th>每 token <strong>全模型</strong>（×32）</th>
+<th>相对 MHA</th>
+<th>56 GiB 能装多少 token</th>
+<th>一条 8K 对话要多少</th>
+<th>8K 对话的并发数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MHA</strong></td>
+<td>32</td>
+<td>2×32×128×2 = <strong>16 KiB</strong></td>
+<td><strong>512 KiB</strong></td>
+<td>1×（基准）</td>
+<td>114,688</td>
+<td>4 GiB</td>
+<td><strong>14</strong></td>
+</tr>
+<tr>
+<td><strong>GQA-8</strong>（Llama-3 实际）</td>
+<td>8</td>
+<td>2×8×128×2 = <strong>4 KiB</strong></td>
+<td><strong>128 KiB</strong></td>
+<td><strong>4×</strong></td>
+<td>458,752</td>
+<td>1 GiB</td>
+<td><strong>56</strong></td>
+</tr>
+<tr>
+<td><strong>MQA</strong></td>
+<td>1</td>
+<td>2×1×128×2 = <strong>0.5 KiB</strong></td>
+<td><strong>16 KiB</strong></td>
+<td><strong>32×</strong></td>
+<td>3,670,016</td>
+<td>128 MiB</td>
+<td><strong>448</strong></td>
+</tr>
+<tr>
+<td><strong>MLA</strong>（⚠️ 推演）</td>
+<td>没有这个概念</td>
+<td>(512+64)×2 = <strong>1.125 KiB</strong></td>
+<td><strong>36 KiB</strong></td>
+<td><strong>14.2×</strong></td>
+<td>1,631,118</td>
+<td>288 MiB</td>
+<td><strong>199</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>MLA 那一行怎么读</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 这一行是【推演】，不是某个真实模型的配置。
+       做法：把 DeepSeek 的两个 MLA 维度（潜向量 512 + 解耦 RoPE 64）
+       套到上面那个 32 层的模型上，看量级。
+
+    ★ 注意它的式子里【没有乘 2】，也【没有头数】：
+       MHA/GQA/MQA 要存 K 和 V 两份 ⟹ 前面那个 ×2
+       MLA 只存一个潜向量 c（K 和 V 从同一个 c 解压出来）⟹ 不乘 2
+       MLA 的 c 不分头 ⟹ 没有 n_kv_heads 这一项
+
+    ⚠️ 这里算出来的 14.2× 和论文的 93.3%（≈15×）看着很接近，
+       但两者【口径不同】（论文比的是 DeepSeek 67B），
+       ★ 不要把它们当成互相验证。
+</code></pre></div>
+
+<p><strong>真实的 MLA 模型有多省</strong>——DeepSeek-V3（⚠️ 按公开配置推算：61 层，潜向量 512，解耦 RoPE 64，BF16）：</p>
+<div class="codehilite"><pre><span></span><code>    每 token = 61 层 × (512 + 64) × 2 字节 = 70,272 字节 = ★ 68.6 KiB
+
+    对照：Llama-3-8B（GQA-8）是 128 KiB。
+
+    ⟹ ★★★ 一个 671B 的模型，每 token 的 KV Cache 比一个 8B 模型还小一半。
+       这句话值得停下来想三秒——它解释了 DeepSeek 为什么敢把上下文开到 128K，
+       也解释了 §7.7 的整件事。
+</code></pre></div>
+
+<p><strong>四者并排的定性对比</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>KV 缩小倍数</th>
+<th>质量</th>
+<th>能不能给已训好的模型换上</th>
+<th>代表模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MHA</strong></td>
+<td>1×（基准）</td>
+<td>基准</td>
+<td>—</td>
+<td>GPT-3、Llama-1</td>
+</tr>
+<tr>
+<td><strong>MQA</strong></td>
+<td>★ 等于头数（本例 32×）</td>
+<td>⚠️ 明显下降</td>
+<td>理论上能 uptrain，实际少见</td>
+<td>PaLM、Falcon</td>
+</tr>
+<tr>
+<td><strong>GQA</strong></td>
+<td>★ 4~8×</td>
+<td>✅ 接近 MHA</td>
+<td>✅ <strong>能</strong>（uptraining）</td>
+<td>★ Llama-2/3、Qwen、Mistral（<strong>事实标准</strong>）</td>
+</tr>
+<tr>
+<td><strong>MLA</strong></td>
+<td>✅ 论文称 93.3%（≈15×）</td>
+<td>✅ 论文称<strong>更强</strong></td>
+<td>❌ <strong>不能</strong>，必须预训练时就用</td>
+<td>★ DeepSeek-V2/V3</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>为什么 MLA 这么好却没普及？</strong>（我的判断）① 它是<strong>模型结构</strong>，不是推理优化——已经训好的 Llama 没法换成 MLA（GQA 还能 uptrain，MLA 不行）；② 实现复杂：矩阵吸收、解耦 RoPE、和各种注意力 kernel 的适配，都要专门写。⟹ 结果是：<strong>GQA 赢在生态，MLA 赢在技术</strong>。</p>
+<p>★ 注意力 kernel 层面怎么原生支持 GQA / MQA（让 8 个共享同一份 KV 的 Q 头排进同一个线程块，K/V 只搬一次），见 <a href="../../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 04 章 §4.4.5</a>。⚠️ 朴素实现会先用 <code>repeat_interleave</code> 把 KV 广播成 32 份再算——那样显存和带宽都白涨 4 倍，省 KV 的努力全白费。</p>
+</blockquote>
+<hr />
+<h2 id="76-kv">7.6 长上下文时，省 KV 是双份的收益</h2>
+<p>省 KV 不只是「能装更多用户」，<strong>Decode 的每一步还要把整个 KV Cache 读一遍</strong>——读得少，每个字吐得也更快。</p>
+<table>
+<thead>
+<tr>
+<th>场景（Llama-3-8B，GQA-8）</th>
+<th>每步读权重</th>
+<th>每步读 KV</th>
+<th>KV 占比</th>
+<th>每步耗时（÷ 3.35 TB/s）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>上下文 2048，batch 1</td>
+<td>15 GB</td>
+<td>0.27 GB</td>
+<td>1.8%</td>
+<td>4.56 ms</td>
+</tr>
+<tr>
+<td>上下文 32768，batch 1</td>
+<td>15 GB</td>
+<td>4.29 GB</td>
+<td>22%</td>
+<td>5.76 ms</td>
+</tr>
+<tr>
+<td>上下文 32768，batch 8</td>
+<td>15 GB</td>
+<td>34.4 GB</td>
+<td><strong>70%</strong></td>
+<td><strong>14.7 ms</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 权重读取量是【固定】的，KV 读取量随 batch × 长度【线性增长】。
+      过了某个点，KV 就成了主角。
+
+    ⟹ 假如上面第三行用的是 MHA（KV ×4）：KV 要读 137.6 GB
+       ——一步 45 ms，而且 80 GB 的卡根本装不下。
+    ⟹ ★★ 「长上下文推理变慢」不是玄学，就是这张表的第三列。
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>为什么 MLA 这么好却没普及？</strong>（我的判断）<br />
-① 它是<strong>模型结构</strong>，不是推理优化——已经训好的 Llama 没法换成 MLA（GQA 还能 uptrain，MLA 不行）。<br />
-② 实现复杂：吸收技巧、解耦 RoPE、和各种注意力 kernel 的适配，都要专门写。<br />
-⟹ 结果是：<strong>GQA 赢在生态，MLA 赢在技术</strong>。</p>
+<p>★ 这张表的完整推导（以及为什么权重只算 15 GB 而不是 16.1 GB）在 <a href="../../大模型算子开发/09-推理侧算子.html">大模型算子开发 09 章 §9.2.5</a>。</p>
 </blockquote>
 <hr />
-<h2 id="76-mla-06">7.6 ★ MLA 如何改变了并行策略——回收 06 章的伏笔</h2>
-<p>06 章说 SGLang 让「注意力层用 DP、MoE 层用 EP」。<strong>为什么注意力层能用 DP？MLA 是前提。</strong></p>
+<h2 id="77-mla-06">7.7 ★ MLA 如何改变了并行策略——回收 06 章的伏笔</h2>
+<p>06 章说 SGLang 让「注意力层用 DP、MoE 层用 EP」。<strong>为什么注意力层能用 DP？MLA 是前提。</strong> 这里有两层原因，第二层才是关键。</p>
+<p><strong>第一层：MLA 的 KV 小，所以每卡存一份完整 KV 是负担得起的。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ★ 如果注意力用 DP（每张卡处理不同的请求）：
       ⟹ 每张卡都要持有【自己那批请求的完整 KV】
 
-      用 GQA 的模型：KV 很大 ⟹ 每卡都存完整 KV，★ 显存爆炸，DP 不可行
-                    ⟹ 只能用 TP 把 KV 头切开分摊
+      用 GQA 的模型：KV 很大 ⟹ 每卡都存完整 KV，★ 显存吃紧
+      用 MLA 的模型：KV 只有 1/15 ⟹ 每卡存完整 KV 完全可以接受
+</code></pre></div>
 
-      ★★ 用 MLA 的模型：KV 只有 1/15 ⟹ 每卡存完整 KV 完全可以接受
-                    ⟹ ★ 注意力层用 DP 变得【可行】
-                    ⟹ 而 DP 的好处是：注意力层【一次 all-reduce 都不用】
+<p><strong>第二层（更要命）：MLA 的 KV 根本没法用 TP 切。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★★ 回到 §7.4 那句话：MLA 存的潜向量 c【没有头这一维】。
 
-    ⟹ ★★★ MLA 不只是省显存，它【解锁了一种新的并行策略】。
+    TP 切注意力是按【头】切的（§7.3 那张表）。
+    MLA 没有头可切 ⟹ ★★★ TP 只能把整份 c 【复制】到每张卡上。
+
+    代入 DeepSeek-V3（每 token 68.6 KiB），一条 8K 的对话 = 549 MiB：
+
+      TP=8 ：8 张卡各存【同一条】对话的 549 MiB
+             ⟹ 花掉 8 × 549 MiB，只服务【1 个】用户
+      DP=8 ：8 张卡各存【不同】对话的 549 MiB
+             ⟹ 同样的显存，服务【8 个】用户
+
+    ⟹ ★★★ 同样的显存，并发差 8 倍。这才是 Attention DP 的真正动机。
+       ⟹ 而 DP 还顺带白拿一个好处：注意力层【一次 all-reduce 都不用】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★★ 所以 MLA 不只是省显存，它【逼出并且解锁了一种新的并行策略】。
        这就是 SGLang 要为 DeepSeek 类模型专门做 DP-Attention 的根本原因。
 </code></pre></div>
 
 <blockquote>
-<p>✅ 对应源码：SGLang <a href="../源码/SGLang/python/sglang/srt/layers/dp_attention.py#L343">dp_attention.py:343</a> <code>initialize_dp_attention</code>，<br />
-以及 06 章讲过的 <code>attn_dp × attn_cp × attn_tp</code> 分解（<a href="../源码/SGLang/python/sglang/srt/distributed/parallel_state.py#L2587">parallel_state.py:2587</a> 附近）。</p>
+<p>⚠️ 实际部署不是非黑即白。✅ DeepSeek-V3 官方的 Prefill 最小部署单元是 4 机 32 卡，注意力部分用的是 <strong>TP4 + DP8</strong> 的混合，不是纯 DP（见 <a href="11-MoE推理与专家并行.html">11 章 §11.2</a>）。<strong>「注意力 DP」说的是方向，不是一个非此即彼的开关。</strong></p>
+<p>✅ 对应源码：SGLang <a href="../源码/SGLang/python/sglang/srt/layers/dp_attention.py#L343">dp_attention.py:343</a> <code>initialize_dp_attention</code>，以及 06 章讲过的 <code>attn_dp × attn_cp × attn_tp</code> 分解（<a href="../源码/SGLang/python/sglang/srt/distributed/parallel_state.py#L2587">parallel_state.py:2587</a> 附近）。</p>
 </blockquote>
 <hr />
-<h2 id="77">7.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① Q 用完就扔，KV 要存 ⟹ ★ 只在 KV 头数上做文章               │
-│                                                              │
-│  ② MQA：所有 Q 共用一组 KV，省到极限，⚠️ 质量掉点              │
-│     GQA：分组共用（通常 8 组），★ 事实标准，KV 缩 4~8 倍        │
-│          ✅ 可以从 MHA 模型 uptrain 转换，不用重训              │
-│          ⚠️ 副作用：TP 数不能超过 KV 头数                       │
-│                                                              │
-│  ③ ★★ MLA：换思路——压缩成低维潜在向量，                       │
-│     靠【矩阵吸收】让解压不产生额外计算                          │
-│     ✅ KV 减少 93.3%，最大生成吞吐 5.76 倍（DeepSeek-V2 摘要）  │
-│     ⚠️ 代价：RoPE 要解耦；且必须在【预训练时】就用，无法后加     │
-│                                                              │
-│  ④ ★★★ MLA 解锁了新并行策略：KV 够小 ⟹ 注意力层可以用 DP       │
-│     ⟹ SGLang 的 DP-Attention 由此而来（回收 06 章伏笔）        │
-└──────────────────────────────────────────────────────────────┘
+<h2 id="78">7.8 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>    ① Q 用完就扔，KV 要一直存 ⟹ ★ 只在 KV 头数上做文章
+
+       ⚠️ 通式只有一条：2 × n_kv_heads × head_dim × 字节数 × 层数
+          拿 d_model 去套 GQA 模型，会高估 4 倍（MQA 高估 32 倍）
+
+    ② 同一个 32 层 / 32 头 / head_dim 128 的模型，每 token 全模型：
+          MHA    512 KiB    1×      8K 对话能开  14 路并发
+          GQA-8  128 KiB    4×                   56 路
+          MQA     16 KiB   32×                  448 路
+          MLA     36 KiB   14×（⚠️ 推演）        199 路
+
+    ③ MQA：所有 Q 共用一组 KV，省到极限，⚠️ 质量掉点
+       GQA：分组共用（通常 8 组），★ 事实标准
+            ✅ 能从 MHA 模型 uptrain 转换，不用重训
+            ⚠️ 副作用：TP 数不能超过 KV 头数，超了就是白白复制
+
+    ④ ★★ MLA：换思路——压成一个低维潜向量（512 + 解耦 RoPE 64），
+       靠【矩阵吸收】让「解压」不产生额外计算
+       ✅ KV 减少 93.3%、最大生成吞吐 5.76 倍（DeepSeek-V2 摘要，
+          ⚠️ 对照基准是 DeepSeek 67B）
+       ⚠️ 代价：RoPE 要解耦；且必须在【预训练时】就用，无法后加
+       ★ DeepSeek-V3 每 token 只要 68.6 KiB —— 671B 的模型，
+         KV 比 8B 的 Llama-3 还小一半
+
+    ⑤ ★★★ MLA 解锁了新并行策略：
+       不只因为「KV 够小」，更因为「MLA 的 KV 没有头维度，TP 切不开、
+       只能复制」⟹ 注意力层不得不、也刚好可以走 DP
+       ⟹ SGLang 的 DP-Attention 由此而来（回收 06 章伏笔）
 </code></pre></div>
 
 <hr />
 <blockquote>
 <p><strong>下一步</strong> → <a href="08-投机解码.html">08 投机解码</a><br />
-前面几章都在「省显存以便把 batch 做大」。下一章换个思路：<br />
-<strong>batch 做不大的时候，能不能让一次前向多吐几个字？</strong></p>
+前面几章都在「省显存以便把 batch 做大」。下一章换个思路：<strong>batch 做不大的时候，能不能让一次前向多吐几个字？</strong></p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

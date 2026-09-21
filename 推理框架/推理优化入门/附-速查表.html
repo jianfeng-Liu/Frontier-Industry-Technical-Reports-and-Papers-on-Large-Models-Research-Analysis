@@ -254,26 +254,56 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="_2">一、核心公式</h2>
 <div class="codehilite"><pre><span></span><code>★ 算术强度（决定瓶颈在算力还是带宽）                          【01】
     算术强度 ≈ 这一批的 token 数
-    &gt; ~300（H100 BF16 平衡点）⟹ 算力受限
-    &lt; ~300                    ⟹ ★ 访存受限
-    ⟹ Decode 时 batch=1 ⟹ 算术强度≈1 ⟹ 算力利用率 &lt;1%
+
+    ★ 分界线叫【屋脊点】= 峰值算力 ÷ 峰值带宽
+      H100 SXM5：989 TFLOPS（BF16 稠密）÷ 3.35 TB/s = 295 FLOP/Byte
+
+    &gt; 295 ⟹ 算力受限（Compute Bound）
+    &lt; 295 ⟹ ★ 访存受限（Memory Bound）
+    ⟹ Decode 时 batch=1 ⟹ 算术强度≈1 ⟹ 算力利用率 ≈0.3%
+
+    ⚠️ 989 是【稠密】值。规格表里 BF16 还有个 1979 的【稀疏】值
+       （要求 2:4 稀疏权重，常规推理用不上）。拿 1979 当稠密用，
+       屋脊点会算成 591，后面所有结论全错。
 
 ★★ KV Cache 大小                                            【02】
     字节 = 2 × 层数 × KV头数 × 头维度 × 精度 × 序列长度 × 并发
            ↑K,V
 
+    ★ 每 token 每层 = 2 × n_kv_heads × head_dim × 字节数
+      ⚠️ MHA（n_kv_heads × head_dim = d_model）时才退化为
+         FP16 下 = 2 × d_model × 2 = 4 × d_model 字节/层
+      ⚠️⚠️ 【最高频的错】：拿 d_model 硬套 MHA 公式去算 GQA 模型。
+           Llama-3-70B 的 d_model=8192，但 KV 头只有 8 个（不是 64 个），
+           用 MHA 公式会高估 8 倍。GQA 省下的正是这 8 倍（07 章）。
+
     Llama-3-8B（32层, 8个KV头, 128头维, BF16）
-      ⟹ ★ 每 token 128 KB
-      ⟹ 8K 对话 = 1 GB，128K 对话 = 16 GB
+      ⟹ ★ 每 token 128 KiB  （= 2 × 8 × 128 × 2 × 32 = 131072 字节）
+      ⟹ 8K 对话 = 1 GiB，128K 对话 = 16 GiB
 
 ★ 可用 KV 空间                                               【02】
     ≈ 显存总量 − 权重 − 激活 − CUDA上下文 − 框架预留
-    H100 80GB 跑 8B BF16 ⟹ ★ 约 58 GB ⟹ 约 47 万 token
+    H100 80GB 跑 8B BF16 ⟹ ★ 约 58 GiB ⟹ 约 47 万 token
+                            （58 GiB ÷ 128 KiB = 475,136）
 
 ★ 最大并发 ≈ 可用 KV token 数 ÷ 平均对话长度                 【02】
 
 ★ 端到端延迟                                                 【13】
-    E2E = TTFT + TPOT × 输出长度
+    E2E = TTFT + TPOT × (输出长度 − 1)
+          ⚠️ 是 −1：第 1 个 token 已经算在 TTFT 里了
+
+★ Decode 单步耗时 / 吞吐（访存受限，直接除带宽）              【13】
+    单步搬运 = 权重字节（固定）+ batch × 平均上下文 × 每token KV字节
+    单步耗时 = 单步搬运 ÷ 有效带宽（⚠️ 取峰值的 80%）
+    TPOT ≈ 单步耗时      吞吐 = batch ÷ 单步耗时
+
+★★ 吞吐甜点（KV 搬运量追平权重搬运量的那个并发）             【13】
+    甜点 batch = 权重字节 ÷ (平均上下文长度 × 每 token KV 字节)
+    Llama-3-8B、上下文 1152 ⟹ 16 GB ÷ 0.151 GB ≈ 106 并发
+    ⟹ 低于它，加并发几乎白赚吞吐；高于它，只是等比例拖长单步
+
+★ 延迟-吞吐曲线的拐点（= 真实容量）                          【13】
+    拐点 = min(可用 KV 空间 ÷ 每条序列 KV, max_num_seqs)
 
 ★ 投机解码加速比                                             【08】
     ≈ (平均接受 token 数 + 1) ÷ (1 + 草稿开销)
@@ -284,8 +314,18 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        ⟹ 🔑 c 才是隐藏的杀手：目标模型越小 c 越大，越不划算
           70B 配 1B    ⟹ c≈12.5%，接受率 75% ⟹ 划算
           8B  配 0.6B  ⟹ c≈37.5%，接受率 81% ⟹ ⚠️ 反而不划算
+
+★★ 「时间减少」和「加速」的换算（最常说错的一处）            【13】
+    时间减少 p  ⟺  加速 1/(1−p) 倍        加速 N 倍 ⟺ 时间减少 1−1/N
+    减少 50% = 2 倍 ｜ 减少 60% = 2.5 倍 ｜ 减少 80% = 5 倍
+    ⚠️ 「时间减少 60%」≠「加速 60%」（后者只有 1.6 倍）
+    ★ 规矩：延迟说「从 A 降到 B」或「加速 N 倍」，别用百分比说延迟
 </code></pre></div>
 
+<blockquote>
+<p>✅ <strong>H100 SXM5 完整硬件参数</strong>（BF16 稠密 989 TFLOPS / FP32 67 TFLOPS / HBM3 80 GB / 3.35 TB/s / 屋脊点 295 FLOP/Byte）见 <a href="../../大模型算子开发/附-速查表.html">大模型算子开发/附-速查表 §A</a>，屋顶线推导见 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发/02 章</a>。<br />
+⚠️ <strong>单位别混</strong>：GB（10⁹）和 GiB（2³⁰）差 7%；KV Cache 这类按 2 的幂算出来的量，写 KiB / GiB 更准确。</p>
+</blockquote>
 <hr />
 <h2 id="_3">二、缩写对照（按首次出现章节排序）</h2>
 <table>
@@ -319,7 +359,25 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>ITL</td>
 <td>Inter-Token Latency</td>
-<td>同 TPOT</td>
+<td>token 间延迟（⚠️ 是分布，TPOT 是它的均值）</td>
+<td style="text-align: center;">13</td>
+</tr>
+<tr>
+<td>E2E</td>
+<td>End-to-End latency</td>
+<td>端到端延迟</td>
+<td style="text-align: center;">13</td>
+</tr>
+<tr>
+<td>goodput</td>
+<td>（无缩写，直译「有效吞吐」）</td>
+<td>★ SLO 约束下的最大吞吐</td>
+<td style="text-align: center;">10 / 13</td>
+</tr>
+<tr>
+<td>P99</td>
+<td>99th percentile</td>
+<td>第 99 百分位（★ 别只看均值）</td>
 <td style="text-align: center;">13</td>
 </tr>
 <tr>
@@ -468,8 +526,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ExternalDP × DP × PP × PCP × TP
                                   ↑ 变化最快 = 物理最近
 
-    步长：TP=1, PCP=TP, PP=PCP×TP, DP=PP×PCP×TP
-    ⟹ ★ TP 最近，DP 最远
+    步长（stride）= 它右边所有维度的【大小】之积：
+      TP 的步长 = 1
+      PCP 的步长 = tp_size
+      PP  的步长 = pcp_size × tp_size
+      DP  的步长 = pp_size × pcp_size × tp_size
+    ⟹ ★ 步长越小 = rank 编号相邻 = 物理越近。TP 最近，DP 最远
 
 ★★ 对比训练（Megatron-LM）                                    【06】
     tp - cp - ep - dp - pp
@@ -504,7 +566,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><strong>TP</strong></td>
 <td>每层 <strong>2</strong> 次 all-reduce（训练 4 次）</td>
 <td>★ 降显存<strong>和</strong>降延迟</td>
-<td>★ 不超过单机卡数；<strong>必须整除 KV 头数</strong></td>
+<td>★ 不超过单机卡数；⚠️ <strong>KV 头数要能被 TP 整除</strong>，TP 超过 KV 头数时框架会<strong>复制</strong> KV 头，KV 显存就不再省了</td>
 </tr>
 <tr>
 <td><strong>PP</strong></td>
@@ -538,6 +600,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>⚠️ <strong>算通信时间时的单位陷阱</strong>：H100 的 <strong>NVLink 900 GB/s 是「双向聚合」值</strong>（单卡对外的总和）。估算「我这次 all-reduce 要发多少字节、要多久」时，单向可用带宽要按 <strong>450 GB/s</strong> 算，用 900 会把时间算少一半。同理 PCIe Gen5 x16 的 128 GB/s 也是双向值。</p>
+</blockquote>
 <hr />
 <h2 id="_6">四、决策树</h2>
 <div class="codehilite"><pre><span></span><code>★ 选并行配置                                                  【06】
@@ -576,16 +641,26 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <hr />
 <h2 id="_7">五、排查清单</h2>
-<div class="codehilite"><pre><span></span><code>GPU 利用率长期 &lt;30%   → ★ CPU 瓶颈？检查 CUDA Graph【12】/ batch 太小
+<div class="codehilite"><pre><span></span><code>GPU 利用率长期 &lt;30%   → ⚠️ 先问是哪个利用率！【13】
+                         Decode 的【算力】利用率天生就 &lt;1%，那是正常的；
+                         【带宽】利用率（MBU）才该接近 100%。
+                       两个都低才是真问题 → ★ CPU 瓶颈？查 CUDA Graph【12】/ batch 太小
 KV 使用率长期 &gt;95%    → 显存瓶颈 → FP8 KV【09】/ 换 GQA-MLA 模型【07】
 抢占次数非零          → 在颠簸 → ★ 调小 max_num_seqs 反而更快【04】
 前缀缓存命中率低       → 🔑 ★ 检查易变内容（时间戳）是否放在 prompt 开头【05】
-TTFT 高、TPOT 正常    → Prefill 瓶颈 → 前缀缓存 / PD 分离【10】
+TTFT 高、TPOT 正常    → ★ 先分清是【排队】还是【Prefill 慢】【13】
+                       Prefill 慢 → 前缀缓存【05】/ 调 chunk 粒度 / PD 分离【10】
+                       排队       → 机器不够，或调度偏向了 Decode
 TPOT 高、TTFT 正常    → Decode 瓶颈 → 加 TP / 量化 / 投机解码【08】
+                       ⚠️ 也可能 batch 已越过吞吐甜点，往回调反而更好【13】
+TPOT 均值正常、ITL P99 高 → ★ 有东西在插队：chunk 太大，或在抢占重算【13】
 MoE 各卡利用率不均     → ★ 专家负载不均 → EPLB【11】
 P99 远高于均值        → 长尾 → 查抢占【04】和专家不均【11】
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>一个反复被误用的算法</strong>：「kernel 启动开销 3~10 µs × 200 个 kernel = 2 ms」——<strong>错</strong>。kernel 启动是<strong>流水化</strong>的（CPU 下发第 n+1 个时 GPU 正在跑第 n 个），只要 CPU 跟得上就被藏在计算后面，<strong>不能串行相加</strong>。真症状是时间线上 <strong>kernel 之间出现大片空白</strong>，那才是 CUDA Graph 要解决的（【12】）。</p>
+</blockquote>
 <hr />
 <h2 id="_8">六、关键源码位置</h2>
 <h3 id="vllmcommit-bd8865a">vLLM（commit <code>bd8865a</code>）</h3>
@@ -714,7 +789,7 @@ P99 远高于均值        → 长尾 → 查抢占【04】和专家不均【11�
 </tr>
 <tr>
 <td>投机解码</td>
-<td><code>speculative/</code>（★ EAGLE 相关 8 个文件）</td>
+<td><code>speculative/</code>（34 个 <code>.py</code> + 2 个子目录；★ 名字带 <code>eagle</code> 的 10 个）</td>
 </tr>
 <tr>
 <td>PD 分离</td>

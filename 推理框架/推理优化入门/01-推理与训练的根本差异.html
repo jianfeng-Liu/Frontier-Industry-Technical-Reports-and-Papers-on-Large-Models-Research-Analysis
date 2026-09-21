@@ -252,192 +252,464 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="11">1.1 先看一个反直觉的现象</h2>
-<p>你用一张 H100 跑一个 7B（70 亿参数）模型：</p>
-<div class="codehilite"><pre><span></span><code>    ★ 训练时：GPU 的算力利用率能到 40%~50%
-    ★ 推理时（一次只服务一个用户）：算力利用率常常【不到 1%】
-</code></pre></div>
-
-<p>同一张卡，同一个模型，差了 50 倍。<strong>卡没坏，是这件事本身的性质变了。</strong></p>
+<p>你用一张 H100 跑一个 7B/8B（70~80 亿参数）模型，同一张卡、同一个模型、同样的 BF16 精度：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>一次前向处理多少 token</th>
+<th><strong>算力</strong>利用率</th>
+<th><strong>显存带宽</strong>利用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训练</td>
+<td>8 × 4096 = 32768</td>
+<td>40%~50%（⚠️ 公开报告的顶级水位）</td>
+<td>远低于 100%</td>
+</tr>
+<tr>
+<td>推理 · Decode（一次只服务一个用户）</td>
+<td><strong>1</strong></td>
+<td><strong>0.34%</strong></td>
+<td><strong>≈ 100%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>算力利用率差了 <strong>100 多倍</strong>。<strong>卡没坏，是这件事本身的性质变了。</strong></p>
+<blockquote>
+<p>⚠️ <strong>先把最容易误读的一点说清楚</strong>：上面右边那一列不是排版错误。Decode 的<strong>算力</strong>利用率只有千分之三，但它的<strong>显存带宽已经跑满了</strong>。这张卡没有在偷懒——它已经跑到硬件的物理上限，只是上限换到了另一条边上。「算力利用率低」在这里<strong>不是浪费，而是访存受限（Memory Bound）这件事的定义本身</strong>。整章后面所有的账，都建立在「哪一条边先到顶」这个判断上。</p>
+</blockquote>
+<p>本章要做的就是把 <strong>0.34%</strong> 这个数字<strong>算出来</strong>，不是记住它。（左边那个 40%~50% 是训练侧的 MFU 水位，⚠️ 属于公开报告披露的经验值，不是能从硬件参数推出来的——推导和口径见 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发/02 章 §2.6</a>。）</p>
 <hr />
 <h2 id="12">1.2 差异的根源：一次前向要搬多少、要算多少</h2>
 <p>先定义两个词（第一次出现，给全称）：</p>
 <blockquote>
 <p>📖 <strong>FLOPs</strong>（<strong>FL</strong>oating point <strong>OP</strong>eration<strong>s</strong>，浮点运算次数）——「要算多少」。<br />
-📖 <strong>访存量 / MOPs</strong>（<strong>M</strong>emory <strong>OP</strong>eration<strong>s</strong>，内存访问字节数）——「要从显存搬多少数据到计算单元」。</p>
+📖 <strong>访存量 / MOPs</strong>（<strong>M</strong>emory <strong>OP</strong>eration<strong>s</strong>，内存访问字节数）——「要从显存搬多少字节到计算单元」。<br />
+📖 <strong>算术强度</strong>（arithmetic intensity）——「每搬 1 个字节，配了多少次运算」，单位 <strong>FLOP/Byte</strong>。这是全书最重要的一个比值。</p>
 </blockquote>
-<p>一个参数量为 <strong>Ψ</strong>（希腊字母 psi，代表参数个数）的稠密模型，跑<strong>一次</strong>前向传播：</p>
-<div class="codehilite"><pre><span></span><code>    要算：  ≈ 2Ψ FLOPs  × （这一批有多少个 token）
-             ★ 每个参数参与一次乘、一次加 = 2 次运算
+<p>一个参数量为 <strong>Ψ</strong>（希腊字母 psi，代表参数<strong>个数</strong>）的稠密模型，跑<strong>一次</strong>前向传播，这一批里有 <strong>B</strong> 个 token：</p>
+<div class="codehilite"><pre><span></span><code>要算：  ≈ 2 × Ψ × B  FLOPs
+         ★ 每个参数参与一次乘、一次加 = 2 次运算，每个 token 都要走一遍全部权重
 
-    要搬：  ≈ 2Ψ 字节（BF16 每参数 2 字节）
-             ★★ 关键：不管这一批有 1 个 token 还是 1000 个 token，
-                权重都只需要【搬一遍】
+要搬：  ≈ 2 × Ψ  字节            （BF16，每参数 2 字节）
+         ★★ 关键：不管这一批有 1 个 token 还是 1000 个 token，
+            权重都只需要【搬一遍】—— 搬进来之后，B 个 token 共用它
 </code></pre></div>
 
-<p>于是有一个决定性的比值：</p>
-<div class="codehilite"><pre><span></span><code>    算术强度（arithmetic intensity）
-        = FLOPs ÷ 访存字节
-        = (2Ψ × B) ÷ (2Ψ)
-        = B                              ← B 就是这一批的 token 数
+<p>于是有一个决定性的结论：</p>
+<div class="codehilite"><pre><span></span><code>算术强度 = FLOPs ÷ 访存字节
+         = (2 × Ψ × B) ÷ (2 × Ψ)
+         = B
 
-    ★★ 算术强度 ≈ 批大小。一句话记住它。
+★★ 算术强度 ≈ 这一批的 token 数。一句话记住它。
+   注意 Ψ 被约掉了 —— 模型多大都不影响这个比值，只有 B 影响。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>这个式子只算了权重的搬运量。</strong> 推理还要搬 KV Cache，它和 B 成正比、不会被摊薄，所以上面这条「算术强度 = B」在 B 很大时会偏乐观。补全的账在 <a href="02-KV-Cache与显存账.html">02 章 §2.6</a>，那里会看到 B 大到一定程度后收益是怎么塌下来的。本章先用这个简化版建立直觉。</p>
+</blockquote>
 <hr />
 <h2 id="13">1.3 把这个数字和硬件对上</h2>
-<p>每张 GPU 都有一个「性价比平衡点」——算力除以带宽：</p>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 演示用的量级（各家公开规格，具体数字随型号/精度而变）
+<p>每张 GPU 都有一个「算力 / 带宽平衡点」，超过它才可能吃满算力。这个点叫<strong>屋脊点</strong>（ridge point）：</p>
+<div class="codehilite"><pre><span></span><code>NVIDIA H100 SXM5（本系列统一基准）：
+    BF16 稠密算力  = 989 TFLOP/s    （⚠️ 不是 1979 —— 那是带 2:4 稀疏的数字）
+    HBM3 显存带宽  = 3.35 TB/s      （80 GB HBM3）
 
-    NVIDIA H100 (SXM)：  BF16 算力 ≈ 990 TFLOP/s
-                         显存带宽 ≈ 3.35 TB/s
-                         ⟹ 平衡点 ≈ 990e12 / 3.35e12 ≈ 300
+    屋脊点 = 989 × 10¹² ÷ (3.35 × 10¹²) ≈ 295 FLOP/Byte
+                                            ↑ 常被四舍五入说成「约 300」
 
-    ★ 含义：只有当算术强度 &gt; ~300 时，GPU 才可能吃满算力。
-      低于这个数，GPU 一定在【等数据】，算力空转。
+★ 含义：只有当算术强度 &gt; 295 时，GPU 才【可能】吃满算力。
+  低于这个数，GPU 一定在等数据，性能上限 = 带宽 × 算术强度。
 </code></pre></div>
 
-<p>现在把训练和推理代进去：</p>
+<p>现在把不同的 B 代进去，<strong>逐行算出来</strong>（屋顶线上限 = <code>min(989, 3.35 × B)</code> TFLOPS）：</p>
 <table>
 <thead>
 <tr>
-<th></th>
-<th>一批处理多少 token</th>
-<th>算术强度</th>
-<th>瓶颈在哪</th>
+<th>场景</th>
+<th>B（这一批的 token 数）</th>
+<th>算术强度 = B</th>
+<th>性能上限 = 3.35 × B</th>
+<th>封顶后</th>
+<th>占 989 TFLOPS</th>
+<th>瓶颈</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>训练</strong></td>
-<td>batch 8 × 序列 4096 = <strong>32768</strong></td>
-<td>~32768 ≫ 300</td>
-<td>✅ <strong>算力受限</strong>（compute-bound）</td>
+<td><strong>Decode</strong>，batch=1</td>
+<td>1</td>
+<td>1</td>
+<td>3.35 TFLOPS</td>
+<td>3.35</td>
+<td><strong>0.34%</strong></td>
+<td>❌ 访存受限</td>
 </tr>
 <tr>
-<td><strong>推理 · Prefill</strong>（读 prompt）</td>
-<td>一个 2000 字的 prompt = <strong>2000</strong></td>
-<td>~2000 &gt; 300</td>
-<td>✅ <strong>算力受限</strong></td>
+<td><strong>Decode</strong>，batch=8</td>
+<td>8</td>
+<td>8</td>
+<td>26.8</td>
+<td>26.8</td>
+<td>2.7%</td>
+<td>❌ 访存受限</td>
 </tr>
 <tr>
-<td><strong>推理 · Decode</strong>（吐字）</td>
-<td><strong>1</strong>（一次只生成一个 token）</td>
-<td><strong>~1</strong> ≪ 300</td>
-<td>❌ <strong>访存受限</strong>（memory-bound）</td>
+<td><strong>Decode</strong>，batch=64</td>
+<td>64</td>
+<td>64</td>
+<td>214</td>
+<td>214</td>
+<td>21.7%</td>
+<td>❌ 访存受限</td>
+</tr>
+<tr>
+<td><strong>Decode</strong>，batch=295</td>
+<td>295</td>
+<td>295</td>
+<td>989</td>
+<td>989</td>
+<td>100%</td>
+<td>⚖️ 正好在屋脊点</td>
+</tr>
+<tr>
+<td><strong>Prefill</strong>，2000 token 的 prompt</td>
+<td>2000</td>
+<td>2000</td>
+<td>6,700</td>
+<td><strong>989</strong>（封顶）</td>
+<td>100%</td>
+<td>✅ 算力受限</td>
+</tr>
+<tr>
+<td><strong>训练</strong>，batch 8 × 序列 4096</td>
+<td>32768</td>
+<td>32768</td>
+<td>≈ 110,000</td>
+<td><strong>989</strong>（封顶）</td>
+<td>100%</td>
+<td>✅ 算力受限</td>
 </tr>
 </tbody>
 </table>
+<p>三件事从这张表里直接读出来：</p>
+<p><strong>① §1.1 那个 0.34% 是算出来的，不是测出来的。</strong> <code>3.35 ÷ 989 = 0.34%</code>。它是 batch=1 解码在 H100 上的<strong>理论上限</strong>——写得再好的 kernel 也不可能超过它。</p>
+<p><strong>② 「算力利用率」和「带宽利用率」必须分开说。</strong> 同一行的两个数字完全相反：</p>
+<div class="codehilite"><pre><span></span><code>算力利用率 = 实际 FLOP/s ÷ 989 TFLOPS      → batch=1 解码时  0.34%
+带宽利用率 = 实际 Byte/s ÷ 3.35 TB/s       → batch=1 解码时  ≈ 100%
+
+★★ 看到「推理时 GPU 利用率只有 3%」这种说法，第一件事是问【哪个利用率】。
+   如果是算力利用率，那 Decode 阶段本来就该这么低，这是物理规律；
+   如果连带宽利用率也上不去，那才是真有问题（kernel 写得差、下发跟不上）。
+</code></pre></div>
+
+<p><strong>③ 屋脊点 295 这个数，第 4 行看起来很诱人，但它是个陷阱。</strong> 「把 batch 做到 295 就能吃满算力」在纸上成立，实际做不到——batch 做大要显存装 KV Cache，<a href="02-KV-Cache与显存账.html">02 章 §2.3</a> 会逐行算出：一张 H100 跑 8B 模型、4K 长度的对话，最多只装得下 <strong>100~116 条</strong>。<strong>够不到 295，差 3 倍。</strong> 这个矛盾是全书的主线。</p>
 <blockquote>
-<p>🔑 <strong>★★ 这就是那 50 倍的来源。</strong><br />
-解码阶段每生成一个字，都要把<strong>整个模型的权重</strong>从显存里搬一遍，却只做 <strong>1 个 token</strong> 的计算。<br />
-300 倍的算力买了，只用上 1/300。</p>
+<p>🔑 <strong>★★ 一句话总结这一节</strong>：解码阶段每生成一个字，都要把<strong>整个模型的权重</strong>从显存里搬一遍，却只做 <strong>1 个 token</strong> 的计算。屋脊点要求每搬 1 字节配 295 次运算，而 batch=1 只配了 1 次。<strong>买来的算力，用上了 1/295。</strong></p>
+<p>⚠️ 训练那一行是个粗估：训练除了前向还有反向和激活值的读写，算术强度不完全等于 B。但量级上 32768 ≫ 295 的结论稳固，结论不变。严格的算术强度推导见 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发/02 章 §2.2</a>，屋顶线模型见同章 §2.4。</p>
 </blockquote>
 <hr />
 <h2 id="14">1.4 那怎么办？——这就是整本教程</h2>
 <p>既然瓶颈是「搬一次权重只干了一点活」，那所有优化都在做同一件事：</p>
-<div class="codehilite"><pre><span></span><code>    ★★ 让「每搬一次权重」干更多的活 ★★
-
-    办法一：一次多塞几个用户进来（把 B 从 1 变成 256）
-            → 连续批处理                          （04 章）
-            → 但 B 变大的前提是显存装得下 KV Cache
-              → PagedAttention、前缀缓存           （05 章）
-              → MQA / GQA / MLA                    （07 章）
-              → KV Cache 量化                      （09 章）
-            ★ 你会发现 05、07、09 三章表面在讲省显存，
-              实际全都是为了「把 B 做大」这一件事。
-
-    办法二：一次多吐几个字（一次前向验证 4 个候选 token）
-            → 投机解码                             （08 章）
-
-    办法三：让权重本身变小，搬得更快
-            → 权重量化 FP8 / INT4                  （09 章）
-
-    办法四：别让 CPU 拖后腿（B=1 时 GPU kernel 太小，CPU 派发都来不及）
-            → CUDA Graph、图编译                   （12 章）
+<div class="codehilite"><pre><span></span><code>★★ 让「每搬一次权重」干更多的活 ★★
 </code></pre></div>
 
+<p>四条路，后面十二章全部挂在这四条路上：</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>具体做法</th>
+<th>在做什么</th>
+<th>讲在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 一次多塞几个用户</strong></td>
+<td>连续批处理（continuous batching）</td>
+<td>把 B 从 1 做到几十上百</td>
+<td><a href="04-连续批处理与调度.html">04 章</a></td>
+</tr>
+<tr>
+<td>↳ 前提：显存要装得下 KV</td>
+<td>PagedAttention、前缀缓存</td>
+<td>不浪费已分配的显存</td>
+<td><a href="05-PagedAttention与前缀缓存.html">05 章</a></td>
+</tr>
+<tr>
+<td>↳ 前提：显存要装得下 KV</td>
+<td>MQA / GQA / MLA</td>
+<td>让每个 token 的 KV 更小</td>
+<td><a href="07-注意力变体MQA-GQA-MLA.html">07 章</a></td>
+</tr>
+<tr>
+<td>↳ 前提：显存要装得下 KV</td>
+<td>KV Cache 量化</td>
+<td>让每个 token 的 KV 更小</td>
+<td><a href="09-量化.html">09 章</a></td>
+</tr>
+<tr>
+<td><strong>② 一次多吐几个字</strong></td>
+<td>投机解码（一次前向验证多个候选 token）</td>
+<td>把 B 从 1 做到 4~8，<strong>不需要更多用户</strong></td>
+<td><a href="08-投机解码.html">08 章</a></td>
+</tr>
+<tr>
+<td><strong>③ 让权重本身变小</strong></td>
+<td>权重量化 FP8 / INT4</td>
+<td>分母（搬运字节）直接减半、减到 1/4</td>
+<td><a href="09-量化.html">09 章</a></td>
+</tr>
+<tr>
+<td><strong>④ 别让 CPU 拖后腿</strong></td>
+<td>CUDA Graph、图编译</td>
+<td>B=1 时 kernel 太小，CPU 下发都来不及</td>
+<td><a href="12-CUDA-Graph与图编译.html">12 章</a></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>05、07、09 三章表面在讲「省显存」，实际全都是为了「把 B 做大」这一件事。</strong> 这是本教程的骨架，读到后面如果觉得散，回来看这张表。</p>
+<p>⚠️ 第 ④ 条容易被算错账，先打个预防针：kernel 的启动开销<strong>不是每个 kernel 串行相加</strong>的——CPU 下发第 2 个 kernel 和 GPU 执行第 1 个是同时进行的，下发是流水化的。正确的判据是 <code>耗时 ≈ max(kernel 数 × 单个下发成本 ⚠️约 2 µs, GPU 执行时间)</code>。只有前者更大时（这叫 <strong>Host Bound</strong>，下发受限），CUDA Graph 才有收益；否则收益是零。展开见 <a href="12-CUDA-Graph与图编译.html">12 章</a> 和 <a href="../../大模型算子开发/01-GPU硬件基础.html">大模型算子开发/01 章 §1.8.2</a>。</p>
+</blockquote>
 <hr />
 <h2 id="15">1.5 第二个根本差异：没有反向传播</h2>
 <p>这一条看起来平淡，但它悄悄改掉了并行策略的全部成本模型。</p>
-<div class="codehilite"><pre><span></span><code>    训练一次迭代：  前向 → 反向 → 优化器更新
-    推理一次迭代：  前向                     ← ★ 就这么多
+<div class="codehilite"><pre><span></span><code>训练一次迭代：  前向 → 反向 → 优化器更新
+推理一次迭代：  前向                     ← ★ 就这么多
 </code></pre></div>
 
-<p>带来三个后果：</p>
-<p><strong>① 显存账完全不同。</strong><br />
-<a href="../../训练框架/分布式训练入门/02-显存去哪了.html">训练框架/02 章</a> 那张表说训练每个参数要 <strong>16 字节</strong>（参数 + 梯度 + Adam 的两个动量 + FP32 主权重）。推理呢：</p>
-<div class="codehilite"><pre><span></span><code>    推理每个参数：   2 字节（BF16 权重）        ★ 就这些
-    没有梯度、没有优化器状态、没有 FP32 主权重
-
-    ⟹ ★ 同一个模型，推理的权重显存是训练的【1/8】
-    ⟹ ⚠️ 但推理多了一个训练几乎没有的大头：KV Cache（02 章）
+<p>带来三个后果。</p>
+<h3 id="1">① 显存账完全不同</h3>
+<p><a href="../../训练框架/分布式训练入门/02-显存去哪了.html">训练框架/02 章</a> 那张著名的表说训练每个参数要 <strong>16 字节</strong>。把两边逐项列出来对比：</p>
+<table>
+<thead>
+<tr>
+<th>每个参数要存什么</th>
+<th>训练（BF16 混合精度 + AdamW）</th>
+<th>推理（BF16）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16 权重</td>
+<td>2 字节</td>
+<td><strong>2 字节</strong></td>
+</tr>
+<tr>
+<td>BF16 梯度</td>
+<td>2 字节</td>
+<td>—</td>
+</tr>
+<tr>
+<td>FP32 主权重</td>
+<td>4 字节</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Adam 一阶动量 m</td>
+<td>4 字节</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Adam 二阶动量 v</td>
+<td>4 字节</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>16 字节 / 参数</strong></td>
+<td><strong>2 字节 / 参数</strong></td>
+</tr>
+<tr>
+<td><strong>代入 8B 模型</strong></td>
+<td><strong>128 GB</strong>（一张 H100 装不下）</td>
+<td><strong>16 GB</strong>（一张 H100 轻松装下）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ ★ 同一个模型，推理的【权重】显存是训练的 1/8
+⟹ ⚠️ 但推理多了一个训练几乎没有的大头：KV Cache
+   8B 模型在一张 H100 上，KV Cache 能占到 50~58 GB —— 比权重本身大 3 倍多。
+   这笔账整个 02 章都在算。
 </code></pre></div>
 
-<p><strong>② 张量并行的通信次数【减半】。</strong></p>
-<div class="codehilite"><pre><span></span><code>    训练：每层 4 次 all-reduce（前向 2 次 + 反向 2 次）
-    推理：每层 2 次 all-reduce（只有前向）      ← ★ 少一半
+<h3 id="2">② 张量并行的通信次数【减半】</h3>
+<blockquote>
+<p>📖 <strong>TP</strong>（<strong>T</strong>ensor <strong>P</strong>arallelism，张量并行）——把每一层的权重矩阵横着或竖着切开，分给多张卡，每张卡算一部分，再通信合并。<br />
+📖 <strong>all-reduce</strong>（全归约）——所有卡把各自的一份数据求和，结果人人都拿到一份完整的。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>训练：每层 4 次 all-reduce
+       前向 2 次（Attention 之后、MLP 之后）
+       反向 2 次（对应位置回传输入梯度）
 
-    ✅ 源码可查：vLLM 的 RowParallelLinear 在
-       [linear.py:1660](../源码/vLLM/vllm/model_executor/layers/linear.py#L1660)
-       只有一句 tensor_model_parallel_all_reduce，没有任何反向的通信。
-</code></pre></div>
-
-<p><strong>③ 数据并行的含义彻底变了。</strong></p>
-<div class="codehilite"><pre><span></span><code>    训练的 DP：  N 份副本算不同数据 → ★ 每步必须 all-reduce 梯度同步
-                 ⟹ 通信量 2Ψ，是个【重】操作
-
-    推理的 DP：  N 份副本服务不同用户 → ★ 各算各的，【不需要同步】
-                 ⟹ 通信量 ≈ 0，是个【轻】操作
+推理：每层 2 次 all-reduce
+       只有前向那 2 次                    ← ★ 少一半
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>记住这一条，06 章会用它解释一个让人困惑的现象</strong>：<br />
-训练里 PP（流水线并行）排在最外层、DP 排中间；<br />
-推理里反过来，DP 排最外层、PP 排里面。<br />
-<strong>不是谁写错了，是 DP 的成本从「最贵」变成了「几乎免费」。</strong></p>
+<p>✅ <strong>源码可查</strong>：vLLM 的 <code>RowParallelLinear.forward</code> 在 <a href="../源码/vLLM/vllm/model_executor/layers/linear.py#L1660">linear.py:1660</a> 只有一句 <code>tensor_model_parallel_all_reduce</code>，整个类里没有任何反向的通信代码——因为推理不需要。训练侧每层 4 次的来源见 <a href="../../训练框架/分布式训练入门/06-张量并行TP.html">训练框架/06 章</a>。</p>
+</blockquote>
+<h3 id="3">③ 数据并行的含义彻底变了</h3>
+<blockquote>
+<p>📖 <strong>DP</strong>（<strong>D</strong>ata <strong>P</strong>arallelism，数据并行）——同一个模型复制 N 份，每份处理不同的数据。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练的 DP</th>
+<th>推理的 DP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>N 份副本在干什么</td>
+<td>算<strong>同一个模型</strong>的不同数据分片</td>
+<td>服务<strong>互不相关</strong>的用户</td>
+</tr>
+<tr>
+<td>每步之后要做什么</td>
+<td>★ <strong>必须 all-reduce 梯度</strong>，否则 N 份权重会分叉</td>
+<td>★ <strong>什么都不做</strong>，各算各的</td>
+</tr>
+<tr>
+<td>每卡通信量</td>
+<td>梯度 2Ψ 字节（BF16），ring all-reduce 每卡收发 ≈ <strong>4Ψ 字节</strong></td>
+<td>≈ <strong>0</strong></td>
+</tr>
+<tr>
+<td>代价</td>
+<td>【重】操作，必须放在带宽好的位置</td>
+<td>【轻】操作，几乎免费</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 上面一行的单位要小心：本仓库在 <a href="../../训练框架/分布式训练入门/03-通信原语.html">训练框架/03 章 §3.3</a> 里把 ring all-reduce 的每卡通信量写成「2Ψ」，那里的 Ψ 指<strong>梯度总字节数</strong>；本章的 Ψ 指<strong>参数个数</strong>。BF16 下梯度是 2Ψ 字节，所以换算过来每卡收发约 4Ψ 字节。<strong>两处都没错，是 Ψ 的口径不同</strong>——看到 2Ψ / 4Ψ 先确认它数的是元素还是字节。</p>
+<p>★★ <strong>记住这一条，<a href="06-推理中的并行策略.html">06 章</a> 会用它解释一个让人困惑的现象</strong>：训练里 PP（流水线并行）排在最外层、DP 排在中间；推理里反过来，DP 排最外层、PP 排里面。<strong>不是谁写错了，是 DP 的成本从「最贵」变成了「几乎免费」，于是它该被挪到通信最差的那一层去。</strong></p>
 </blockquote>
 <hr />
 <h2 id="16">1.6 第三个差异：训练是离线的，推理是在线的</h2>
-<div class="codehilite"><pre><span></span><code>    训练：  一个作业跑两个月，只关心【总吞吐】（MFU、tokens/s）
-            ★ 慢一点没关系，只要不崩
-
-    推理：  几万个用户同时在等，关心两件事：
-            ① 我等了多久才看到第一个字？   → TTFT
-            ② 后面的字吐得够不够快？       → TPOT
-            ★ 而且要在【承诺的延迟上限（SLO）】内，还要吞吐尽量高
-</code></pre></div>
-
+<p>先给三个词：</p>
 <blockquote>
-<p>📖 <strong>TTFT</strong>（<strong>T</strong>ime <strong>T</strong>o <strong>F</strong>irst <strong>T</strong>oken，首字延迟）<br />
-📖 <strong>TPOT</strong>（<strong>T</strong>ime <strong>P</strong>er <strong>O</strong>utput <strong>T</strong>oken，每字延迟）<br />
-📖 <strong>SLO</strong>（<strong>S</strong>ervice <strong>L</strong>evel <strong>O</strong>bjective，服务等级目标——你对用户承诺的延迟上限）<br />
-这三个词 13 章会详细讲，先混个眼熟。</p>
+<p>📖 <strong>TTFT</strong>（<strong>T</strong>ime <strong>T</strong>o <strong>F</strong>irst <strong>T</strong>oken，首字延迟）——用户按下回车，到看到第一个字，隔了多久。<br />
+📖 <strong>TPOT</strong>（<strong>T</strong>ime <strong>P</strong>er <strong>O</strong>utput <strong>T</strong>oken，每字延迟）——第一个字之后，后面每个字之间隔多久。<br />
+📖 <strong>SLO</strong>（<strong>S</strong>ervice <strong>L</strong>evel <strong>O</strong>bjective，服务等级目标）——你对用户承诺的延迟上限，比如「TTFT 的 P99 不超过 2 秒」。<br />
+这三个词 <a href="13-性能指标与压测.html">13 章</a> 会详细讲，先混个眼熟。</p>
 </blockquote>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练</th>
+<th>推理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个作业活多久</td>
+<td>几周到几个月</td>
+<td>几百毫秒到几十秒</td>
+</tr>
+<tr>
+<td>同时有多少「客户」在等</td>
+<td>0（没人盯着）</td>
+<td>几万个真人</td>
+</tr>
+<tr>
+<td>只关心什么</td>
+<td><strong>总吞吐</strong>（MFU、tokens/s）</td>
+<td>★ <strong>TTFT + TPOT + 吞吐，三个一起</strong></td>
+</tr>
+<tr>
+<td>慢一点的后果</td>
+<td>多跑两天，能接受</td>
+<td>用户走了，违反 SLO</td>
+</tr>
+<tr>
+<td>优化的目标函数</td>
+<td>最大化吞吐</td>
+<td>★ <strong>在 SLO 约束下</strong>最大化吞吐</td>
+</tr>
+</tbody>
+</table>
 <p><strong>这带来一个训练里完全不存在的矛盾</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ★ 提吞吐的手段（把 batch 做大）会【伤害】延迟
-    ★ 降延迟的手段（batch 做小、多卡切细）会【伤害】吞吐
+<div class="codehilite"><pre><span></span><code>★ 提吞吐的手段（把 batch 做大）会【伤害】延迟
+   ——batch 大了，每一步搬的 KV 更多，一步走得更慢 ⟹ TPOT 变差（02 章 §2.6 会把这个算出来）
 
-    ⟹ 推理系统的每一个设计，本质都是在这条线上选一个点。
-    ⟹ 10 章的 PD 分离，就是发现「这两件事根本不该在同一台机器上做」。
+★ 降延迟的手段（batch 做小、多卡切细）会【伤害】吞吐
+   ——batch 小了，权重摊不薄，回到 0.34% 那个状态
+
+⟹ 推理系统的每一个设计，本质都是在这条线上选一个点。
+⟹ [10 章](10-PD分离.md) 的 PD 分离，就是发现
+   「Prefill 和 Decode 这两件事根本不该在同一台机器上做」。
 </code></pre></div>
 
 <hr />
 <h2 id="17">1.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① 训练算力受限，推理【解码阶段】访存受限                        │
-│     算术强度 ≈ batch 里的 token 数，要 &gt; ~300 才吃得满算力      │
-│     ⟹ 解码时 batch=1 → 算力利用率 &lt;1%                        │
-│                                                              │
-│  ② 所有推理优化都在做一件事：                                  │
-│     ★★ 让「搬一次权重」干更多的活 ★★                          │
-│                                                              │
-│  ③ 没有反向传播 ⟹ 权重显存 1/8、TP 通信减半、DP 几乎免费        │
-│     ⟹ ★ 并行策略的成本模型和训练【不一样】（06 章）            │
-│                                                              │
-│  ④ 在线服务 ⟹ 多了「延迟 vs 吞吐」这条永恒的取舍线              │
-└──────────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>结论</th>
+<th>关键数字（H100 SXM5，BF16）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>算术强度 ≈ 这一批的 token 数 B，要 <strong>&gt; 295 FLOP/Byte</strong> 才吃得满算力</td>
+<td>989 TFLOPS ÷ 3.35 TB/s = <strong>295</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td>训练算力受限（B ≈ 32768），Prefill 算力受限（B ≈ 几千），<strong>Decode 访存受限（B = 1）</strong></td>
+<td>Decode batch=1 算力利用率 = 3.35 ÷ 989 = <strong>0.34%</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★ 但 Decode 的<strong>带宽</strong>利用率 ≈ 100%。算力低不是浪费，是 Memory Bound 的定义</td>
+<td>两个利用率必须分开说</td>
+</tr>
+<tr>
+<td>④</td>
+<td>所有推理优化都在做同一件事：<strong>让「搬一次权重」干更多的活</strong></td>
+<td>四条路见 §1.4 的表</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>没有反向传播 ⟹ 权重显存 <strong>1/8</strong>、TP 通信 <strong>减半</strong>、DP 通信量 <strong>≈ 0</strong></td>
+<td>16 字节/参数 → 2 字节/参数</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>⟹ 并行策略的成本模型和训练<strong>不一样</strong>，不能照搬</td>
+<td><a href="06-推理中的并行策略.html">06 章</a></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>在线服务 ⟹ 多了「延迟 vs 吞吐」这条永恒的取舍线</td>
+<td>TTFT / TPOT / SLO，<a href="13-性能指标与压测.html">13 章</a></td>
+</tr>
+</tbody>
+</table>
+<p><strong>自测三题</strong>（答案在对应小节）</p>
+<ol>
+<li>一张 H100 跑 70B 模型（BF16），batch=1 解码。算术强度是多少？算力利用率上限是多少？换成 7B 模型，这两个数会变吗？</li>
+<li>有人说「我们的推理服务 GPU 利用率只有 4%，浪费太严重了」。你要追问他哪一个数字，才能判断这是不是真的浪费？</li>
+<li>训练 8B 模型（BF16 + AdamW）和推理 8B 模型，权重相关的显存分别是多少？为什么推理反而可能更吃紧？</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li>算术强度 = B = <strong>1 FLOP/Byte</strong>，和模型大小无关（§1.2 里 Ψ 被约掉了）。算力利用率上限 = <code>3.35 TB/s × 1 FLOP/Byte ÷ 989 TFLOPS</code> = <strong>0.34%</strong>。换成 7B <strong>完全不变</strong>——这正是「算术强度 ≈ B」这个式子最反直觉也最有用的地方：模型大小只影响绝对耗时（70B 每步搬 140 GB、7B 搬 14 GB），不影响利用率。参见 §1.2、§1.3。</li>
+<li>追问是<strong>算力利用率</strong>还是<strong>带宽利用率</strong>。如果是算力利用率，Decode 阶段 4% 对应 batch ≈ 12，属于正常偏小，问题是 batch 上不去（去查 KV Cache 够不够、调度器有没有攒够请求），不是 kernel 慢；如果连带宽利用率都只有 4%，那才是真问题——大概率是 Host Bound（CPU 下发跟不上）或 kernel 实现差。参见 §1.1、§1.3 第 ② 点。</li>
+<li>训练 = 8B × 16 字节 = <strong>128 GB</strong>（一张 80 GB H100 装不下，必须切多卡）；推理 = 8B × 2 字节 = <strong>16 GB</strong>。推理更吃紧是因为它多了 KV Cache 这一项，而且 KV Cache 随并发数和序列长度线性增长，很快超过权重本身。参见 §1.5 ①，详细账见 <a href="02-KV-Cache与显存账.html">02 章</a>。</li>
+</ol>
 <hr />
 <blockquote>
 <p><strong>下一步</strong> → <a href="02-KV-Cache与显存账.html">02 KV Cache 与显存账本</a><br />

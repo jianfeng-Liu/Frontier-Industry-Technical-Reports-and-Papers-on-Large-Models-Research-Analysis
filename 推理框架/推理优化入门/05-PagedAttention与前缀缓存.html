@@ -251,49 +251,280 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong>一句话</strong>：把操作系统的<strong>虚拟内存分页</strong>搬进 KV Cache 管理。这是 vLLM 之所以叫 vLLM 的原因（<strong>v</strong> = virtual，虚拟）。</p>
 </blockquote>
 <hr />
-<h2 id="51">5.1 先看没有分页时，显存被浪费成什么样</h2>
+<h2 id="50">5.0 本章的固定配置</h2>
+<p>后面每一笔账都用这一套数字，不换来换去。它和 <a href="02-KV-Cache与显存账.html">02 章</a> 是同一套。</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>取值</th>
+<th>怎么来的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型</td>
+<td>Llama-3-8B</td>
+<td>32 层，8 个 KV 头，head_dim = 128，BF16</td>
+</tr>
+<tr>
+<td><strong>每 token 的 KV Cache</strong></td>
+<td><strong>128 KiB</strong></td>
+<td>2 × 32 层 × 8 头 × 128 × 2 字节</td>
+</tr>
+<tr>
+<td>卡</td>
+<td>单张 H100 SXM5 80 GB</td>
+<td>HBM3 带宽 3.35 TB/s</td>
+</tr>
+<tr>
+<td><strong>留给 KV Cache 的空间</strong></td>
+<td><strong>56 GiB</strong></td>
+<td>80 GB 减权重 16 GB、再减框架与临时激活约 4 GB</td>
+</tr>
+<tr>
+<td>块大小 <code>block_size</code></td>
+<td><strong>16 个 token</strong></td>
+<td>一块 = 16 × 128 KiB = <strong>2 MiB</strong></td>
+</tr>
+<tr>
+<td>用户设的生成上限 <code>max_tokens</code></td>
+<td>2048</td>
+<td>§5.1 用它做朴素预分配</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📖 <strong>KiB / GiB</strong>——1 KiB = 1024 字节，1 GiB = 1024³ 字节。厂商标的显存「80 GB」是十进制的 80 × 10⁹ 字节，换算成 GiB 只有 74.5 GiB。⚠️ 本章凡是算「装得下多少 token」一律用 KiB / GiB；02 章里写的「128 KB」指的就是这里的 128 KiB，同一个数。</p>
+</blockquote>
+<hr />
+<h2 id="51">5.1 先把浪费算出来：没有分页时显存去哪了</h2>
 <p>在 PagedAttention 之前，框架给每个请求分配 KV Cache 的做法是：<strong>按最大可能长度，一次性预留一整块连续显存</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    请求进来，max_tokens = 2048（用户设的上限）
-    ⟹ 立刻预留 2048 个 token 的连续空间
+<div class="codehilite"><pre><span></span><code>    请求进来，用户设的上限让这条序列最长可能到 2048 个 token
+    ⟹ 立刻预留 2048 × 128 KiB = 256 MiB 的【连续】显存
 
-    实际上它只生成了 100 个字就结束了
-    ⟹ ★★ 1948 个 token 的空间，从头到尾【一次都没用过】
+    实际上这条序列总共只用到 300 个 token（prompt 128 + 生成 172）就结束了
+    ⟹ ★★ 1748 个 token 的空间，从头到尾【一次都没写过】
 </code></pre></div>
 
-<p>vLLM 论文（arXiv 2309.06180）把浪费拆成三类，这个分类非常清晰：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  一个预留了 2048 槽位、实际用了 100 个的请求：                  │
-│                                                              │
-│  [已用 100][ 保留 (reserved) ][  内部碎片 (internal frag.)  ] │
-│   ↑         ↑                   ↑                            │
-│   ①真在用   ②以后【可能】会用     ③★ 永远不会用到（因为提前结束）│
-│                                                              │
-│  ④ 外部碎片 (external fragmentation)：                        │
-│     块与块之间剩下的零头，谁都装不下                            │
-└──────────────────────────────────────────────────────────────┘
+<p><strong>跟着这个请求走一遍，看这块显存的使用曲线</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    一个请求的 256 MiB 预留块（每格 64 个 token，共 32 格）
+
+    刚分配时      ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   32 格全空
+    Prefill 完    ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   prompt 128 tok
+    生成 100 个后 ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░   228 tok
+    生成 172 个后 █████░░░░░░░░░░░░░░░░░░░░░░░░░░░   300 tok，然后吐 &lt;EOS&gt;
+    请求结束      ────────────────────────────────   整块 256 MiB 一次性还回去
+
+    █ = 真的写了 KV        ░ = 分给它了、但一个字节都没写过
+</code></pre></div>
+
+<p>vLLM 论文（arXiv 2309.06180）把 ░ 的部分拆成三类，这个分类要记住，后面一直用：</p>
+<table>
+<thead>
+<tr>
+<th>名字</th>
+<th>什么意思</th>
+<th>在上图里是哪一块</th>
+<th>分页治得了吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>保留</strong>（reserved）</td>
+<td>分给它了，将来<strong>可能</strong>会用到</td>
+<td>请求还在生成时，前面那一片 ░</td>
+<td>✅ 治：写满一块才申请下一块，根本不提前留</td>
+</tr>
+<tr>
+<td><strong>内部碎片</strong>（internal fragmentation）</td>
+<td>分给它了，但<strong>注定</strong>用不到</td>
+<td>请求结束那一刻还是 ░ 的 1748 个槽</td>
+<td>✅ 治到只剩「最后一块的零头」</td>
+</tr>
+<tr>
+<td><strong>外部碎片</strong>（external fragmentation）</td>
+<td>总空闲量够，但<strong>凑不出一整块连续的</strong></td>
+<td>图里看不到，它在显存全局</td>
+<td>✅ <strong>定义上消失</strong>（所有块一样大）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>外部碎片长什么样</strong>——它是「连续」这个要求逼出来的：</p>
+<div class="codehilite"><pre><span></span><code>    朴素做法要的是【一整段连续的 256 MiB】。
+    服务器跑了一阵，请求来来去去，显存被打成这个样子：
+
+    显存布局   ████ .... ██████ ... ███ ..... ████
+    每段大小   240   120   360    90  180  140  200      （单位 MiB）
+               占用  空闲  占用   空闲 占用  空闲 占用
+
+    ├── 空闲总量 = 120 + 90 + 140 = 350 MiB  &gt;  256 MiB
+    ├── ★ 但最大的一段连续空闲只有 140 MiB
+    └── ⟹ 新请求被拒之门外，而显存明明还空着 350 MiB
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>论文披露的数字</strong>（vLLM 论文 §1 / Figure 2）：在此前的系统里，<br />
-<strong>实际存储 token 的显存只占已分配显存的 20.4%~38.2%</strong>，<br />
-其余全是上面三类浪费。<strong>vLLM 把这个数字提到了 96% 以上。</strong></p>
+<p>✅ <strong>论文披露的数字</strong>（vLLM 论文 §1 / Figure 2）：在此前的系统里，<strong>真正存着 token 的显存只占已分配显存的 20.4%~38.2%</strong>，其余全是上面三类浪费。<strong>vLLM 把这个数字提到了 96% 以上。</strong></p>
 </blockquote>
 <hr />
-<h2 id="52-pagedattention">5.2 PagedAttention：像操作系统那样管显存</h2>
-<p><strong>这个类比是理解全章的钥匙</strong>：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────┬────────────────────────────────────┐
-│  操作系统         │  vLLM                              │
-├──────────────────┼────────────────────────────────────┤
-│  进程            │  一个请求（一条序列）                │
-│  虚拟地址空间     │  逻辑上连续的 KV 序列                │
-│  物理内存页 (4KB) │  ★ KV 块（block），默认 16 个 token  │
-│  页表            │  ★ block table（块表）               │
-│  按需分页        │  写满一块才申请下一块                 │
-│  写时复制 (COW)  │  ★ 并行采样多个候选时共享前缀          │
-└──────────────────┴────────────────────────────────────┘
+<h2 id="52">5.2 把这笔账算成具体的并发数</h2>
+<p>光说「浪费 60%」没有痛感，换算成「少服务多少用户」才有。假设一个典型的聊天负载，<code>max_tokens</code> 统一设成 2048：</p>
+<table>
+<thead>
+<tr>
+<th>请求类型</th>
+<th>占比</th>
+<th>实际用到的 token</th>
+<th>预留的 token</th>
+<th>白占的 token</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>短问答（「今天几号」）</td>
+<td>50%</td>
+<td>300</td>
+<td>2048</td>
+<td>1748</td>
+</tr>
+<tr>
+<td>中等回答</td>
+<td>30%</td>
+<td>800</td>
+<td>2048</td>
+<td>1248</td>
+</tr>
+<tr>
+<td>长回答</td>
+<td>15%</td>
+<td>2000</td>
+<td>2048</td>
+<td>48</td>
+</tr>
+<tr>
+<td>顶到上限被截断</td>
+<td>5%</td>
+<td>2048</td>
+<td>2048</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>加权平均</strong></td>
+<td>—</td>
+<td><strong>792</strong></td>
+<td><strong>2048</strong></td>
+<td><strong>1256</strong></td>
+</tr>
+</tbody>
+</table>
+<p>加权平均怎么算的：<code>0.50×300 + 0.30×800 + 0.15×2000 + 0.05×2048 = 792</code> 个 token。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 有效利用率 = 792 ÷ 2048 = 38.7%
+
+    ⟹ 这个数字正好落在 vLLM 论文报告的 20.4%~38.2% 的上沿。
+       论文不是在举极端例子，这就是【日常负载】的样子。
 </code></pre></div>
 
-<p><strong>关键洞察</strong>：</p>
+<p><strong>分页之后同一笔账</strong>：请求不再预留 2048，而是写满一块（16 token）才申请下一块。最后一块平均空一半，也就是 <strong>平均每个请求多占 8 个 token</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    分页后每请求平均占用 = 792 + 8 = 800 个 token = 100 MiB
+                                 ↑
+                    ★ 内部碎片的通式：平均 = block_size ÷ 2 个 token
+</code></pre></div>
+
+<p>两种做法并排：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>朴素预分配</th>
+<th>PagedAttention（block = 16）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每个请求占用</td>
+<td>2048 tok = <strong>256 MiB</strong></td>
+<td>平均 800 tok = <strong>100 MiB</strong></td>
+</tr>
+<tr>
+<td>56 GiB 能同时装</td>
+<td>57344 ÷ 256 = <strong>224 个请求</strong></td>
+<td>57344 ÷ 100 = <strong>573 个请求</strong></td>
+</tr>
+<tr>
+<td>白占的显存比例</td>
+<td><strong>61.3%</strong></td>
+<td>8 ÷ 800 = <strong>1.0%</strong></td>
+</tr>
+<tr>
+<td>外部碎片</td>
+<td>有，而且越跑越碎</td>
+<td><strong>结构上不存在</strong></td>
+</tr>
+<tr>
+<td><strong>并发提升</strong></td>
+<td>—</td>
+<td><strong>2.56 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>这个 2.56 倍不是常数，它等于「预留上限 ÷ 平均真实长度」</strong>（2048 ÷ 800）。很多服务的 <code>max_tokens</code> 默认是 8192 甚至更大——那时朴素做法每请求要 1 GiB，56 GiB 只装得下 56 个，倍数就变成 <strong>7.9 倍</strong>。⟹ <strong>服务端把上限设得越宽松，分页救回来的越多。</strong> 那笔 8192 上限的账在 <a href="../../大模型算子开发/09-推理侧算子.html">大模型算子开发 09 章 §9.3.3</a>。</p>
+</blockquote>
+<hr />
+<h2 id="53-pagedattention">5.3 PagedAttention：像操作系统那样管显存</h2>
+<p><strong>这个类比是理解全章的钥匙</strong>，一行一行对着看：</p>
+<table>
+<thead>
+<tr>
+<th>操作系统</th>
+<th>vLLM</th>
+<th>本章的具体值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>进程</td>
+<td>一个请求（一条序列）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>虚拟地址空间</td>
+<td>逻辑上连续的 KV 序列</td>
+<td>该请求的第 0…t 个 token</td>
+</tr>
+<tr>
+<td>物理内存页（4 KB）</td>
+<td>★ <strong>KV 块</strong>（block）</td>
+<td>16 个 token = 2 MiB</td>
+</tr>
+<tr>
+<td>页表</td>
+<td>★ <strong>块表</strong>（block table）</td>
+<td>逻辑块号 → 物理块号</td>
+</tr>
+<tr>
+<td>物理页帧</td>
+<td>显存里的物理块</td>
+<td>56 GiB ÷ 2 MiB = <strong>28,672 块</strong></td>
+</tr>
+<tr>
+<td>按需分页</td>
+<td>写满一块才申请下一块</td>
+<td>§5.2 的 1.0% 碎片率</td>
+</tr>
+<tr>
+<td>写时复制（COW）</td>
+<td>★ 共享前缀 + 引用计数</td>
+<td>§5.4</td>
+</tr>
+<tr>
+<td>换出到磁盘（swap）</td>
+<td>抢占：换到 CPU 内存，或直接丢弃重算</td>
+<td>§5.7</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键洞察只有一句</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    ★★ KV Cache 在【逻辑上】必须连续（注意力要按顺序读 K_1..K_t），
        但在【物理显存里】完全【不需要】连续。
 
@@ -301,7 +532,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        注意力 kernel 按表去取就行。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    逻辑视图（请求 A 看到的）:
+<div class="codehilite"><pre><span></span><code>    逻辑视图（请求 A 自己看到的，连续的一条）:
     [tok 0..15][tok 16..31][tok 32..47][tok 48..63]
         块0        块1         块2         块3
          │          │           │           │
@@ -310,94 +541,231 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     物理显存（乱序摆放，中间还夹着别的请求的块）:
     ...[ #2 ]...[ #5 ]...[ #7 ]...[ #19 ]...
 
-    ★ 收益一：不再需要连续大块 ⟹ 外部碎片【消失】
+    ★ 收益一：不再需要连续大块  ⟹ 外部碎片【消失】
     ★ 收益二：写满一块才申请下一块 ⟹ 保留浪费【消失】
     ★ 收益三：最多浪费【最后一块】的零头 ⟹ 内部碎片 ≤ 15 个 token
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>为什么块大小是 16？</strong> 太小 → 块表变长、kernel 里查表开销大；<br />
-太大 → 最后一块的零头浪费变多。16 是一个经验平衡点。</p>
+<p>★ <strong>为什么块大小是 16？</strong> 太小 → 块表变长、查表更频繁，而且<strong>一次能连续搬的字节数变少，合并访存效率下降</strong>；太大 → 最后一块的零头浪费变多。16 是一个经验平衡点。⚠️ vLLM 常用 16，SGLang 的默认值随版本变化，以自己那一版的配置为准。</p>
 </blockquote>
-<p><strong>代价</strong>：注意力 kernel 必须重写。标准的 FlashAttention 假设 KV 在显存里连续，PagedAttention 要求它先查块表再按块取数。<strong>这就是为什么这是个系统工作而不只是个内存分配器</strong>。</p>
+<p><strong>代价</strong>：注意力 kernel 必须重写。标准的 FlashAttention 假设 KV 在显存里是一整条，PagedAttention 要求它<strong>先查块表，再按块取数</strong>。kernel 侧究竟改了哪几行、这次查表贵不贵，见 <a href="../../大模型算子开发/09-推理侧算子.html">大模型算子开发 09 章 §9.3.4</a>（结论：查表的表很小，常驻 L2，在访存受限的算子里几乎免费）。<strong>这就是为什么 PagedAttention 是个系统工作，而不只是个内存分配器。</strong></p>
 <hr />
-<h2 id="53">5.3 顺手解决的第二个问题：共享</h2>
-<p>分页带来一个几乎免费的红利——<strong>不同请求可以指向同一个物理块</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    并行采样（一个 prompt 生成 4 个候选答案）：
-      候选1 块表: [7, 2, 19, 41]
+<h2 id="54">5.4 顺手解决的第二个问题：共享与引用计数</h2>
+<p>分页带来一个几乎免费的红利——<strong>不同请求的块表可以指向同一个物理块</strong>。</p>
+<p><strong>场景一：并行采样</strong>（一个 prompt 生成 4 个候选答案）。</p>
+<div class="codehilite"><pre><span></span><code>      候选1 块表: [7, 2, 19, 41]
       候选2 块表: [7, 2, 19, 55]
       候选3 块表: [7, 2, 19, 63]
       候选4 块表: [7, 2, 19, 88]
                    ↑─共享─↑
       ★ prompt 部分的 KV【只存一份】，省了 3 份的显存
-
-    ★ 写时复制（copy-on-write）：某个候选要往共享块里写新 token 时，
-      才复制一份自己的 —— 和操作系统 fork() 完全一样的机制
 </code></pre></div>
 
+<p><strong>场景二：所有用户共用同一段系统提示词</strong>——这才是生产环境的大头。算一笔账：</p>
+<div class="codehilite"><pre><span></span><code>    系统提示词 2000 个 token  ⟹  2000 ÷ 16 = 125 块（正好整除）
+    125 块 × 2 MiB = 250 MiB
+    假设同时有 100 个用户在线，每个人的请求都带着这 2000 字
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>不共享</th>
+<th>共享同一份</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>系统提示词占的显存</td>
+<td>100 × 250 MiB = <strong>24.4 GiB</strong></td>
+<td><strong>250 MiB</strong></td>
+</tr>
+<tr>
+<td>占 56 GiB 池子的比例</td>
+<td><strong>43.6%</strong></td>
+<td>0.4%</td>
+</tr>
+<tr>
+<td>需要做的 Prefill 次数</td>
+<td>100 次 × 2000 token</td>
+<td><strong>1 次</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>43.6% 的 KV 显存在存 100 份一模一样的东西。</strong> 这是分页之后最容易摘的果子。</p>
+</blockquote>
+<p><strong>引用计数（reference count）怎么记账</strong>——这是共享能安全工作的全部机制：</p>
+<table>
+<thead>
+<tr>
+<th>物理块</th>
+<th>里面装的是</th>
+<th>谁在用</th>
+<th>引用计数</th>
+<th>能回收吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#71 … #12（共 125 块）</td>
+<td>系统提示词的 2000 token</td>
+<td>用户 A / B / C</td>
+<td><strong>3</strong></td>
+<td>❌ 不能</td>
+</tr>
+<tr>
+<td>#55</td>
+<td>用户 A 自己的问题</td>
+<td>用户 A</td>
+<td>1</td>
+<td>A 结束后可以</td>
+</tr>
+<tr>
+<td>#83</td>
+<td>用户 B 自己的问题</td>
+<td>用户 B</td>
+<td>1</td>
+<td>B 结束后可以</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    引用计数的三条规则：
+
+    ① 新请求命中了某段前缀  ⟹ 那些块的计数 +1，【不复制任何数据】
+    ② 请求结束             ⟹ 它块表里的所有块计数 −1
+    ③ 计数归 0             ⟹ 块回到空闲池
+       ★ 但【内容不清空】——下次还可能被别人命中。这是 §5.5 的伏笔。
+</code></pre></div>
+
+<p><strong>写时复制（copy-on-write）</strong>：某个候选要往一个<strong>共享的、还没写满的</strong>块里追加 token 时，先把这一块复制一份、改引用计数，再往副本里写。<strong>和操作系统 <code>fork()</code> 之后的行为一模一样。</strong></p>
 <hr />
-<h2 id="54">5.4 前缀缓存：把共享从「一个请求内」扩展到「所有请求之间」</h2>
-<p>上面的共享只发生在同一个 prompt 的多个候选之间。<strong>前缀缓存（prefix caching）把它推广到跨请求、跨时间</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    真实场景：所有用户都带着同一段 2000 字的系统提示词
-
-    用户1 10:00 到达 → Prefill 2000 字 → ★ 把这些块【留在显存里别删】
+<h2 id="55">5.5 前缀缓存：把共享从「一个请求内」扩展到「所有请求之间」</h2>
+<p>§5.4 的共享，发生在<strong>同时在线</strong>的请求之间。<strong>前缀缓存（prefix caching）把它推广到跨请求、跨时间</strong>——靠的就是上面第 ③ 条规则：<strong>计数归 0 的块，内容还在。</strong></p>
+<div class="codehilite"><pre><span></span><code>    用户1 10:00 到达 → Prefill 2000 字 → 生成完毕 → 块计数归 0
+                     ★ 但这 125 块【留在池子里，内容不动】
     用户2 10:01 到达 → 发现前 2000 字一模一样
-                     → ★★ 直接指向用户1 的块，Prefill 【跳过】
-                     → TTFT 从 800ms 降到 20ms
+                     → ★★ 计数 +1 直接接管，Prefill 【跳过】
 </code></pre></div>
 
-<p><strong>怎么判断"一模一样"？——靠哈希。</strong></p>
+<p><strong>TTFT 省了多少</strong>（沿用 8B / H100 的口径）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>没有前缀缓存</th>
+<th>命中前缀缓存</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>要 Prefill 的 token</td>
+<td>2000（系统提示词）+ 30（用户问题）</td>
+<td>只有 30</td>
+</tr>
+<tr>
+<td>理论耗时</td>
+<td>约 30 ms</td>
+<td>约 0.5 ms</td>
+</tr>
+<tr>
+<td>⚠️ 按 50~60% 实际利用率</td>
+<td><strong>约 50~60 ms</strong></td>
+<td><strong>约 1 ms</strong>，加上调度/采样开销，几毫秒量级</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>别照搬「800 ms 降到 20 ms」这类数字</strong>（本章旧版就是这么写的，<strong>偏大得离谱</strong>）。8B 模型在 H100 上做 2000 token 的 Prefill，算力侧就是 30 ms 量级——推导见 <a href="../../大模型算子开发/09-推理侧算子.html">大模型算子开发 09 章 §9.1.4</a>。几百毫秒的 TTFT 只会出现在<strong>更大的模型</strong>（70B 以上）或者<strong>队列已经堵住</strong>的时候，那时省下来的主要是排队时间，不是 Prefill 时间。<strong>引用 TTFT 数字必须带上模型大小和是否排队。</strong></p>
+</blockquote>
+<p><strong>怎么判断「一模一样」？——靠链式哈希。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ★ 每个【写满的】块，算一个哈希：
-       block_hash = hash( 上一块的 hash , 这一块的 16 个 token id , 额外键 )
-                            ↑ ★ 链式的，保证【前缀路径】相同才算命中
-                                                    ↑ 额外键 = 多模态图片、
-                                                      LoRA 适配器 id 等
 
-    ⟹ 查表：hash 在不在 BlockHashToBlockMap 里？在 → 直接复用
+       block_hash = hash( 上一块的 hash ,
+                          这一块的 16 个 token id ,
+                          额外键 )
+                      ↑                        ↑
+          ★ 链式的，保证【整条前缀路径】     额外键 = 多模态图片、
+            都相同才算命中                    LoRA 适配器 id 等
+
+    ⟹ 查表：这个 hash 在不在 BlockHashToBlockMap 里？在 → 直接复用
 </code></pre></div>
 
 <blockquote>
+<p>★ <strong>为什么必须链式？</strong> 因为「第 5 块内容相同」不代表「前 4 块也相同」。把上一块的 hash 拌进来，等于把整条前缀压进了一个值里——两个块 hash 相同，就意味着从头到这里完全一致。</p>
 <p>✅ <strong>源码可查</strong>（vLLM）：<br />
 - 哈希函数 <a href="../源码/vLLM/vllm/v1/core/kv_cache_utils.py#L618">kv_cache_utils.py:618</a> <code>hash_block_tokens</code><br />
 - 额外键 <a href="../源码/vLLM/vllm/v1/core/kv_cache_utils.py#L580">kv_cache_utils.py:580</a> <code>generate_block_hash_extra_keys</code><br />
 - 哈希表 <a href="../源码/vLLM/vllm/v1/core/block_pool.py#L33">block_pool.py:33</a> <code>class BlockHashToBlockMap</code><br />
 - 写满即入表 <a href="../源码/vLLM/vllm/v1/core/block_pool.py#L225">block_pool.py:225</a> <code>cache_full_blocks</code><br />
-- 链的起点 <a href="../源码/vLLM/vllm/v1/core/kv_cache_utils.py#L102">kv_cache_utils.py:102</a> <code>NONE_HASH</code>，<br />
-  种子字符串是 <code>"vllm-none-hash"</code>（L106）</p>
-<p>★ 注意 <code>cache_full_blocks</code> 这个名字——<strong>只有写满的块才进缓存</strong>。<br />
-半满的块（<code>cache_partial_block</code>，L445）走另一条路，因为它的内容还会变。</p>
+- 链的起点 <a href="../源码/vLLM/vllm/v1/core/kv_cache_utils.py#L102">kv_cache_utils.py:102</a> <code>NONE_HASH</code>，种子字符串是 <code>"vllm-none-hash"</code>（L106）</p>
+<p>★ 注意 <code>cache_full_blocks</code> 这个名字——<strong>只有写满的块才进缓存</strong>。半满的块（<code>cache_partial_block</code>，L445）走另一条路，因为它的内容还会变，现在算的哈希下一步就作废了。</p>
 </blockquote>
 <hr />
-<h2 id="55-sglang-radixattention">5.5 SGLang 的另一条路：RadixAttention（基数树）</h2>
+<h2 id="56-sglang-radixattention">5.6 SGLang 的另一条路：RadixAttention（基数树）</h2>
 <p>vLLM 用<strong>哈希表</strong>，SGLang 用<strong>树</strong>。这不是实现细节，是能力差异。</p>
 <blockquote>
-<p>📖 <strong>基数树</strong>（radix tree，也叫压缩前缀树 / Patricia trie）——一种把公共前缀合并成一条边的树。</p>
+<p>📖 <strong>基数树</strong>（radix tree，也叫压缩前缀树 / Patricia trie）——一种把公共前缀合并成<strong>一条边</strong>的树。普通前缀树一条边只放一个字符，基数树一条边可以放一整段。</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    三个请求：
-      &quot;你是一个助手。请介绍杭州&quot;
-      &quot;你是一个助手。请介绍北京&quot;
-      &quot;你是一个助手。今天天气&quot;
+      A  &quot;你是一个助手。请介绍杭州&quot;
+      B  &quot;你是一个助手。请介绍北京&quot;
+      C  &quot;你是一个助手。今天天气&quot;
 
-    基数树自动长成：
-                 ┌─「你是一个助手。」─┐        ← ★ 只存一份
-                 │                    │
-            ┌────┴────┐          ┌────┴────┐
-         「请介绍」                「今天天气」
-        ┌────┴────┐
-     「杭州」   「北京」
+    基数树自动长成这样（★ 每条边上挂的是【一段 token 的 KV】）：
 
-    ★ 树结构给了哈希表给不了的三件事：
-      ① 查询「最长公共前缀」是【一次树遍历】，不用逐块试哈希
-      ② ★★ 调度器可以【提前问】：这个请求能命中多少？（04 章的缓存感知调度）
-      ③ 淘汰时可以从【叶子】往上剪，天然保住被共享最多的根部
+    (root)
+      └── 「你是一个助手。」          ← ★ KV 只存一份，A / B / C 共用
+            ├── 「请介绍」            ← ★ 只存一份，A / B 共用
+            │     ├── 「杭州」        ← A 独占
+            │     └── 「北京」        ← B 独占
+            └── 「今天天气」          ← C 独占
+</code></pre></div>
+
+<p><strong>B 到达时省了多少</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>请求</th>
+<th>总 prompt 长度</th>
+<th>沿树走能复用的</th>
+<th>真正要新算的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A（第一个到）</td>
+<td>「你是一个助手。请介绍杭州」</td>
+<td>0</td>
+<td>全部</td>
+</tr>
+<tr>
+<td>B</td>
+<td>同长度</td>
+<td>「你是一个助手。请介绍」</td>
+<td>只剩「北京」</td>
+</tr>
+<tr>
+<td>C</td>
+<td>—</td>
+<td>「你是一个助手。」</td>
+<td>「今天天气」</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 树结构给了哈希表给不了的三件事：
+
+    ① 查「最长公共前缀」是【一次树遍历】，不用从第 1 块开始逐块试哈希
+    ② ★★ 调度器可以【提前问】：这个请求能命中多少？
+       ⟹ 这就是 04 章的「缓存感知调度」——把高命中的请求排在一起跑
+    ③ 淘汰时从【叶子】往上剪，天然保住被共享最多的根部
+       （哈希表的块级 LRU 做不到这一点，它不知道谁是根）
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>源码可查</strong>（SGLang，<a href="../源码/SGLang/python/sglang/srt/mem_cache/radix_cache.py">radix_cache.py</a>）：<br />
-<code>class TreeNode</code> <strong>L238</strong>、<code>class RadixCache</code> <strong>L303</strong>、<br />
-<code>match_prefix</code> <strong>L377</strong>（最长前缀匹配）、<code>insert</code> <strong>L437</strong>、<br />
-<code>evict</code> <strong>L593</strong>（LRU 淘汰）、<code>_split_node</code> <strong>L705</strong>（插入时把一条边劈成两段——这是基数树的标志性操作）、<br />
-<code>inc_lock_ref</code> <strong>L623</strong>（在用的块不许淘汰）。</p>
+<p>✅ <strong>源码可查</strong>（SGLang，<a href="../源码/SGLang/python/sglang/srt/mem_cache/radix_cache.py">radix_cache.py</a>）：<code>class TreeNode</code> <strong>L238</strong>、<code>class RadixCache</code> <strong>L303</strong>、<code>match_prefix</code> <strong>L377</strong>（最长前缀匹配）、<code>insert</code> <strong>L437</strong>、<code>evict</code> <strong>L593</strong>（LRU 淘汰）、<code>_split_node</code> <strong>L705</strong>（插入时把一条边劈成两段——这是基数树的标志性操作）、<code>inc_lock_ref</code> <strong>L623</strong>（在用的块不许淘汰，就是 §5.4 的引用计数）。</p>
 </blockquote>
 <p><strong>对比一句话</strong>：</p>
 <table>
@@ -427,55 +795,99 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>实现复杂度</td>
 <td>简单</td>
-<td>复杂（要处理节点分裂/合并）</td>
+<td>复杂（要处理节点分裂 / 合并）</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️（我的判断）两者的<strong>最终命中效果在常见负载下接近</strong>，真正的差距在 ②——<br />
-SGLang 能把「命中率」当成调度输入，vLLM 更多是「命中了算赚到」。</p>
+<p>⚠️（我的判断，非实测）两者的<strong>最终命中效果在常见负载下接近</strong>，真正的差距在第 ② 条——SGLang 能把「命中率」当成调度的输入，vLLM 更多是「命中了算赚到」。</p>
 </blockquote>
 <hr />
-<h2 id="56">5.6 缓存不是白拿的</h2>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 一：缓存块占的显存，就是不能给新请求用的显存
-       ⟹ 命中率低的负载（每个用户 prompt 都不一样）反而是负收益
+<h2 id="57">5.7 装不下的时候：抢占</h2>
+<p>分页把并发从 224 提到 573，但显存总有用完的一天——一批请求同时进入长生成，块池见底。这时调度器必须<strong>抢占</strong>某些请求，把它们的块吐出来：</p>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>做法</th>
+<th>代价</th>
+<th>什么时候划算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>换出</strong>（swap）</td>
+<td>把它的块拷到 CPU 内存，之后再拷回来</td>
+<td>过 PCIe，⚠️ 约 64 GB/s，比 HBM 慢 50 倍</td>
+<td>块很多、重算很贵时</td>
+</tr>
+<tr>
+<td><strong>重算</strong>（recompute）</td>
+<td>直接丢弃这些块，之后重新 Prefill 一遍</td>
+<td>一次 Prefill 的算力</td>
+<td>序列短时更简单也更省心</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    一个 2048 token 的请求，KV = 256 MiB
 
-    ⚠️ 二：★ 前缀缓存有【安全边界】问题
-       用户A 的对话内容留在缓存里，用户B 如果能通过响应时间差异
-       探测出「我的前缀命中了」，就能推断出 A 说过什么
-       ⟹ 多租户场景要按租户隔离缓存空间
+    换出再换回：256 MiB × 2 ÷ 64 GB/s ≈  8.4 ms
+    丢弃再重算：Prefill 2048 token     ≈ 30 ms（算力侧理论下界）
 
-    ⚠️ 三：哈希碰撞（理论上）
-       vLLM 用的是 Python 内置 hash + 可配置的哈希函数，
-       ★ 生产环境有安全要求时应显式配置为加密哈希
+    ⟹ 这个长度下换出更快；但重算不占 CPU 内存、不抢 PCIe，实现也简单得多。
+    ⚠️ 实际选哪个还要看 PCIe 是不是已经被别的流量占满，生产系统两种都要有。
 </code></pre></div>
 
 <hr />
-<h2 id="57">5.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① 分页前：显存有效利用率只有 20%~38%（✅ vLLM 论文披露）      │
-│     浪费分三类：保留 / 内部碎片 / 外部碎片                     │
-│                                                              │
-│  ② ★★ PagedAttention = 操作系统虚拟内存                       │
-│     逻辑连续 + 物理离散 + 块表，块大小 16                      │
-│     ⟹ 外部碎片和保留浪费消失，利用率 &gt;96%                     │
-│     代价：注意力 kernel 要重写                                 │
-│                                                              │
-│  ③ 分页顺手带来【共享】：并行采样共享前缀 + 写时复制           │
-│                                                              │
-│  ④ 前缀缓存把共享推广到跨请求                                  │
-│     vLLM：链式哈希 + 哈希表（✅ hash_block_tokens）            │
-│     SGLang：★ 基数树（✅ RadixCache）⟹ 支撑缓存感知调度        │
-│                                                              │
-│  ⑤ 代价：占显存、有跨租户信息泄露面                            │
-└──────────────────────────────────────────────────────────────┘
+<h2 id="58">5.8 缓存不是白拿的（但也没那么贵）</h2>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 一：★ 前缀缓存有【安全边界】问题
+       用户A 的对话内容留在缓存里。用户B 如果能通过【响应时间差异】
+       探测出「我这段前缀命中了」，就能反推出 A 说过什么
+       ⟹ ★★ 多租户场景必须按租户隔离缓存空间，或把租户 id 拌进哈希的「额外键」
+
+    ⚠️ 二：记账本身要钱
+       每一步都要算哈希 / 走树、维护引用计数、维护 LRU 顺序
+       ⟹ 命中率极低的负载（每个用户的 prompt 都完全不同），
+          这些开销就是纯亏——只是亏得不多
+
+    ⚠️ 三：哈希碰撞（理论上）
+       vLLM 默认用 Python 内置 hash，可配置换成别的
+       ⟹ ★ 生产环境有安全要求时应显式配置为加密哈希
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一处要纠正本章旧版的说法</strong>：旧版写「缓存块占的显存就是不能给新请求用的显存，所以命中率低时是负收益」。<strong>这不准确。</strong> vLLM 和 SGLang 的实现里，引用计数归 0 的块<strong>仍然躺在空闲池里</strong>，新请求一伸手就被 LRU 立刻淘汰掉（<code>evict</code> / <code>BlockPool</code> 的空闲队列）。⟹ <strong>前缀缓存不会挤占并发</strong>，它不是「划一块地出来当缓存」，而是「反正要空着，顺便留着内容」。真正的代价是上面那三条，不是显存。</p>
+</blockquote>
+<hr />
+<h2 id="59">5.9 本章小结</h2>
+<div class="codehilite"><pre><span></span><code>    ① 分页前：显存有效利用率只有 20%~38%（✅ vLLM 论文披露）
+       浪费分三类：保留 / 内部碎片 / 外部碎片
+       ⟹ 本章的负载算出来是 38.7%，正好在论文区间的上沿
+
+    ② ★★ PagedAttention = 操作系统的虚拟内存
+       逻辑连续 + 物理离散 + 块表，块大小 16 个 token
+       ⟹ 外部碎片【结构上消失】，内部碎片降到 1.0%
+       ⟹ 本章配置下并发 224 → 573（2.56 倍）；
+          max_tokens 设得越宽松，倍数越大（8192 时是 7.9 倍）
+       代价：注意力 kernel 要重写成「先查表再取数」
+
+    ③ 分页顺手带来【共享】：引用计数 + 写时复制
+       ⟹ 100 个用户共用一段 2000 字系统提示词：
+          24.4 GiB（43.6% 的池子）→ 250 MiB
+
+    ④ 前缀缓存把共享推广到跨请求、跨时间
+       靠的是「计数归 0 的块内容不清空」
+       vLLM：★ 链式哈希 + 哈希表（✅ hash_block_tokens）
+       SGLang：★ 基数树（✅ RadixCache）⟹ 能预估命中率 ⟹ 缓存感知调度
+
+    ⑤ ★ 前缀缓存【不挤占并发】（空闲块随时可被 LRU 淘汰）
+       它真正的代价是：记账开销 + 跨租户信息泄露面
 </code></pre></div>
 
 <hr />
 <blockquote>
 <p><strong>下一步</strong> → <a href="06-推理中的并行策略.html">06 推理中的并行策略</a> ⭐ <strong>核心章</strong><br />
-前五章都在单卡范围内想办法。从这一章开始上多卡——而你会发现，<br />
-<strong>推理的并行策略和训练【不一样】，连 rank 的排布顺序都是反过来的。</strong></p>
+前五章都在单卡范围内想办法。从这一章开始上多卡——而你会发现，<strong>推理的并行策略和训练【不一样】，连 rank 的排布顺序都是反过来的。</strong></p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

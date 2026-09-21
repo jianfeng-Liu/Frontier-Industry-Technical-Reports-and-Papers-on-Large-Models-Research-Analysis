@@ -248,32 +248,60 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="13">13 性能指标与压测</h1>
 <blockquote>
-<p><strong>一句话</strong>：「吞吐提升 3 倍」在没说清<strong>输入输出长度、并发数、延迟约束</strong>之前，是一句没有信息量的话。这一章教你怎么问对问题。</p>
+<p><strong>一句话</strong>：「吞吐提升 3 倍」在没说清<strong>输入输出长度、并发数、延迟约束</strong>之前，是一句没有信息量的话。这一章教你怎么问对问题，并且用一个具体场景把四个核心指标<strong>逐项算出来</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="131">13.1 四个核心指标</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────┬────────────────────────┬──────────────────────────┐
-│  指标     │  定义                   │  由什么决定               │
-├──────────┼────────────────────────┼──────────────────────────┤
-│ ★ TTFT   │ 从请求到达到收到第 1 个 │ ★ Prefill 速度            │
-│ 首字延迟  │ token 的时间            │  + 排队时间               │
-├──────────┼────────────────────────┼──────────────────────────┤
-│ ★ TPOT   │ 相邻两个输出 token 之间 │ ★ Decode 速度             │
-│ 每字延迟  │ 的平均间隔              │  （访存受限）             │
-├──────────┼────────────────────────┼──────────────────────────┤
-│  E2E     │ 端到端总时间            │ ★ = TTFT + TPOT × 输出长度│
-├──────────┼────────────────────────┼──────────────────────────┤
-│ ★ 吞吐    │ 每秒处理的 token 数     │  batch 大小 × 单步速度    │
-│ Throughput│ 或每秒完成的请求数      │                          │
-└──────────┴────────────────────────┴──────────────────────────┘
-</code></pre></div>
-
+<h3 id="1311">13.1.1 先给定义</h3>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>中文</th>
+<th>定义</th>
+<th>由什么决定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★ <strong>TTFT</strong></td>
+<td>首字延迟</td>
+<td>从请求到达，到用户收到<strong>第 1 个</strong> token 的时间</td>
+<td>★ 排队时间 + Prefill 计算时间</td>
+</tr>
+<tr>
+<td>★ <strong>TPOT</strong></td>
+<td>每字延迟</td>
+<td>第 1 个 token 之后，<strong>平均</strong>每个输出 token 的间隔</td>
+<td>★ Decode 单步耗时（访存受限）</td>
+</tr>
+<tr>
+<td>★ <strong>ITL</strong></td>
+<td>相邻 token 间隔</td>
+<td><strong>每一次</strong>相邻两个 token 之间的实际间隔（是一个分布，不是一个数）</td>
+<td>Decode 单步耗时 + 被别人插队的抖动</td>
+</tr>
+<tr>
+<td><strong>E2E</strong></td>
+<td>端到端延迟</td>
+<td>请求到达 → 最后一个 token 吐完</td>
+<td>★ = TTFT + TPOT × (输出长度 − 1)</td>
+</tr>
+<tr>
+<td>★ <strong>吞吐</strong></td>
+<td>Throughput</td>
+<td>每秒产出多少 token，或每秒完成多少请求</td>
+<td>★ batch 大小 ÷ 单步耗时</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>📖 <strong>TTFT</strong> = <strong>T</strong>ime <strong>T</strong>o <strong>F</strong>irst <strong>T</strong>oken（首字延迟）<br />
-📖 <strong>TPOT</strong> = <strong>T</strong>ime <strong>P</strong>er <strong>O</strong>utput <strong>T</strong>oken（每字延迟），也叫 <strong>ITL</strong>（<strong>I</strong>nter-<strong>T</strong>oken <strong>L</strong>atency）<br />
+📖 <strong>TPOT</strong> = <strong>T</strong>ime <strong>P</strong>er <strong>O</strong>utput <strong>T</strong>oken（每字延迟）<br />
+📖 <strong>ITL</strong> = <strong>I</strong>nter-<strong>T</strong>oken <strong>L</strong>atency（token 间延迟）<br />
 📖 <strong>E2E</strong> = <strong>E</strong>nd-<strong>to</strong>-<strong>E</strong>nd latency（端到端延迟）</p>
 </blockquote>
-<p><strong>一个必须建立的直觉——把指标和体验对上</strong>：</p>
+<p><strong>把指标和用户体验对上</strong>，这个直觉必须先建立：</p>
 <div class="codehilite"><pre><span></span><code>    TTFT = 500 ms  ⟹ 用户感觉「按下回车后愣了半秒」  ★ 可以接受
     TTFT = 3 s     ⟹ 用户以为卡了                    ❌ 不可接受
 
@@ -281,20 +309,220 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     TPOT = 100 ms  ⟹ 每秒 10 个字，★ 明显能看出在一个个蹦字
 </code></pre></div>
 
+<h3 id="1312-tpot-itl">13.1.2 ⚠️ TPOT 和 ITL 不是一个东西</h3>
+<p>很多人把这两个词混着用，但压测工具（vLLM / SGLang 自带的那两个）是<strong>分开报</strong>的，含义确实不同：</p>
+<div class="codehilite"><pre><span></span><code>    一条请求吐了 10 个 token，相邻间隔（ITL）依次是：
+        6, 6, 6, 120, 6, 6, 6, 6, 6   (ms)   ← 一共 9 个间隔
+
+    TPOT = 这 9 个数的平均 = (6×8 + 120) ÷ 9 = 18.7 ms   ← ★ 一个平均数
+    ITL  = 这 9 个数本身                                  ← ★ 一个分布
+           P99 ITL = 120 ms
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这条请求的 TPOT 看起来是 18.7 ms（还行），但用户实实在在地卡了 120 ms。</strong><br />
+⚠️ 那个 120 ms 从哪来的？多半是<strong>这一步被一块 Prefill 插队了</strong>（03 章的 chunked prefill），或者<strong>被抢占后重算</strong>（04 章）。<br />
+⟹ <strong>看 TPOT 的均值判断「快不快」，看 ITL 的 P99 判断「卡不卡」。</strong> 只看 TPOT 会漏掉全部卡顿。</p>
+<p>⚠️ 还有一个坑：<strong>开了投机解码（08 章）之后，一步可能吐出 3 个 token</strong>，这 3 个 token 之间的 ITL 接近 0，然后下一步前是一个大间隔。这时 ITL 的分布会变成「一堆 0 + 一堆大值」，<strong>平均值（TPOT）变好了，但抖动变大了</strong>。拿 ITL 的 P99 去对比开/关投机解码，才看得出真相。</p>
+</blockquote>
+<h3 id="1313">13.1.3 ★★ 同一个场景，把四个数一起算出来</h3>
+<p>光看定义没用。下面给一个完全具体的场景，<strong>四个指标全部手算出来</strong>，你可以自己验算每一步。</p>
+<p><strong>场景设定</strong>（全部写死，一个含糊的都没有）：</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>取值</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型</td>
+<td>Llama-3-8B，BF16 权重 = <strong>16 GB</strong>（8.03e9 参数 × 2 字节 ≈ 1.61e10 字节）</td>
+<td>02 章 §2.3</td>
+</tr>
+<tr>
+<td>每 token KV Cache</td>
+<td><strong>128 KiB = 0.131 MB</strong>（32 层 × 8 个 KV 头 × 128 头维 × 2 份 × 2 字节）</td>
+<td>02 章 §2.2</td>
+</tr>
+<tr>
+<td>⚠️ 单位约定</td>
+<td><strong>本节的 GB / MB 一律是十进制</strong>（10⁹ / 10⁶ 字节）；显存容量写 GiB 时会特别标注</td>
+<td>避免单位混用</td>
+</tr>
+<tr>
+<td>硬件</td>
+<td>H100 SXM5：HBM3 80 GB / <strong>3.35 TB/s</strong>，BF16 稠密算力 <strong>989 TFLOPS</strong></td>
+<td><a href="../../大模型算子开发/附-速查表.html">大模型算子开发/附-速查表 §A</a></td>
+</tr>
+<tr>
+<td>输入长度 ISL</td>
+<td><strong>1024</strong> token</td>
+<td>—</td>
+</tr>
+<tr>
+<td>输出长度 OSL</td>
+<td><strong>256</strong> token</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Decode 期间的平均上下文</td>
+<td>1024 + 128 = <strong>1152</strong> token（从 1024 涨到 1280，取中点）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>⚠️ 有效带宽</td>
+<td>峰值的 80% = <strong>2680 GB/s</strong></td>
+<td>⚠️ 实测量级，见 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发/02 章 §2.5</a></td>
+</tr>
+<tr>
+<td>⚠️ Prefill 有效算力</td>
+<td>峰值的 40% = <strong>400 TFLOPS</strong></td>
+<td>⚠️ 实测量级，无一手来源，仅用于把数算通</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第一步 · 算 TTFT（Prefill 的账，算力受限）</strong></p>
+<div class="codehilite"><pre><span></span><code>    Prefill 的计算量 = 2 × 参数量 × token 数
+                     = 2 × 8.0e9 × 1024
+                     = 1.64e13 FLOP = 16.4 TFLOP
+
+    ★ 注意力那部分（QKᵀ 和 PV，不含参数）另有约 0.27 TFLOP，
+      只占 1.7%，这里忽略。（长 prompt 下就不能忽略了，N² 增长）
+
+    Prefill 计算时间 = 16.4 TFLOP ÷ 400 TFLOPS = 41 ms
+
+    ⟹ TTFT = 排队时间 + 41 ms
+       ★ 空载时（没人排队）TTFT ≈ 41 ms
+       ★★ 有负载时排队时间才是大头 —— 见 13.1.4
+</code></pre></div>
+
+<p><strong>第二步 · 算 TPOT（Decode 的账，访存受限）</strong></p>
+<p>Decode 每走一步，要从 HBM 搬两样东西：<strong>整份权重</strong>（和 batch 无关）+ <strong>batch 内所有序列的 KV</strong>（和 batch 成正比）。</p>
+<div class="codehilite"><pre><span></span><code>    单步搬运字节 = 16 GB（权重，固定）
+                 + batch × 1152 × 128 KiB（KV，线性增长）
+
+    单步耗时 = 单步搬运字节 ÷ 2680 GB/s
+    TPOT     = 单步耗时                    ← Decode 一步吐一个 token
+    吞吐     = batch ÷ 单步耗时
+</code></pre></div>
+
+<p><strong>第三步 · 三个 batch 的结果并排放</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align: right;">batch = 1</th>
+<th style="text-align: right;">batch = 32</th>
+<th style="text-align: right;">batch = 128</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>搬权重</td>
+<td style="text-align: right;">16.00 GB</td>
+<td style="text-align: right;">16.00 GB</td>
+<td style="text-align: right;">16.00 GB</td>
+</tr>
+<tr>
+<td>搬 KV = batch × 1152 × 128 KiB</td>
+<td style="text-align: right;">0.15 GB</td>
+<td style="text-align: right;">4.83 GB</td>
+<td style="text-align: right;">19.33 GB</td>
+</tr>
+<tr>
+<td><strong>单步搬运合计</strong></td>
+<td style="text-align: right;"><strong>16.15 GB</strong></td>
+<td style="text-align: right;"><strong>20.83 GB</strong></td>
+<td style="text-align: right;"><strong>35.33 GB</strong></td>
+</tr>
+<tr>
+<td>单步耗时 = 合计 ÷ 2680 GB/s</td>
+<td style="text-align: right;">6.0 ms</td>
+<td style="text-align: right;">7.8 ms</td>
+<td style="text-align: right;">13.2 ms</td>
+</tr>
+<tr>
+<td>★ <strong>TPOT</strong></td>
+<td style="text-align: right;"><strong>6.0 ms</strong></td>
+<td style="text-align: right;"><strong>7.8 ms</strong></td>
+<td style="text-align: right;"><strong>13.2 ms</strong></td>
+</tr>
+<tr>
+<td>★ <strong>ITL</strong>（理想模型下 = TPOT）</td>
+<td style="text-align: right;">6.0 ms</td>
+<td style="text-align: right;">7.8 ms</td>
+<td style="text-align: right;">13.2 ms</td>
+</tr>
+<tr>
+<td>★ <strong>吞吐</strong> = batch ÷ 单步耗时</td>
+<td style="text-align: right;"><strong>166 tok/s</strong></td>
+<td style="text-align: right;"><strong>4118 tok/s</strong></td>
+<td style="text-align: right;"><strong>9711 tok/s</strong></td>
+</tr>
+<tr>
+<td><strong>TTFT</strong>（空载）</td>
+<td style="text-align: right;">41 ms</td>
+<td style="text-align: right;">41 ms + 排队</td>
+<td style="text-align: right;">41 ms + 排队</td>
+</tr>
+<tr>
+<td><strong>E2E</strong> = TTFT + TPOT × 255</td>
+<td style="text-align: right;"><strong>1.57 s</strong></td>
+<td style="text-align: right;"><strong>2.02 s</strong></td>
+<td style="text-align: right;"><strong>3.41 s</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>这张表要读出三件事</strong>：</p>
+<p>★ <strong>① 吞吐涨了 58 倍，TPOT 只变差 2.2 倍。</strong> batch 1 → 128，吞吐 166 → 9711（<strong>58.5 倍</strong>），TPOT 6.0 → 13.2 ms（慢了 <strong>2.2 倍</strong>，即时间增加 119%）。这笔买卖在大多数场景下划算——<strong>这就是连续批处理（04 章）存在的全部理由</strong>。</p>
+<p>★★ <strong>② 但它确实伤了延迟，而且伤害是算出来的、躲不掉的。</strong> 权重那 16 GB 是<strong>固定成本</strong>，batch 越大摊得越薄；KV 那部分是<strong>可变成本</strong>，随 batch 线性增长，<strong>永远摊不薄</strong>。所以「吞吐涨 ⟹ TPOT 一定变差」不是实现没做好，是算术推出来的。</p>
+<p>★ <strong>③ 收益在递减，而且能算出拐点。</strong> batch 1 → 32（并发 ×32）吞吐涨 24.8 倍；batch 32 → 128（并发 ×4）吞吐只涨 2.36 倍。原因一眼可见：</p>
+<div class="codehilite"><pre><span></span><code>    KV 搬运量什么时候追平权重？
+        16 GB ÷ (1152 × 128 KiB) = 16e9 ÷ 1.51e8 ≈ 106 条
+
+    ⟹ ★★ 并发 &lt; 106：权重是大头，加并发几乎白赚吞吐
+       ★★ 并发 &gt; 106：KV 是大头，加并发只是等比例地把单步拖长，
+                       吞吐趋于封顶，TPOT 却继续线性变差
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这个 106 就是 02 章 §2.6 那句「存在吞吐甜点」的具体数字。</strong> 甜点区不是玄学，它 = <code>权重字节 ÷ (平均上下文长度 × 每 token KV 字节)</code>。换个模型、换个上下文长度，自己代一遍就知道甜点在哪。</p>
+</blockquote>
+<h3 id="1314-ttft">13.1.4 TTFT 为什么在真实系统里会爆掉</h3>
+<p>上表里 TTFT 一直是 41 ms，那是<strong>空载</strong>。真实服务里 TTFT 的大头是<strong>排队</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 一张卡同一时刻只能做一件事（要么 Prefill，要么 Decode，
+      要么 chunked prefill 混合批 —— 03 章）。
+
+    你的 prompt 前面排了 3 个同样长的 prompt：
+        TTFT = 3 × 41 ms（等前面的）+ 41 ms（自己的）= 164 ms
+
+    如果这 3 步中间还夹着 Decode 步（真实调度一定会夹）：
+        每夹一个 Decode 步 +13 ms（batch=128 时）
+        夹 10 步 ⟹ TTFT 再 +130 ms
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>所以 TTFT 有两个完全不同的来源，排查时必须先分清是哪一个</strong>：<br />
+<strong>① Prefill 算得慢</strong> ⟹ prompt 太长、没开前缀缓存、chunk 切得太碎。<br />
+<strong>② 在排队</strong> ⟹ 系统已经过载，或者调度策略把 Decode 排在了 Prefill 前面。<br />
+⟹ 区分方法：看框架日志里的「等待队列长度」和「排队时长 vs 计算时长」。两个数一对比，答案是哪个立刻就清楚了。</p>
+</blockquote>
 <hr />
 <h2 id="132">13.2 ★★ 最重要的一条：吞吐和延迟是对立的</h2>
-<div class="codehilite"><pre><span></span><code>    batch 从 1 加到 256：
-      ★ 吞吐：上升（权重搬运被摊薄，01 章）
-      ★ TPOT：变差（KV 搬运量线性增长 + 排队，02 章 §2.6）
-
-    ⟹ ★★★ 「吞吐提升 3 倍」这句话，如果没说
+<p>§13.1.3 那张表已经把这件事<strong>算</strong>出来了。这里只说它的后果：</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★★ 「吞吐提升 3 倍」这句话，如果没说
        【延迟变成了多少】，那它可能只是把 batch 调大了而已。
-       ★ 任何人都能靠调大 batch「提升吞吐」。
+       ★ 任何人都能靠调大 batch「提升吞吐」—— 上面那张表就是证据：
+         什么都不优化，光把 batch 从 1 调到 128，吞吐就是 58 倍。
 </code></pre></div>
 
 <p><strong>⟹ 所以 10 章 DistServe 提出的那个指标才是对的</strong>：</p>
 <blockquote>
-<p>📖 <strong>goodput（有效吞吐）</strong>——<strong>在满足 SLO 的前提下</strong>的最大吞吐。<br />
+<p>📖 <strong>goodput（有效吞吐）</strong>——<strong>在满足 SLO 的前提下</strong>能达到的最大吞吐。<br />
+📖 <strong>SLO</strong> = <strong>S</strong>ervice <strong>L</strong>evel <strong>O</strong>bjective（服务等级目标），你对用户承诺的延迟上限。<br />
 ✅ DistServe 论文原文：<em>"the maximum request rate that can be served adhering to the SLO attainment goal"</em></p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★★ 正确的表述方式长这样：
@@ -304,160 +532,400 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>📖 <strong>P99</strong>——把所有请求的延迟排序，第 99 百分位的值。<br />
-★ <strong>务必看 P99，不要只看平均值。</strong> 平均 200 ms、P99 5 s 的系统，<br />
-意味着每 100 个用户里就有 1 个等了 5 秒——而他很可能就此流失。<br />
+<p>📖 <strong>P99</strong>——把所有请求的延迟从小到大排序，取第 99 百分位的那个值。<br />
+★ <strong>务必看 P99，不要只看平均值。</strong> 平均 200 ms、P99 5 s 的系统，意味着每 100 个用户里就有 1 个等了 5 秒——而他很可能就此流失。<br />
 ⚠️ 抢占（04 章）和专家负载不均（11 章）都会造成长尾，平均值完全看不出来。</p>
 </blockquote>
 <hr />
-<h2 id="133">13.3 ★ 压测必须说清的四件事</h2>
-<p><strong>看到任何性能数字，先问这四个问题</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ① ★★ 输入/输出长度分布是多少？（P:D ratio）
-       ISL=128, OSL=2048   ⟹ Decode 主导，几乎在测 Decode 性能
-       ISL=8192, OSL=128   ⟹ ★ Prefill 主导，测的是完全另一回事
-       ⟹ 这两组数字之间【没有可比性】
-       📖 ISL = Input Sequence Length，OSL = Output Sequence Length
+<h2 id="133">13.3 ★ 看到任何性能数字，先问这四件事</h2>
+<p><strong>① ★★ 输入/输出长度分布是多少？（P:D ratio）</strong></p>
+<div class="codehilite"><pre><span></span><code>    ISL=128,  OSL=2048  ⟹ Decode 主导，几乎是在测 Decode 性能
+    ISL=8192, OSL=128   ⟹ ★ Prefill 主导，测的是完全另一回事
+    ⟹ 这两组数字之间【没有可比性】
+    📖 ISL = Input Sequence Length（输入长度）
+       OSL = Output Sequence Length（输出长度）
+</code></pre></div>
 
-    ② ★★ 是固定并发还是固定到达率？
-       固定并发（N 个客户端循环发）⟹ 测【最大能力】，★ 没有排队概念
-       固定到达率（每秒 X 个请求）⟹ ★ 测【真实服务】，能看出排队和过载
-       ⟹ ★ 只有后者能测出有意义的 P99
+<p><strong>② ★★ 是固定并发还是固定到达率？</strong></p>
+<div class="codehilite"><pre><span></span><code>    固定并发（N 个客户端循环发，一个回来再发下一个）
+      ⟹ 测【系统最大能力】，★ 队列里永远只有 N 个，没有排队爆炸这回事
+    固定到达率（不管系统忙不忙，每秒发 X 个请求）
+      ⟹ ★ 测【真实服务】，请求会堆积，能看出排队和过载
+    ⟹ ★ 只有后者能测出有意义的 P99 TTFT
+</code></pre></div>
 
-    ③ ★ 前缀重合度多少？
-       如果压测脚本用同一个 prompt 打 1000 次，
-       ⟹ ★★ 前缀缓存 100% 命中，Prefill 成本接近 0
-       ⟹ 这个数字漂亮但【毫无意义】
+<p><strong>③ ★ 前缀重合度多少？</strong></p>
+<div class="codehilite"><pre><span></span><code>    如果压测脚本用同一个 prompt 打 1000 次：
+      ⟹ ★★ 前缀缓存（05 章）100% 命中，Prefill 成本接近 0
+      ⟹ 这个数字很漂亮，但【毫无意义】
+    反过来，如果线上本该有 90% 的共享系统提示词，压测却用全随机 prompt，
+      ⟹ 你会低估线上性能，做出错误的扩容决策
+</code></pre></div>
 
-    ④ ★ 精度、并行配置、硬件
-       FP8 vs BF16、TP=1 vs TP=8、H100 vs A100
-       ⟹ 换任何一个，数字都不可比
+<p><strong>④ ★ 精度、并行配置、硬件</strong></p>
+<div class="codehilite"><pre><span></span><code>    FP8 vs BF16、TP=1 vs TP=8、H100 vs A100、开没开 CUDA Graph
+    ⟹ 换任何一个，数字都不可比
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>这四条里，第 ③ 条最常被无意中违反。</strong><br />
-很多"性能对比"的差异，实际来自压测数据的前缀重合度不同。</p>
+<p>⚠️ <strong>这四条里，第 ③ 条最常被无意中违反。</strong> 很多「性能对比」的差异，实际来自压测数据的前缀重合度不同，和框架本身无关。</p>
 </blockquote>
 <hr />
-<h2 id="134">13.4 一个可执行的压测流程</h2>
-<div class="codehilite"><pre><span></span><code>    ★ 第一步：画出【延迟-吞吐曲线】，而不是测一个点
+<h2 id="134">13.4 ★★ 一条可执行的压测流程</h2>
+<p>不要「跑一下 benchmark 看看」。按下面六步走，每一步都有明确的产出和停止条件。</p>
+<h3 id="0">第 0 步 · 先把负载定死（跳过这步后面全白测）</h3>
+<div class="codehilite"><pre><span></span><code>    □ ISL / OSL：要么回放线上真实分布，要么用 random 数据集写死长度
+    □ 前缀重合度：显式设成 0（纯随机）或显式设成线上的比例，不要放任默认
+    □ 固定输出长度：开 --ignore-eos，否则不同配置下输出长度不同，没法比
+    □ 请求数：≥ 500 条，且丢掉前 10% 的暖机数据
+    □ 每组配置跑 3 遍，看波动有多大（波动 &gt;10% 说明环境不干净）
+</code></pre></div>
 
-      并发 1  → 记录 (吞吐, TTFT_P99, TPOT_P99)
-      并发 2  → ...
-      并发 4, 8, 16, 32, 64, 128, 256 → ...
+<h3 id="1-">第 1 步 · 固定并发扫一遍，画「延迟-吞吐曲线」</h3>
+<p><strong>关键：不要只测一个点。</strong> 并发取 1, 2, 4, 8, 16, 32, 64, 128, 256…，每个点记录 <code>(吞吐, P99 TTFT, P99 TPOT, P99 ITL)</code>。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># vLLM ≥ 0.9 的新 CLI；老版本对应 python benchmarks/benchmark_serving.py</span>
+vllm<span class="w"> </span>bench<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>meta-llama/Meta-Llama-3-8B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dataset-name<span class="w"> </span>random<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--random-input-len<span class="w"> </span><span class="m">1024</span><span class="w"> </span>--random-output-len<span class="w"> </span><span class="m">256</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--random-prefix-len<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--num-prompts<span class="w"> </span><span class="m">500</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-concurrency<span class="w"> </span><span class="m">32</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ignore-eos<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--percentile-metrics<span class="w"> </span>ttft,tpot,itl,e2el<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--metric-percentiles<span class="w"> </span><span class="m">50</span>,95,99<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--save-result<span class="w"> </span>--result-filename<span class="w"> </span>c32.json
+</code></pre></div>
 
-      画成图：横轴吞吐，纵轴 P99 延迟
-      ⟹ ★★ 你会看到一条&quot;曲棍球杆&quot;形状的曲线：
-         前半段延迟平缓上升（系统还有余力）
-         ★ 某一点后延迟【陡然上升】（开始排队，过载了）
-      ⟹ ★★★ 那个拐点，就是这套配置的【真实容量】
-
-    ★ 第二步：画一条你的 SLO 横线
-      比如 P99 TPOT = 50 ms
-      ⟹ ★ 横线和曲线的交点 = goodput = 你真正能承诺的吞吐
-
-    ★ 第三步：改一个变量，重画
-      开 FP8 KV Cache → 重画 → ★ 看拐点右移了多少
-      开投机解码       → 重画 → ★ 注意看高并发段是不是【变差】了（08 章）
+<div class="codehilite"><pre><span></span><code><span class="c1"># SGLang 自带的，参数刻意做得和上面几乎一样，方便同口径对比</span>
+python<span class="w"> </span>-m<span class="w"> </span>sglang.bench_serving<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>sglang<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dataset-name<span class="w"> </span>random<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--random-input-len<span class="w"> </span><span class="m">1024</span><span class="w"> </span>--random-output-len<span class="w"> </span><span class="m">256</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--num-prompts<span class="w"> </span><span class="m">500</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-concurrency<span class="w"> </span><span class="m">32</span>
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>只有画出曲线，才能回答「这个优化到底有没有用」。</strong><br />
-单点测试极容易得出「优化 A 提升 3 倍」这种在别的并发下完全不成立的结论。</p>
+<p>⚠️ <strong>flag 名在版本之间会变。</strong> 跑之前先 <code>vllm bench serve --help</code> 对一遍，别照抄任何博客（包括这一页）里的参数。<br />
+⚠️ <strong>两个框架的默认数据集和默认参数不一样。</strong> 直接拿各自 README 里的数字对比是无效的，<strong>必须自己用同一个数据集、同一组参数重跑</strong>。</p>
 </blockquote>
-<hr />
-<h2 id="135">13.5 ★ 常用工具</h2>
-<div class="codehilite"><pre><span></span><code>    ★ vllm bench serve（vLLM 自带）
-      ⟹ 支持多种数据集（ShareGPT、随机、自定义），
-         直接输出 TTFT/TPOT/E2E 的均值和各分位数
-      ⟹ ★ 支持固定到达率（--request-rate），能测排队
+<p>用 §13.1.3 那个场景，扫出来的曲线大概长这样（⚠️ 下表是用 §13.1.3 的模型推的理论值，不是实测）：</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">并发</th>
+<th style="text-align: right;">吞吐 (tok/s)</th>
+<th style="text-align: right;">单步耗时 = P99 TPOT</th>
+<th style="text-align: right;">E2E (OSL=256)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">166</td>
+<td style="text-align: right;">6.0 ms</td>
+<td style="text-align: right;">1.57 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">1246</td>
+<td style="text-align: right;">6.4 ms</td>
+<td style="text-align: right;">1.68 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">32</td>
+<td style="text-align: right;">4118</td>
+<td style="text-align: right;">7.8 ms</td>
+<td style="text-align: right;">2.02 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">64</td>
+<td style="text-align: right;">6687</td>
+<td style="text-align: right;">9.6 ms</td>
+<td style="text-align: right;">2.48 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">128</td>
+<td style="text-align: right;">9711</td>
+<td style="text-align: right;">13.2 ms</td>
+<td style="text-align: right;">3.41 s</td>
+</tr>
+<tr>
+<td style="text-align: right;">256</td>
+<td style="text-align: right;">12549</td>
+<td style="text-align: right;">20.4 ms</td>
+<td style="text-align: right;">5.24 s</td>
+</tr>
+<tr>
+<td style="text-align: right;"><strong>412</strong></td>
+<td style="text-align: right;"><strong>14110</strong></td>
+<td style="text-align: right;"><strong>29.2 ms</strong></td>
+<td style="text-align: right;"><strong>7.49 s</strong> ← ★ KV 池装满</td>
+</tr>
+<tr>
+<td style="text-align: right;">512</td>
+<td style="text-align: right;">≈14110（不再涨）</td>
+<td style="text-align: right;">29.2 ms + 排队</td>
+<td style="text-align: right;">爆炸</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么恰好卡在 412？</strong> 因为 KV Cache 池就这么大：</p>
+<div class="codehilite"><pre><span></span><code>    可用 KV 空间 ≈ 58 GiB ≈ 62.3 GB
+      （02 章 §2.3：一张 80 GB 的卡，扣掉 16 GB 权重
+        和约 6 GB 的 CUDA 上下文 / 激活 / 框架预留）
+      ⚠️ 这一档是量级估算，±10% 不影响下面的结论
 
-    ★ python -m sglang.bench_serving（SGLang 自带）
-      ⟹ 接口和上面几乎一样，★ 可以用同一套参数对比两个框架
+    每条序列占   = 1152 token × 128 KiB = 144 MiB = 0.151 GB
 
-    ★ GenAI-Perf（NVIDIA）
-      ⟹ 跨框架、跨后端的统一压测工具
+    62.3 ÷ 0.151 ≈ 412 条      ← ★★ 这就是这套配置的物理并发上限
 
-    ⚠️ 注意：两个框架自带的压测脚本，默认数据集和默认参数【不一样】。
-       ★ 直接拿各自 README 里的数字对比，是无效的。
-       要对比就必须用【同一个数据集、同一组参数】自己重跑。
+    ⟹ 第 413 条请求进来时，没有 KV 块可分 ⟹ 只能【排队】
+    ⟹ 吞吐不再涨（GPU 已经满载），但 TTFT 和 E2E 开始线性堆积
+    ⟹ ★★★ 这就是曲线的【拐点】
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ 真实系统里拐点还可能更早到，因为 <code>max_num_seqs</code>（vLLM 的并发上限参数）可能先于 KV 池撞线。<strong>拐点取 <code>min(KV 池能装的条数, max_num_seqs)</code>。</strong></p>
+</blockquote>
+<p>曲线的形状（这才是要记住的东西）：</p>
+<div class="codehilite"><pre><span></span><code>   延迟
+    │                                        ╱   ← ③ 过载段：吞吐不涨了，
+    │                                       ╱       延迟直线上升（纯排队）
+    │                                 ____╱
+    │                       _____----      ↑
+    │           _____------              拐点 = 真实容量
+    │  ____-----
+    └────────────────────────────────────────────→ 吞吐
+       ① 低并发            ② 甜点区          ③ 过载
+       延迟最好            两头都还行        千万别在这儿运行
+       吞吐最差
+</code></pre></div>
+
+<h3 id="2-slo-goodput">第 2 步 · 画一条 SLO 横线，读出 goodput</h3>
+<div class="codehilite"><pre><span></span><code>    假设承诺 P99 TPOT &lt; 20 ms：
+      横线和曲线的交点落在【并发 ≈ 250】附近
+      ⟹ goodput ≈ 12500 tokens/s     ← ★ 这才是你能对外承诺的数字
+      ⟹ 而不是曲线最右端那个 14110
+</code></pre></div>
+
+<p>★ <strong>注意 goodput（12500）和峰值吞吐（14110）只差 13%，但并发差了 1.6 倍。</strong> 为最后那 13% 的吞吐去逼近拐点，换来的是延迟多涨 43% 和零余量——<strong>生产环境应该运行在拐点左边留 20~30% 余量的地方。</strong></p>
+<h3 id="3">第 3 步 · 换成固定到达率，在拐点附近复测</h3>
+<p>固定并发测不出排队。拐点附近换 <code>--request-rate</code> 再跑一遍：</p>
+<div class="codehilite"><pre><span></span><code>vllm<span class="w"> </span>bench<span class="w"> </span>serve<span class="w"> </span>...<span class="w"> </span>--request-rate<span class="w"> </span><span class="m">12</span><span class="w"> </span>--burstiness<span class="w"> </span><span class="m">1</span>.0<span class="w">    </span><span class="c1"># 泊松到达</span>
+vllm<span class="w"> </span>bench<span class="w"> </span>serve<span class="w"> </span>...<span class="w"> </span>--request-rate<span class="w"> </span><span class="m">14</span><span class="w"> </span>--burstiness<span class="w"> </span><span class="m">1</span>.0
+vllm<span class="w"> </span>bench<span class="w"> </span>serve<span class="w"> </span>...<span class="w"> </span>--request-rate<span class="w"> </span><span class="m">16</span><span class="w"> </span>--burstiness<span class="w"> </span><span class="m">1</span>.0
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 看的是：到达率超过服务率之后，P99 TTFT 是不是【一直涨不收敛】
+    ⟹ 收敛 ⟹ 系统还有余量
+    ⟹ 一路涨到天上 ⟹ 已经过载，这个到达率不可承诺
+    ⚠️ burstiness &lt; 1 是突发流量，会让拐点提前。线上真实流量几乎都有突发。
+</code></pre></div>
+
+<h3 id="4">第 4 步 · 一次只改一个变量，重画整条曲线</h3>
+<div class="codehilite"><pre><span></span><code>    开 FP8 KV Cache（09 章）→ 重画 → ★ 每条序列 0.151 → 0.076 GB
+                                      ⟹ KV 池能装 825 条 ⟹ 拐点右移一倍
+    开投机解码（08 章）    → 重画 → ★ 低并发段变好，
+                                      ⚠️ 高并发段很可能【变差】，必须验
+    调大 chunked prefill 块 → 重画 → ★ TTFT 变好、TPOT 变差，看曲线怎么移
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>只有画出整条曲线，才能回答「这个优化到底有没有用」。</strong> 单点测试极容易得出「优化 A 提升 3 倍」这种在别的并发下完全不成立的结论——比如投机解码，在 batch=1 上 1.85 倍，在 batch=64 上跌破 1 倍（08 章）。</p>
+</blockquote>
+<h3 id="5">第 5 步 · 什么时候停</h3>
+<p>满足下面<strong>任意一条</strong>就停手，再加压得到的数据没有参考价值：</p>
+<div class="codehilite"><pre><span></span><code>    ① P99 延迟越过 SLO 横线      ⟹ 已经找到 goodput，这就是答案
+    ② 并发翻倍，吞吐涨幅 &lt; 10%   ⟹ 已经过拐点，再加只是堆延迟
+    ③ 日志出现 preemption &gt; 0    ⟹ 显存在颠簸，此时的数据不是稳态
+    ④ KV 使用率长期 &gt; 95%        ⟹ 同上，随时会抢占
+    ⑤ 三次重复之间波动 &gt; 10%     ⟹ 环境不干净（别人在用卡 / 温度墙），先修环境
+</code></pre></div>
+
+<hr />
+<h2 id="135-60-60">13.5 ⚠️ 怎么报告收益：「时间减少 60%」不是「加速 60%」</h2>
+<p>这是本章最容易出的<strong>表述错误</strong>，而且一出就是几倍的偏差。</p>
+<div class="codehilite"><pre><span></span><code>    优化前 TPOT = 20 ms  →  优化后 TPOT = 8 ms
+
+    ✅「时间减少 60%」      （20−8）/20 = 60%      对
+    ✅「加速 2.5 倍」        20/8 = 2.5            对
+    ❌「加速 60%」          这是 20 → 12.5 ms，完全是另一个结果
+    ⚠️「快了 150%」          （20−8）/8 = 150%     数学上对，但极易被读成 2.5 倍以外的意思
+</code></pre></div>
+
+<p>换算关系，记住这张表就不会错：</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">时间减少</th>
+<th style="text-align: right;">等价于加速</th>
+<th style="text-align: right;">反过来：加速 N 倍</th>
+<th style="text-align: right;">等价于时间减少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">20%</td>
+<td style="text-align: right;">1.25 倍</td>
+<td style="text-align: right;">1.5 倍</td>
+<td style="text-align: right;">33%</td>
+</tr>
+<tr>
+<td style="text-align: right;">33%</td>
+<td style="text-align: right;">1.5 倍</td>
+<td style="text-align: right;">2 倍</td>
+<td style="text-align: right;">50%</td>
+</tr>
+<tr>
+<td style="text-align: right;">50%</td>
+<td style="text-align: right;"><strong>2 倍</strong></td>
+<td style="text-align: right;">2.5 倍</td>
+<td style="text-align: right;">60%</td>
+</tr>
+<tr>
+<td style="text-align: right;">60%</td>
+<td style="text-align: right;"><strong>2.5 倍</strong></td>
+<td style="text-align: right;">3 倍</td>
+<td style="text-align: right;">67%</td>
+</tr>
+<tr>
+<td style="text-align: right;">80%</td>
+<td style="text-align: right;">5 倍</td>
+<td style="text-align: right;">10 倍</td>
+<td style="text-align: right;">90%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    公式：时间减少 p  ⟺  加速 1/(1−p) 倍
+          加速 N 倍   ⟺  时间减少 (1 − 1/N)
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>给自己立两条规矩，从此不会说错</strong>：<br />
+<strong>① 延迟只说「从 A 降到 B」或「加速 N 倍」，永远不要用百分比说延迟。</strong><br />
+<strong>② 吞吐只说「从 A 升到 B」或「提升到 N 倍」。</strong> 吞吐侧没有歧义（从 800 涨到 2400 就是 3 倍 / +200%），但也要把绝对值写出来。<br />
+⚠️ 引用别人的数字时同样要还原：看到「latency reduced by 2x」，那是<strong>时间减半</strong>（=加速 2 倍）；看到「2x lower latency」，也是时间减半。英文里 "2x lower" 一律指减半，不要读成减少 2%。</p>
+</blockquote>
 <hr />
 <h2 id="136">13.6 ★ 排查清单：性能不达标时按顺序查</h2>
-<div class="codehilite"><pre><span></span><code>    ① 看 GPU 利用率
-       持续 &lt;30%？ ⟹ ★ 可能是 CPU 瓶颈（12 章）或 batch 太小
+<div class="codehilite"><pre><span></span><code>    ① 看 GPU 利用率 —— ⚠️ 但先问清是哪个「利用率」
+       📖 算力利用率（MFU / nvidia-smi 的 SM 占用）
+       📖 带宽利用率（MBU / DRAM Throughput）
+       ★★ Decode 阶段【算力利用率极低是正常的】（02 章：不到 1%），
+          但【带宽利用率应该接近 100%】。
+       ⟹ 两个都低（&lt;30%）才是真有问题：CPU 瓶颈（12 章）或 batch 太小
        ⟹ 先确认 CUDA Graph 开了没
 
     ② 看 KV Cache 使用率（框架日志里都有）
-       长期 &gt;95%？ ⟹ ★ 显存是瓶颈，频繁抢占
-       ⟹ 上 FP8 KV（09 章）/ 换 GQA/MLA 模型（07 章）/ 加卡
+       长期 &gt;95%？ ⟹ ★ 显存是瓶颈，会频繁抢占
+       ⟹ 上 FP8 KV（09 章）/ 换 GQA-MLA 模型（07 章）/ 加卡
 
     ③ 看抢占次数（vLLM 日志有 preemption 计数）
-       ★ 非零就说明在颠簸 ⟹ 降低 max_num_seqs 反而可能变快
+       ★ 非零就说明在颠簸 ⟹ 调小 max_num_seqs 反而可能变快
 
     ④ 看前缀缓存命中率
        ⟹ 命中率低但业务上本该有共享前缀？检查 prompt 拼接方式
           （★ 变动的内容如时间戳放在开头，会毁掉整个前缀缓存）
 
     ⑤ TTFT 高但 TPOT 正常
-       ⟹ Prefill 是瓶颈：调小 chunked prefill 粒度、
-          开前缀缓存、考虑 PD 分离（10 章）
+       ⟹ 先分清是【排队】还是【Prefill 慢】（§13.1.4）
+       ⟹ Prefill 慢：开前缀缓存、调 chunked prefill 粒度、考虑 PD 分离（10 章）
+       ⟹ 排队：机器不够，或调度策略偏向了 Decode
 
     ⑥ TPOT 高但 TTFT 正常
-       ⟹ Decode 是瓶颈：★ 增大 TP、量化权重、上投机解码（低并发时）
+       ⟹ Decode 是瓶颈：★ 增大 TP、量化权重、上投机解码（仅低并发）
+       ⟹ 也可能是 batch 已经越过 §13.1.3 的甜点，往回调反而更好
 
-    ⑦ ★ MoE 模型且各卡利用率不均
+    ⑦ TPOT 均值正常但 ITL 的 P99 很高
+       ⟹ 有东西在插队：chunked prefill 的块太大，或者在抢占重算
+
+    ⑧ ★ MoE 模型且各卡利用率不均
        ⟹ 专家负载不均衡 ⟹ 上 EPLB（11 章）
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>第 ④ 条里那个「时间戳放开头」的坑，实践中极其常见。</strong><br />
-系统提示词里写 <code>当前时间：2026-08-21 10:23:45</code>，<br />
-⟹ 每个请求的第一个块的哈希都不同 ⟹ ★★ <strong>整条前缀缓存链全部失效</strong>（05 章的链式哈希）。<br />
+系统提示词里写 <code>当前时间：2026-08-21 10:23:45</code>，⟹ 每个请求的第一个块的哈希都不同 ⟹ ★★ <strong>整条前缀缓存链全部失效</strong>（05 章的链式哈希）。<br />
 ⟹ 正确做法：<strong>把易变内容放到 prompt 末尾。</strong></p>
+<p>⚠️ <strong>还有一个反复被误用的排查结论：「kernel 启动开销 3~10 µs，我这一步有 200 个 kernel，所以光启动就 2 ms」——这是错的。</strong> kernel 启动是<strong>流水化</strong>的：CPU 在下发第 n+1 个的同时 GPU 在跑第 n 个，只要 CPU 下发速度跟得上，启动开销就被藏在计算后面，<strong>不能串行相加</strong>。真正的症状是 nsys 时间线上 <strong>kernel 之间出现大片空白</strong>（CPU 下发跟不上），那才是 CUDA Graph 要解决的问题（12 章）。</p>
 </blockquote>
 <hr />
 <h2 id="137-mfu">13.7 ⚠️ 关于 MFU：推理里它没那么重要</h2>
 <p>训练侧最看重的指标 MFU，在推理里要小心使用：</p>
 <blockquote>
-<p>📖 <strong>MFU</strong>（<strong>M</strong>odel <strong>FLOPs </strong>U**tilization，模型算力利用率）——<br />
-实际算力 ÷ 硬件峰值算力。见 <a href="../../训练框架/分布式训练入门/12-并行策略组合与MFU.html">训练框架/12 章</a>。</p>
+<p>📖 <strong>MFU</strong> = <strong>M</strong>odel <strong>FLOPs</strong> <strong>U</strong>tilization（模型算力利用率）—— 模型<strong>必须</strong>完成的运算量 ÷ 硬件在同样时间内<strong>能</strong>提供的运算量。详见 <a href="../../训练框架/分布式训练入门/12-并行策略组合与MFU.html">训练框架/12 章</a> 和 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发/02 章 §2.6</a>。</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ⚠️ ★★ 推理的 Decode 阶段【本质上就是访存受限】，
-       它的 MFU 天生只有百分之几——★ 这【不是缺陷】，是物理性质。
+       它的 MFU 天生只有百分之几 —— ★ 这【不是缺陷】，是物理性质。
        ⟹ 追求高 MFU 会把你引向错误的方向（比如盲目加大 batch 伤延迟）
 
     ★ 推理该看的是【MBU】：
       📖 MBU = Model Bandwidth Utilization（模型带宽利用率）
               = 实际达到的访存带宽 ÷ 硬件峰值带宽
-      ⟹ ★★ 这才是 Decode 阶段的正确标尺。MBU 到 70%+ 就已经很好了。
+      ⟹ ★★ 这才是 Decode 阶段的正确标尺。
 
     ⟹ ★ 一句话：Prefill 看 MFU，Decode 看 MBU。
 </code></pre></div>
 
+<p><strong>用 §13.1.3 的数字算一遍 MBU</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    batch=128 的那一步：搬 35.33 GB，耗时 13.2 ms
+    实际带宽 = 35.33 GB ÷ 13.2 ms = 2677 GB/s
+    MBU = 2677 ÷ 3350 = 80%
+
+    ⚠️ 这个 80% 是我们一开始【假设】进去的（有效带宽取峰值 80%），
+       所以它只能说明算式自洽，不是实测结论。
+    ★ 但口径是对的：实测 MBU 到 70~80% 就说明 Decode 侧已经榨得差不多了，
+      再调参数收益很小，该换层次想问题（量化、换注意力变体、PD 分离）。
+</code></pre></div>
+
+<p>同一步的 MFU 是多少？</p>
+<div class="codehilite"><pre><span></span><code>    计算量 = 2 × 8.0e9 × 128 token = 2.05 TFLOP
+    有效算力 = 2.05 TFLOP ÷ 13.2 ms = 155 TFLOPS
+    MFU = 155 ÷ 989 = 15.7%
+
+    ⟹ ★★ 同一步：MBU 80%（榨干了），MFU 15.7%（看着很难看）。
+       拿 MFU 去骂这个系统「GPU 没用满」，是拿错了尺子。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>所以「GPU 利用率低」这句话不说口径就是耍流氓。</strong> 说清楚是算力利用率还是带宽利用率，结论会完全相反。</p>
+</blockquote>
 <hr />
 <h2 id="138">13.8 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① 四个指标：TTFT（Prefill 决定）、TPOT（Decode 决定）、       │
-│     E2E = TTFT + TPOT × 输出长度、吞吐                        │
-│     ★ 一律看 P99，不要看平均值                                │
-│                                                              │
-│  ② ★★★ 吞吐和延迟对立 ⟹ 脱离延迟约束谈吞吐没有意义            │
-│     ⟹ ★ 正确指标是 goodput（SLO 约束下的吞吐）                │
-│                                                              │
-│  ③ 看到性能数字先问四件事：                                    │
-│     ★ 输入/输出长度分布、固定并发还是固定到达率、              │
-│       前缀重合度、精度与并行配置                               │
-│                                                              │
-│  ④ ★★ 正确的压测方法是画【延迟-吞吐曲线】，找拐点，            │
-│     再用 SLO 横线截出 goodput。★ 单点测试会骗人。              │
-│                                                              │
-│  ⑤ 排查顺序：GPU 利用率 → KV 使用率 → 抢占次数 →              │
-│     缓存命中率 → 看是 TTFT 还是 TPOT 超标                     │
-│     🔑 ★ 常见坑：时间戳放 prompt 开头会毁掉整条前缀缓存        │
-│                                                              │
-│  ⑥ ⚠️ 推理别盲目追 MFU：★ Prefill 看 MFU，Decode 看 MBU       │
-└──────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>① 五个指标：
+   TTFT（排队 + Prefill 决定）、TPOT（Decode 单步决定）、
+   ITL（是分布，看 P99 才看得出卡顿）、
+   E2E = TTFT + TPOT × (输出长度 − 1)、吞吐 = batch ÷ 单步耗时
+   ★ 一律看 P99，不要看平均值
+
+② ★★★ 吞吐和延迟对立，而且是算出来的：
+   权重是固定成本（batch 越大越摊薄），KV 是可变成本（永远摊不薄）
+   ⟹ 甜点 = 权重字节 ÷ (平均上下文 × 每 token KV 字节)
+   ⟹ 本章场景：Llama-3-8B / 上下文 1152 ⟹ 甜点 ≈ 106 并发
+   ⟹ 正确指标是 goodput（SLO 约束下的吞吐），不是裸吞吐
+
+③ 看到性能数字先问四件事：
+   ★ 输入/输出长度分布、固定并发还是固定到达率、
+     前缀重合度、精度与并行配置
+
+④ ★★ 压测六步：定死负载 → 扫并发画曲线 → 画 SLO 横线读 goodput →
+   换固定到达率复测 → 一次改一个变量重画 → 按五条停止条件停手
+   ★ 拐点 = min(KV 池能装的条数, max_num_seqs)，本章场景 ≈ 412
+   ★ 生产要运行在拐点左边，留 20~30% 余量
+
+⑤ ⚠️ 报告收益别说错：
+   时间减少 60% = 加速 2.5 倍 ≠ 加速 60%
+   规矩：延迟说「从 A 降到 B」或「加速 N 倍」，别用百分比说延迟
+
+⑥ 排查顺序：利用率（先问是算力还是带宽）→ KV 使用率 → 抢占次数 →
+   缓存命中率 → TTFT 超标先分清排队还是 Prefill 慢 → ITL 的 P99
+   🔑 常见坑：时间戳放 prompt 开头会毁掉整条前缀缓存
+   ⚠️ 常见误判：kernel 启动开销不能串行相加
+
+⑦ ⚠️ 推理别盲目追 MFU：★ Prefill 看 MFU，Decode 看 MBU
+   同一步可以 MBU 80% 而 MFU 15.7% —— 两把尺子，别拿错
 </code></pre></div>
 
 <hr />

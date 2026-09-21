@@ -248,57 +248,195 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="04">04 连续批处理与调度</h1>
 <blockquote>
-<p><strong>一句话</strong>：传统批处理是「一车人一起上、一起下」，连续批处理是「谁下车了就立刻补一个人上来」。这一个改动，把吞吐提了一个数量级。</p>
+<p><strong>一句话</strong>：传统批处理是「一车人一起上、一起下」，连续批处理是「谁下车了就立刻补一个人上来」。这一个改动，把吞吐提了一个数量级。<br />
+★ 本章会算清两件事：<strong>空转的槽位到底亏掉多少</strong>，以及<strong>把槽位填满能把 03 章那个 0.34% 的算力利用率提到多少</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="41">4.1 静态批处理为什么烂</h2>
-<p>训练时的批处理很简单：凑够 8 条数据，一起算，一起结束。推理时照搬，就是<strong>静态批处理（static batching）</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    凑齐 4 个请求，一起跑，全部跑完再放下一批
+<p>训练时的批处理很简单：凑够 8 条数据，一起算，一起结束。推理时照搬，就是<strong>静态批处理（static batching）</strong>：凑齐 4 个请求，一起跑，全部跑完才放下一批。</p>
+<p>拿四个请求举例，它们要生成的 token 数分别是 <strong>A=5、B=7、C=3、D=12</strong>，队列里还有 E、F、G 在等：</p>
+<div class="codehilite"><pre><span></span><code>    步:       1  2  3  4  5  6  7  8  9 10 11 12  |
+    槽1 A:    #  #  #  #  #  .  .  .  .  .  .  .  |   &lt;- 第 5 步就完事，之后 7 步空转
+    槽2 B:    #  #  #  #  #  #  #  .  .  .  .  .  |   &lt;- 第 7 步完事，5 步空转
+    槽3 C:    #  #  #  .  .  .  .  .  .  .  .  .  |   &lt;- 第 3 步完事，9 步空转
+    槽4 D:    #  #  #  #  #  #  #  #  #  #  #  #  |   &lt;- ★ 全批被它一个人拖住
+    队列 :                                        |  E  F  G   &lt;- 等满 12 步才轮到
 
-    时间轴 ──────────────────────────────────────────►
-    请求A (要生成 20 字) ████░░░░░░░░░░░░░░░░░░░░░░░░  ← 20步后就完事了
-    请求B (要生成 30 字) ██████░░░░░░░░░░░░░░░░░░░░░░
-    请求C (要生成 15 字) ███░░░░░░░░░░░░░░░░░░░░░░░░░
-    请求D (要生成 500字) ████████████████████████████  ← ★ 全批被它拖住
-                            ↑
-              ████ = 真在干活    ░░░░ = ★★ 空转，纯浪费
+    # = 这一步真在为某个请求生成 token
+    . = ★★ 槽位空着，但这一步照样把 15 GB 权重完整读了一遍
 
-    ⟹ 这一批的耗时 = 【最长的那个】
-    ⟹ A/B/C 算完了也【不能走】，它们的显存槽位一直被占着
-    ⟹ 新来的请求也【进不来】
+    ⟹ 这一批的耗时 = 【最长的那个】D，12 步
+    ⟹ A/B/C 算完了也【不能走】，它们的 KV Cache 槽位一直被占着
+    ⟹ E/F/G 要等满 12 步才进得来
+</code></pre></div>
+
+<p><strong>把账算出来</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>请求</th>
+<th>要生成的 token 数</th>
+<th>干活的步数</th>
+<th>★ 空转的步数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>5</td>
+<td>5</td>
+<td>7</td>
+</tr>
+<tr>
+<td>B</td>
+<td>7</td>
+<td>7</td>
+<td>5</td>
+</tr>
+<tr>
+<td>C</td>
+<td>3</td>
+<td>3</td>
+<td>9</td>
+</tr>
+<tr>
+<td>D</td>
+<td>12</td>
+<td>12</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>27</strong></td>
+<td><strong>27</strong></td>
+<td><strong>21</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    槽位·步数总量 = 4 槽 × 12 步 = 48
+    真正生成的 token = 27
+    ★ 槽位利用率 = 27 ÷ 48 = 56.3%
+    ⟹ 44% 的槽位·步是空的
 </code></pre></div>
 
 <blockquote>
-<p>★ 问题的根源：<strong>每个请求要生成多少字，事先不知道</strong>。这是推理独有的——训练时每条数据的长度是已知的。<br />
-⚠️（我的估算）在典型的长度分布下，静态批处理的槽位利用率常常只有 30%~50%。</p>
+<p>★ 问题的根源：<strong>每个请求要生成多少字，事先不知道</strong>。这是推理独有的——训练时每条数据的长度是已知且对齐的。<br />
+★★ 注意亏在哪：空转的槽位<strong>不额外花钱</strong>（权重那 15 GB 无论如何都要读一遍），但它<strong>也不产出</strong>。所以真正的损失是「把固定成本摊薄的机会」白扔了——这正好是 03 章「让搬一次权重干更多活」的反面。</p>
+</blockquote>
+<p><strong>长度越参差，亏得越多</strong>（同样 4 个槽位，换几组长度分布）：</p>
+<table>
+<thead>
+<tr>
+<th>batch 里 4 个请求的输出长度</th>
+<th>批耗时（步）</th>
+<th>真正生成的 token</th>
+<th>槽位·步</th>
+<th><strong>槽位利用率</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5 / 7 / 3 / 12</td>
+<td>12</td>
+<td>27</td>
+<td>48</td>
+<td>56.3%</td>
+</tr>
+<tr>
+<td>20 / 30 / 15 / 500</td>
+<td>500</td>
+<td>565</td>
+<td>2000</td>
+<td><strong>28.3%</strong></td>
+</tr>
+<tr>
+<td>20 / 30 / 15 / 2000</td>
+<td>2000</td>
+<td>2065</td>
+<td>8000</td>
+<td><strong>25.8%</strong></td>
+</tr>
+<tr>
+<td>500 / 500 / 500 / 500（长度一样）</td>
+<td>500</td>
+<td>2000</td>
+<td>2000</td>
+<td>★ <strong>100%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>最后一行是关键</strong>：如果所有请求的输出长度都一样，静态批处理<strong>一点都不亏</strong>。<br />
+⟹ ★★ <strong>连续批处理的全部收益，都来自「长度参差」。</strong> 请求长度越杂，收益越大；长度完全一致时，收益接近零。<br />
+⚠️ 所以别引用「连续批处理提升 N 倍吞吐」这种脱离长度分布的数字——上表里 N 可以是 1.8（56.3%→100%），也可以是 3.9（25.8%→100%），也可以是 1.0。</p>
 </blockquote>
 <hr />
 <h2 id="42">4.2 连续批处理：以「步」为单位调度</h2>
 <blockquote>
-<p>📖 <strong>连续批处理</strong>（continuous batching），也叫 <strong>in-flight batching</strong>（飞行中批处理）、<strong>iteration-level scheduling</strong>（迭代级调度）。<br />
-✅ 最早由 Orca 系统提出（OSDI'22），vLLM 论文（arXiv 2309.06180）把它和 PagedAttention 组合成了现在的标准形态。</p>
+<p>📖 <strong>连续批处理</strong>（<strong>continuous batching</strong>），也叫 <strong>in-flight batching</strong>（飞行中批处理）、<strong>iteration-level scheduling</strong>（迭代级调度）。<br />
+✅ 最早由 Orca 系统提出（Yu et al., OSDI'22），vLLM 论文（arXiv 2309.06180）把它和 PagedAttention 组合成了现在的标准形态。</p>
 </blockquote>
 <p>核心改动只有一句话：</p>
 <div class="codehilite"><pre><span></span><code>    ★★ 调度的单位从【一个请求】变成【一次前向】。
        每跑完一步，就重新决定「下一步谁在批里」。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    时间轴 ──────────────────────────────────────────►
-    步:   1  2  3  4  5  6  7  8  9 10 11 12 ...
-    槽1: [A  A  A  A  A][E  E  E  E  E  E  E ...   ← ★ A 一走 E 立刻补上
-    槽2: [B  B  B  B  B  B  B][F  F  F  F  F ...
-    槽3: [C  C  C][G  G  G  G  G  G  G  G  G ...
-    槽4: [D  D  D  D  D  D  D  D  D  D  D  D ...   ← D 慢，但不拖累别人
+<p>同样四个请求、同样 12 步，现在长这样（E 要 7 个 token、F 要 5 个、G 要 9 个）：</p>
+<div class="codehilite"><pre><span></span><code>    步:       1  2  3  4  5  6  7  8  9 10 11 12
+    槽1:      A  A  A  A  A  E  E  E  E  E  E  E    &lt;- A 第 5 步走，E 第 6 步立刻补上
+    槽2:      B  B  B  B  B  B  B  F  F  F  F  F    &lt;- B 第 7 步走，F 立刻补上
+    槽3:      C  C  C  G  G  G  G  G  G  G  G  G    &lt;- C 第 3 步走，G 立刻补上
+    槽4:      D  D  D  D  D  D  D  D  D  D  D  D    &lt;- D 慢，但不拖累任何人
 
-    ⟹ ★ 没有 ░░░░ 了。槽位一空出来立刻被填满。
+    ⟹ ★ 一个 . 都没有了。槽位一空出来立刻被填满。
 </code></pre></div>
 
+<p><strong>同一个例子，两种做法逐项对照</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>静态批处理</th>
+<th>连续批处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>12 步内真正生成的 token</td>
+<td>5+7+3+12 = <strong>27</strong></td>
+<td>27 + E/F/G 的 7+5+9 = <strong>48</strong></td>
+</tr>
+<tr>
+<td>槽位·步数总量</td>
+<td>4 × 12 = <strong>48</strong></td>
+<td>4 × 12 = <strong>48</strong></td>
+</tr>
+<tr>
+<td><strong>槽位利用率</strong></td>
+<td><strong>56.3%</strong></td>
+<td>★ <strong>100%</strong></td>
+</tr>
+<tr>
+<td>E 的排队时间</td>
+<td>12 步 ≈ 54 ms</td>
+<td><strong>5 步 ≈ 23 ms</strong>（降 58%）</td>
+</tr>
+<tr>
+<td>12 步内推进的请求数</td>
+<td>4</td>
+<td><strong>7</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 上面那个「≈54 ms / ≈23 ms」是按一步 4.5 ms 折算的（03 章那个 Llama-3-8B / H100 / batch 小的口径）。排队时间是直接加到 E 的 <strong>TTFT</strong> 上的，所以连续批处理<strong>同时</strong>改善了吞吐和 TTFT。</p>
+</blockquote>
 <p><strong>调度器每一步做的事</strong>，就这四件：</p>
 <div class="codehilite"><pre><span></span><code>    ① 清理：把上一步生成了 &lt;eos&gt;（结束符）或达到长度上限的请求踢出去，
             ★ 释放它的 KV Cache 块
     ② 补人：从等待队列里拿新请求，看显存够不够，够就放进来（做 Prefill）
     ③ 组批：把「新人的 Prefill 分块」+「老人的 Decode」凑成一个批，
-            ★ 总量不超过 token 预算（03 章）
+            ★ 总量不超过 token 预算（03 章 §3.5）
     ④ 跑：一次前向，然后回到 ①
 </code></pre></div>
 
@@ -307,126 +445,369 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 在 <a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L477">scheduler.py:477</a>。<br />
 结果的一致性由 <a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L1172">scheduler.py:1172</a> 的断言守着：<br />
 <code>python
-assert total_num_scheduled_tokens &lt;= self.max_num_scheduled_tokens</code></p>
+assert total_num_scheduled_tokens &lt;= self.max_num_scheduled_tokens</code><br />
+★ 顺便看一眼那个文件里 <code>schedule()</code> 开头的注释：<strong>「调度器里既没有 decoding phase 也没有 prefill phase」</strong>——在 v1 的实现里，每个请求每一步只被问一句话「你还差几个 token 没算」，Prefill 和 Decode 的区别只是这个数字是 448 还是 1。</p>
 </blockquote>
 <hr />
-<h2 id="43">4.3 ★ 装不下了怎么办：抢占</h2>
+<h2 id="43">4.3 ★ 把槽位填满，到底换来什么</h2>
+<p>03 章 §3.2 算出：batch = 1 时 Decode 只用到 <strong>0.34%</strong> 的算力。现在把并发数扫一遍，看填满槽位能提到多少（Llama-3-8B、H100、每条序列上下文固定 512 token）：</p>
+<table>
+<thead>
+<tr>
+<th>并发 batch</th>
+<th>读权重</th>
+<th>读 KV（batch × 512 × 128 KiB）</th>
+<th>⚠️ 激活（8.8 MB × batch，估）</th>
+<th>搬运合计</th>
+<th><strong>一步耗时 = TPOT</strong></th>
+<th><strong>吞吐 = batch ÷ TPOT</strong></th>
+<th>实现算力</th>
+<th><strong>算力利用率</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>15.0 GB</td>
+<td>0.07 GB</td>
+<td>0.01 GB</td>
+<td>15.08 GB</td>
+<td><strong>4.50 ms</strong></td>
+<td>222 token/s</td>
+<td>3.3 TFLOPS</td>
+<td><strong>0.34%</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>15.0</td>
+<td>0.54</td>
+<td>0.07</td>
+<td>15.61</td>
+<td>4.66 ms</td>
+<td>1 717</td>
+<td>25.8</td>
+<td>2.6%</td>
+</tr>
+<tr>
+<td>32</td>
+<td>15.0</td>
+<td>2.15</td>
+<td>0.28</td>
+<td>17.43</td>
+<td>5.20 ms</td>
+<td>6 154</td>
+<td>92.4</td>
+<td>9.3%</td>
+</tr>
+<tr>
+<td>64</td>
+<td>15.0</td>
+<td>4.29</td>
+<td>0.56</td>
+<td>19.85</td>
+<td>5.93 ms</td>
+<td>10 793</td>
+<td>162</td>
+<td>16.4%</td>
+</tr>
+<tr>
+<td>128</td>
+<td>15.0</td>
+<td>8.59</td>
+<td>1.13</td>
+<td>24.72</td>
+<td>7.38 ms</td>
+<td>17 344</td>
+<td>260</td>
+<td>26.3%</td>
+</tr>
+<tr>
+<td>256</td>
+<td>15.0</td>
+<td>17.18</td>
+<td>2.25</td>
+<td>34.43</td>
+<td><strong>10.28 ms</strong></td>
+<td><strong>24 903</strong></td>
+<td>374</td>
+<td><strong>37.8%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>先盯住「读权重」这一列：<strong>不管 batch 是 1 还是 256，权重都只读一遍 15.0 GB。</strong> 这就是攒 batch 为什么划算——吞吐涨了 112 倍，TPOT 只从 4.50 ms 涨到 10.28 ms（2.3 倍）。</p>
+<p><strong>但边际收益在掉，而且掉得很快</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>batch 从 → 到</th>
+<th>吞吐涨幅</th>
+<th>TPOT 涨幅（变慢）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 → 8（8 倍）</td>
+<td><strong>7.7×</strong></td>
+<td>1.04×</td>
+</tr>
+<tr>
+<td>8 → 32（4 倍）</td>
+<td>3.6×</td>
+<td>1.12×</td>
+</tr>
+<tr>
+<td>32 → 64（2 倍）</td>
+<td>1.75×</td>
+<td>1.14×</td>
+</tr>
+<tr>
+<td>64 → 128（2 倍）</td>
+<td>1.61×</td>
+<td>1.24×</td>
+</tr>
+<tr>
+<td>128 → 256（2 倍）</td>
+<td><strong>1.44×</strong></td>
+<td><strong>1.39×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>最后一行两个数字几乎碰上了</strong>：batch 翻倍只换来 1.44 倍吞吐，却让每个用户的吐字速度慢 1.39 倍。<strong>这就是 <a href="02-KV-Cache与显存账.html">02 章 §2.6</a> 说的「甜点区」，现在它有了算术依据。</strong><br />
+★ 原因就在「读 KV」那一列：它和 batch 成<strong>正比</strong>，摊不薄。batch=1 时 KV 只占搬运量的 0.5%，batch=256 时占 50%——<strong>权重被摊薄了，KV 没有</strong>。<br />
+⚠️ 甜点的位置<strong>完全取决于上下文长度</strong>。同样的表在上下文 4096 下重算，batch 8→32 的吞吐涨幅只有 <strong>2.4×</strong>（上下文 512 时是 3.6×）。<strong>上下文越长，甜点越靠左。</strong> 所以 <code>max_num_seqs</code> 没有普适值，得按自己的长度分布量。</p>
+</blockquote>
+<p><strong>连续批处理在这张表里的位置</strong>：它不改变任何一行的数字，它只保证<strong>你真的能坐到靠下的那一行</strong>。</p>
+<p>静态批处理下槽位利用率 56.3%，意味着平均在跑的请求数只有 <code>128 × 56.3% ≈ 72</code> 个。你按 batch=128 预留了 KV Cache 显存，实际拿到的却是 batch≈72 那一行的吞吐（约 11 800 token/s）——<strong>比 17 344 少 32%，而显存一分钱没省。</strong> 连续批处理做的就是把这 32% 捡回来。</p>
+<hr />
+<h2 id="44">4.4 ★ 装不下了怎么办：抢占</h2>
 <p>连续批处理有个新问题：请求进来时显存够，但它<strong>会一直变长</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    进来时：prompt 500 字 → 占 32 块
-    生成到第 3000 字：    → 占 219 块    ← ★ 它长胖了
+<div class="codehilite"><pre><span></span><code>    ★ 块（block）= 固定装 16 个 token 的 KV = 16 × 128 KiB = 2 MiB（05 章）
+
+    进来时：prompt 500 token        → ceil(500 ÷ 16)  =  32 块 =  64 MiB
+    生成 3000 token 之后：
+           共 500 + 3000 = 3500 token → ceil(3500 ÷ 16) = 219 块 = 438 MiB
+                                                          ★ 它长胖了 6.8 倍
 
     ⟹ 某一步突然发现：所有在跑的请求加起来，下一步要的块【不够了】
 </code></pre></div>
 
 <p>这时必须<strong>踢掉</strong>某些请求。vLLM 的做法：</p>
-<div class="codehilite"><pre><span></span><code>    ★ 选谁：从 running 队列的【尾部】选（最晚进来的先踢）
-       ⟹ 这保证了 FCFS（先来先服务）语义，不会让老请求饿死
+<div class="codehilite"><pre><span></span><code>    ★ 选谁：默认 FCFS 策略下，从 running 队列的【尾部】选（最晚进来的先踢）
+       ⟹ 这保证了 FCFS（First Come First Served，先来先服务）语义，
+          不会让老请求饿死
+       ⟹ 如果开了优先级调度，换成选【优先级最低、同优先级里到得最晚】的那个
 
     ★ 怎么踢：调用 _preempt_request()
        ① 释放它全部的 KV Cache 块          ← 显存立刻回来
-       ② 状态改成 PREEMPTED，塞回等待队列
+       ② 状态改成 PREEMPTED，塞回等待队列【队首】
        ③ ★★ num_computed_tokens = 0       ← 已经算的全部作废
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>源码可查</strong>：<a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L1340">scheduler.py:1340</a> <code>def _preempt_request</code>，<br />
-关键三行：<br />
+<p>✅ <strong>源码可查</strong>：踢谁在 <a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L679">scheduler.py:679</a>，就一句 <code>preempted_req = self.running.pop()</code>——<code>pop()</code> 不带参数，取的是<strong>队尾</strong>。它是 <code>if self.policy == SchedulingPolicy.PRIORITY:</code>（<a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L644">scheduler.py:644</a>，用 <code>max(self.running, key=lambda r: (r.priority, r.arrival_time))</code> 挑受害者）的 <code>else</code> 分支，也就是默认那条路。<br />
+怎么踢在 <a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L1340">scheduler.py:1340</a> <code>def _preempt_request</code>，关键三行：<br />
 <code>python
 self._free_request_blocks(request)
 request.status = RequestStatus.PREEMPTED
 request.num_computed_tokens = 0      # ★ 归零 = 重算</code></p>
 </blockquote>
-<p><strong>两种抢占策略</strong>（知道有这个区别就行）：</p>
+<p><strong>两种抢占策略，把成本算出来</strong>（就用上面那个 3500 token、438 MiB 的请求）：</p>
 <table>
 <thead>
 <tr>
 <th>策略</th>
 <th>做法</th>
-<th>代价</th>
+<th>这个例子的成本</th>
+<th>代价的性质</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>重算（recompute）</strong></td>
-<td>直接扔掉 KV，恢复时重新 Prefill</td>
-<td>★ 浪费算力，但<strong>不占带宽</strong>；恢复时还能命中前缀缓存</td>
+<td>直接扔掉 KV，恢复时重新 Prefill 3500 token</td>
+<td>Prefill 52.1 TFLOP ÷ 989 TFLOPS = <strong>52.7 ms</strong>（理论下界）</td>
+<td>浪费算力，但<strong>不占 CPU 内存、不抢 PCIe</strong>；恢复时还能命中前缀缓存</td>
 </tr>
 <tr>
 <td><strong>换出（swap）</strong></td>
 <td>把 KV 拷到 CPU 内存，恢复时拷回来</td>
-<td>省算力，但 PCIe 带宽是瓶颈，长序列反而更慢</td>
+<td>438 MiB × 2（出+回）÷ 64 GB/s = <strong>14.4 ms</strong></td>
+<td>省算力，但吃 PCIe 带宽和 CPU 内存，序列越长越贵</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️（我的判断）vLLM v1 主推重算路径 —— 上面的 <code>num_computed_tokens = 0</code> 就是证据。<br />
-原因是有了前缀缓存（05 章），重算时那些块很可能还在缓存里没被淘汰，<strong>"重算"实际上并不真的重算</strong>。</p>
+<p>⚠️ 那个 64 GB/s 是 <strong>PCIe Gen5 ×16 的单向理论带宽</strong>（双向聚合才是 128 GB/s，别把两个数混用），实测通常只有它的 70%~85%。所以换出的真实成本更接近 17~20 ms。<br />
+★ 光看时间，换出快 3 倍多。<strong>但 vLLM v1 只做重算。</strong></p>
+<p>✅ <strong>源码可查</strong>：在 <code>vllm/v1/</code> 整个目录下 grep <code>swap_in</code> / <code>swap_out</code>，<strong>一个命中都没有</strong>——v1 根本没有换出路径，<code>_preempt_request</code> 做的就是「释放块 + 归零」。<br />
+⚠️（我的判断，vLLM 未公开说明取舍理由）两个可能的原因：① 有了前缀缓存（<a href="05-PagedAttention与前缀缓存.html">05 章</a>），被释放的块很可能还在缓存里没被淘汰，<strong>「重算」经常不真的重算</strong>，成本远低于那 52.7 ms；② 重算烧的是本来就闲着的算力（§4.3 那张表：并发 64 时算力只用 16.4%），而换出要抢 PCIe——那条总线上还跑着权重加载、采样结果回传等别的流量。</p>
 </blockquote>
 <hr />
-<h2 id="44">4.4 调度器还要管的几件事</h2>
+<h2 id="45">4.5 调度器还要管的几件事</h2>
 <div class="codehilite"><pre><span></span><code>    ★ 队列优先级
-      默认 FCFS。也支持按优先级（priority）排，但要防饿死。
+      默认 FCFS。也支持按优先级（priority）排，但要自己防饿死。
 
     ★ 单步请求数上限 max_num_seqs
-      即使显存够，也不能无限加——batch 太大反而伤 TPOT（02 章 §2.6）
+      即使显存够也不能无限加 —— 就是 §4.3 那张表的「甜点区」在哪的问题
 
     ★ 单步 token 上限 max_num_batched_tokens
-      就是 03 章的 token 预算，控制 chunked prefill 的粒度
+      就是 03 章 §3.5 的 token 预算，控制 chunked prefill 的粒度
+      ★ 判据：这一步的总 token 数要 ≥ 屋脊点对应的那个几百（03 章 §3.3）
 
     ★ 结束条件判定
-      &lt;eos&gt;、max_tokens、stop 字符串、客户端断连……
+      &lt;eos&gt;、max_tokens、stop 字符串、客户端断连 ......
       ⟹ 一旦命中，立刻释放块，让后面的人进来
 
     ★ 给投机解码留槽位
-      看 scheduler.py:566 那句 min(..., input_budget - draft_slots)
+      看 scheduler.py:566-568 那句 min(..., input_budget - draft_slots)
       ⟹ draft_slots 就是给草稿 token 预留的位置（08 章）
+
+    ★ 调度器自己的耗时
+      上面这一整套逻辑跑在【CPU】上，而且每一步都要跑一次 ——
+      §4.3 那张表里一步 Decode 只有 4.5~10 ms，调度必须在这个时间里做完。
+      ⚠️ 判据是 【每步耗时 ≈ max(CPU 侧耗时, GPU 侧耗时)】，
+         不是把每个 kernel 的下发开销串行加起来（下发是流水化的，见 12 章）。
+      ⟹ 所以框架都在做两件事：把这段逻辑用 C++ 重写，
+         以及让它和 GPU 执行【重叠】（一边算这一步，一边在 CPU 上准备下一步）。
 </code></pre></div>
 
 <hr />
-<h2 id="45-sglang">4.5 SGLang 的不同之处：调度时看「缓存」</h2>
+<h2 id="46-sglang">4.6 SGLang 的不同之处：调度时看「缓存」</h2>
 <p>vLLM 的调度器主要看<strong>显存够不够</strong>。SGLang 多看一样东西：<strong>这个请求能命中多少前缀缓存</strong>。</p>
 <div class="codehilite"><pre><span></span><code>    ★ cache-aware scheduling（缓存感知调度）
-      两个请求都在排队，显存只够放一个：
-        请求X：前缀缓存能命中 90%  → Prefill 几乎不用算
-        请求Y：完全不命中          → Prefill 要跑满
+      两个请求都在排队，prompt 都是 1024 token，显存只够先放一个：
+</code></pre></div>
 
-      ⟹ ★ 先放 X 进来，它几乎零成本就能开始吐字
-      ⟹ 这在多轮对话、共享系统提示词的场景下收益巨大
+<table>
+<thead>
+<tr>
+<th></th>
+<th>前缀命中</th>
+<th>还要 Prefill 的 token</th>
+<th>这次 Prefill 的耗时</th>
+<th>瓶颈</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>请求 X</strong></td>
+<td>90%（按 16 对齐 → 57 块 = 912 token）</td>
+<td><strong>112</strong></td>
+<td><strong>4.8 ms</strong></td>
+<td>访存（权重那 15 GB）</td>
+</tr>
+<tr>
+<td>请求 Y</td>
+<td>0%</td>
+<td>1024</td>
+<td><strong>14.7 ms</strong></td>
+<td>算力</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 先放 X 进来，它几乎零成本就能开始吐字，早腾出槽位给 Y
+    ⟹ 这在多轮对话、共享系统提示词的场景下收益巨大
 </code></pre></div>
 
 <blockquote>
-<p>✅ 这是 SGLang 论文（arXiv 2312.07104，<code>papers/SGLang-RadixAttention-arXiv-2312.07104.pdf</code>）的核心贡献之一，<br />
-依赖它的基数树缓存结构（05 章）。<br />
+<p>⚠️ 但注意 X 只比 Y 快 <strong>3.1 倍</strong>，不是 10 倍——<strong>前缀缓存省掉的是算力，那 15 GB 的权重读取是省不掉的固定成本</strong>（03 章 §3.2）。prompt 越短，这笔固定成本占比越大，缓存的收益越被它吃掉。<br />
+★ prompt 越长收益越大：8192 token 的 prompt 命中 90%，Prefill 从 <strong>133 ms 降到约 15 ms（8.8 倍）</strong>。</p>
+<p>✅ 这是 SGLang 论文（arXiv 2312.07104，<code>papers/SGLang-RadixAttention-arXiv-2312.07104.pdf</code>）的核心贡献之一，依赖它的基数树缓存结构（<a href="05-PagedAttention与前缀缓存.html">05 章</a>）。<br />
 源码里对应 <a href="../源码/SGLang/python/sglang/srt/mem_cache/radix_cache.py#L377">radix_cache.py:377</a> 的 <code>match_prefix</code>。</p>
 </blockquote>
 <p><strong>还有一个 SGLang 特有的机制：引用计数锁。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ★ 正在被某个请求使用的缓存块，【不能被淘汰】
       ⟹ inc_lock_ref / dec_lock_ref
       ✅ [radix_cache.py:623](../源码/SGLang/python/sglang/srt/mem_cache/radix_cache.py#L623)
+      ★ 没有这把锁，LRU 淘汰可能把正在被读的块删掉 —— 静默出错
 </code></pre></div>
 
 <hr />
-<h2 id="46">4.6 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① 静态批处理被【最长的请求】拖住，槽位大量空转               │
-│                                                              │
-│  ② ★★ 连续批处理：调度单位从「请求」变成「一次前向」          │
-│     每步：清理 → 补人 → 组批 → 跑                             │
-│     ✅ vLLM Scheduler.schedule()  scheduler.py:477            │
-│                                                              │
-│  ③ 请求会变长 ⟹ 需要抢占                                      │
-│     vLLM 从队尾踢，释放块 + num_computed_tokens=0（重算）      │
-│     ✅ scheduler.py:1340                                      │
-│     ★ 有前缀缓存兜底，&quot;重算&quot;往往不真重算                       │
-│                                                              │
-│  ④ SGLang 多一层：★ 缓存感知调度——优先放能命中前缀的请求      │
-└──────────────────────────────────────────────────────────────┘
+<h2 id="47">4.7 本章小结</h2>
+<p><strong>① 静态批处理被【最长的请求】拖住，槽位大量空转。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>静态批处理</th>
+<th>连续批处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>槽位利用率（5/7/3/12 的例子）</td>
+<td>56.3%</td>
+<td>★ <strong>100%</strong></td>
+</tr>
+<tr>
+<td>槽位利用率（20/30/15/500 的例子）</td>
+<td><strong>28.3%</strong></td>
+<td>★ <strong>100%</strong></td>
+</tr>
+<tr>
+<td>槽位利用率（4 个请求长度一样）</td>
+<td>100%</td>
+<td>100% ← ★ <strong>收益为零</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>连续批处理的收益完全来自「长度参差」。</strong> 引用任何「提升 N 倍」的数字，都得先问一句「长度分布是什么」。</p>
+</blockquote>
+<p><strong>② ★★ 核心改动：调度单位从「请求」变成「一次前向」。</strong> 每步做四件事：清理 → 补人 → 组批 → 跑。✅ vLLM <code>Scheduler.schedule()</code>，<a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L477">scheduler.py:477</a>。</p>
+<p><strong>③ 填满槽位换来什么</strong>（Llama-3-8B、H100、上下文 512）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>batch = 1</th>
+<th>batch = 256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一步搬运量</td>
+<td>15.08 GB</td>
+<td>34.43 GB</td>
+</tr>
+<tr>
+<td>TPOT</td>
+<td>4.50 ms</td>
+<td>10.28 ms（慢 2.3 倍）</td>
+</tr>
+<tr>
+<td>吞吐</td>
+<td>222 token/s</td>
+<td><strong>24 903 token/s（涨 112 倍）</strong></td>
+</tr>
+<tr>
+<td>算力利用率</td>
+<td>0.34%</td>
+<td><strong>37.8%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 为什么这么赚：权重那 15.0 GB 不管 batch 多大都只读一遍
+    ⚠️ 为什么不能无限加：KV 的读取量和 batch 成【正比】，摊不薄
+       batch=1 时 KV 占搬运量 0.5%，batch=256 时占 50%
+    ⟹ ★ 128 → 256：吞吐只涨 1.44×，TPOT 却慢 1.39× —— 这就是甜点区
+    ⟹ ⚠️ 甜点位置取决于上下文长度，上下文越长越靠左。没有普适的 max_num_seqs。
 </code></pre></div>
 
+<p><strong>④ 请求会变长 ⟹ 需要抢占。</strong> vLLM 从 running 队尾踢（保 FCFS），释放块 + <code>num_computed_tokens = 0</code>。✅ <a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L679">scheduler.py:679</a> 与 <a href="../源码/vLLM/vllm/v1/core/sched/scheduler.py#L1340">scheduler.py:1340</a>。</p>
+<div class="codehilite"><pre><span></span><code>    重算 vs 换出（3500 token、438 MiB 的请求）：
+      重算：52.7 ms（一次完整 Prefill 的算力）
+      换出：14.4 ms（438 MiB × 2 ÷ ⚠️PCIe Gen5 单向 64 GB/s）
+    ⟹ ✅ 但 vLLM v1 只有重算（v1 目录下没有任何 swap 路径）
+    ⟹ ★ 有前缀缓存兜底，「重算」往往不真重算，实际成本远低于 52.7 ms
+</code></pre></div>
+
+<p><strong>⑤ SGLang 多一层：★ 缓存感知调度</strong>——优先放能命中前缀的请求。⚠️ 但省掉的是算力，权重读取是固定成本，所以<strong>短 prompt 的收益有限（3 倍），长 prompt 才惊人（8.8 倍）</strong>。</p>
 <hr />
 <blockquote>
 <p><strong>下一步</strong> → <a href="05-PagedAttention与前缀缓存.html">05 PagedAttention 与前缀缓存</a><br />
-这一章反复出现「块」「释放块」「命中前缀」。下一章讲这个「块」是怎么来的——它是整个 vLLM 的地基。</p>
+这一章反复出现「块」「释放块」「命中前缀」。下一章讲这个「块」是怎么来的——它是整个 vLLM 的地基，也是连续批处理能跑起来的前提（请求随时进出，显存必须随时能拿、随时能还、永远不碎）。</p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

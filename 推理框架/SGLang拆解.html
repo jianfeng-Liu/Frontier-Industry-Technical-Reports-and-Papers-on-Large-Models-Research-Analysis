@@ -248,50 +248,338 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="sglang">SGLang 源码拆解</h1>
 <blockquote>
-<p>版本：commit <code>04444ee</code>（2026-08-20 拉取），5,674 个 <code>.py</code> 文件 / 1,836,778 行。<br />
-<strong>读法建议</strong>：先读完 <a href="vLLM拆解.html">vLLM拆解.md</a> 再读这篇。<br />
-SGLang 的很多设计只有和 vLLM 对照才看得出用意。</p>
+<p><strong>一句话</strong>：SGLang 把「缓存」当一等公民——<strong>一棵基数树装下所有请求的 KV 前缀</strong>，调度器在放请求进来之前就能问出「这个请求能省多少 Prefill」；并行上它只固定 <code>tp × pp</code>，剩下的维度全从 TP 组<strong>内部</strong>再切。</p>
+<p><strong>版本</strong>：commit <code>04444ee</code>（2026-08-20 拉取，本地副本在 <a href="源码/SGLang/">源码/SGLang/</a>），5,674 个 <code>.py</code> 文件 / 1,836,778 行。代码主体在 <code>python/sglang/srt/</code>（<strong>srt = SGLang RunTime</strong>）。</p>
+<p>⚠️ <strong>行号是我在这个 commit 上实际 <code>grep</code> 出来的。SGLang 迭代比 vLLM 更快，<code>scheduler.py</code> 单文件就有四千多行，换个版本行号必然偏移。</strong> 每处引用都同时写了<strong>文件名 + 符号名</strong>；行号对不上时用符号名搜。</p>
+<p><strong>读法建议</strong>：先读完 <a href="vLLM拆解.html">vLLM拆解.md</a> 再读这篇——SGLang 的很多设计只有和 vLLM 对照才看得出用意。概念侧（基数树 vs 哈希表、缓存感知调度）在 <a href="推理优化入门/05-PagedAttention与前缀缓存.html">05 章</a> 和 <a href="推理优化入门/04-连续批处理与调度.html">04 章</a>，<strong>这篇只回答：那些机制在源码里长什么样。</strong></p>
 </blockquote>
 <hr />
 <h2 id="_1">一、目录长什么样</h2>
-<p>代码主体在 <code>python/sglang/srt/</code>（<strong>srt = SGLang RunTime</strong>）：</p>
 <div class="codehilite"><pre><span></span><code>    srt/
     ├── managers/        ★★ 调度器、批次、策略  ← 相当于 vLLM 的 v1/core/sched
-    ├── mem_cache/       ★★ 内存池 + 各种前缀缓存  ← 本文重点，40+ 个文件
-    ├── distributed/     ★★ 并行状态  ← 06 章的源头
+    │   └── scheduler_components/   ★ 调度器被拆出来的 20 个 .py
+    ├── mem_cache/       ★★ 内存池 + 各种前缀缓存  ← 本文重点，40 个 .py 文件
+    ├── distributed/     ★★ 并行状态  ← 第五节的源头
     ├── layers/          ★ 各种层，含 dp_attention.py
-    ├── speculative/     ★ 投机解码（35+ 文件，EAGLE 占 8 个）
+    ├── speculative/     ★ 投机解码（34 个 .py + 2 个子目录）
     ├── disaggregation/  ★ PD 分离
     ├── eplb/            ★ 专家负载均衡（★ 含离线模拟器）
+    ├── elastic_ep/      ★ 弹性专家并行
     ├── model_executor/  执行器
     ├── compilation/     图编译
-    ├── elastic_ep/      ★ 弹性专家并行
     └── entrypoints/     HTTP 服务
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>第一印象就能看出取向</strong>：<code>mem_cache/</code> 有 40+ 个文件（vLLM 对应的 <code>v1/core/</code> 只有 8 个）。<br />
-<strong>SGLang 把「缓存」当成了一等公民</strong>，这和它的论文主张（RadixAttention）完全一致。</p>
+<p>★ <strong>第一印象就能看出取向</strong>：<code>mem_cache/</code> 有 <strong>40 个 <code>.py</code> 文件</strong>，而 vLLM 对应的 <code>v1/core/</code> 只有 <strong>8 个 <code>.py</code> 加一个 <code>sched/</code> 子目录（7 个文件）</strong>。<strong>SGLang 把「缓存」当成了一等公民</strong>，这和它的论文主张（RadixAttention）完全一致。</p>
+<p>📖 上面出现的缩写：<strong>PD 分离</strong>（Prefill / Decode disaggregation）——把 Prefill 和 Decode 两段放到不同机器上分别部署，见 <a href="推理优化入门/10-PD分离.html">10 章</a>；<strong>EPLB</strong>（Expert Parallelism Load Balancer，专家并行负载均衡器）——见第八节；<strong>EP</strong>（expert parallelism，专家并行）——MoE 的专家分散到不同卡上。<strong>不认识的缩写都可以先去 <a href="推理优化入门/附-速查表.html">附-速查表</a> 查。</strong></p>
 </blockquote>
 <hr />
-<h2 id="radixattention">二、★★ RadixAttention：基数树前缀缓存</h2>
-<p>这是 SGLang 的招牌，也是它和 vLLM 最本质的分歧点。</p>
-<p>文件：<a href="源码/SGLang/python/sglang/srt/mem_cache/radix_cache.py">mem_cache/radix_cache.py</a></p>
-<div class="codehilite"><pre><span></span><code>    class RadixKey                L59    ★ 树的键（token 序列 + 额外标识）
-    class TreeNode                L238   ★ 树节点
-        def evicted               L269
-    class RadixCache              L303   ★★ 主类
-        def match_prefix          L377   ★★ 最长前缀匹配 ← 核心操作
-        def insert                L437   插入
-        def cache_finished_req    L459   ★ 请求结束时把 KV 交还给树
-        def cache_unfinished_req  L516   ★ 请求进行中也能先缓存
-        def evict                 L593   ★ LRU 淘汰
-        def inc_lock_ref          L623   ★★ 引用计数锁：在用的块不许淘汰
-        def evictable_size        L659   ★ 可淘汰的量（调度器要看这个）
-        def _split_node           L705   ★★ 边分裂 ← 基数树的标志性操作
+<h2 id="_2">二、★★ 主线：一个请求走完全程</h2>
+<p>和 vLLM 的两进程结构不同，<strong>SGLang 是三类进程 + ZMQ 消息</strong>。先把这条主线走完，后面每一节才挂得上去。</p>
+<blockquote>
+<p>📖 <strong>ZMQ</strong>（ZeroMQ）——一个轻量消息库。SGLang 用它在前端、调度器、反分词三类进程之间传结构化消息，而不是共享内存队列。</p>
+</blockquote>
+<h3 id="21">2.1 调用链：三个进程，一圈消息</h3>
+<div class="codehilite"><pre><span></span><code>    HTTP POST /generate  或  /v1/chat/completions
+      │   entrypoints/http_server.py
+      ▼
+  【进程 1：TokenizerManager（异步前端，一个）】
+  ① TokenizerManager.generate_request()      managers/tokenizer_manager.py:765
+      ├─ _tokenize_one_request()             L995    分词 → TokenizedGenerateReqInput
+      ├─ _send_one_request()                 L1597   ★ 经 ZMQ 发给调度器进程
+      └─ _wait_one_response()                L1733   ★ 挂在 asyncio 上等，边等边 yield
+      │
+      ▼  ZMQ
+  【进程 2：Scheduler（每个 TP rank 一个，同步代码）】
+  ② Scheduler.event_loop_normal()            managers/scheduler.py:1743   ★★ 主循环
+      ├─ request_receiver.recv_requests()             L1750
+      ├─ process_input_requests()                     L1901
+      │     └─ handle_generate_request()              L2396   建 Req 对象
+      │           └─ _add_request_to_queue()          L2767   ★ 进 waiting_queue（L2774）
+      ├─ get_next_batch_to_run()                      L3064   ★★ 决定这一步跑谁
+      │     ├─ get_new_batch_prefill()                L3209   Prefill 候选
+      │     │     ├─ SchedulePolicy.calc_priority()   L3285   ★★ 排序（含 LPM）
+      │     │     └─ PrefillAdder                     L3309   ★ 逐个往批次里加
+      │     └─ update_running_batch()                 L3550   Decode 批次
+      ├─ run_batch()                                  L3695   → 前向 + 采样
+      └─ process_batch_result()                       L3991   写回 Req、判结束
+      │                                                        └─ 结束时 release_kv_cache()
+      │                                                           mem_cache/common.py:198
+      │                                                           → RadixCache.cache_finished_req()
+      ▼  ZMQ
+  【进程 3：DetokenizerManager（一个）】
+  ③ DetokenizerManager.event_loop()          managers/detokenizer_manager.py:167
+      └─ handle_batch_token_id_out()         L431    ★ 增量反分词：token id → 文本片段
+      ▼  ZMQ
+  【回到进程 1】
+  ④ TokenizerManager._wait_one_response() 收到片段 → HTTP SSE 逐块吐字
 </code></pre></div>
 
-<h3 id="_2">★ 为什么是树，而不是哈希表</h3>
+<blockquote>
+<p>📖 <strong>SSE</strong>（Server-Sent Events，服务器推送事件）——HTTP 上的单向流式协议。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★★ 三进程切分的两个后果，值得单独记住：
+
+    ① 调度器是【纯同步】代码，一个 while True 跑到底（L1745）。
+       ⟹ 读它不用考虑 await 把循环切走，控制流是线性的
+       ⟹ 代价：调度器进程里任何一次慢操作都直接顶住整步
+
+    ② 反分词【单独一个进程】。
+       ⟹ tokenizer 的 CPU 开销（尤其是中文和多字节 token 的增量解码）
+          不占调度器进程的时间
+       ⟹ 这是 vLLM 没有的一刀：vLLM 的 detokenize 在前端进程里做
+          （OutputProcessor 内部）
+</code></pre></div>
+
+<h3 id="22-prefill">2.2 ★★ 一次循环里发生什么：Prefill 优先</h3>
+<p><code>event_loop_normal</code>（<a href="源码/SGLang/python/sglang/srt/managers/scheduler.py">scheduler.py:1743</a>）的循环体只有五步：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L1745-1773（节选）</span>
+<span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+    <span class="n">recv_reqs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">request_receiver</span><span class="o">.</span><span class="n">recv_requests</span><span class="p">()</span>      <span class="c1"># ① 收请求</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">process_input_requests</span><span class="p">(</span><span class="n">recv_reqs</span><span class="p">)</span>                 <span class="c1"># ② 入队</span>
+    <span class="n">plan</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_next_batch_to_run</span><span class="p">(</span>                     <span class="c1"># ③ 组批 ★★</span>
+        <span class="n">running_batch</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">running_batch</span><span class="p">,</span> <span class="n">last_batch</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">last_batch</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">running_batch</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">running_batch</span>
+    <span class="n">batch</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">batch_to_run</span>
+    <span class="k">if</span> <span class="n">batch</span><span class="p">:</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">run_batch</span><span class="p">(</span><span class="n">batch</span><span class="p">)</span>                     <span class="c1"># ④ 前向</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">process_batch_result</span><span class="p">(</span><span class="n">batch</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>           <span class="c1"># ⑤ 收结果</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">last_batch</span> <span class="o">=</span> <span class="n">batch</span>
+</code></pre></div>
+
+<p><strong>第 ③ 步是全文最关键的分叉</strong>，代码自己写了注释：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L3175-3184</span>
+<span class="k">if</span> <span class="n">new_batch</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="c1"># Run prefill first if possible</span>
+    <span class="n">ret</span> <span class="o">=</span> <span class="n">new_batch</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="c1"># Run decode (skip for prefill-only batches)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">running_batch</span><span class="o">.</span><span class="n">is_empty</span><span class="p">()</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">running_batch</span><span class="o">.</span><span class="n">is_prefill_only</span><span class="p">:</span>
+        <span class="n">running_batch</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">update_running_batch</span><span class="p">(</span><span class="n">running_batch</span><span class="p">)</span>
+        <span class="n">ret</span> <span class="o">=</span> <span class="n">running_batch</span> <span class="k">if</span> <span class="ow">not</span> <span class="n">running_batch</span><span class="o">.</span><span class="n">is_empty</span><span class="p">()</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">ret</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 读懂这 10 行 = 读懂 SGLang 和 vLLM 最大的行为差异：
+
+    SGLang：一步要么【全是 Prefill】，要么【全是 Decode】。
+            有 Prefill 可做就先做 Prefill，没有才跑 Decode。
+
+    vLLM：  一步里 Decode 和 Prefill chunk【混在同一个批次】，
+            共用一个 token 预算（见 vLLM 拆解的第三节第 2 步）。
+</code></pre></div>
+
+<blockquote>
+<p>★ SGLang 也能混，但<strong>要显式打开</strong>：<code>enable_mixed_chunk</code>（源码里在 <a href="源码/SGLang/python/sglang/srt/managers/scheduler.py">scheduler.py:1182-1184</a> 算出 <code>self.is_mixed_chunk</code>）。<strong>默认是分开的。</strong></p>
+</blockquote>
+<p>⚠️ <strong>下面这张时间线是我按上面的代码结构画的示意，不是实测 trace</strong>。设定：一个长请求正在 Decode，第 3 步来了两个新请求。</p>
+<div class="codehilite"><pre><span></span><code>  step 1   [ Decode  ]  running_batch 里 1 个请求，吐 1 个字
+  step 2   [ Decode  ]  吐 1 个字
+           ← 两个新请求到达，进 waiting_queue
+  step 3   [ Prefill ]  ★★ get_new_batch_prefill 有货 ⟹ 这一步【不 Decode】
+                        ⟹ 老请求这一步【一个字都没吐】←★ TBT 尖峰来源
+  step 4   [ Decode  ]  last_batch 是 extend ⟹ 先 merge 进 running_batch（L3136-3141）
+                        ⟹ 现在 3 个请求一起 Decode
+  step 5   [ Decode  ]  ...
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 于是 SGLang 有一组 vLLM 没有的旋钮，专门治这个尖峰：
+      managers/prefill_delayer.py          ★ 故意延迟 Prefill（攒批）
+      managers/min_free_slots_delayer.py   ★ 保底空闲槽位，防抢占颠簸
+    ⟹ 两个都是主动「不做事」的组件。
+    ⟹ ★★ vLLM 用 chunked prefill 把长 Prefill 切碎混进去，
+       SGLang 用「延迟 + 分步」在时间上错开。两条路治的是同一个病。
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>TBT</strong>（Time Between Tokens，token 间隔）——相邻两个输出 token 之间的时间。一步只跑 Prefill 会让所有在 Decode 的请求这一步不出字，表现为 TBT 尖峰。指标口径见 <a href="推理优化入门/13-性能指标与压测.html">13 章</a>。</p>
+</blockquote>
+<h3 id="23">2.3 状态怎么变：两个共享前缀的请求</h3>
+<p>⚠️ <strong>下面这张表的数字是我为讲解构造的</strong>，用来看清树、引用计数、<code>waiting_queue</code> 三者怎么联动。设定：系统提示词 30 个 token，请求 A 和 B 都带它，A 先到 10 ms。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>发生了什么</th>
+<th>基数树</th>
+<th>A 的状态</th>
+<th>B 的状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>A 到达，<code>_add_request_to_queue</code>（L2767）</td>
+<td>空树</td>
+<td>在 <code>waiting_queue</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>calc_priority</code> → <code>match_prefix</code>（radix_cache.py:377）</td>
+<td>空树，匹配长度 <strong>0</strong></td>
+<td><code>num_matched_prefix_tokens = 0</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>PrefillAdder</code> 收下 A，<code>inc_lock_ref</code>（L623）锁住 A 用到的路径</td>
+<td>—</td>
+<td>Prefill 全部 30 token + 提示词后的正文</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>A 进 Decode。<code>maybe_cache_unfinished_req</code>（mem_cache/common.py:107）</td>
+<td>★ A 已算的前缀<strong>插进树</strong>，边上挂着 KV</td>
+<td>Decode 中，锁仍持有</td>
+<td>—</td>
+</tr>
+<tr>
+<td>5</td>
+<td>B 到达，<code>match_prefix</code></td>
+<td>★★ 匹配到 <strong>30</strong>（整段提示词）</td>
+<td>—</td>
+<td><code>num_matched_prefix_tokens = 30</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>_sort_by_longest_prefix</code>（L381）把 B 排前面</td>
+<td>—</td>
+<td>—</td>
+<td>★ 排到队首</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>PrefillAdder</code> 收 B：<strong>只 Prefill 提示词之后的部分</strong></td>
+<td>★ <code>_split_node</code>（L705）在分叉点劈边</td>
+<td>—</td>
+<td>★★ 省掉 30 token 的 Prefill</td>
+</tr>
+<tr>
+<td>8</td>
+<td>A 结束：<code>release_kv_cache</code> → <code>cache_finished_req</code>（L459）</td>
+<td>★ A 的 KV <strong>交还给树</strong>，<code>dec_lock_ref</code> 解锁</td>
+<td><code>FINISHED</code></td>
+<td>Decode 中</td>
+</tr>
+<tr>
+<td>9</td>
+<td>显存紧张，<code>evict</code>（L593）跑 LRU</td>
+<td>★ <strong>只淘汰 <code>evictable_size()</code>（L659）统计到的部分</strong>——B 锁住的路径不动</td>
+<td>—</td>
+<td>安全</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 这张表里的因果链，是 SGLang 全部设计的浓缩：
+
+    树能一次问出「匹配多长」（第 5 步）
+      ⟹ 调度器才能按匹配长度排序（第 6 步）
+      ⟹ 才能「先放最省事的那批进来」（第 7 步）
+
+    而共享一旦发生，淘汰就必须知道谁在用（第 9 步）
+      ⟹ 所以必须有引用计数锁（第 3 / 8 步）
+    ⟹ ★ 树和锁是一套东西，不能只抄一半。
+</code></pre></div>
+
+<hr />
+<h2 id="radixattention">三、★★ RadixAttention：基数树前缀缓存</h2>
+<p>这是 SGLang 的招牌，也是它和 vLLM 最本质的分歧点。</p>
+<blockquote>
+<p>📖 <strong>基数树</strong>（radix tree，也叫压缩前缀树 / Patricia trie）——把公共前缀合并成一条边的树。原理和图示在 <a href="推理优化入门/05-PagedAttention与前缀缓存.html">05 章</a>。</p>
+</blockquote>
+<p>文件：<a href="源码/SGLang/python/sglang/srt/mem_cache/radix_cache.py">mem_cache/radix_cache.py</a>（<strong>共 863 行</strong>）</p>
+<table>
+<thead>
+<tr>
+<th>符号</th>
+<th>行</th>
+<th>是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>class RadixKey</code></td>
+<td>L59</td>
+<td>★ 树的键（token 序列 + 额外标识）</td>
+</tr>
+<tr>
+<td><code>class TreeNode</code></td>
+<td>L238</td>
+<td>★ 树节点</td>
+</tr>
+<tr>
+<td><code>TreeNode.evicted</code></td>
+<td>L269</td>
+<td>该节点的 KV 是否已被淘汰</td>
+</tr>
+<tr>
+<td><code>class RadixCache</code></td>
+<td>L303</td>
+<td>★★ 主类</td>
+</tr>
+<tr>
+<td><code>def match_prefix</code></td>
+<td>L377</td>
+<td>★★ 最长前缀匹配 ← <strong>核心操作</strong></td>
+</tr>
+<tr>
+<td><code>def insert</code></td>
+<td>L437</td>
+<td>插入</td>
+</tr>
+<tr>
+<td><code>def cache_finished_req</code></td>
+<td>L459</td>
+<td>★ 请求结束时把 KV 交还给树</td>
+</tr>
+<tr>
+<td><code>def cache_unfinished_req</code></td>
+<td>L516</td>
+<td>★ 请求进行中也能先缓存</td>
+</tr>
+<tr>
+<td><code>def evict</code></td>
+<td>L593</td>
+<td>★ LRU 淘汰</td>
+</tr>
+<tr>
+<td><code>def inc_lock_ref</code></td>
+<td>L623</td>
+<td>★★ 引用计数锁：在用的块不许淘汰</td>
+</tr>
+<tr>
+<td><code>def dec_lock_ref</code></td>
+<td>L638</td>
+<td>解锁</td>
+</tr>
+<tr>
+<td><code>def evictable_size</code></td>
+<td>L659</td>
+<td>★ 可淘汰的量（调度器要看这个）</td>
+</tr>
+<tr>
+<td><code>def protected_size</code></td>
+<td>L662</td>
+<td>★ 被锁住、动不了的量</td>
+</tr>
+<tr>
+<td><code>def _split_node</code></td>
+<td>L705</td>
+<td>★★ 边分裂 ← 基数树的标志性操作</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ evictable_size (L659) + protected_size (L662) 这一对，
+      和 total_size (L590) 一起构成调度器的显存视图：
+      总量 = 能淘汰的 + 被锁住的
+    ⟹ ★★ 调度器判断「还能不能放人进来」，看的是【能淘汰的】那一半。
+</code></pre></div>
+
+<h3 id="_3">★ 为什么是树，而不是哈希表</h3>
 <div class="codehilite"><pre><span></span><code>    vLLM：块 → 哈希 → 查表
       ⟹ 要知道命中多长，得【逐块】算哈希去试
       ⟹ ★ 而且只能回答「命中/不命中」，很难提前估算「能命中多少」
@@ -323,63 +611,130 @@ SGLang 的很多设计只有和 vLLM 对照才看得出用意。</p>
     ⟹ ★★ 调度器看的是 evictable_size，而不是「缓存总大小」
 </code></pre></div>
 
-<h3 id="_3">★ 缓存家族：一棵树不够用</h3>
+<h3 id="_4">★ 缓存家族：一棵树不够用</h3>
 <p><code>mem_cache/</code> 里的树有一整个家族，每个对应一种模型结构：</p>
-<div class="codehilite"><pre><span></span><code>    radix_cache.py              ★ 标准版
-    radix_cache_cpp.py          ★ C++ 实现（降低树操作的 CPU 开销）
-    hiradix_cache.py            ★★ 分层（hierarchical）：GPU → CPU → SSD 三级
-    swa_radix_cache.py          滑动窗口注意力专用
-    pure_swa_radix_cache.py     纯滑动窗口
-    mamba_radix_cache.py        ★ Mamba 状态专用
-    unified_radix_cache.py      ★ 混合结构模型（一部分注意力 + 一部分 Mamba）
-    chunk_cache.py              不用树的简单版（对照组）
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>管什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>radix_cache.py</code></td>
+<td>★ 标准版</td>
+</tr>
+<tr>
+<td><code>radix_cache_cpp.py</code></td>
+<td>★ C++ 实现（降低树操作的 CPU 开销）</td>
+</tr>
+<tr>
+<td><code>hiradix_cache.py</code></td>
+<td>★★ 分层（hierarchical）：GPU → CPU → SSD 三级</td>
+</tr>
+<tr>
+<td><code>swa_radix_cache.py</code></td>
+<td>滑动窗口注意力专用</td>
+</tr>
+<tr>
+<td><code>pure_swa_radix_cache.py</code></td>
+<td>纯滑动窗口</td>
+</tr>
+<tr>
+<td><code>mamba_radix_cache.py</code></td>
+<td>★ Mamba 状态专用</td>
+</tr>
+<tr>
+<td><code>unified_radix_cache.py</code></td>
+<td>★ 混合结构模型（一部分注意力 + 一部分 Mamba）</td>
+</tr>
+<tr>
+<td><code>chunk_cache.py</code></td>
+<td><strong>不用树</strong>的简单版（对照组）</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>为什么要这么多种？</strong><br />
-05 章讲的树，隐含假设是「KV 只增不减、可以任意复用」。<br />
-<strong>滑动窗口注意力会丢弃旧 KV，Mamba 根本没有 KV 只有状态</strong>——<br />
-这两种情况下树的语义完全不同，必须分开实现。<br />
-★ 这也解释了为什么 <code>mem_cache/</code> 有 40 个文件：<strong>现代模型结构已经不统一了。</strong></p>
+<p>⚠️ 上面是 <strong>7 棵树 + 1 个非树对照组</strong>。另外 <code>mem_cache/storage/</code> 下还有接外部存储的子类（<code>flexkv_radix_cache.py</code> / <code>lmc_radix_cache.py</code>），它们是在 <code>RadixCache</code> 上再包一层。</p>
+<p>📖 <strong>SWA</strong>（sliding window attention，滑动窗口注意力）——每个 token 只看最近 W 个 token，超出窗口的旧 KV 可以丢掉。</p>
+<p>🔑 <strong>为什么要这么多种？</strong> <a href="推理优化入门/05-PagedAttention与前缀缓存.html">05 章</a> 讲的树，隐含假设是「KV 只增不减、可以任意复用」。<strong>滑动窗口注意力会丢弃旧 KV，Mamba 根本没有 KV 只有状态</strong>——这两种情况下树的语义完全不同，必须分开实现。★ 这也解释了为什么 <code>mem_cache/</code> 有 40 个文件：<strong>现代模型结构已经不统一了。</strong></p>
 </blockquote>
 <hr />
-<h2 id="_4">三、★★ 缓存感知调度：树结构的真正回报</h2>
+<h2 id="_5">四、★★ 缓存感知调度：树结构的真正回报</h2>
 <p>文件：<a href="源码/SGLang/python/sglang/srt/managers/schedule_policy.py">managers/schedule_policy.py</a></p>
 <p><strong>源码把调度策略明确分成了两类</strong>，这个划分本身就是论点：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L200</span>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L200-213</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">CacheAwarePolicy</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Scheduling policies that are aware of the tree cache.&quot;&quot;&quot;</span>
     <span class="n">LPM</span> <span class="o">=</span> <span class="s2">&quot;lpm&quot;</span>                <span class="c1"># ★★ longest prefix match（最长前缀匹配优先）</span>
     <span class="n">DFS_WEIGHT</span> <span class="o">=</span> <span class="s2">&quot;dfs-weight&quot;</span>  <span class="c1"># ★ 深度优先加权</span>
 
-<span class="c1"># ✅ L207</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">CacheAgnosticPolicy</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;Scheduling policies that are not aware of the tree cache.&quot;&quot;&quot;</span>
     <span class="n">FCFS</span> <span class="o">=</span> <span class="s2">&quot;fcfs&quot;</span>              <span class="c1"># 先来先服务</span>
     <span class="n">LOF</span> <span class="o">=</span> <span class="s2">&quot;lof&quot;</span>                <span class="c1"># longest output first</span>
     <span class="n">RANDOM</span> <span class="o">=</span> <span class="s2">&quot;random&quot;</span>
-    <span class="n">ROUTING_KEY</span> <span class="o">=</span> <span class="s2">&quot;routing-key&quot;</span>  <span class="c1"># ★ 按 MoE 路由键的热度排（★ 见下）</span>
+    <span class="n">ROUTING_KEY</span> <span class="o">=</span> <span class="s2">&quot;routing-key&quot;</span>  <span class="c1"># prioritize by routing key frequency in running batch</span>
 </code></pre></div>
 
+<blockquote>
+<p>📖 <strong>LPM</strong>（longest prefix match，最长前缀匹配）／<strong>FCFS</strong>（first come first serve，先来先服务）／<strong>LOF</strong>（longest output first，预计输出最长的先跑）。</p>
+</blockquote>
 <div class="codehilite"><pre><span></span><code>    ★★ LPM 策略在做什么：
        等待队列里有 100 个请求，显存只够放 10 个。
        ⟹ ★ 优先放【前缀命中最长】的那 10 个
        ⟹ 它们的 Prefill 几乎不用算 ⟹ ★ 立刻就能开始吐字
-       ⟹ 同样的显存，服务的请求数显著更多
 
     ⟹ ★★★ 这就是 vLLM 的哈希表方案给不了的东西。
        没有树，你就不知道「谁命中最长」。
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong><code>ROUTING_KEY</code> 这个策略特别有意思</strong>（注释：<em>"prioritize by routing key frequency in running batch"</em>）：<br />
-按 <strong>MoE 路由键在当前批次里的出现频率</strong>排序。<br />
-⟹ 把会激活<strong>同一批专家</strong>的请求放到同一步里跑<br />
-⟹ <strong>减少 all-to-all 的通信量和专家负载的抖动</strong>（11 章）。<br />
-<strong>这是把 11 章的 MoE 负载问题，搬到调度层来解决。</strong></p>
+<p>⚠️ <strong>但要说清两件源码里写着、宣传里不提的事。</strong></p>
 </blockquote>
-<p>其他相关文件：</p>
-<div class="codehilite"><pre><span></span><code>    managers/scheduler.py             class Scheduler  L383   ★ 主调度器
+<p><strong>⚠️ 一：LPM 不是默认值。</strong> <a href="源码/SGLang/python/sglang/srt/server_args.py">server_args.py:839-854</a> 里 <code>schedule_policy</code> 的默认值是 <strong><code>"fcfs"</code></strong>，可选值是 <code>lpm / random / fcfs / dfs-weight / lof / priority / routing-key</code>。★ 要用 LPM 得显式加 <code>--schedule-policy lpm</code>。⟹ <strong>「SGLang 天生缓存感知」这句话，对默认配置不成立。</strong></p>
+<p><strong>⚠️ 二：LPM 会自动退化。</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ schedule_policy.py:290-294</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_determine_active_policy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">waiting_queue</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Req</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Policy</span><span class="p">:</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">policy</span> <span class="o">==</span> <span class="n">CacheAwarePolicy</span><span class="o">.</span><span class="n">LPM</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">waiting_queue</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">128</span><span class="p">:</span>
+        <span class="c1"># Turn off the expensive prefix matching and sorting when the #queue is large.</span>
+        <span class="k">return</span> <span class="n">CacheAgnosticPolicy</span><span class="o">.</span><span class="n">FCFS</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">policy</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 等待队列超过 128 就退回 FCFS——前缀匹配加排序本身不是免费的。
+    ⟹ 也就是说：★ 最需要挑活干的高负载时刻，恰恰是它关掉的时刻。
+    ⟹ ★ 读框架源码时，这类「自我保护的退化分支」比主路径更值得记：
+       它标出了作者认为主路径会失效的边界。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>「同样的显存能多服务多少请求」我没有可回溯的数字</strong>（本地 <code>papers/</code> 里的 RadixAttention 论文给的是特定负载下的吞吐倍数，不能当通用结论）。<strong>方向上 LPM 确实省 Prefill，倍数请以你自己的负载实测为准</strong>，压测方法见 <a href="推理优化入门/13-性能指标与压测.html">13 章</a>。</p>
+</blockquote>
+<p><strong>排序的实现</strong>就是一行 <code>sort</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L381-391</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">_sort_by_longest_prefix</span><span class="p">(</span><span class="n">waiting_queue</span><span class="p">,</span> <span class="n">temporary_deprioritized</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Sorts the waiting queue based on the longest prefix match.&quot;&quot;&quot;</span>
+    <span class="n">waiting_queue</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">r</span><span class="p">:</span> <span class="p">(</span>
+        <span class="o">-</span><span class="n">r</span><span class="o">.</span><span class="n">num_matched_prefix_tokens</span>
+        <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="n">rid</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">temporary_deprioritized</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="s2">&quot;inf&quot;</span><span class="p">)))</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 注意 float(&quot;inf&quot;) 这个分支：被【临时降优先级】的请求排到最后。
+    ⟹ 这是防饿死/防抖动的口子——不然一批同前缀的请求会永久压住别人。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong><code>ROUTING_KEY</code> 这个策略特别有意思</strong>（注释原文：<em>"prioritize by routing key frequency in running batch"</em>，实现在 <code>_sort_by_routing_key</code>，<strong>L451</strong>）：按 <strong>MoE 路由键在当前批次里的出现频率</strong>排序。⟹ 把会激活<strong>同一批专家</strong>的请求放到同一步里跑 ⟹ <strong>减少 all-to-all 的通信量和专家负载的抖动</strong>。<strong>这是把 <a href="推理优化入门/11-MoE推理与专家并行.html">11 章</a> 的 MoE 负载问题，搬到调度层来解决。</strong></p>
+<p>📖 <strong>MoE</strong>（Mixture of Experts，混合专家）——每个 token 只激活一小部分专家子网络的模型结构。</p>
+</blockquote>
+<h3 id="_6">相关文件</h3>
+<div class="codehilite"><pre><span></span><code>    managers/scheduler.py             class Scheduler  L383   ★ 主调度器（4000+ 行）
+    managers/scheduler_components/    ★★ 被拆出来的 20 个 .py
+      ├─ request_receiver.py          收请求（主循环 L1750 调它）
+      ├─ batch_result_processor.py    ★ 写回结果、释放 KV
+      └─ output_sender.py             往 ZMQ 发输出
     managers/schedule_batch.py        批次的数据结构
     managers/scheduler_pp_mixin.py    ★ PP 相关逻辑单独拆成 mixin
     managers/prefill_delayer.py       ★ 故意延迟 Prefill（攒批）
@@ -388,134 +743,246 @@ SGLang 的很多设计只有和 vLLM 对照才看得出用意。</p>
 </code></pre></div>
 
 <blockquote>
-<p>★ <code>prefill_delayer.py</code> 和 <code>min_free_slots_delayer.py</code> 这两个名字值得注意——<br />
-它们都是<strong>主动"不做事"</strong>的组件。这是成熟系统才会有的东西：<br />
-<strong>有时候等一等比立刻做更快。</strong></p>
+<p>★ <code>prefill_delayer.py</code> 和 <code>min_free_slots_delayer.py</code> 这两个名字值得注意——它们都是<strong>主动「不做事」</strong>的组件。这是成熟系统才会有的东西：<strong>有时候等一等比立刻做更快。</strong> 为什么 SGLang 特别需要它们，见第 2.2 节那条时间线。</p>
 </blockquote>
 <hr />
-<h2 id="vllm">四、★★ 并行状态：和 vLLM 完全不同的思路</h2>
-<p>文件：<a href="源码/SGLang/python/sglang/srt/distributed/parallel_state.py">distributed/parallel_state.py</a></p>
-<div class="codehilite"><pre><span></span><code>    def initialize_model_parallel    L2328
-</code></pre></div>
-
-<h3 id="_5">第一行就分道扬镳了</h3>
-<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L2408</span>
+<h2 id="vllm">五、★★ 并行状态：和 vLLM 完全不同的思路</h2>
+<p>文件：<a href="源码/SGLang/python/sglang/srt/distributed/parallel_state.py">distributed/parallel_state.py</a>，函数 <code>initialize_model_parallel</code>（<strong>L2328</strong>）。</p>
+<blockquote>
+<p>📖 <strong>TP / PP / EP / DP</strong>（tensor / pipeline / expert / data parallelism，张量 / 流水线 / 专家 / 数据并行）——四种切法，见 <a href="推理优化入门/06-推理中的并行策略.html">06 章</a>。<br />
+📖 <strong>CP</strong>（context parallelism，上下文并行）——把<strong>一条序列的长度</strong>切到多张卡上。<br />
+📖 <strong>DCP</strong>（decode context parallelism）——只在 Decode 阶段把 KV Cache 切开的变体。</p>
+</blockquote>
+<h3 id="_7">第一行就分道扬镳了</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L2408-2413</span>
 <span class="k">if</span> <span class="n">world_size</span> <span class="o">!=</span> <span class="n">tensor_model_parallel_size</span> <span class="o">*</span> <span class="n">pipeline_model_parallel_size</span><span class="p">:</span>
-    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">&quot;world_size (</span><span class="si">{</span><span class="n">world_size</span><span class="si">}</span><span class="s2">) is not equal to &quot;</span>
+        <span class="sa">f</span><span class="s2">&quot;tensor_model_parallel_size (</span><span class="si">{</span><span class="n">tensor_model_parallel_size</span><span class="si">}</span><span class="s2">) x &quot;</span>
+        <span class="sa">f</span><span class="s2">&quot;pipeline_model_parallel_size (</span><span class="si">{</span><span class="n">pipeline_model_parallel_size</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ★★★ 读懂它：SGLang 的全局网格里【只有 TP 和 PP】。
-        没有 DP 维度的位置。
+        world_size 必须正好等于 tp × pp，没有 DP 维度的位置。
 
-    ⟹ 对比 vLLM 的 5 维 reshape（ExtDP×DP×PP×PCP×TP），
+    ⟹ 对比 vLLM 的五维 reshape（ExtDP × DP × PP × PCP × TP），
        这是两种世界观。
 </code></pre></div>
 
 <h3 id="dp-tp">那 DP 从哪来？——从 TP 组【内部】再切</h3>
-<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L2587</span>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L2501 —— 注意力侧的分解</span>
+<span class="n">attn_tp_size</span> <span class="o">=</span> <span class="n">tensor_model_parallel_size</span> <span class="o">//</span> <span class="n">attn_cp_size</span> <span class="o">//</span> <span class="n">attn_dp_size</span>
+
+<span class="c1"># ✅ L2587 —— MoE 侧的分解</span>
 <span class="n">moe_tp_size</span> <span class="o">=</span> <span class="n">tensor_model_parallel_size</span> <span class="o">//</span> <span class="n">moe_ep_size</span> <span class="o">//</span> <span class="n">moe_dp_size</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★★ 同一批 TP 卡，被【两套不同的分解】同时看待：
-
-    ┌────────────────────────────────────────────────────┐
-    │  注意力层看到的：  tp = attn_dp × attn_cp × attn_tp  │
-    │  MoE 层看到的：    tp = moe_dp × moe_ep × moe_tp    │
-    └────────────────────────────────────────────────────┘
-
-    ⟹ 同样 8 张卡，注意力层可能是「8 个 DP 副本」，
+<p><strong>同一批 TP 卡，被两套不同的分解同时看待</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>谁在看</th>
+<th>怎么分解这 <code>tp</code> 张卡</th>
+<th>源码</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注意力层</td>
+<td><code>tp = attn_dp × attn_cp × attn_tp</code></td>
+<td>L2501</td>
+</tr>
+<tr>
+<td>MoE 层</td>
+<td><code>tp = moe_dp × moe_ep × moe_tp</code></td>
+<td>L2587</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 同样 8 张卡，注意力层可能是「8 个 DP 副本」，
        MoE 层可能是「8 路专家并行」。★ 同时成立。
 </code></pre></div>
 
-<p><strong>各通信组的构造位置</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    _TP        L2446    张量并行组
-    _ATTN_CP   L2526    注意力的上下文并行
-    _ATTN_TP   L2571    ★ 注意力的张量并行
-    _MOE_DP    ~L2620   MoE 的数据并行
-    _MOE_EP    L2636    ★ MoE 的专家并行
-    _MOE_TP    L2666    MoE 的张量并行
-    _PP        L2689    流水线并行
+<p><strong>文档字符串给了一个完整的 8 卡例子</strong>（✅ L2375-2390 原文），把上面那张表变成具体的 rank 列表——设 <code>tp = 8</code>、<code>attn_cp = 2</code>、<code>attn_tp = 4</code>（于是 <code>attn_dp = 8 ÷ 2 ÷ 4 = 1</code>）、<code>moe_dp = 2</code>、<code>moe_ep = 4</code>（于是 <code>moe_tp = 8 ÷ 4 ÷ 2 = 1</code>）：</p>
+<div class="codehilite"><pre><span></span><code>    1 个 TP 组：        [g0,g1,g2,g3,g4,g5,g6,g7]      ← ★ 全局只有这一个
+    4 个 attn CP 组：   [g0,g4] [g1,g5] [g2,g6] [g3,g7]
+    2 个 attn TP 组：   [g0..g3] [g4..g7]
+    2 个 moe EP 组：    [g0..g3] [g4..g7]
+    4 个 moe DP 组：    [g0,g4] [g1,g5] [g2,g6] [g3,g7]
+
+    ★★ 盯着后四行看：
+       attn CP 组 和 moe DP 组 —— 完全是同一批 rank 组合
+       attn TP 组 和 moe EP 组 —— 也完全是同一批
+    ⟹ 同一条通信链路，在注意力层叫「上下文并行」，
+       在 MoE 层叫「数据并行」/「专家并行」。
+    ⟹ ★ 这就是「模型部位自己声明怎么切」的字面意思：
+       ★★ 卡没动、NCCL 组没动，只是【同一组卡在两个层里承担不同角色】。
 </code></pre></div>
 
-<p><strong>一个值得学的小优化</strong>（L2554）：</p>
-<div class="codehilite"><pre><span></span><code><span class="k">if</span> <span class="n">attn_tp_size</span> <span class="o">==</span> <span class="n">tensor_model_parallel_size</span><span class="p">:</span>
+<p><strong>各通信组的构造位置</strong>（行号指 <code>init_model_parallel_group(...)</code> 那一句）：</p>
+<table>
+<thead>
+<tr>
+<th>组</th>
+<th>行</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_TP</code></td>
+<td>L2446</td>
+<td>连续切：<code>range(idx*tp, (idx+1)*tp)</code></td>
+</tr>
+<tr>
+<td><code>_DCP</code></td>
+<td>L2486</td>
+<td>★ 只在 <code>decode_context_parallel_size &gt; 1</code> 时建（L2479）</td>
+</tr>
+<tr>
+<td><code>_ATTN_CP</code></td>
+<td>L2526</td>
+<td>注意力的上下文并行</td>
+</tr>
+<tr>
+<td><code>_ATTN_TP</code></td>
+<td>L2571</td>
+<td>★ 注意力的张量并行</td>
+</tr>
+<tr>
+<td><code>_MOE_DP</code></td>
+<td>L2608</td>
+<td>MoE 的数据并行</td>
+</tr>
+<tr>
+<td><code>_MOE_EP</code></td>
+<td>L2636</td>
+<td>★ MoE 的专家并行</td>
+</tr>
+<tr>
+<td><code>_MOE_TP</code></td>
+<td>L2666</td>
+<td>MoE 的张量并行</td>
+</tr>
+<tr>
+<td><code>_PP</code></td>
+<td>L2689</td>
+<td>流水线并行；步长切：<code>range(idx, world, num_pp_groups)</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>一个值得学的小优化</strong>——源码里出现了整整五次：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ L2554-2555（同型写法还有 L2507、L2596、L2621、L2650）</span>
+<span class="k">if</span> <span class="n">attn_tp_size</span> <span class="o">==</span> <span class="n">tensor_model_parallel_size</span><span class="p">:</span>
     <span class="n">_ATTN_TP</span> <span class="o">=</span> <span class="n">_TP</span>      <span class="c1"># ★ 不切的话，直接复用 TP 组，不新建 NCCL 通信组</span>
 </code></pre></div>
 
 <blockquote>
-<p>★ 新建一个 NCCL 通信组是有实打实开销的（握手、显存、句柄）。<br />
-这一行说明作者很在意通信组的数量——<strong>因为 SGLang 的组本来就多</strong>。</p>
+<p>★ 新建一个 NCCL 通信组是有实打实开销的（握手、显存、句柄）。这个写法出现五次说明作者很在意通信组的数量——<strong>因为 SGLang 的组本来就多</strong>（上面那张表有 8 个）。</p>
 </blockquote>
 <h3 id="dp-attention">DP Attention 的实现</h3>
 <p>文件：<a href="源码/SGLang/python/sglang/srt/layers/dp_attention.py">layers/dp_attention.py</a></p>
-<div class="codehilite"><pre><span></span><code>    class DpPaddingMode            L81    ★ 各 DP rank 序列长度不同时怎么补齐
-    compute_dp_attention_world_info L326  ★ 算出本 rank 在 DP-attention 里的身份
-    initialize_dp_attention        L343   ★★ 初始化
-    _dp_gather_via_all_reduce      L489   ★ 聚合路径一
-    _dp_gather_via_all_gather      L531   ★ 聚合路径二
-    _dp_gatherv_sizes              L730   变长聚合
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>符号</th>
+<th>行</th>
+<th>是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>class DpPaddingMode</code></td>
+<td>L81</td>
+<td>★ 各 DP rank 序列长度不同时怎么补齐</td>
+</tr>
+<tr>
+<td><code>compute_dp_attention_world_info</code></td>
+<td>L326</td>
+<td>★ 算出本 rank 在 DP-attention 里的身份</td>
+</tr>
+<tr>
+<td><code>initialize_dp_attention</code></td>
+<td>L343</td>
+<td>★★ 初始化</td>
+</tr>
+<tr>
+<td><code>_dp_gather_via_all_reduce</code></td>
+<td>L489</td>
+<td>★ 聚合路径一</td>
+</tr>
+<tr>
+<td><code>_dp_gather_via_all_gather</code></td>
+<td>L531</td>
+<td>★ 聚合路径二</td>
+</tr>
+<tr>
+<td><code>_dp_gatherv_sizes</code></td>
+<td>L730</td>
+<td>变长聚合</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ★ 为什么要两条聚合路径（L489 / L531）？
       注意力算完，各 DP rank 手里是不同请求的结果，要拼回一个完整批次。
       ⟹ all_reduce 路径：把本地结果填进全长张量的对应位置，其余置零，再 all-reduce
       ⟹ all_gather 路径：直接收集各 rank 的片段
-      ★★ 哪条快取决于【批次形状】：
+    ⚠️（我的判断，源码没写取舍依据）哪条快取决于【批次形状】：
          各 rank 长度接近 ⟹ all_gather 更省（传的是实际数据）
-         各 rank 长度悬殊 ⟹ all_reduce 可能更简单（不用处理变长）
+         各 rank 长度悬殊 ⟹ all_reduce 不用处理变长，实现更简单
     ⟹ ★ 框架两条都实现了，运行时选。
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong><code>DpPaddingMode</code>（L81）是 DP Attention 最脏的地方</strong>：<br />
-DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调一致<br />
-⟹ <strong>必须把各 rank 的 token 数补齐到一样</strong>，才能进入 MoE 层。<br />
-这就是 06 章「DP 组必须一起 generate」在 SGLang 侧的对应体现。</p>
+<p>★★ <strong><code>DpPaddingMode</code>（L81）是 DP Attention 最脏的地方</strong>：DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调一致 ⟹ <strong>必须把各 rank 的 token 数补齐到一样</strong>，才能进入 MoE 层。这就是 <a href="推理优化入门/06-推理中的并行策略.html">06 章</a>「DP 组必须一起 generate」在 SGLang 侧的对应体现——<strong>vLLM 用一个专门的主循环（<code>DPEngineCoreProc</code>）解决它，SGLang 用一个 padding 模式枚举解决它。</strong></p>
 </blockquote>
 <hr />
-<h2 id="eagle">五、投机解码：EAGLE 的重兵投入</h2>
-<p>目录 <code>speculative/</code> 有 35+ 个文件，<strong>光 EAGLE 相关就有 8 个</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ★ EAGLE 一族
-      eagle_info.py / eagle_utils.py / eagle_worker_v2.py
-      eagle_worker_common.py
+<h2 id="eagle">六、投机解码：EAGLE 的重兵投入</h2>
+<p>目录 <code>speculative/</code> 有 <strong>34 个 <code>.py</code> + 2 个子目录</strong>，<strong>光名字里带 <code>eagle</code> 的就有 10 个</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ EAGLE 一族（10 个）
+      eagle_info.py / eagle_utils.py / eagle_worker_v2.py / eagle_worker_common.py
       ★ eagle_draft_cuda_graph_runner.py          ← 给草稿模型上 CUDA Graph
       eagle_draft_extend_cuda_graph_runner.py
       multi_layer_eagle_utils.py                  ★ 多层 EAGLE
+      multi_layer_eagle_worker_v2.py
       multi_layer_eagle_draft_extend_cuda_graph_runner.py
       ★ eagle_disaggregation.py                   ← ★★ 投机解码 + PD 分离
 
     ★ MTP（DeepSeek 的多 token 预测）
       frozen_kv_mtp_worker_v2.py / frozen_kv_mtp_info.py
-      frozen_kv_mtp_cuda_graph_runner.py
+      frozen_kv_mtp_utils.py / frozen_kv_mtp_cuda_graph_runner.py
 
     ★ n-gram
       ngram_worker.py / ngram_info.py
       ★ cpp_ngram/                                ← C++ 实现，降低查表开销
 
-    ★★ 自适应（08 章 §8.6 的关键）
+    ★★ 自适应
       adaptive_spec_params.py
       adaptive_runtime_state.py
 
     ★ 其他
-      ragged_verify.py       变长验证
-      spec_registry.py       策略注册表
-      decoupled_spec_io.py   解耦的输入输出
+      base_spec_worker.py / spec_registry.py      基类与策略注册表
+      ragged_verify.py                            变长验证
+      decoupled_spec_io.py                        解耦的输入输出
+      dflash_* / dspark_* / standalone_worker_v2.py  其他算法
 </code></pre></div>
 
 <blockquote>
+<p>📖 <strong>EAGLE</strong>——投机解码里最主流的草稿方案，用「特征级自回归」的小模型猜下几个 token（论文 arXiv 2401.15077，本地 PDF 在 <a href="papers/">papers/</a>；⚠️ 缩写的英文全称我没从论文正文核实到，这里不写）。<strong>MTP</strong>（Multi-Token Prediction，多 token 预测）——DeepSeek 的做法，让主模型自己多预测几个 token。两者都见 <a href="推理优化入门/08-投机解码.html">08 章</a>。</p>
 <p>★★ <strong>三个值得注意的信号</strong>：<br />
-① <code>*_cuda_graph_runner.py</code> 有 5 个 —— <strong>草稿模型不上 CUDA Graph，投机解码的收益会被 CPU 派发开销吃掉</strong>（12 章 §12.7）。<br />
-② <code>eagle_disaggregation.py</code> —— 投机解码和 PD 分离<strong>要专门做组合</strong>，不是各开各的就行。<br />
-③ <code>adaptive_*</code> —— 印证 08 章那条规律：<strong>投机解码必须按负载动态开关。</strong></p>
+① <code>*_cuda_graph_runner.py</code> 有 <strong>4 个</strong> —— <strong>草稿模型不上 CUDA Graph，投机解码的收益会被 CPU 派发开销吃掉</strong>（见 <a href="推理优化入门/12-CUDA-Graph与图编译.html">12 章</a>）。<br />
+② <code>eagle_disaggregation.py</code> / <code>dflash_disaggregation.py</code> / <code>dspark_disaggregation.py</code> —— 投机解码和 PD 分离<strong>每种算法都要单独做组合</strong>，不是各开各的就行。<br />
+③ <code>adaptive_*</code> —— 印证 <a href="推理优化入门/08-投机解码.html">08 章</a> 那条规律：<strong>投机解码必须按负载动态开关。</strong></p>
 </blockquote>
 <hr />
-<h2 id="pd-disaggregation">六、PD 分离 <code>disaggregation/</code></h2>
+<h2 id="pd-disaggregation">七、PD 分离 <code>disaggregation/</code></h2>
 <div class="codehilite"><pre><span></span><code>    prefill.py                       ★ P 端主逻辑
     decode.py                        ★ D 端主逻辑
     decode_schedule_batch_mixin.py   D 端的批次组织
     ★ decode_kvcache_offload_manager.py  D 端 KV 换出到 CPU/SSD
     decode_hicache_mixin.py          D 端接分层缓存
     kv_events.py                     KV 传输事件
+    base/  common/  utils.py         公共层
 
     传输后端：
       nixl/        ★ NVIDIA RDMA 传输库（主流）
@@ -530,19 +997,22 @@ DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调
 </code></pre></div>
 
 <blockquote>
-<p>★ <code>fake/</code> 这个目录是很好的工程实践：<strong>PD 分离依赖专用硬件，<br />
-但功能正确性不该依赖硬件才能测。</strong> 值得借鉴。</p>
+<p>📖 <strong>RDMA</strong>（Remote Direct Memory Access，远程直接内存访问）——网卡绕过 CPU 直接读写对端内存/显存，是跨机传 KV 的主力手段。</p>
+<p>★ <code>fake/</code> 这个目录是很好的工程实践：<strong>PD 分离依赖专用硬件，但功能正确性不该依赖硬件才能测。</strong> 值得借鉴。</p>
 </blockquote>
 <hr />
-<h2 id="eplb-eplb-vllm">七、EPLB <code>eplb/</code>：比 vLLM 分得更细</h2>
-<div class="codehilite"><pre><span></span><code>    expert_distribution.py     ★ 统计：谁热谁冷
-    expert_location.py         ★ 记录：专家现在在哪张卡
+<h2 id="eplb-eplb-vllm">八、EPLB <code>eplb/</code>：比 vLLM 分得更细</h2>
+<blockquote>
+<p>📖 <strong>EPLB</strong>（Expert Parallelism Load Balancer，专家并行负载均衡器）——MoE 里热门专家会把某几张卡压满，EPLB 负责把专家搬一搬让负载均匀。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    expert_distribution.py       ★ 统计：谁热谁冷
+    expert_location.py           ★ 记录：专家现在在哪张卡
     expert_location_dispatch.py  按位置分发 token
-    expert_location_updater.py ★ 在线更新位置（不停服）
-    eplb_manager.py            总控
-    eplb_algorithms/           多种均衡算法
-    lplb_solver.py             求解器
-    ★ eplb_simulator/          ★★ 离线模拟器
+    expert_location_updater.py   ★ 在线更新位置（不停服）
+    eplb_manager.py              总控
+    eplb_algorithms/             多种均衡算法
+    lplb_solver.py               求解器
+    ★ eplb_simulator/            ★★ 离线模拟器
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ★★ eplb_simulator/ 是最务实的一个设计：
@@ -552,33 +1022,37 @@ DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调
 </code></pre></div>
 
 <blockquote>
-<p>★ 另外注意顶层还有一个 <code>elastic_ep/</code> 目录——<strong>弹性专家并行</strong>，<br />
-说明 SGLang 在往「运行时增减 EP 规模」这个方向走。</p>
+<p>★ 另外注意顶层还有一个 <code>elastic_ep/</code> 目录——<strong>弹性专家并行</strong>，说明 SGLang 在往「运行时增减 EP 规模」这个方向走。<strong>vLLM 侧的对应物是 <code>parallel_state.py</code> 里那些 <code>enable_elastic_ep</code> 分支</strong>（见 vLLM 拆解第五节）。</p>
 </blockquote>
 <hr />
-<h2 id="_6">八、★ 读源码的建议路线</h2>
-<div class="codehilite"><pre><span></span><code>    第 1 天：mem_cache/radix_cache.py 全文（★ 只有 700 多行，值得通读）
+<h2 id="_8">九、★ 读源码的建议路线</h2>
+<div class="codehilite"><pre><span></span><code>    第 1 天：managers/scheduler.py 的 event_loop_normal（L1743，只有 30 行）
+            + get_next_batch_to_run 的 L3175-3184
+            ⟹ 先把第二节那条主线和「Prefill 优先」搞清楚。这是骨架。
+
+    第 2 天：mem_cache/radix_cache.py 全文（863 行，值得通读）
             ⟹ 重点：match_prefix (L377)、_split_node (L705)、
-                    inc_lock_ref (L623)
+                    inc_lock_ref (L623)、evictable_size (L659)
             ★ 这是 SGLang 的灵魂
 
-    第 2 天：managers/schedule_policy.py
+    第 3 天：managers/schedule_policy.py
             ⟹ 从 L200 的两个 Enum 开始读，理解「缓存感知」是什么意思
+            ★ 一定要读 L290-294 那个退化分支
             ⟹ 再看 PrefillAdder (L511) 怎么往批次里加请求
 
-    第 3 天：distributed/parallel_state.py L2328-2700
+    第 4 天：distributed/parallel_state.py 的 L2328-2700
             ⟹ 对照 vLLM 的 L1751-1960 一起读
-            ★ 两种世界观的直接对比
+            ★ 两种世界观的直接对比；先读 L2375-2390 的文档字符串例子
 
-    第 4 天：layers/dp_attention.py
+    第 5 天：layers/dp_attention.py
             ⟹ 理解「注意力层用 DP」到底是怎么落地的
             ★ 重点看 DpPaddingMode (L81) 解决什么问题
 
-    第 5 天：按需选一个：speculative/ 或 disaggregation/ 或 eplb/
+    第 6 天：按需选一个：speculative/ 或 disaggregation/ 或 eplb/
 </code></pre></div>
 
 <hr />
-<h2 id="vllm_1">九、★★ 和 vLLM 的核心差异</h2>
+<h2 id="vllm_1">十、★★ 和 vLLM 的核心差异</h2>
 <table>
 <thead>
 <tr>
@@ -589,9 +1063,19 @@ DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调
 </thead>
 <tbody>
 <tr>
+<td><strong>进程结构</strong></td>
+<td>异步前端 + 引擎，进程间队列</td>
+<td>★ 前端 / 调度器 / 反分词<strong>三类进程</strong>，ZMQ</td>
+</tr>
+<tr>
+<td><strong>一次 step</strong></td>
+<td>★★ Prefill chunk 和 Decode <strong>混在同一批次</strong>（✅ <code>enable_chunked_prefill</code> 默认 <code>True</code>）</td>
+<td>★★ 一步<strong>要么全 Prefill 要么全 Decode</strong>；混合要显式开 <code>enable_mixed_chunk</code></td>
+</tr>
+<tr>
 <td><strong>并行网格</strong></td>
 <td>固定五维 <code>ExtDP×DP×PP×PCP×TP</code></td>
-<td>★ 只有 <code>tp × pp</code>，DP 从 TP 组内再切</td>
+<td>★ 只有 <code>tp × pp</code>，其余维度从 TP 组内再切</td>
 </tr>
 <tr>
 <td><strong>谁决定切法</strong></td>
@@ -601,22 +1085,22 @@ DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调
 <tr>
 <td><strong>前缀缓存</strong></td>
 <td>链式哈希 + 哈希表</td>
-<td>★★ 基数树（8 个变体）</td>
+<td>★★ 基数树（7 棵树 + 1 个非树对照）</td>
 </tr>
 <tr>
 <td><strong>调度依据</strong></td>
 <td>显存 + token 预算</td>
-<td>★★ 显存 + <strong>前缀命中长度</strong>（LPM）</td>
+<td>★★ 显存 + <strong>前缀命中长度</strong>（LPM，⚠️ 非默认）</td>
 </tr>
 <tr>
 <td><strong>缓存层次</strong></td>
 <td>块池 + 可插拔 offload</td>
-<td>★ hiradix：GPU→CPU→SSD 三级内建</td>
+<td>★ <code>hiradix</code>：GPU→CPU→SSD 三级内建</td>
 </tr>
 <tr>
 <td><strong>代码规模</strong></td>
-<td>143 万行</td>
-<td>184 万行</td>
+<td>143 万行 / 4,280 个 <code>.py</code></td>
+<td>184 万行 / 5,674 个 <code>.py</code></td>
 </tr>
 <tr>
 <td><strong>最擅长</strong></td>
@@ -631,12 +1115,16 @@ DP 的本意是各 rank 独立，但 MoE 层的 all-to-all 又要求大家步调
               ⟹ 简单、可预测、容易运维
 
     ★ SGLang：并行策略是【模型属性】——每一部分自己声明想怎么切。
-              ⟹ 灵活、能榨出 MoE 的性能，但要跟踪 6+ 个通信组
+              ⟹ 灵活、能榨出 MoE 的性能，但要跟踪 8 个通信组
 
-    ⟹ 两条路都在收敛：vLLM 补上了 DCP/PCP 和 EP 的独立处理，
-       SGLang 也在补 PP。★ 差异在缩小，但设计基因还在。
+    ⟹ 两条路都在收敛：vLLM 补上了 PCP/DCP 和 EP 的独立处理，
+       SGLang 也在补 PP（scheduler_pp_mixin.py）。
+       ★ 差异在缩小，但设计基因还在。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>别拿这张表做选型</strong>。它描述的是 <code>bd8865a</code> / <code>04444ee</code> 这两个 commit 的形态，两个项目每个季度都在互相补齐功能。选型请按你自己的负载压测，方法见 <a href="推理优化入门/13-性能指标与压测.html">13 章</a> 和 <a href="推理框架对比.html">推理框架对比.md</a>。</p>
+</blockquote>
 <hr />
 <blockquote>
 <p>返回 <a href="README.html">推理框架总目录</a> ｜ 选型见 <a href="推理框架对比.html">推理框架对比.md</a></p>

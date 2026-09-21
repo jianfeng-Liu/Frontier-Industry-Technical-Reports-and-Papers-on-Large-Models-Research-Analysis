@@ -253,117 +253,400 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="21-kv-cache">2.1 为什么需要 KV Cache</h2>
 <p>先回忆注意力（Attention）在算什么。对第 t 个 token：</p>
-<div class="codehilite"><pre><span></span><code>    Q_t（Query，查询）要和【前面所有 token】的 K（Key，键）做点积，
-    再用得到的权重去加权【前面所有 token】的 V（Value，值）。
+<div class="codehilite"><pre><span></span><code>Q_t（Query，查询）要和【前面所有 token】的 K（Key，键）做点积，
+再用得到的权重去加权【前面所有 token】的 V（Value，值）。
 
-    Attention(Q_t) = softmax( Q_t · [K_1 ... K_t]ᵀ / √d ) · [V_1 ... V_t]
-                                     ↑ 需要历史          ↑ 需要历史
+Attention(Q_t) = softmax( Q_t · [K_1 ... K_t]ᵀ / √d ) · [V_1 ... V_t]
+                                 ↑ 需要历史          ↑ 需要历史
 </code></pre></div>
 
-<p>现在看解码过程。生成第 100 个字时，需要 K_1..K_99；生成第 101 个字时，需要 K_1..K_100。</p>
-<div class="codehilite"><pre><span></span><code>    ★ 天真做法：每生成一个字，把前面 100 个 token 重新跑一遍前向
-       ⟹ 生成 N 个字的总代价 ≈ O(N²)，1000 字要跑 50 万个 token 的量
+<p>关键观察：<strong>第 t 步用到的 K_1..K_{t-1}，和第 t-1 步用到的完全是同一批数字</strong>。它们只取决于历史 token，不取决于现在在生成什么。所以要么每步重算，要么存下来。</p>
+<p><strong>把两种做法逐步算一遍。</strong> 设 prompt 有 10 个 token，要生成 1000 个字：</p>
+<table>
+<thead>
+<tr>
+<th>已生成到第几个字</th>
+<th>无 KV Cache：本步要前向的 token 数</th>
+<th>无 KV Cache：累计</th>
+<th>有 KV Cache：本步</th>
+<th>有 KV Cache：累计</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>第 1 个</td>
+<td>10</td>
+<td>10</td>
+<td>1</td>
+<td>1</td>
+</tr>
+<tr>
+<td>第 2 个</td>
+<td>11</td>
+<td>21</td>
+<td>1</td>
+<td>2</td>
+</tr>
+<tr>
+<td>第 10 个</td>
+<td>19</td>
+<td>145</td>
+<td>1</td>
+<td>10</td>
+</tr>
+<tr>
+<td>第 100 个</td>
+<td>109</td>
+<td>5,950</td>
+<td>1</td>
+<td>100</td>
+</tr>
+<tr>
+<td>第 1000 个</td>
+<td>1009</td>
+<td><strong>509,500</strong></td>
+<td>1</td>
+<td><strong>1,000</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>无 KV Cache 的累计公式：10·N + N(N−1)/2  ⟹ O(N²)
+有 KV Cache 的累计公式：N                 ⟹ O(N)
 
-    ★ KV Cache：K_1..K_99 上一步已经算过了，【存下来别扔】
-       ⟹ 每步只算新 token 的 K_t、V_t，追加到缓存末尾
-       ⟹ 生成 N 个字的总代价 ≈ O(N)
+★ 代入 N = 1000：509,500 ÷ 1,000 = 【509 倍】的计算量差距。
+  而且这个差距随着回答变长【越来越大】——N = 4000 时是 2000 倍。
 </code></pre></div>
 
+<p>KV Cache 的做法就一句话：<strong>K_1..K_{t-1} 上一步已经算过了，存下来别扔</strong>。每步只算新 token 的 K_t、V_t，追加到缓存末尾。</p>
 <blockquote>
-<p>🔑 <strong>KV Cache 不是「优化」，是推理的默认前提。</strong> 没有它，长文本生成慢到不可用。<br />
-代价是：<strong>它要占显存，而且占得非常多。</strong></p>
+<p>🔑 <strong>KV Cache 不是「优化」，是推理的默认前提。</strong> 没有它，长文本生成慢到不可用（所以你不会在任何生产框架里看到「关掉 KV Cache」这个选项）。<br />
+代价是：<strong>它要占显存，而且占得非常多。</strong> 本章剩下的部分全是在算这笔账。</p>
 </blockquote>
 <hr />
 <h2 id="22-kv-cache">2.2 KV Cache 到底占多少——把公式推一遍</h2>
-<p>一个 token、一层，要存 K 和 V 两个向量：</p>
-<div class="codehilite"><pre><span></span><code>    单个 token、单层的 KV 字节数
-        = 2（K 和 V 两份）
-        × num_kv_heads（KV 头数）
-        × head_dim（每个头的维度）
-        × dtype_bytes（BF16 = 2 字节）
-
-    整个模型：再乘以 num_layers（层数）
-
-    一整条序列：再乘以 seq_len（这条序列有多少 token）
-
-    整个服务：再乘以 batch_size（同时有多少条序列）
+<p>先给三个符号（第一次出现，给全称）：</p>
+<blockquote>
+<p>📖 <strong>n_heads</strong>（注意力头数）——一层里有多少个独立的注意力「视角」。<br />
+📖 <strong>n_kv_heads / H_kv</strong>（KV 头数）——其中有多少个<strong>独立的 K、V</strong>。MHA（Multi-Head Attention，多头注意力）里 <code>H_kv = n_heads</code>；GQA（Grouped-Query Attention，分组查询注意力）里 <code>H_kv &lt; n_heads</code>，多个 Q 头共用一份 K、V。这是省 KV Cache 的主战场（<a href="07-注意力变体MQA-GQA-MLA.html">07 章</a>）。<br />
+📖 <strong>head_dim / D_head</strong>（每个头的维度）——通常 <code>n_heads × head_dim = d_model</code>（隐藏维度）。</p>
+</blockquote>
+<p>完整公式：</p>
+<div class="codehilite"><pre><span></span><code>KV Cache 总字节 = 2 × L × H_kv × D_head × dtype × seq_len × batch
+                  ↑   ↑    ↑        ↑        ↑        ↑        ↑
+                 K,V  层数 KV头数  头维度   每元素   序列长度  并发
+                                            字节数
 </code></pre></div>
 
-<p>合成一条：</p>
-<div class="codehilite"><pre><span></span><code>┌────────────────────────────────────────────────────────────────┐
-│  KV Cache 总字节                                                │
-│    = 2 × L × H_kv × D_head × dtype × seq_len × batch           │
-│      ↑    ↑    ↑        ↑        ↑        ↑         ↑          │
-│      K,V  层数 KV头数  头维度   精度   序列长度   并发数         │
-└────────────────────────────────────────────────────────────────┘
+<p><strong>代真实数字：Llama-3-8B</strong>（⚠️ 参数取自公开的模型配置文件 <code>config.json</code>，非论文披露表格）</p>
+<div class="codehilite"><pre><span></span><code>L = 32 层，H_kv = 8（用了 GQA，32 个 Q 头共享 8 组 KV），D_head = 128，BF16 = 2 字节
 </code></pre></div>
 
-<p><strong>代真实数字：Llama-3-8B</strong>（⚠️ 参数取自公开的模型配置，非论文披露表格）</p>
-<div class="codehilite"><pre><span></span><code>    L = 32 层，H_kv = 8（用了 GQA，见 07 章），D_head = 128，BF16 = 2 字节
-
-    单 token 单层：2 × 8 × 128 × 2 = 4096 字节 = 4 KB
-    单 token 全模型：4 KB × 32 = 128 KB
-
-    ★ 记住这个数：Llama-3-8B 每个 token 要 128 KB 的 KV Cache
-
-    一条 8K 长度的对话：128 KB × 8192 = 1 GB
-    一条 128K 长度的对话：128 KB × 131072 = 16 GB   ← ★ 一个用户吃掉一半 H100
-</code></pre></div>
-
-<p><strong>再看没用 GQA 的老模型有多可怕</strong>——如果 H_kv = 32（每个注意力头都有自己的 KV）：</p>
-<div class="codehilite"><pre><span></span><code>    单 token 全模型：128 KB × 4 = 512 KB
-    一条 8K 对话：4 GB
-    ★★ 一张 80GB 的 H100，去掉 16GB 权重，剩 64GB
-       ⟹ 只能装 16 个用户。这就是 GQA 存在的理由（07 章）。
-</code></pre></div>
-
-<hr />
-<h2 id="23-h100">2.3 一张 H100 的完整显存账</h2>
-<p>拿 <strong>Llama-3-8B，单张 H100 80GB，BF16</strong> 算一遍：</p>
-<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────┐
-│  项目                    大小        说明                │
-├─────────────────────────────────────────────────────────┤
-│  ① 模型权重             16 GB       8B × 2 字节，固定    │
-│  ② CUDA / NCCL 上下文  ~1-2 GB      驱动和通信库开销     │
-│  ③ 激活值（临时）       ~1-2 GB      前向中间结果，用完就放│
-│  ④ 框架预留             ~2 GB       调度器、采样器等      │
-├─────────────────────────────────────────────────────────┤
-│  ⟹ 剩给 KV Cache：    ≈ 58-60 GB                        │
-│                                                         │
-│  ★ 58 GB ÷ 128 KB/token ≈ 475,000 个 token             │
-│                                                         │
-│     如果平均每条对话 4K token → 能装 ~116 条并发         │
-│     如果平均每条对话 32K token → 只能装 ~14 条并发       │
-└─────────────────────────────────────────────────────────┘
+<p><strong>逐项乘上去，每一步都看得到中间值</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>第几步</th>
+<th>乘什么</th>
+<th>值</th>
+<th>累积结果</th>
+<th>这是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>K 和 V 两份</td>
+<td>× 2</td>
+<td>2</td>
+<td>—</td>
+</tr>
+<tr>
+<td>②</td>
+<td>KV 头数 H_kv</td>
+<td>× 8</td>
+<td>16</td>
+<td>—</td>
+</tr>
+<tr>
+<td>③</td>
+<td>每头维度 D_head</td>
+<td>× 128</td>
+<td>2048 个元素</td>
+<td>一个 token、一层的 K+V 有 2048 个数</td>
+</tr>
+<tr>
+<td>④</td>
+<td>每元素字节数（BF16）</td>
+<td>× 2</td>
+<td><strong>4096 字节 = 4 KiB</strong></td>
+<td>★ 单 token、单层</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>层数 L</td>
+<td>× 32</td>
+<td><strong>131072 字节 = 128 KiB</strong></td>
+<td>★★ <strong>单 token、全模型</strong></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>序列长度 8192</td>
+<td>× 8192</td>
+<td><strong>1 GiB</strong></td>
+<td>一条 8K 长度的对话</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>并发 64 条</td>
+<td>× 64</td>
+<td><strong>64 GiB</strong></td>
+<td>⚠️ 已经超过一张 H100 的全部显存</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>★ 记住第 ⑤ 行这个数：Llama-3-8B 每个 token 要 128 KiB 的 KV Cache。</strong> 本章后面所有的账都从它出发，它也是<a href="附-速查表.html">附-速查表</a> 里那个 128 KB。</p>
+</blockquote>
+<p>再看更长的上下文：</p>
+<table>
+<thead>
+<tr>
+<th>对话长度</th>
+<th>KV Cache</th>
+<th>占整张卡（79.6 GiB）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1K token</td>
+<td>128 MiB</td>
+<td>0.2%</td>
+</tr>
+<tr>
+<td>4K token</td>
+<td>512 MiB</td>
+<td>0.6%</td>
+</tr>
+<tr>
+<td>8K token</td>
+<td>1 GiB</td>
+<td>1.3%</td>
+</tr>
+<tr>
+<td>32K token</td>
+<td>4 GiB</td>
+<td>5.0%</td>
+</tr>
+<tr>
+<td>128K token</td>
+<td><strong>16 GiB</strong></td>
+<td><strong>20%</strong> ← ★ 一个用户就吃掉这张卡的 1/5</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>单位说明，全章统一，请先读这一段。</strong> 本章算<strong>容量</strong>一律用 <strong>GiB</strong>（1 GiB = 2³⁰ 字节），因为显存的一切数字（<code>nvidia-smi</code>、PyTorch、KV 块大小）都是 2 的幂；算<strong>带宽</strong>（§2.6）才换成十进制 GB，因为 3.35 TB/s 是十进制单位。两套单位差 7%，<strong>混着用是本主题最常见的错账来源</strong>。另外，H100「80GB」的实际可用量是 <strong>79.6 GiB</strong>（<code>nvidia-smi</code> 报 81559 MiB），本章按这个数算。</p>
+<p>⚠️ 128K 那一行要说清楚：Llama-3-8B 原版的上下文窗口只有 8K，128K 是 <strong>Llama-3.1-8B</strong>。但两者的 <code>L / H_kv / D_head</code> 完全一样，所以 128 KiB/token 这个单价通用。16 GiB 只占整张卡的 20%，但和 §2.3 的 KV 预算（约 50 GiB）比，<strong>一个长上下文用户就吃掉了近 1/3 的并发能力</strong>。</p>
+</blockquote>
+<h3 id="gqa">没用 GQA 的老模型有多可怕</h3>
+<p>如果 <code>H_kv = 32</code>（每个注意力头都有自己独立的 K、V，即 MHA）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>H_kv</th>
+<th>单 token 全模型 KV</th>
+<th>一条 8K 对话</th>
+<th>58 GiB 的 KV 预算能装几条 8K 对话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GQA</strong>（Llama-3-8B 实际）</td>
+<td>8</td>
+<td>128 KiB</td>
+<td>1 GiB</td>
+<td>58</td>
+</tr>
+<tr>
+<td><strong>MHA</strong>（假想的同规模老模型）</td>
+<td>32</td>
+<td><strong>512 KiB</strong></td>
+<td><strong>4 GiB</strong></td>
+<td>★★ <strong>14</strong></td>
+</tr>
+</tbody>
+</table>
+<p>（58 GiB 这个预算是怎么来的，下一节 §2.3 逐行扣给你看。）</p>
+<div class="codehilite"><pre><span></span><code>★★ 同一个模型规模，只因为 KV 头数从 8 变成 32，并发能力就掉到 1/4。
+   这就是 GQA 存在的全部理由（07 章）。
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>这就是全书的中心矛盾</strong>：<br />
-01 章说「要把 batch 做大才吃得满算力（需要 &gt;300）」。<br />
-这一章说「batch 做大就爆显存」。<br />
-<strong>05 / 07 / 09 三章，全部是在同一件事上想办法——让同样的显存装下更多 token。</strong></p>
+<p>⚠️⚠️ <strong>这里有一个极高频的计算错误，务必躲开。</strong> MHA 下 <code>H_kv × D_head = n_heads × D_head = d_model</code>，所以公式可以简写成「每 token 每层 = <strong>4 × d_model</strong> 字节」（FP16/BF16 下）。很多文章和速查卡片直接给这个简写式——<strong>但它只对 MHA 成立</strong>。</p>
+<p><code>用 d_model 硬套 GQA 模型会怎样：
+  Llama-3-8B 的 d_model = 4096
+  错算：4 × 4096 = 16384 字节/层 × 32 层 = 512 KiB/token   ✗ 高估 4 倍
+  正确：2 × H_kv(8) × D_head(128) × 2 = 4096 字节/层 × 32 层 = 128 KiB/token  ✓</code></p>
+<p>★ <strong>判断法则：公式里那个头数必须是 <code>n_kv_heads</code>，不是 <code>n_heads</code>。</strong> 遇到 MQA（H_kv = 1）或 MLA，高估的倍数更夸张——DeepSeek-V2 的 MLA 能把这个单价压到几十分之一。看到任何 KV Cache 估算，第一件事是去 <code>config.json</code> 里确认 <code>num_key_value_heads</code>。</p>
+</blockquote>
+<hr />
+<h2 id="23-h100">2.3 一张 H100 的完整显存账</h2>
+<p>拿 <strong>Llama-3-8B，单张 H100 SXM5 80GB，BF16</strong> 算一遍。<strong>逐行扣，每一行都给累计余额</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>项目</th>
+<th>大小</th>
+<th>累计已用</th>
+<th>剩余</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>整张卡</td>
+<td>—</td>
+<td>0</td>
+<td><strong>79.6 GiB</strong></td>
+<td>「80GB」的实际可用量，<code>nvidia-smi</code> 报 81559 MiB</td>
+</tr>
+<tr>
+<td>①</td>
+<td>模型权重</td>
+<td><strong>15.0 GiB</strong></td>
+<td>15.0</td>
+<td>64.6</td>
+<td>8.03B 参数 × 2 字节 = 16.06 × 10⁹ 字节 = 15.0 GiB</td>
+</tr>
+<tr>
+<td>②</td>
+<td>CUDA / NCCL 上下文</td>
+<td>⚠️ ~1.6 GiB</td>
+<td>16.6</td>
+<td>63.0</td>
+<td>驱动、通信库、cuBLAS 工作区</td>
+</tr>
+<tr>
+<td>③</td>
+<td>激活值峰值</td>
+<td>⚠️ ~2 GiB</td>
+<td>18.6</td>
+<td>61.0</td>
+<td>前向中间结果，用完就放（见 §2.4 的 profile run）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>框架预留 + CUDA Graph 显存池</td>
+<td>⚠️ ~3 GiB</td>
+<td>21.6</td>
+<td><strong>58.0 GiB</strong></td>
+<td>调度器、采样器、日志缓冲、图捕获</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>★ 再乘 <code>gpu_memory_utilization</code></td>
+<td>× 0.9</td>
+<td>—</td>
+<td><strong>≈ 50 GiB</strong></td>
+<td><code>0.9 × 79.6 = 71.6</code>，再减掉上面那 21.6 → <strong>50.0</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 注意第 ① 行就是 <a href="01-推理与训练的根本差异.html">01 章 §1.5</a> 那个「16 GB 权重」——那里按十进制 GB 说，这里按 GiB 记账，同一个数。这也是为什么上一节要先把单位约定讲掉。<br />
+⚠️ ②③④ 三行标了 ⚠️，因为它们<strong>随框架版本、<code>max_num_seqs</code>、有没有开 CUDA Graph 而变</strong>，不是固定值。真实数字看 vLLM 启动日志里那几行 <code>memory profiling results</code>，别照抄这张表。</p>
+<p>⚠️ <strong>第 ⑤ 行是很多估算漏掉的一步，也是「我算出 58 GiB，日志却显示 50 GiB」的原因。</strong> vLLM 的口径是：<code>可用 KV 显存 = 总显存 × gpu_memory_utilization − 非 KV 的一切开销</code>，<strong>不是</strong>「剩下多少给多少」。那 10% 是留给显存碎片和峰值抖动的安全垫，而且是从<strong>总显存</strong>里扣的，不是从剩余里扣的。<br />
+✅ 源码可查：<code>requested_memory = 总显存 × gpu_memory_utilization</code> 在 <a href="../源码/vLLM/vllm/v1/worker/utils.py#L444">utils.py:444</a>，相减那一步在 <a href="../源码/vLLM/vllm/v1/worker/gpu_worker.py#L559">gpu_worker.py:559</a>。<br />
+⟹ 想把 50 GiB 拿回到 58 GiB，就是把 <code>--gpu-memory-utilization</code> 往 0.95 甚至 0.98 调。<strong>代价是 OOM 风险</strong>，这是个真实存在的旋钮，不是玄学。</p>
+</blockquote>
+<p><strong>把 KV 预算换算成 token 数和并发数</strong>（单价 128 KiB/token）：</p>
+<table>
+<thead>
+<tr>
+<th>KV 预算</th>
+<th>能装多少 token</th>
+<th>4K 对话</th>
+<th>8K 对话</th>
+<th>32K 对话</th>
+<th>128K 对话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>58 GiB（理论剩余）</td>
+<td><strong>475,136</strong></td>
+<td>116 条</td>
+<td>58 条</td>
+<td>14 条</td>
+<td>3 条</td>
+</tr>
+<tr>
+<td>50 GiB（默认 0.9 之后）</td>
+<td><strong>409,600</strong></td>
+<td>100 条</td>
+<td>50 条</td>
+<td>12 条</td>
+<td>3 条</td>
+</tr>
+</tbody>
+</table>
+<p>（验算一行：<code>58 GiB ÷ 128 KiB = 58 × 1024 × 1024 ÷ 128 = 475,136</code>；<code>475,136 ÷ 4096 = 116</code>。）</p>
+<blockquote>
+<p>★★ <strong>这就是全书的中心矛盾，现在两边的数字都有了</strong>：<br />
+<a href="01-推理与训练的根本差异.html">01 章 §1.3</a> 说「算术强度要 <strong>&gt; 295</strong> 才吃得满算力，也就是 batch 要 295」。<br />
+这一章说「4K 对话的 batch 最多 <strong>100~116</strong>」。<br />
+<strong>够不到。差了 3 倍。</strong><br />
+⟹ 05 / 07 / 09 三章，全部是在同一件事上想办法——<strong>让同样的显存装下更多 token</strong>，好让 batch 再往上顶一点。</p>
 </blockquote>
 <hr />
 <h2 id="24-vllm">2.4 vLLM 是怎么算这笔账的</h2>
 <p>vLLM 启动时不是「猜」剩多少显存，而是<strong>真跑一遍</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ① 加载权重，记下占了多少
-    ② 用最大 batch 跑一次假的前向（profile run），记下激活值峰值
-    ③ 剩下的显存 × gpu_memory_utilization（默认 0.9）
-       ⟹ 全部划给 KV Cache，切成固定大小的【块】
+<div class="codehilite"><pre><span></span><code>① 记一次基线快照：这张卡现在还空多少
+② 加载权重，记下权重占了多少
+③ 用最大 batch 跑一次【假的】前向（profile run），记下激活值峰值
+   ★ 这一步同时也把 kernel 编译好了，顺带估一下 CUDA Graph 要占多少
+④ 可用 KV 显存 = 总显存 × gpu_memory_utilization
+                − 权重 − 激活峰值 − 上下文等一切非 KV 开销
+⑤ 把这块显存一次性切成固定大小的【块】（block），交给 BlockPool 管
 </code></pre></div>
 
 <blockquote>
-<p>✅ 这个流程在 vLLM 源码里叫 <code>determine_available_memory</code> / <code>initialize_kv_cache</code>，<br />
-块的管理在 <a href="../源码/vLLM/vllm/v1/core/block_pool.py">block_pool.py</a>，<br />
-<code>class BlockPool</code> 在 <strong>L143</strong>。</p>
+<p>✅ <strong>源码可查</strong>：主流程是 <code>GpuWorker.determine_available_memory</code>，在 <a href="../源码/vLLM/vllm/v1/worker/gpu_worker.py#L475">gpu_worker.py:475</a>；profile run 在 <a href="../源码/vLLM/vllm/v1/worker/gpu_model_runner.py#L6553">gpu_model_runner.py:6553</a>；切块和分配在 <a href="../源码/vLLM/vllm/v1/worker/gpu_model_runner.py#L7756">gpu_model_runner.py:7756</a>，块池 <code>class BlockPool</code> 在 <a href="../源码/vLLM/vllm/v1/core/block_pool.py#L143">block_pool.py:143</a>。</p>
 </blockquote>
-<p><strong>关键设计</strong>：KV Cache 的总量在启动时就<strong>定死</strong>了，运行期不再变。所以调度器随时知道「还剩几块」，装不下就排队或抢占（04 章）。</p>
+<p><strong>关键设计</strong>：KV Cache 的总量在启动时就<strong>定死</strong>了，运行期一个字节都不再变。这个设计换来两件事：</p>
+<table>
+<thead>
+<tr>
+<th>好处</th>
+<th>坏处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>调度器随时知道「还剩几块」，能精确判断一条新请求装不装得下</td>
+<td>想改 KV 预算必须重启服务</td>
+</tr>
+<tr>
+<td>不会因为 KV 突然涨上来而 OOM（装不下就排队或抢占，见 <a href="04-连续批处理与调度.html">04 章</a>）</td>
+<td>profile 估偏了（比如激活峰值估低），运行期才暴露</td>
+</tr>
+<tr>
+<td>显存不用反复向驱动申请释放，没有分配器抖动</td>
+<td>多个模型共卡时互相挤，<code>0.9</code> 要手动分</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="25">2.5 三个能改变这笔账的旋钮</h2>
+<p>回头看 §2.2 那个公式 <code>2 × L × H_kv × D_head × dtype × seq_len × batch</code>——<strong>能拧的就是里面的因子</strong>：</p>
 <table>
 <thead>
 <tr>
 <th>旋钮</th>
+<th>动哪个因子</th>
 <th>做法</th>
 <th>效果</th>
 <th>讲在哪</th>
@@ -371,66 +654,217 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </thead>
 <tbody>
 <tr>
-<td><strong>减少 H_kv</strong></td>
-<td>MQA / GQA / MLA</td>
-<td>KV 直接缩 4~8 倍，<strong>最有效</strong></td>
+<td><strong>减少 KV 头数</strong></td>
+<td><code>H_kv</code> ↓</td>
+<td>GQA / MQA / MLA</td>
+<td>GQA 缩 <strong>4~8 倍</strong>；MQA（H_kv=1）缩 <strong>数十倍</strong>；MLA 换压缩思路，缩得更多</td>
 <td><a href="07-注意力变体MQA-GQA-MLA.html">07 章</a></td>
 </tr>
 <tr>
-<td><strong>降低 dtype</strong></td>
+<td><strong>降低精度</strong></td>
+<td><code>dtype</code> ↓</td>
 <td>KV Cache 用 FP8 存</td>
-<td>再缩 <strong>2 倍</strong>，几乎无损</td>
+<td>再缩 <strong>2 倍</strong>，质量损失很小</td>
 <td><a href="09-量化.html">09 章</a></td>
 </tr>
 <tr>
 <td><strong>别浪费已分配的</strong></td>
+<td>三个因子都不动</td>
 <td>PagedAttention + 前缀复用</td>
-<td>把利用率从 ~30% 提到 &gt;90%</td>
+<td>有效利用率从 <strong>20%~38%</strong> 提到 <strong>&gt;96%</strong></td>
 <td><a href="05-PagedAttention与前缀缓存.html">05 章</a></td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>✅ 第三行那两个数字是 vLLM 论文（arXiv 2309.06180）的一手披露：分页之前，真正装 token 的显存只占已分配显存的 <strong>20.4%~38.2%</strong>，其余全是保留浪费、内部碎片、外部碎片三类损耗。拆解见 <a href="05-PagedAttention与前缀缓存.html">05 章 §5.1</a>。<br />
+★ 注意这三个旋钮是<strong>可以叠乘的</strong>：GQA（÷4）× FP8（÷2）× 分页（×2.5 的有效利用率）≈ 同样显存装 20 倍的 token。这不是夸张，是三章内容合起来的实际效果。</p>
+</blockquote>
 <p>还有一个「作弊」旋钮——<strong>根本不存全部</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ★ StreamingLLM：只保留【最开头几个 token】+【最近的窗口】
-      ✅ 论文 arXiv 2309.17453（papers/StreamingLLM-Attention-Sinks-arXiv-2309.17453.pdf）
-      发现最开头的 token 是「注意力池（attention sink）」，扔了就崩，
-      中间的反而可以扔。
-      ⟹ 代价是真的丢信息，属于「近似方法」，和前三个不同性质。
+<div class="codehilite"><pre><span></span><code>★ StreamingLLM：只保留【最开头几个 token】+【最近的一个滑动窗口】，中间全扔
+  ✅ 论文 arXiv 2309.17453（papers/StreamingLLM-Attention-Sinks-arXiv-2309.17453.pdf）
+  它发现最开头的几个 token 是「注意力池（attention sink）」——模型会把
+  用不掉的注意力权重倾倒在那里，扔了就崩；中间的反而可以扔。
+  ⟹ 于是 seq_len 这个因子被【钉死】在窗口大小上，不再随对话变长而增长。
+  ⚠️ 代价是真的丢信息，属于「近似方法」，和前三个旋钮【不是同一性质】：
+     前三个无损或近乎无损，这个会改变模型的输出。
 </code></pre></div>
 
 <hr />
 <h2 id="26-kv-cache">2.6 一个容易被忽略的点：KV Cache 也要被「搬」</h2>
-<p>01 章说解码是<strong>访存受限</strong>，当时只算了权重。实际上每生成一个 token，要搬两样东西：</p>
-<div class="codehilite"><pre><span></span><code>    ① 全部权重：              16 GB      ← 和 batch 无关
-    ② batch 内所有序列的 KV：  ？          ← ★ 和 batch 成【正比】
-
-    batch = 1，序列 4K：   KV 只有 0.5 GB，权重是大头
-    batch = 128，序列 4K： KV 有 64 GB，★★ KV 反而成了大头
+<p><a href="01-推理与训练的根本差异.html">01 章</a> 说解码是<strong>访存受限</strong>，当时只算了权重。实际上每生成一个 token，要搬<strong>两样</strong>东西：</p>
+<div class="codehilite"><pre><span></span><code>① 全部权重：              16.1 GB     ← 和 batch 无关，被 batch 内所有序列【摊薄】
+② batch 内所有序列的 KV：  ？           ← ★ 和 batch 成【正比】，摊【不薄】
 </code></pre></div>
 
 <blockquote>
-<p>⚠️（我的推断，非论文披露）<strong>这解释了一个实践现象</strong>：<br />
-batch 从 1 加到 32，吞吐几乎线性涨（权重摊薄了）；<br />
-从 32 加到 256，涨幅明显放缓（KV 的搬运量在线性增长，摊不薄）。<br />
-<strong>所以 batch 不是越大越好，存在一个甜点区。</strong></p>
+<p>⚠️ <strong>这一节换单位了</strong>：因为要除以带宽 3.35 TB/s，而带宽是<strong>十进制</strong>单位，所以这一节的字节数全部换成十进制 GB（1 GB = 10⁹ 字节）。于是 §2.3 里那个 15.0 GiB 的权重，在这里写成 <strong>16.1 GB</strong>；一条 4K 序列的 KV，§2.2 里是 512 MiB，这里是 <strong>0.537 GB</strong>。<strong>同一个字节数，两种写法，差 7%。</strong> 换算一次、说清楚，比混着用安全。</p>
+</blockquote>
+<p><strong>这一节把 <a href="01-推理与训练的根本差异.html">01 章 §1.2</a> 那个「算术强度 ≈ B」的简化版补全。</strong> 设序列长度 4096（每条占 0.537 GB 的 KV），显存带宽 3.35 TB/s，逐行算：</p>
+<table>
+<thead>
+<tr>
+<th>batch</th>
+<th>KV 搬运量</th>
+<th>+ 权重 16.1 GB</th>
+<th>每步总搬运</th>
+<th>每步耗时</th>
+<th>吞吐</th>
+<th>相对 batch=1</th>
+<th>理想线性</th>
+<th>权重占搬运量</th>
+<th>算力利用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.5 GB</td>
+<td>16.1</td>
+<td><strong>16.6 GB</strong></td>
+<td><strong>4.96 ms</strong></td>
+<td>202 tok/s</td>
+<td>1.0×</td>
+<td>1×</td>
+<td><strong>97%</strong></td>
+<td>0.33%</td>
+</tr>
+<tr>
+<td>8</td>
+<td>4.3</td>
+<td>16.1</td>
+<td>20.4</td>
+<td>6.08 ms</td>
+<td>1,316</td>
+<td>6.5×</td>
+<td>8×</td>
+<td>79%</td>
+<td>2.1%</td>
+</tr>
+<tr>
+<td>32</td>
+<td>17.2</td>
+<td>16.1</td>
+<td>33.2</td>
+<td>9.92 ms</td>
+<td>3,225</td>
+<td><strong>16.0×</strong></td>
+<td>32×</td>
+<td>48%</td>
+<td>5.2%</td>
+</tr>
+<tr>
+<td>64</td>
+<td>34.4</td>
+<td>16.1</td>
+<td>50.4</td>
+<td>15.1 ms</td>
+<td>4,252</td>
+<td><strong>21.1×</strong></td>
+<td>64×</td>
+<td>32%</td>
+<td>6.9%</td>
+</tr>
+<tr>
+<td>112</td>
+<td>60.1</td>
+<td>16.1</td>
+<td>76.2</td>
+<td>22.7 ms</td>
+<td>4,925</td>
+<td><strong>24.4×</strong></td>
+<td>112×</td>
+<td><strong>21%</strong></td>
+<td>8.0%</td>
+</tr>
+</tbody>
+</table>
+<p>每一列怎么来的，一行算术就能自己验：</p>
+<div class="codehilite"><pre><span></span><code>每条序列的 KV = 4096 token × 131072 字节 = 0.537 GB
+KV 搬运量 = batch × 0.537 GB                （batch=32：32 × 0.537 = 17.2 GB）
+每步耗时  = 总搬运量 ÷ 3.35 TB/s            （33.2e9 ÷ 3.35e12 = 9.92 ms）
+吞吐      = batch ÷ 每步耗时                 （32 ÷ 0.00992 = 3225 tok/s）
+算力利用率 = 2 × 8.03e9 × batch ÷ 每步耗时 ÷ 989e12
+                                            （5.14e11 ÷ 0.00992 ÷ 989e12 = 5.2%）
+★ 112 这一行是 4K 序列下的显存上限：112 × 0.537 = 60.1 GB = 56.0 GiB，
+  正好顶到 §2.3 那个 58 GiB 的理论预算。
+  ⚠️ 如果按默认 gpu_memory_utilization=0.9 的 50 GiB 算，上限是 100 条，
+     这张表的最后一行就要退到 batch=100（吞吐约 4800 tok/s）。
+</code></pre></div>
+
+<p><strong>这张表一次说明了四件事：</strong></p>
+<p><strong>① batch 的收益是有拐点的，而且拐点算得出来。</strong> 从 1 到 8，吞吐涨 6.5 倍（接近理想的 8 倍）；从 8 到 32，再涨 2.4 倍（理想是 4 倍）；从 32 到 112，只再涨 1.5 倍（理想是 3.5 倍）。<strong>原因就在「权重占搬运量」那一列</strong>：batch=1 时搬的 97% 是权重，加 batch 等于白赚；batch=112 时权重只占 21%，剩下 79% 是 KV——<strong>KV 随 batch 线性增长，摊不薄，加 batch 就不再白赚了。</strong></p>
+<p><strong>② 所以 batch 不是越大越好，存在一个甜点区。</strong> 这张卡上大致是 32~64：吞吐已经拿到 16~21 倍，而每步耗时还在 10~15 ms。</p>
+<p><strong>③ 吞吐涨了 24 倍，TPOT 也变差了 4.6 倍。</strong> 每步耗时从 4.96 ms 涨到 22.7 ms——<strong>每个字之间的间隔变成了 4.6 倍</strong>。这是 <a href="01-推理与训练的根本差异.html">01 章 §1.6</a> 那条「延迟 vs 吞吐」取舍线的具体数字版，也是 <a href="13-性能指标与压测.html">13 章 §13.2</a> 说「只报吞吐不报延迟没有意义」的依据。</p>
+<p><strong>④ 即便 batch 顶到显存上限，算力利用率也只有 8%。</strong> 而这整张表的前提是<strong>带宽 100% 用满</strong>。（顺带说明一处 0.01 的差异：batch=1 这一行算出 0.33%，而 <a href="01-推理与训练的根本差异.html">01 章 §1.3</a> 说 0.34%——因为那里只算了权重的搬运量，这里把 KV 也算进去了，分母变大一点，利用率就更低一点。这正是本节要补的那一项。）再次印证 <a href="01-推理与训练的根本差异.html">01 章</a> 的那句话：算力利用率低不是浪费，是 Memory Bound 的定义——想让算力利用率上去，只能改变算术强度（<a href="07-注意力变体MQA-GQA-MLA.html">07</a> / <a href="08-投机解码.html">08</a> / <a href="09-量化.html">09</a> 章），加不了 batch 就是加不了。</p>
+<blockquote>
+<p>⚠️ <strong>这张表是屋顶线的理论上限，不是实测。</strong> 它做了三个简化：(a) 假设带宽 100% 用满，真机的 attention kernel 达不到；(b) 忽略了 attention 自身的 FLOPs（4K 序列下约多 13% 的计算量）；(c) 忽略了 kernel 之间的空隙和 CPU 下发开销（小 batch 下这一项尤其明显，见 <a href="12-CUDA-Graph与图编译.html">12 章</a>）。<strong>真机的绝对数字会更差，但「收益递减 + TPOT 恶化」这两条趋势是稳的</strong>——它们直接来自「权重摊薄、KV 摊不薄」这个结构，和实现质量无关。</p>
 </blockquote>
 <hr />
 <h2 id="27">2.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① KV Cache = 2 × 层数 × KV头数 × 头维度 × 精度 × 长度 × 并发  │
-│     ★ Llama-3-8B：每个 token 128 KB                           │
-│                                                              │
-│  ② 一张 H100 装 8B 模型 → ~58 GB 归 KV Cache → ~47 万 token   │
-│     ★ 并发数 = 47万 ÷ 平均对话长度                            │
-│                                                              │
-│  ③ ★★ 中心矛盾：batch 要大才吃满算力，但 batch 大就爆显存       │
-│     05 / 07 / 09 三章都在解这一个矛盾                          │
-│                                                              │
-│  ④ batch 大到一定程度后，搬 KV 的开销会超过搬权重              │
-│     ⟹ 存在吞吐甜点，不是越大越好                              │
-└──────────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>结论</th>
+<th>关键数字</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>KV Cache 公式：<code>2 × L × H_kv × D_head × dtype × seq_len × batch</code></td>
+<td>★ Llama-3-8B：<strong>128 KiB / token</strong>（全模型）</td>
+</tr>
+<tr>
+<td>②</td>
+<td>⚠️ 头数必须用 <strong>n_kv_heads</strong>，不是 n_heads。<code>4 × d_model</code> 那个简写式<strong>只对 MHA 成立</strong></td>
+<td>硬套 GQA 会高估 4 倍，硬套 MQA 会高估几十倍</td>
+</tr>
+<tr>
+<td>③</td>
+<td>一张 H100 装 8B 模型，理论剩 <strong>58 GiB</strong> 给 KV；但 vLLM 默认 <code>gpu_memory_utilization=0.9</code> 会压到 <strong>≈ 50 GiB</strong></td>
+<td>50 GiB ÷ 128 KiB = <strong>409,600 个 token</strong></td>
+</tr>
+<tr>
+<td>③′</td>
+<td>⚠️ 容量算 GiB、带宽算十进制 GB，两者差 7%，<strong>不要混用</strong></td>
+<td>15.0 GiB 权重 = 16.1 GB 权重，同一个数</td>
+</tr>
+<tr>
+<td>④</td>
+<td>并发数 = KV 预算 ÷ 平均对话长度</td>
+<td>4K 对话约 <strong>100 条</strong>，32K 对话只有 <strong>12 条</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>★★ 中心矛盾：01 章要 batch = 295 才吃满算力，显存只给得起 100</td>
+<td>05 / 07 / 09 三章都在解这一个矛盾</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>batch 大到一定程度后，搬 KV 的开销超过搬权重，收益递减</td>
+<td>batch=1 时权重占搬运量 <strong>97%</strong>，batch=112 时只占 <strong>21%</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>而且 batch 换来的吞吐是用 TPOT 买的</td>
+<td>吞吐 ×24 的同时，每步耗时从 4.96 ms 变 22.7 ms（<strong>×4.6</strong>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自测三题</strong>（答案在对应小节）</p>
+<ol>
+<li>一个模型 <code>num_hidden_layers=80</code>、<code>num_attention_heads=64</code>、<code>num_key_value_heads=8</code>、<code>head_dim=128</code>，FP16。它每个 token 的 KV Cache 是多少？如果有人用 <code>4 × d_model × 层数</code> 算，会得出什么数？错在哪？</li>
+<li>你把 <code>--gpu-memory-utilization</code> 从 0.9 调到 0.95，8B 模型在 H100 上能多装多少个 token？相当于多几条 8K 的并发？</li>
+<li>§2.6 的表里，batch 从 32 加到 64，吞吐只涨了 1.32 倍而不是 2 倍。用一行算术说明这 1.32 是从哪来的。</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li>正确算法：<code>2 × 8 × 128 × 2 = 4096</code> 字节/层，× 80 层 = <strong>327,680 字节 = 320 KiB / token</strong>。用 <code>4 × d_model</code> 硬套：<code>d_model = 64 × 128 = 8192</code>，<code>4 × 8192 = 32768</code> 字节/层 × 80 = <strong>2560 KiB = 2.5 MiB</strong>，<strong>高估了 8 倍</strong>——正好是 <code>n_heads ÷ n_kv_heads = 64 ÷ 8 = 8</code>。错在那个简写式的推导前提是 MHA（<code>n_kv_heads = n_heads</code>），而这个模型是 GQA。参见 §2.2 的 ⚠️⚠️ 提醒。</li>
+<li>多出来的预算 = <code>(0.95 − 0.9) × 79.6 GiB ≈ 4.0 GiB</code>（其余各项开销不变，涨出来的全部落到 KV 上）。换算 token 数 = <code>4 GiB ÷ 128 KiB = 32,768 个 token</code>，即多 <strong>4 条</strong> 8K 对话（8K 对话每条正好占 1 GiB）。⚠️ 代价是安全垫从 8.0 GiB 缩到 4.0 GiB，激活峰值抖动、长 prompt 或多模态输入变大时更容易 OOM。参见 §2.3 第 ⑤ 行。</li>
+<li>搬运量从 33.2 GB 涨到 50.4 GB（涨 1.52 倍），token 数从 32 涨到 64（涨 2 倍）。吞吐 = token ÷ 搬运量 ∝ <code>2 ÷ 1.52 = 1.32</code>。<strong>一行话：batch 翻倍，但要搬的字节涨了 1.52 倍，净收益只有 2 ÷ 1.52。</strong> 权重那 16.1 GB 是唯一被摊薄的部分，它占比越小，这个比值就越接近 1。参见 §2.6 第 ① 点。</li>
+</ol>
 <hr />
 <blockquote>
 <p><strong>下一步</strong> → <a href="03-Prefill与Decode两阶段.html">03 Prefill 与 Decode 两阶段</a><br />

@@ -249,44 +249,61 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="12-simt">12 · 昇腾硬件基础：从 SIMT 换到达芬奇，脑子里那张图要重画</h1>
 <blockquote>
 <p><strong>前置</strong>：<a href="01-GPU硬件基础.html">01 · GPU 硬件基础</a>、<a href="02-屋顶线与性能剖析.html">02 · 屋顶线与性能剖析</a>。本章处处和它们对照，先读完那两章再来。<br />
-<strong>目标</strong>：把前 11 章建立的 NVIDIA 心智模型平移到华为昇腾上——哪些概念一一对应，哪些<strong>根本没有对应物</strong>。后者才是真正的坑。</p>
+<strong>目标</strong>：把前 11 章建立的 NVIDIA 心智模型平移到华为昇腾上——哪些概念一一对应，哪些<strong>根本没有对应物</strong>。后者才是真正的坑。读完之后你应该能回答三个问题：<strong>一块数据从 GM 到 Cube 要走几跳、每跳谁搬？昇腾没有 occupancy，那 500 个周期的访存延迟靠什么盖住？屋顶线上为什么会多出第三类瓶颈？</strong><br />
+<strong>读法</strong>：本章每个抽象概念后面都跟一个带数字的小例子，算术都能自己验算。<strong>§12.3.4（五级流水的逐时间单位推演）、§12.3.3（FRACTAL_NZ 的 4×4 手推）、§12.6.2（MTE Bound 的搬运次数账）这三处请拿纸笔算一遍</strong>——它们分别对应昇腾算子最典型的一个性能形态、一个格式坑和一个误诊。<br />
+<strong>本章不教怎么写代码</strong>。三段式、双缓冲、Tiling、msprof 的实操在 <a href="13-AscendC编程.html">13 · Ascend C 编程</a>。本章只回答"硬件长什么样、为什么必须那么写"。</p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
 <p><strong>NPU</strong>（Neural Processing Unit，神经网络处理器）—— 相对 GPU 的通用并行架构，NPU 指为神经网络定制的专用芯片。昇腾属于此类。<br />
-<strong>达芬奇架构</strong>（DaVinci Architecture）—— 华为自研的 AI 计算架构，属于 DSA（Domain Specific Architecture，特定域架构）。<br />
-<strong>AI Core</strong> —— 达芬奇架构的基本计算单元，地位相当于 NVIDIA 的 SM（Streaming Multiprocessor）。<br />
-<strong>Cube / Vector / Scalar</strong> —— AI Core 内部三类计算单元，分别做矩阵乘、向量运算、流程控制。<br />
-<strong>AIC / AIV</strong>（AI Cube / AI Vector）—— 910B 起 Cube 和 Vector 被拆成两种独立的核，AIC 指矩阵核，AIV 指向量核。<br />
-<strong>GM</strong>（Global Memory，全局内存）—— 昇腾对片外主存（HBM）的称呼，相当于 GPU 的 HBM/Global Memory。<br />
-<strong>UB</strong>（Unified Buffer，统一缓冲区）—— Vector 单元专用的片上高速存储，相当于 GPU 共享内存的一部分角色。<br />
+<strong>DSA</strong>（Domain Specific Architecture，特定域架构）—— 只为一类负载设计的芯片架构，代价是通用性。<br />
+<strong>达芬奇架构</strong>（DaVinci Architecture）—— 华为自研的 AI 计算架构，属于 DSA。<br />
+<strong>AI Core</strong> —— 达芬奇架构的基本计算单元，地位相当于 NVIDIA 的 SM（Streaming Multiprocessor，流式多处理器）。<br />
+<strong>Cube / Vector / Scalar</strong>（矩阵单元 / 向量单元 / 标量单元）—— AI Core 内部三类计算单元，分别做矩阵乘、向量运算、流程控制。<br />
+<strong>AIC / AIV</strong>（AI Cube / AI Vector，矩阵核 / 向量核）—— 910B 起 Cube 和 Vector 被拆成两种独立的核，AIC 指矩阵核，AIV 指向量核，数量比 1 : 2。<br />
+<strong>GM</strong>（Global Memory，全局内存）—— 昇腾对片外主存（HBM，高带宽显存）的称呼，相当于 GPU 的 HBM / Global Memory。<br />
+<strong>UB</strong>（Unified Buffer，统一缓冲区）—— Vector 单元唯一的片上工作区，相当于 GPU 共享内存的一部分角色。<br />
+<strong>L1 Buffer</strong> —— AIC 侧的片上中转缓冲，GM 和 L0 之间的那一跳落在这里。<strong>它是 scratchpad（便笺存储）不是 cache</strong>，名字带 L1 极易误解。<br />
 <strong>L0A / L0B / L0C</strong> —— Cube 单元专用的三块片上缓冲：左矩阵、右矩阵、结果累加。GPU 上没有对应物。<br />
-<strong>MTE</strong>（Memory Transfer Engine，存储转换引擎）—— 专门负责各级存储之间搬运和格式转换的硬件单元。<br />
-<strong>HCCS</strong>（Huawei Cache Coherent System）—— 华为自研的片间高速互联，地位相当于 NVLink。<br />
+<strong>Scratchpad</strong>（便笺存储）—— 容量由程序员显式管理的片上存储，<strong>不会自动填充</strong>，和 cache 的根本区别就在这里。<br />
+<strong>MTE</strong>（Memory Transfer Engine，存储转换引擎）—— 专门负责各级存储之间搬运和格式转换的<strong>独立硬件流水线</strong>。MTE1 管 L1→L0A/L0B，MTE2 管搬入（GM→L1/UB），MTE3 管搬出（UB→GM）。<br />
+<strong>FixPipe</strong>（Fixed Pipe，随路后处理流水）—— 把 Cube 的结果从 L0C 搬出去的通路，顺路做量化、ReLU、精度转换。<br />
+<strong>五级流水</strong> —— Scalar / MTE1 / MTE2 / MTE3 / Cube-Vector 这几条能同时干活的硬件流水线。昇腾掩盖延迟的<strong>唯一</strong>手段就是把它们错开排满。<br />
+<strong>MTE Bound</strong>（搬运受限）—— 算力没打满、HBM 带宽也没打满，但 MTE 流水占满了。屋顶线模型不覆盖的第三类瓶颈，见 §12.6。<br />
+<strong>FRACTAL_NZ</strong>（分形 NZ 格式）—— 昇腾片上矩阵的摆放格式：先切 16×16 小块，块内行优先、块间列优先。<br />
+<strong>HCCS</strong>（Huawei Cache Coherence System，华为缓存一致性互联）—— 华为自研的片间高速互联，地位相当于 NVLink。<br />
 <strong>UB 总线</strong>（Unified Bus，统一总线）—— CloudMatrix 超节点使用的全互联总线。注意：<strong>和上面的 Unified Buffer 是两个完全不同的东西，昇腾体系里这个缩写撞车了</strong>，看到 UB 要先判断语境。<br />
-<strong>CANN</strong>（Compute Architecture for Neural Networks，神经网络计算架构）—— 昇腾的软件栈总称，地位相当于 CUDA。</p>
+<strong>CANN</strong>（Compute Architecture for Neural Networks，神经网络计算架构）—— 昇腾的软件栈总称，地位相当于 CUDA。<br />
+<strong>soc_version</strong>（芯片型号标识）—— 如 <code>Ascend910B3</code>。昇腾的算子和硬件参数都按它区分，<strong>同一个"910B"下面的子型号差异可以很大</strong>。</p>
+<hr />
 <blockquote>
 <p><strong>关于本章数字的可信度标记</strong><br />
 华为<strong>没有发布过昇腾 910B/910C 的完整数据手册</strong>，公开数字来自产品页、拆解报告和社区实测，彼此矛盾的地方很多。本章沿用本仓库的核对纪律：<br />
 <strong>✅ 披露</strong> = 华为官方产品页 / CANN 官方文档明确写出的；<br />
-<strong>⚠️ 推断</strong> = 第三方分析、芯片拆解、学术论文或社区实测，仅供量级参考。<br />
-凡是要写进方案、拿去做容量规划的数字，<strong>请用 §12.4.3 的方法在自己手上的卡上实测</strong>，不要引用本章。</p>
+<strong>⚠️ 推断</strong> = 第三方分析、芯片拆解、学术论文、社区实测，或<strong>本章为了把例子讲下去而设的假设值</strong>，仅供量级参考。<br />
+本章所有算例都会在开头标明用的是哪一档数字。<strong>凡是要写进方案、拿去做容量规划的数字，请用 §12.4.3 的方法在自己手上的卡上实测，不要引用本章。</strong><br />
+还有一类数字本章<strong>干脆不给</strong>：L1 / L0A / L0B / L0C 的容量。公开资料里这几个数跨型号差异大且互相矛盾，写死了只会误导。正确做法同样在 §12.4.3。</p>
 </blockquote>
 <hr />
 <h2 id="121">12.1 一句话说清两者的分歧</h2>
+<h3 id="1211">12.1.1 两条技术路线</h3>
 <p>第 01 章讲过，GPU 的哲学是 <strong>SIMT</strong>（Single Instruction Multiple Threads，单指令多线程）：堆一万多个弱核，让它们用同一条指令处理不同数据。矩阵乘不是 GPU 的专属任务，它只是"恰好很适合"GPU 的一类任务——所以 NVIDIA 后来才要额外加 Tensor Core 这种专用单元打补丁。</p>
 <p>昇腾反过来：<strong>先认定矩阵乘是主要任务，再围绕它造芯片</strong>。</p>
 <div class="codehilite"><pre><span></span><code>NVIDIA（通用 → 专用）：
   一堆通用 CUDA Core  →  发现 AI 火了  →  加装 Tensor Core
   结果：一个 SM 里，通用单元和专用单元并存，靠编译器决定用哪个
+       用不上 Tensor Core 的时候，还有 CUDA Core 兜底（慢一档，但能跑）
 
 华为昇腾（一开始就专用）：
   先问&quot;AI 负载是什么&quot;  →  答：矩阵乘 + 向量运算 + 少量控制
   →  直接造三种专门的硬件单元：Cube / Vector / Scalar
-  结果：一个 AI Core 里没有&quot;通用核&quot;，每种运算有且只有一条硬件通路
+  结果：一个 AI Core 里【没有通用核】，每种运算有且只有一条硬件通路
+       用不上 Cube 的时候，【没有兜底】——只能改数据布局让它用得上
 </code></pre></div>
 
-<p>这个差别带来的直接后果，是本章后面所有内容的根源：</p>
+<p>最后那两行括号里的对比，是本章后面所有内容的根源。<strong>"没有兜底"会在三个地方反复出现</strong>：维度对不齐没有慢速通用路径可退（§12.2.2）、延迟没有 warp 轮转可掩盖（§12.3.2）、搬运有自己的独立流水线因而会自己先成为瓶颈（§12.6）。</p>
+<h3 id="1212-01">12.1.2 概念存废清单：第 01 章有一半要作废</h3>
+<p>先把结论摆出来，细节和逐条理由在 §12.3.2：</p>
 <table>
 <thead>
 <tr>
@@ -308,7 +325,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td>片上存储</td>
-<td>Cache 为主（L1/L2 自动管理）</td>
+<td>Cache 为主（L1/L2 自动填充）</td>
 <td><strong>Scratchpad 为主（L1/L0/UB 全靠你手动搬）</strong></td>
 </tr>
 <tr>
@@ -326,111 +343,348 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>Warp（32 线程）</td>
 <td>无对应物——<strong>昇腾没有 warp</strong></td>
 </tr>
+<tr>
+<td>延迟怎么掩盖</td>
+<td><strong>超额订阅</strong>：一个 SM 挂 64 个 warp 轮转</td>
+<td><strong>手工排流水</strong>：五条流水线错开</td>
+</tr>
+<tr>
+<td>计算核的数量级</td>
+<td>132 个 SM</td>
+<td>⚠️ 20 个 AIC + 40 个 AIV（910B3 口径）</td>
+</tr>
 </tbody>
 </table>
-<p>最后一行要单独强调：<strong>昇腾没有 warp、没有 thread、没有 block、没有 bank conflict、没有 occupancy</strong>。第 01 章里你辛苦建立的那套概念，有一半在这里直接作废。取而代之的是"多核切分 + 核内五级流水 + 手动双缓冲"，见 <a href="13-AscendC编程.html">13 · Ascend C 编程</a>。</p>
+<p>最后两行是全章的主轴。<strong>132 对 20，差了将近 7 倍</strong>——这不是"昇腾核少所以慢"（单核的 Cube 比一个 SM 的 Tensor Core 强），而是<strong>调度弹性完全不同</strong>：GPU 上几千个 Block 去填 132 个 SM，某个 Block 慢一点会被别的 Block 填上；昇腾只有 20 个核，一个核慢就整个算子慢，没有任何弹性。</p>
+<blockquote>
+<p>★ <strong>一句话记住这一章</strong>：GPU 用"人多"掩盖延迟，昇腾用"排班"掩盖延迟。人多是硬件自动的，排班要你手写。</p>
+</blockquote>
 <hr />
 <h2 id="122-ai-core">12.2 达芬奇架构：AI Core 内部长什么样</h2>
-<h3 id="1221">12.2.1 三类计算单元</h3>
-<p>一个 AI Core 内部有三种计算单元，各管一摊（✅ CANN 官方文档）：</p>
-<div class="codehilite"><pre><span></span><code>┌─────────────────── 一个 AI Core（达芬奇） ───────────────────┐
-│                                                              │
-│  ┌────────────┐   矩阵乘。16×16×16 的三维立方体，            │
-│  │   Cube     │   一条指令完成 4096 次乘累加。               │
-│  │  矩阵单元  │   大模型 90% 的算力在这里。                  │
-│  └────────────┘                                              │
-│                                                              │
-│  ┌────────────┐   除矩阵乘以外的一切：激活、归一化、         │
-│  │  Vector    │   逐元素加减乘除、类型转换、规约……          │
-│  │  向量单元  │   指令集非常丰富。                           │
-│  └────────────┘                                              │
-│                                                              │
-│  ┌────────────┐   一个小 CPU：循环控制、分支判断、           │
-│  │  Scalar    │   给 Cube/Vector 算地址和参数。              │
-│  │  标量单元  │   它不干活，它指挥干活。                     │
-│  └────────────┘                                              │
-│                                                              │
-│  ┌────────────┐   各级存储之间搬数据 + 顺手做格式转换。      │
-│  │  MTE ×N    │   MTE1/MTE2/MTE3 分管不同方向。              │
-│  │  搬运引擎  │   **它是独立流水线，能和计算重叠**。         │
-│  └────────────┘                                              │
-└──────────────────────────────────────────────────────────────┘
+<h3 id="1221">12.2.1 三类计算单元，加一类搬运单元</h3>
+<p>一个 AI Core 内部的分工是这样的（✅ CANN 官方文档）：</p>
+<div class="codehilite"><pre><span></span><code>一个 AI Core（达芬奇）内部
+  │
+  ├── Cube    矩阵单元   只做一件事：16×16×16 的矩阵乘累加
+  │                       大模型 90% 以上的 FLOP 都在这里产生
+  │
+  ├── Vector  向量单元   除矩阵乘以外的一切：激活、归一化、逐元素
+  │                       加减乘除、类型转换、规约。指令集非常丰富
+  │
+  ├── Scalar  标量单元   一个小 CPU：循环控制、分支判断、算地址
+  │                       它不干活，它指挥干活
+  │
+  └── MTE ×3  搬运引擎   各级存储之间搬数据，顺手做格式转换
+                          ★ 独立硬件流水线，能和计算【真正同时】发生
 </code></pre></div>
 
-<p>请特别记住 MTE 是<strong>独立的硬件流水线</strong>。这意味着"搬数据"和"算数据"可以真正同时发生——这正是第 13 章双缓冲（Double Buffer）的物理基础。在 GPU 上你也做类似的事（<code>cp.async</code> 异步拷贝、软件流水），但 GPU 上那是一种优化技巧，在昇腾上<strong>这是基本写法，不这么写性能直接腰斩</strong>。</p>
-<h3 id="1222-cube161616">12.2.2 Cube：16×16×16 的立方体</h3>
-<p>Cube 单元一条指令完成 <code>C[16×16] += A[16×16] × B[16×16]</code>：</p>
-<div class="codehilite"><pre><span></span><code>16 × 16 × 16 = 4096 次乘累加 / 指令
-</code></pre></div>
-
-<p>对照第 03 章讲的 Tensor Core：Hopper 的 Tensor Core 也是做 MMA（Matrix Multiply-Accumulate，矩阵乘累加），但接口是 <strong>warp 级</strong>的——需要一个 warp 的 32 个线程协同持有数据碎片。Cube 是<strong>核级</strong>的，你不用操心线程怎么分数据，只要把数据按规定格式搬进 L0A/L0B 就行。</p>
+<p>抽象的分工看不出份量，<strong>把一层 Transformer 的算子摊开点名</strong>，就清楚了：</p>
+<table>
+<thead>
+<tr>
+<th>这个算子</th>
+<th>谁来算</th>
+<th>在一层里占的 FLOP（⚠️ 量级，随模型结构浮动）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>QKV 投影、Attention 输出投影</td>
+<td><strong>Cube</strong></td>
+<td>大头</td>
+</tr>
+<tr>
+<td>Attention 内部的 <code>Q×Kᵀ</code> 和 <code>P×V</code></td>
+<td><strong>Cube</strong></td>
+<td>大头</td>
+</tr>
+<tr>
+<td>FFN 的两个（或三个）矩阵乘</td>
+<td><strong>Cube</strong></td>
+<td>最大头</td>
+</tr>
+<tr>
+<td>Softmax、RMSNorm、SiLU、残差加、RoPE</td>
+<td><strong>Vector</strong></td>
+<td>合计通常 &lt; 10%</td>
+</tr>
+<tr>
+<td>量化 / 反量化、精度转换（Cast）</td>
+<td><strong>Vector</strong></td>
+<td>很小</td>
+</tr>
+<tr>
+<td>循环控制、tiling 参数、每一块的地址计算</td>
+<td><strong>Scalar</strong></td>
+<td>0（它不产生 FLOP）</td>
+</tr>
+<tr>
+<td>上面每一步的数据进出片上</td>
+<td><strong>MTE</strong></td>
+<td>0（它也不产生 FLOP，但常常是瓶颈）</td>
+</tr>
+</tbody>
+</table>
+<p>这张表解释了两件事。</p>
+<p><strong>第一，为什么 Vector 单元不能砍。</strong> Vector 算子只占不到 10% 的 FLOP，但它们的<strong>个数</strong>远多于 Cube 算子——一层里矩阵乘大概 6～7 个，Vector 算子二三十个。而且它们全是 <a href="02-屋顶线与性能剖析.html">02 章 §2.3</a> 里那种算术强度 0.1 量级的 Memory Bound 算子，耗时占比远高于 FLOP 占比。</p>
+<p><strong>第二，为什么 AIV 的数量是 AIC 的两倍</strong>（§12.2.3）。⚠️ 这是一个合理的解释而非官方说法：Cube 的 FLOP 效率太高了，一个 AIC 几微秒就能算完的 GEMM，后面跟着的那一串 Vector 算子要花掉可观的时间。配两个 AIV 是在平衡这条产线。</p>
 <blockquote>
-<p>⚠️ 推断：社区资料称达芬奇核分 Max / Lite / Tiny 三档，Max 核单周期 8192 次 MAC（可能是 FP16 口径下计入了两个 Cube 或双发射），Tiny 核仅 512 次。这组数字和"16×16×16 = 4096"对不上，公开资料没有解释差异来源，请勿据此推算峰值算力。</p>
+<p>★ <strong>请特别记住 MTE 是独立的硬件流水线</strong>。这意味着"搬数据"和"算数据"可以真正同时发生——这正是 <a href="13-AscendC编程.html">13 章 §13.4</a> 双缓冲的物理基础。GPU 上你也做类似的事（<code>cp.async</code> 异步拷贝、TMA、软件流水），但 GPU 上那是一种<strong>优化技巧</strong>；在昇腾上<strong>这是基本写法，不这么写性能直接腰斩</strong>。为什么会腰斩，§12.3.4 会用时间线算给你看。</p>
 </blockquote>
-<p><strong>维度对齐的要求比 GPU 更硬</strong>。第 03 章说 Tensor Core 要求维度是 16 的倍数，否则退化；昇腾这边不是"退化"，而是数据在片上就必须按分形格式摆放（见 §12.3.3），不对齐会触发额外的补齐搬运，代价明显更大。</p>
-<h3 id="1223-aic-aiv-910b">12.2.3 AIC / AIV 分离：910B 最重要的架构变化</h3>
-<p>这是从 910A 到 910B 最需要知道的一件事（⚠️ 推断，来自社区与学术资料，官方文档未系统说明演进）：</p>
-<div class="codehilite"><pre><span></span><code>910A（耦合架构）：
-  ┌──────── 一个 AI Core ────────┐
-  │  Cube  +  Vector  同核部署   │   Cube 算完的结果留在 L0C，
-  │  共享 Scalar、共享指令流     │   Vector 直接从 L0C 取走接着算
-  └──────────────────────────────┘   → 中间结果不出片
-
-910B / 910C（分离架构）：
-  ┌─── AIC（矩阵核）───┐      ┌─── AIV（向量核）───┐
-  │ Cube + 自己的      │      │ Vector + 自己的     │
-  │ Scalar + 自己的    │      │ Scalar + 自己的     │
-  │ 指令流             │      │ 指令流              │
-  └────────┬───────────┘      └──────────┬─────────┘
-           │                              │
-           └──────► Global Memory ◄───────┘
-                   （经 L2 中转）
-                 ↑ 两者之间没有直连通道
+<h3 id="1222-cube161616">12.2.2 Cube：16×16×16 的立方体，以及"对不齐没有退路"</h3>
+<p>Cube 单元一条指令完成 <code>C[16×16] += A[16×16] × B[16×16]</code>（✅ CANN 文档口径，FP16）：</p>
+<div class="codehilite"><pre><span></span><code>16 × 16 × 16 = 4096 次乘累加 / 指令 = 8192 FLOP / 指令
 </code></pre></div>
 
-<p><strong>AIC : AIV = 1 : 2</strong>（✅ CANN 官方文档）——一个矩阵核配两个向量核。</p>
-<p>分离架构的好处是矩阵计算和向量计算能各自独立调度、互不阻塞；代价是<strong>AIC 和 AIV 之间的数据必须绕 Global Memory（经 L2）</strong>，不能像 910A 那样在片上直接交棒。</p>
-<p>这一条直接决定了昇腾上融合算子的写法。回想第 05 章讲的算子融合：GPU 上把 GEMM（General Matrix Multiply，通用矩阵乘）和后面的激活函数融合，收益来自"中间结果不写回 HBM"。在 910B 上，如果 GEMM 跑在 AIC、激活跑在 AIV，那中间结果<strong>照样要过 GM</strong>，融合收益被削掉一大截。于是昇腾的融合算子必须在 tiling（分块）层面做<strong>CV 流水并行</strong>：把数据切成块，让 AIV 处理第 k 块的同时 AIC 已经在算第 k+1 块，用流水重叠掩盖搬运，而不是靠"消除搬运"。</p>
+<p><strong>代进一个具体的块算一遍。</strong> 假设 tiling 把 GEMM 切成 256×256×256 的块（这个尺寸只是为了手算好看，真实值由 L1/L0 容量决定，见 §12.4.3）：</p>
+<div class="codehilite"><pre><span></span><code>一个 256×256×256 的块要发多少条 Cube 指令？
+  M 方向 256 / 16 = 16
+  N 方向 256 / 16 = 16
+  K 方向 256 / 16 = 16
+  合计 16 × 16 × 16 = 4096 条 Mmad 指令
+
+校验：4096 条 × 8192 FLOP/条 = 33.55 MFLOP
+      直接算：2 × 256³ = 33.55 MFLOP   ✓ 对上了
+</code></pre></div>
+
+<p>对照 <a href="01-GPU硬件基础.html">01 章 §1.7</a> 的 Tensor Core：Hopper 的 Tensor Core 也是做 MMA（Matrix Multiply-Accumulate，矩阵乘累加），但接口是 <strong>warp 级</strong>的——需要一个 warp 的 32 个线程协同持有数据碎片（Fragment）。Cube 是<strong>核级</strong>的：你不用操心线程怎么分数据，只要把数据按规定格式摆进 L0A / L0B 就行。<strong>这是昇腾比 CUDA 省事的少数几个地方之一。</strong></p>
 <blockquote>
-<p>这也解释了一个常见困惑：为什么昇腾上 FlashAttention 类算子的优化文章，通篇在讲"核间负载均衡""CV 流水并行""MTE2 流水优化"，而不像 GPU 那边讲"把 softmax 留在 SRAM 里"。物理约束不同，优化的着力点就不同。详见 <a href="04-FlashAttention全系.html">04 章 §4.9</a>。</p>
+<p>⚠️ 推断：社区资料称达芬奇核分 Max / Lite / Tiny 三档，Max 核单周期 8192 次 MAC（可能是 FP16 口径下计入了两个 Cube 或双发射），Tiny 核仅 512 次。这组数字和"16×16×16 = 4096"对不上，公开资料没有解释差异来源，<strong>请勿据此推算峰值算力</strong>。另外不同数据类型下 K 方向的长度不一样（INT8 比 FP16 长），具体值以你的型号文档为准，本章不给。</p>
+</blockquote>
+<p><strong>现在说对齐，这里和 GPU 的差别比想象中大。</strong> 第 01 章说 Tensor Core 要求维度是 16 的倍数，否则退化。昇腾这边的措辞要换：<strong>不是"退化"，是"必须补齐"</strong>。</p>
+<div class="codehilite"><pre><span></span><code>例：一个 M = 250 的 GEMM（N = K = 256），在 Cube 上怎么算？
+
+  M 方向需要 250 / 16 = 15.625 个 16 行的分形块
+  → 只能补到 16 个块 = 256 行，最后一个块里只有 10 行是真数据、6 行是填充
+
+  ① 多算的 FLOP：(256 − 250) / 256 = 2.3%     ← 这部分其实无所谓
+  ② 真正的代价在搬运：GM 上那 250 行本来是连续的，
+     要摆成 16 行一组的分形块（§12.3.3），最后一组凑不满，
+     MTE 要么多搬一段、要么走非对齐的慢路径
+  ③ 而且【没有退路】：GPU 上对不齐可以退回 CUDA Core 慢慢算，
+     昇腾的 AI Core 里根本没有通用核，Cube 只吃 16×16 的块
+</code></pre></div>
+
+<blockquote>
+<p>★ 这就是 §12.1.1 那句"没有兜底"的第一次兑现。GPU 上维度不对齐是<strong>性能问题</strong>（慢 5 倍，但能跑）；昇腾上是<strong>格式问题</strong>（必须补齐到 16，代价落在 MTE 上）。所以昇腾侧的对齐建议比 GPU 更硬：见 <a href="附-速查表.html">附-速查表 §L.7</a>。</p>
+</blockquote>
+<h3 id="1223-aic-aiv-910b">12.2.3 AIC / AIV 分离：910B 最重要的架构变化</h3>
+<p><strong>分离架构本身是 ✅ 的</strong>：CANN 官方文档在 Atlas A2 训练系列上明确区分 AIC（矩阵核）和 AIV（向量核），并据此定义了 AIV Only / AIC Only / MIX 三种算子模式（<a href="13-AscendC编程.html">13 章 §13.5.6</a>）。⚠️ <strong>推断的部分是"从 910A 的耦合形态演进而来"这个叙述</strong>——官方文档没有系统说明代际演进，下面这张对比图里 910A 那一半来自社区与学术资料。</p>
+<div class="codehilite"><pre><span></span><code>910A（耦合架构，⚠️ 推断）
+  一个 AI Core
+    ├── Cube 和 Vector 同核部署，共享 Scalar、共享指令流
+    └── Cube 算完的结果留在 L0C，Vector 直接取走接着算
+        → 中间结果不出片
+
+910B / 910C（分离架构，✅ 架构存在）
+
+  AIC（矩阵核）
+    ├── Cube
+    ├── 自己的 Scalar、自己的指令流
+    └── 自己的片上存储：L1 / L0A / L0B / L0C
+
+  AIV（向量核）
+    ├── Vector
+    ├── 自己的 Scalar、自己的指令流
+    └── 自己的片上存储：UB
+
+  两者要交换数据，只有这一条路：
+    AIC  ──►  Global Memory（经 L2 中转）  ──►  AIV
+    ⚠️ 推断：硬件上没有 AIC↔AIV 的片上直连通道
+</code></pre></div>
+
+<p><strong>AIC : AIV = 1 : 2</strong>（✅ CANN 官方文档）——一个矩阵核配两个向量核，理由见 §12.2.1 那张点名表。</p>
+<p>分离的好处是矩阵计算和向量计算能各自独立调度、互不阻塞；代价是<strong>AIC 和 AIV 之间的数据必须绕 Global Memory</strong>（在 Ascend C 里就是绕 GM 上的 workspace，✅ 这一点在高阶 Matmul API 的用法里是明写的）。</p>
+<p><strong>把这个代价算成数字。</strong> 这是本节最该慢慢看的一段，因为它直接改写了"融合"这个词在昇腾上的含义。</p>
+<div class="codehilite"><pre><span></span><code>任务：GEMM（4096×4096×4096，BF16）后面跟一个激活函数
+⚠️ 用到的硬件数字全部是推断值：910B3 FP16 ~320 TFLOPS、HBM ~1.6 TB/s（§12.4.1）
+
+【不融合，两个独立算子】
+  GEMM  写 C 到 GM            4096×4096×2 B = 33.55 MB
+  激活  读 C                                   33.55 MB
+        写 Y                                   33.55 MB
+  比&quot;理想情况&quot;多出来的 GM 流量 = 读 C + 写 C = 67.1 MB
+  多花的时间 = 67.1 MB ÷ 1.6 TB/s ≈ 42 µs
+
+【GPU 上融合（05 章的 Epilogue 融合）】
+  GEMM 算完一块 C，结果还在寄存器/共享内存里，顺手做激活，直接写 Y
+  多出来的 GM 流量 = 0     ★ 这 42 µs 是【消除】掉的
+
+【910B 上&quot;融合&quot;】
+  GEMM 在 AIC、激活在 AIV，中间结果仍然要经 GM
+  多出来的 GM 流量 = 67.1 MB   ★ 一个字节都没省
+</code></pre></div>
+
+<p>那昇腾的融合算子还有什么意义？意义在<strong>掩盖</strong>，不在消除。把数据切成 8 块做 CV 流水并行（Cube-Vector 流水并行）：</p>
+<div class="codehilite"><pre><span></span><code>GEMM 本身的 Cube 时间 = 2 × 4096³ ÷ 320 TFLOPS ≈ 429 µs
+切成 8 块后，每块：T_AIC ≈ 429/8 ≈ 53.6 µs，T_AIV ≈ 42/8 ≈ 5.3 µs
+
+不流水（AIC 全算完，AIV 再全算）：429 + 42 = 471 µs
+                                   AIC 忙 429/471 = 91%，AIV 忙 8.9%
+
+流水（AIC 算第 k+1 块时，AIV 在处理第 k 块）：
+  用 13 章 §13.4.3 那个公式：(ΣT − maxT) + N × maxT
+                           = (53.6 + 5.3 − 53.6) + 8 × 53.6
+                           = 5.3 + 429 ≈ 434 µs
+
+省下 471 − 434 = 37 µs，占 7.9%
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>同样叫"融合"，两边省的不是同一笔钱</strong>：GPU 上省的是 67 MB 的 GM 流量（消除），昇腾上省的是 42 µs 里被流水盖住的那部分（掩盖），而且<strong>必须先做分块才有得掩盖</strong>——不分块就是 0 收益。这就是为什么昇腾上 FlashAttention 类算子的优化文章，通篇在讲"核间负载均衡""CV 流水并行""MTE2 流水优化"，而不像 GPU 那边讲"把 softmax 留在 SRAM 里"。物理约束不同，优化的着力点就不同。详见 <a href="04-FlashAttention全系.html">04 章 §4.9.1</a>、<a href="05-算子融合.html">05 章</a> 章末与 <a href="13-AscendC编程.html">13 章 §13.6</a> 陷阱 3。</p>
+<p>⚠️ 上面这笔账里有一个容易被放大的误读：<strong>7.9% 不是"昇腾融合没用"</strong>。它是这个特定形状（大方阵 GEMM，Cube 时间压倒性地长）下的结果。换成 Decode 阶段的小 shape，Cube 时间坍缩到微秒级，Vector 和搬运的占比会完全反过来——那时候融合与否的差距远不止 8%。<strong>形状变了要重算，别记这个百分比，记那个公式。</strong></p>
 <p>⚠️ 推断：下一代昇腾 950 据称针对性地补了这个短板——AIC 与两个 AIV 共享 L1，且新增小容量直通缓冲供 AIC↔AIV 小数据交互，不必绕 GM。若属实，未来几代的融合算子写法会再变一次。</p>
 </blockquote>
+<h3 id="1224">12.2.4 五级流水线：先认全这五条腿</h3>
+<p>前面说"MTE 是独立硬件流水线"，现在把话说完整：<strong>一个 AI Core 内部有多条能并发推进的指令流水线，每条管一类事。</strong> 经典说法是五级：</p>
+<table>
+<thead>
+<tr>
+<th>流水线</th>
+<th>Ascend C 里的枚举名</th>
+<th>干什么</th>
+<th>对应的典型 API</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Scalar</strong></td>
+<td><code>PIPE_S</code></td>
+<td>循环控制、分支、算地址、发射其他指令</td>
+<td>普通 C++ 语句、<code>GetValue</code></td>
+</tr>
+<tr>
+<td><strong>MTE2</strong>（搬入）</td>
+<td><code>PIPE_MTE2</code></td>
+<td>GM → L1 / UB / L0（顺路 ND→NZ 格式转换）</td>
+<td><code>DataCopy</code>（搬进来的那次）</td>
+</tr>
+<tr>
+<td><strong>MTE1</strong>（转存）</td>
+<td><code>PIPE_MTE1</code></td>
+<td>L1 → L0A / L0B（顺路 NZ→ZZ/ZN）</td>
+<td><code>LoadData</code>，或高阶 <code>Matmul</code> 内部</td>
+</tr>
+<tr>
+<td><strong>MTE3</strong>（搬出）</td>
+<td><code>PIPE_MTE3</code></td>
+<td>UB → GM / UB → L1</td>
+<td><code>DataCopy</code>（搬出去的那次）</td>
+</tr>
+<tr>
+<td><strong>Cube / Vector</strong></td>
+<td><code>PIPE_M</code> / <code>PIPE_V</code></td>
+<td>真正算数</td>
+<td><code>Mmad</code> / <code>Add</code>、<code>Exp</code>…</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 两点补充。① <strong>Cube 和 Vector 在 Ascend C 的事件枚举里是两条（<code>PIPE_M</code> / <code>PIPE_V</code>），"五级"是把它们合并成"计算级"的一种口径</strong>；910B 的分离架构下它们本来就在不同的核上，更不可能是同一条。看到"五级""六级""七级"不同说法，先确认对方在数哪几条。② CANN 的枚举里还有 <code>PIPE_FIX</code>（FixPipe，把 L0C 的结果搬出去，顺路做量化 / ReLU / 精度转换），<strong>版本相关</strong>，老文档里没有。以你所装 CANN 版本的文档为准。</p>
+</blockquote>
+<p><strong>为什么要认全这几条？</strong> 因为昇腾的性能分析工具（msprof 的指令流水图）就是按这几行画的，看哪一行最满就是看瓶颈在哪一级（<a href="13-AscendC编程.html">13 章 §13.8.3</a>）。而在此之前，你得先知道一块数据从 GM 到 Cube 途中会踩到哪几条线——这就是下一节。</p>
 <hr />
 <h2 id="123-cache-scratchpad">12.3 内存层级：Cache 世界 → Scratchpad 世界</h2>
-<p>这是 GPU 工程师转昇腾最容易摔跤的地方。</p>
-<h3 id="1231">12.3.1 完整层级</h3>
-<div class="codehilite"><pre><span></span><code>                    ┌──────────────────────┐
-                    │   GM / HBM（片外）    │  64 GB 级，最慢
-                    └───────────┬──────────┘
-                                │  MTE2 搬入 / MTE3 搬出
-                    ┌───────────┴──────────┐
-                    │   L2 Cache（片上）    │  多核共享，硬件管理
-                    └───────────┬──────────┘
-                                │
-            ┌───────────────────┴──────────────────┐
-            │                                      │
-   ┌────────┴────────┐                   ┌─────────┴─────────┐
-   │  AIC（矩阵核）   │                   │  AIV（向量核）     │
-   │                 │                   │                   │
-   │  L1 Buffer      │  中转/复用暂存     │   UB              │
-   │      ↓          │                   │  Unified Buffer   │
-   │  L0A  L0B       │  左矩阵 / 右矩阵   │  Vector 的唯一    │
-   │    ↘   ↙        │                   │  工作区           │
-   │    [Cube]       │                   │      ↓            │
-   │      ↓          │                   │   [Vector]        │
-   │    L0C          │  结果 + 累加       │                   │
-   │      ↓          │                   │                   │
-   │  BT Buffer      │  Bias 表           │                   │
-   │  FP Buffer      │  量化/Relu 参数    │                   │
-   └─────────────────┘                   └───────────────────┘
+<p>这是 GPU 工程师转昇腾最容易摔跤的地方。<strong>一句话概括差别</strong>：GPU 上你写 <code>a = x[i]</code>，硬件自动把数据从 HBM 经 L2、L1 送到寄存器，你什么都不用管；昇腾上<strong>每一跳都要你写一行代码</strong>，没写就没搬，没搬就读到垃圾。</p>
+<h3 id="1231">12.3.1 完整层级，以及一块数据要走几跳</h3>
+<p>先看静态的层级图：</p>
+<div class="codehilite"><pre><span></span><code>片外
+  GM / HBM        64 GB 级，最慢。所有输入输出的起点和终点
+    │
+片上·全芯片共享
+  L2 Cache        多核共享，硬件自动管理。★ 这是昇腾唯一&quot;像 cache&quot;的一级
+    │
+    ├──────────────── AIC（矩阵核）侧 ────────────────
+    │     L1 Buffer     片上中转 / 复用暂存（scratchpad）
+    │       ├── L0A     Cube 的左矩阵取料口
+    │       ├── L0B     Cube 的右矩阵取料口
+    │       ├── L0C     Cube 的结果累加器
+    │       ├── BT Buffer    Bias 表
+    │       └── FP Buffer    量化 / ReLU 参数
+    │
+    └──────────────── AIV（向量核）侧 ────────────────
+          UB            Unified Buffer，Vector 单元【唯一】的工作区
 </code></pre></div>
 
-<p>典型数据流（✅ CANN 官方文档）：</p>
-<div class="codehilite"><pre><span></span><code>Cube 计算：  GM → L1 → L0A/L0B → [Cube] → L0C → FixPipe → GM（或回写 L1）
-Vector 计算：GM → UB → [Vector] → UB → GM
+<p><strong>现在加上"谁搬"，看两条数据流</strong>（✅ CANN 官方文档）：</p>
+<div class="codehilite"><pre><span></span><code>Cube 路径（矩阵算子）
+  GM ──MTE2──► L1 ──MTE1──► L0A / L0B ──► [Cube] ──► L0C ──FixPipe──► GM（或回 L1 / UB）
+     ①            ②                ③          ④              ⑤
+
+Vector 路径（向量算子）
+  GM ──MTE2──► UB ──► [Vector] ──► UB ──MTE3──► GM
+     ①               ②                    ③
 </code></pre></div>
 
-<h3 id="1232-gpu">12.3.2 和 GPU 的对照，以及"没有对应物"的部分</h3>
+<p>逐跳点名，这张表是本节的核心：</p>
+<table>
+<thead>
+<tr>
+<th>跳</th>
+<th>从 → 到</th>
+<th>执行者</th>
+<th>顺路做什么</th>
+<th>你要写的代码</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>GM → L1（或 → UB）</td>
+<td><strong>MTE2</strong></td>
+<td>ND → FRACTAL_NZ 格式转换</td>
+<td><code>DataCopy</code></td>
+</tr>
+<tr>
+<td>②</td>
+<td>L1 → L0A / L0B</td>
+<td><strong>MTE1</strong></td>
+<td>NZ → ZZ / ZN 格式转换</td>
+<td><code>LoadData</code>，或高阶 <code>Matmul</code> API 内部代劳</td>
+</tr>
+<tr>
+<td>③</td>
+<td>L0A / L0B → Cube</td>
+<td>硬件（指令操作数）</td>
+<td>—</td>
+<td><code>Mmad</code>（或高阶 API）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>Cube → L0C</td>
+<td>硬件（累加）</td>
+<td>多个 K 块在 L0C 上累加</td>
+<td>—</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>L0C → GM / L1 / UB</td>
+<td><strong>FixPipe</strong></td>
+<td>随路量化、ReLU、精度转换</td>
+<td><code>DataCopy</code> / Fixpipe 相关 API</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cube 路径 5 跳，Vector 路径 3 跳。</strong> 这个数字本身就是一条结论：</p>
+<blockquote>
+<p>★ <strong>为什么在昇腾上写矩阵算子比写向量算子难得多</strong>——不是因为矩阵乘的数学难，是因为数据要多走两跳，而这两跳都要你显式安排，还要顺路处理两次格式转换。这也是为什么 <a href="13-AscendC编程.html">13 章</a> 建议矩阵算子尽量用高阶 <code>Matmul</code> API 而不是自己摆 L0A/L0B。</p>
+</blockquote>
+<p>和 GPU 的同一条路径并排看一下，差别在"谁负责"而不在"几跳"：</p>
+<div class="codehilite"><pre><span></span><code>GPU（Tensor Core 路径）
+  HBM ──硬件自动（经 L2/L1）──► 共享内存 ──ldmatrix──► 寄存器 ──► Tensor Core
+       ↑ 你写一句访存就行         ↑ 这一跳你要写      ↑ 编译器/CUTLASS 代劳
+
+昇腾（Cube 路径）
+  GM ──MTE2，你写──► L1 ──MTE1，你写──► L0A/L0B ──► Cube
+       ↑ 不写就没有       ↑ 不写就没有
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>L1 Buffer 这个名字是个陷阱</strong>。它叫 L1，但<strong>它不是 cache</strong>，不会因为你"访问了 GM 上某个地址"就自动被填充。它是 scratchpad（便笺存储）：容量是你的，内容是你搬进去的，你不搬它就是空的。昇腾这一层里唯一真正像 cache 的只有 <strong>L2</strong>。UB 同理。<strong>看到 L1 就想起共享内存（<code>__shared__</code>），不要想起 CPU 的 L1 cache。</strong></p>
+</blockquote>
+<h3 id="1232-01">12.3.2 第 01 章那套概念，逐条清点存废</h3>
+<p><strong>这是全章最重要的一节。</strong> 第 01 章你辛苦建立的那套词汇，有一半在昇腾上不是"改了个名字"，而是<strong>根本不存在</strong>。先看对照表，再看它们为什么不存在。</p>
+<p><strong>存储层的对照：</strong></p>
 <table>
 <thead>
 <tr>
@@ -453,7 +707,7 @@ Vector 计算：GM → UB → [Vector] → UB → GM
 <tr>
 <td>L1 Buffer</td>
 <td>共享内存（Shared Memory）</td>
-<td><strong>L1 是 scratchpad，不是 cache</strong>：不会自动填充，必须显式 <code>DataCopy</code> 搬进来</td>
+<td><strong>L1 是 scratchpad 不是 cache</strong>：不会自动填充，必须显式 <code>DataCopy</code></td>
 </tr>
 <tr>
 <td>UB</td>
@@ -463,62 +717,330 @@ Vector 计算：GM → UB → [Vector] → UB → GM
 <tr>
 <td>L0A / L0B / L0C</td>
 <td><strong>无对应物</strong></td>
-<td>Tensor Core 的操作数直接来自寄存器，昇腾则有三块专用缓冲</td>
+<td>Tensor Core 的操作数来自寄存器，昇腾有三块专用缓冲</td>
 </tr>
 <tr>
 <td>BT / FP Buffer</td>
 <td><strong>无对应物</strong></td>
-<td>910B 分离架构新增，专存 Bias 和量化参数</td>
+<td>分离架构新增，专存 Bias 和量化 / ReLU 参数</td>
 </tr>
 <tr>
 <td>MTE</td>
-<td><code>cp.async</code> / LDGSTS 指令</td>
-<td>GPU 上是指令，昇腾上是<strong>独立硬件单元</strong>，有自己的流水线编号</td>
+<td><code>cp.async</code> / TMA</td>
+<td>GPU 上是<strong>指令</strong>，昇腾上是<strong>独立硬件单元</strong>，有自己的流水线编号</td>
 </tr>
 <tr>
 <td>寄存器文件</td>
 <td>寄存器文件</td>
 <td>昇腾这层对开发者基本不可见</td>
 </tr>
+</tbody>
+</table>
+<p><strong>编程概念的存废清单——这张表才是重点：</strong></p>
+<table>
+<thead>
 <tr>
-<td><strong>无对应物</strong></td>
-<td>Bank Conflict</td>
-<td>昇腾片上存储的冲突模型不同，第 01 章那套 padding 技巧用不上</td>
+<th>第 01 章的概念</th>
+<th>它在 GPU 上解决什么问题</th>
+<th>昇腾上还在吗</th>
+<th>取而代之的是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Thread / Block / Grid</td>
+<td>把元素摊到硬件上</td>
+<td><strong>没有</strong></td>
+<td>只有"核"这一层。⚠️ <code>blockDim</code> 在昇腾指<strong>核数</strong>，撞名了</td>
 </tr>
 <tr>
-<td><strong>无对应物</strong></td>
-<td>Occupancy</td>
-<td>昇腾没有"多个 warp 轮转掩盖延迟"这回事，延迟靠<strong>流水线重叠</strong>掩盖</td>
+<td>Warp（32 线程）、SIMT</td>
+<td>调度的最小单位</td>
+<td><strong>没有</strong></td>
+<td>一条 Cube/Vector 指令直接处理一整块数据</td>
+</tr>
+<tr>
+<td>Warp 分歧（§1.2.5）</td>
+<td>同 warp 走不同分支要两条路都走</td>
+<td><strong>没有</strong></td>
+<td>没有 warp 就没有分歧；分支由 Scalar 单元统一做</td>
+</tr>
+<tr>
+<td>合并访存 / 扇区（§1.4）</td>
+<td>让 32 个线程的地址连续</td>
+<td><strong>没有</strong></td>
+<td>换成 <strong>32 字节对齐 + 连续搬运</strong>（<code>DataCopy</code> 的硬要求）</td>
+</tr>
+<tr>
+<td>Bank Conflict（§1.5）</td>
+<td>共享内存的存储体冲突</td>
+<td><strong>没有</strong></td>
+<td>padding <code>[32][33]</code>、swizzle 这些技巧全部作废</td>
+</tr>
+<tr>
+<td>Occupancy（§1.6）</td>
+<td>靠多 warp 轮转掩盖延迟</td>
+<td><strong>没有</strong></td>
+<td>换成<strong>手工排流水</strong>（§12.3.4）</td>
+</tr>
+<tr>
+<td>寄存器溢出（§1.3）</td>
+<td>寄存器不够，静默掉到 HBM</td>
+<td><strong>基本没有</strong></td>
+<td>换成 UB / L1 / L0 超分配，而且它<strong>会报错</strong>，不是静默变慢</td>
+</tr>
+<tr>
+<td>尾巴效应 / 波次（§1.2.4）</td>
+<td>Block 数不是波次整数倍就浪费</td>
+<td><strong>还在，而且更严重</strong></td>
+<td>只有 20～40 个核，尾巴摊不薄，见下</td>
+</tr>
+<tr>
+<td>Tensor Core 对齐到 16（§1.7）</td>
+<td>对不齐就退回慢路径</td>
+<td><strong>还在，而且更硬</strong></td>
+<td>没有慢路径可退，必须补齐（§12.2.2）</td>
 </tr>
 </tbody>
 </table>
-<p>最后两行值得停下来想一想。GPU 隐藏访存延迟的办法是<strong>超额订阅</strong>：一个 SM 上挂 64 个 warp，这个 warp 等内存时就切到那个 warp，所以第 01 章要讲 occupancy。昇腾的办法是<strong>流水线</strong>：MTE2 搬第 k+1 块的同时，Cube 在算第 k 块，Vector 在处理第 k-1 块的结果，MTE3 在写第 k-2 块。延迟靠"手工排流水"掩盖，不是靠"多开线程"掩盖。</p>
-<p><strong>所以昇腾算子调优的核心问题不是"occupancy 够不够"，而是"流水排没排满、哪一级是瓶颈"</strong>。判断方法见第 13 章讲的 msprof 指令流水图。</p>
-<h3 id="1233-fractal_nz">12.3.3 FRACTAL_NZ：一个躲不掉的数据格式</h3>
-<p>昇腾片上的矩阵不按你熟悉的行优先（Row Major）摆放，而是按<strong>分形格式</strong>：</p>
-<div class="codehilite"><pre><span></span><code>NZ 格式（FRACTAL_NZ）直觉：
-  把一个大矩阵先切成 16×16 的小块，
-  块内按行优先存，块间按列优先排。
+<p>三条要单独展开。</p>
+<p><strong>① 尾巴效应不但还在，而且比 GPU 严重。</strong> 第 01 章 §1.2.4 说"Block 数量多的时候尾巴会被摊薄，影响可以忽略"——那个结论的前提是 GPU 有几千个 Block 去填 132 个 SM。昇腾没有这个前提：</p>
+<div class="codehilite"><pre><span></span><code>GPU：Grid = 3907 个 Block，132 个 SM，一波装 1056 个
+     → 4 个波次，最后一波装 70%，整体利用率 92.5%（01 章 §1.8.2 算过）
 
-为什么：Cube 一次吃 16×16，按这个格式摆好，
-        搬运时不需要跨步（stride）访问，MTE 效率最高。
+昇腾：⚠️ 910B3 有 40 个 AIV。假设一个算子切成 45 块
+     → 第 1 轮 40 块，第 2 轮只有 5 块，35 个核空转
+     → 耗时 = 2 轮，利用率 = 45 / (40 × 2) = 56%
+
+  多 12.5% 的工作量，耗时翻倍。
+  ★ 而且你【没法靠&quot;多切几块&quot;来摊薄】——核就这么多，
+    块数每跨过 40 的整数倍一次，就多一轮。
 </code></pre></div>
 
-<p>实践后果：</p>
+<p>这就是为什么昇腾算子的调优文章总在讲"核间负载均衡"（<a href="13-AscendC编程.html">13 章 §13.5.4</a> 给了变长序列场景的完整例子）。<strong>GPU 的调度弹性来自"Block 数远多于 SM 数"，昇腾没有这个缓冲垫。</strong></p>
+<p><strong>② Bank Conflict 为什么消失了。</strong> GPU 的共享内存被切成 32 个 bank，是为了让<strong>一个 warp 的 32 个线程</strong>在一个周期内各取各的数——bank 数等于 warp 宽度不是巧合。昇腾没有 warp，也就没有"32 个并发的独立地址"这回事：Vector 指令一次处理的是<strong>一整段连续数据</strong>，UB 的取数模式是顺序的、批量的。于是 §1.5 那一整套算 bank 编号、加 padding、做 swizzle 的技巧，在昇腾上<strong>连问题都不存在</strong>。取而代之的约束是"搬运长度和起始地址都要 32 字节对齐"——形式完全不同，但同属"你得照着硬件喜欢的方式摆数据"这一类。</p>
+<p><strong>③ Occupancy 为什么消失了，以及这才是真正的分岔。</strong></p>
+<p>回想 <a href="01-GPU硬件基础.html">01 章 §1.6.1</a> 算过的那笔账：一次 HBM 访存 500 个周期，每个 warp 拿到数据后算 20 个周期，所以需要 <code>500 ÷ 20 = 25</code> 个 warp 才能把延迟填满。<strong>关键在于，这 25 个 warp 的轮转是硬件自动做的</strong>——你只要别把寄存器用超，调度器自己会在 warp 之间切换。</p>
+<p>昇腾一个核只有<strong>一条指令流</strong>，没有"另外 24 个 warp"可以切过去。同样的 500 周期，如果没别的活干，就是 500 周期的纯等待。唯一的办法是：<strong>在发起第 k 块的搬运之后，立刻让计算单元去处理第 k−1 块</strong>——也就是让不同的流水线在时间上错开。而要错开，就必须有<strong>两份缓冲</strong>（一份正在被搬，一份正在被算）。</p>
+<div class="codehilite"><pre><span></span><code>GPU 的延迟掩盖               昇腾的延迟掩盖
+────────────────────────    ────────────────────────
+资源        64 个 warp 槽位   资源        每个缓冲的份数（BUFFER_NUM）
+上限        64（硬件给的）     上限        2～3（受 UB / L1 容量限制）
+谁来调度    硬件调度器         谁来调度    你，写在代码里
+不做会怎样  仍有部分自动轮转    不做会怎样  【硬件直接空转】
+调优旋钮    寄存器用量、Block   调优旋钮    tileLength、BUFFER_NUM
+诊断指标    Occupancy 百分比    诊断指标    指令流水图各级占比
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong><code>BUFFER_NUM</code> 就是昇腾版的 Occupancy</strong>——都是"手上有几张牌可以换"。区别有两个，而且都很致命：<strong>它的上限是 2～3 而不是 64</strong>（片上容量装不下更多份），<strong>而且它不是硬件给的，是你写出来的</strong>。这一句话解释了 <a href="13-AscendC编程.html">13 章</a> 为什么要花整整一节讲"<code>BUFFER_NUM = 2</code> 不是优化而是基本功"。</p>
+<p>★ <strong>所以昇腾算子调优的核心问题不是"occupancy 够不够"，而是"流水排没排满、哪一级是瓶颈"。</strong> 下一节把这句话画成图。</p>
+</blockquote>
+<h3 id="1233-fractal_nz">12.3.3 FRACTAL_NZ：一个躲不掉的数据格式</h3>
+<p>昇腾片上的矩阵不按你熟悉的行优先（Row Major，昇腾叫 <strong>ND</strong> 格式）摆放，而是按<strong>分形格式</strong> FRACTAL_NZ：</p>
+<div class="codehilite"><pre><span></span><code>规则两句话：
+  ① 把大矩阵切成 16×16 的小块
+  ② 块内按行优先存，块间按列优先排
+</code></pre></div>
+
+<p><strong>用一个 4×4 矩阵手推一遍。</strong> 为了画得下，把"16×16 的小块"缩成"2×2 的小块"，规则完全一样：</p>
+<div class="codehilite"><pre><span></span><code>原矩阵（4×4）
+  a00 a01 a02 a03
+  a10 a11 a12 a13
+  a20 a21 a22 a23
+  a30 a31 a32 a33
+
+切成 4 个 2×2 小块
+  B00 = a00 a01     B01 = a02 a03
+        a10 a11           a12 a13
+  B10 = a20 a21     B11 = a22 a23
+        a30 a31           a32 a33
+
+ND（行优先）在内存里的顺序：
+  a00 a01 a02 a03 | a10 a11 a12 a13 | a20 a21 a22 a23 | a30 a31 a32 a33
+
+NZ（块内行优先、块间列优先）在内存里的顺序：
+  块的走法：先竖着走完第 0 列的两个块（B00 → B10），再走第 1 列（B01 → B11）
+
+     B00              B10              B01              B11
+  a00 a01 a10 a11 | a20 a21 a30 a31 | a02 a03 a12 a13 | a22 a23 a32 a33
+</code></pre></div>
+
+<p><strong>为什么要这么摆？把搬运次数算出来就明白了。</strong></p>
+<div class="codehilite"><pre><span></span><code>Cube 一次吃一个 16×16 的块（FP16，512 字节）。要把这个块搬进片上：
+
+  NZ 格式：这 256 个元素在内存里【连续】
+           → 1 次连续搬运，512 字节
+
+  ND 格式：这 256 个元素分散在 16 行里，每行 16 个（32 字节），
+           相邻两行相隔一整个 row stride（比如 4096 × 2 = 8192 字节）
+           → 16 次跨步搬运，每次只搬 32 字节
+
+  ★ 同样的 512 字节，一次搬完 vs 分 16 次搬。
+    §12.6 会告诉你，&quot;小而多的搬运&quot;正是 MTE Bound 的头号成因。
+</code></pre></div>
+
+<p>实践后果三条：</p>
 <ul>
-<li>L1 Buffer 里推荐用 NZ 格式，这样搬到 L0A / L0B 时（两者还要分别转成 ZZ / ZN 格式）格式转换开销最小（✅ CANN 文档）。</li>
-<li>从 GPU 迁移过来的代码里，那些手工算 stride 的逻辑基本都要重写。</li>
-<li><code>torch_npu</code> 里有 <code>npu_format_cast</code> 这类接口在 ND（普通格式）和 NZ 之间转换。<strong>转换本身是有成本的</strong>，模型里反复 ND↔NZ 横跳是昇腾上一类典型的隐性性能损失。</li>
+<li><strong>L1 Buffer 里推荐用 NZ 格式</strong>，这样搬到 L0A / L0B 时（两者还要分别转成 ZZ / ZN 格式）格式转换开销最小（✅ CANN 文档）。</li>
+<li><strong>从 GPU 迁移过来的代码里，那些手工算 stride 的逻辑基本都要重写。</strong> 你在 GPU 上精心设计的 tile 布局，在这里是另一套规则。</li>
+<li><strong><code>torch_npu</code> 里有 <code>npu_format_cast</code> 这类接口在 ND 和 NZ 之间转换，而转换本身是有成本的。</strong></li>
 </ul>
+<p>最后这一条值得算一笔账，因为它是昇腾上一类典型的<strong>隐性</strong>性能损失：</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 用推断数字：910B3 HBM ~1.6 TB/s
+
+一次 ND ↔ NZ 转换 = 把整个张量读一遍、写一遍
+  4096×4096 的 BF16 权重 = 33.55 MB
+  读 + 写 = 67.1 MB ÷ 1.6 TB/s ≈ 42 µs
+
+如果模型里某一层的输入输出在 ND 和 NZ 之间横跳两次，
+80 层的模型一次前向就是 80 × 2 × 42 µs ≈ 6.7 ms
+
+  ★ 这 6.7 ms 不产生任何 FLOP，在算子耗时表上还会被摊到
+    一堆叫 TransData / Cast 的小算子头上，很容易看漏。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>排查动作</strong>：在 msprof 的算子耗时列表里 grep <code>TransData</code>、<code>Cast</code>、<code>Format</code>。它们的总耗时如果超过端到端的 5%，说明模型里有 ND↔NZ 横跳，值得回去看是哪个算子的输入输出格式没对上。具体操作见 <a href="14-GPU到NPU迁移实战.html">14 章 §14.5.4</a>。</p>
+</blockquote>
+<h3 id="1234">12.3.4 把时间轴加上：一次分块矩阵乘的错位流水</h3>
+<p>§12.3.2 说"延迟靠手工排流水掩盖"，§12.3.1 说"数据要走五跳"。<strong>把这两件事画在同一张图上，就是昇腾性能的全部秘密。</strong> 这一节请拿纸笔跟着算。</p>
+<p><strong>设定。</strong> 一个 AIC 要算 6 个输出块，每块走 §12.3.1 的 Cube 路径。每一跳的耗时<strong>全部是 ⚠️ 假设值，仅为演示流水机理</strong>（真机数字要用 msprof 测，见 <a href="13-AscendC编程.html">13 章 §13.8</a>）：</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 假设（仅为演示）：
+
+  T_MTE2  = 2 个时间单位   GM → L1，把 A 块和 B 块搬进片上
+  T_MTE1  = 1 个时间单位   L1 → L0A / L0B
+  T_Cube  = 3 个时间单位   4096 条 Mmad（§12.2.2 那个 256³ 的块）
+  T_MTE3  = 1 个时间单位   L0C → GM（走 FixPipe）
+
+  N = 6 个块
+  Σ T = 2 + 1 + 3 + 1 = 7      max T = 3（Cube）
+
+  ★ Cube 最重，是合理的形态：矩阵算子本来就该 Cube Bound（§12.6）。
+</code></pre></div>
+
+<p><strong>情况 A：不排流水，一块走完再走下一块。</strong></p>
+<div class="codehilite"><pre><span></span><code>数字 = 正在处理第几块；&#39;.&#39; = 这条流水线空转。只画前 14 个时间单位
+
+              11111
+     12345678901234
+MTE2 00.....11.....
+MTE1 ..0......1....
+CUBE ...000....111.
+MTE3 ......0......1
+</code></pre></div>
+
+<p>看出来了吗：<strong>任意一列里，最多只有一行是数字。</strong> 四条流水线，永远只有一条在动。</p>
+<div class="codehilite"><pre><span></span><code>总耗时 = N × Σ T = 6 × 7 = 42 个时间单位
+
+各流水线占用率：
+  MTE2  6×2 = 12 / 42 = 29%
+  MTE1  6×1 =  6 / 42 = 14%
+  Cube  6×3 = 18 / 42 = 43%     ← 最贵的硬件，只用了不到一半
+  MTE3  6×1 =  6 / 42 = 14%
+</code></pre></div>
+
+<p><strong>情况 B：排好流水，每一级各干各的。</strong></p>
+<div class="codehilite"><pre><span></span><code>              1111111111222
+     1234567890123456789012
+MTE2 00.11.22.33.44.55.....
+MTE1 ..0..1..2..3..4..5....
+CUBE ...000111222333444555.
+MTE3 ......0..1..2..3..4..5
+</code></pre></div>
+
+<p><strong>把第 10 个时间单位那一列竖着读一遍</strong>——这一列就是这一章要你记住的那张图：</p>
+<div class="codehilite"><pre><span></span><code>时间单位 10 这一瞬间，一个 AI Core 里同时在发生：
+
+  MTE2  正在把【第 3 块】从 GM 搬进 L1
+  MTE1  空转（它刚在第 9 单位把第 2 块转完）
+  Cube  正在算【第 2 块】
+  MTE3  正在把【第 1 块】的结果从 L0C 写回 GM
+
+  ★ 三块数据，同时在三条不同的硬件流水线上，彼此错开一格。
+    这就是昇腾掩盖延迟的【唯一】机制。
+</code></pre></div>
+
+<p>算账：</p>
+<div class="codehilite"><pre><span></span><code>总耗时 = 22 个时间单位
+
+  通用公式（和 13 章 §13.4.3 是同一个）：
+    不排流水 = N × Σ T
+    排好流水 = (Σ T − max T) + N × max T
+
+  代入：不排 = 6 × 7             = 42   ✓ 和情况 A 一致
+        排好 = (7 − 3) + 6 × 3   = 22   ✓ 和上图一致
+
+加速比 = 42 / 22 = 1.91 倍
+
+各流水线占用率：
+  MTE2  12 / 22 = 55%
+  MTE1   6 / 22 = 27%
+  Cube  18 / 22 = 82%     ← 从 43% 提到 82%，翻了一倍
+  MTE3   6 / 22 = 27%
+</code></pre></div>
+
+<p><strong>开头那 4 个单位（Cube 还没开工）和结尾那 1 个单位（Cube 已经收工）是流水线的填充和排空</strong>，正好等于公式里的 <code>Σ T − max T = 4</code>。块数 N 越多，这 4 个单位摊得越薄：</p>
+<table>
+<thead>
+<tr>
+<th>块数 N</th>
+<th>不排流水</th>
+<th>排好流水</th>
+<th>加速比</th>
+<th>Cube 占用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>14</td>
+<td>10</td>
+<td>1.40×</td>
+<td>60%</td>
+</tr>
+<tr>
+<td>6</td>
+<td>42</td>
+<td>22</td>
+<td>1.91×</td>
+<td>82%</td>
+</tr>
+<tr>
+<td>20</td>
+<td>140</td>
+<td>64</td>
+<td>2.19×</td>
+<td>94%</td>
+</tr>
+<tr>
+<td>N → ∞</td>
+<td>7N</td>
+<td>3N + 4</td>
+<td><strong>→ 7/3 = 2.33×</strong></td>
+<td>→ 100%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>上限是 <code>Σ T / max T</code>，不是"无限快"。</strong> 排流水能做到的极限是"只剩最慢的那一级在累加"，其余三级完全被藏起来。本例是 <code>7 / 3 = 2.33</code> 倍。<strong>想再快，只能去优化 Cube 那一级本身</strong>（更大的 tiling、更高的 Cube 利用率）——这就是 §12.6 里"Cube Bound 是理想终点"的含义。</p>
+</blockquote>
+<p><strong>这张图还顺带回答了两个问题。</strong></p>
+<p><strong>问题一：为什么必须有两份缓冲？</strong> 看第 4 个时间单位：MTE2 正在往 L1 里搬第 1 块，而 MTE1 在第 3 单位刚把第 0 块从 L1 取走、Cube 从第 4 单位开始用它。如果 L1 上只给 A 块留了<strong>一份</strong>空间，MTE2 就必须等 Cube 彻底用完第 0 块才能搬第 1 块——时间线立刻塌回情况 A。<strong>所以"排流水"和"双缓冲"是同一件事的两个说法</strong>：错开时间的前提是错开空间。L1 要两份，L0A/L0B 也要两份。</p>
+<p><strong>问题二：为什么昇腾的 tiling 不能随便切大？</strong> 块切得越大，Cube 每块算得越久（<code>max T</code> 变大），流水填充占比越小——听起来该切大。但块越大，L1 和 L0 上放两份就放不下了，双缓冲开不起来，直接退回情况 A。<strong>"块大小"这一个参数同时被两个相反的力拉扯</strong>，这就是 <a href="13-AscendC编程.html">13 章 §13.5.2</a> 要花一整节反推 tiling 上界的原因。</p>
+<blockquote>
+<p>⚠️ 这套推演是<strong>理想模型</strong>，至少忽略了四件事：① 流水线之间的同步事件本身有开销；② MTE2 和 MTE3 虽是两条流水线，但可能争抢同一条通向 GM 的总线，不完全独立；③ Scalar 单元要给每一块算地址，它自己也可能成为瓶颈（尤其是块很小、循环次数很多的时候）；④ 真实算子里 Cube 和 Vector 还跨在 AIC / AIV 两个核上（§12.2.3），中间要过 GM。<strong>真实加速比会低于 1.91，具体多少只能实测。这里要记住的是量级和机理，不是那个数。</strong></p>
+</blockquote>
 <hr />
-<h2 id="124-910b-910c">12.4 规格：910B 与 910C</h2>
+<h2 id="124-910b-910c">12.4 规格：910B 与 910C，以及为什么本节最该被怀疑</h2>
 <h3 id="1241-910b">12.4.1 910B：先搞清楚你手上是哪一款</h3>
-<p><strong>"910B" 不是一款芯片，是一个系列</strong>。B1/B2/B3/B4 的 AI Core 数量和 HBM 带宽差异巨大，笼统说"910B"会导致严重的性能预估偏差。</p>
+<p><strong>"910B" 不是一款芯片，是一个系列</strong>。B1 / B2 / B3 / B4 的 AI Core 数量、HBM 容量和带宽差异巨大，笼统说"910B"会导致严重的性能预估偏差，甚至会让一份部署方案在另一个子型号上<strong>根本起不来</strong>（<a href="14-GPU到NPU迁移实战.html">14 章 §14.3.3</a> 算过这笔显存账）。</p>
 <table>
 <thead>
 <tr>
 <th>型号</th>
-<th>AI Core</th>
+<th>AIC</th>
+<th>AIV</th>
 <th>HBM 容量</th>
 <th>HBM 带宽</th>
 <th>FP16 算力</th>
@@ -528,7 +1050,8 @@ Vector 计算：GM → UB → [Vector] → UB → GM
 <tbody>
 <tr>
 <td>910B2</td>
-<td>24 AIC + 48 AIV</td>
+<td>24</td>
+<td>48</td>
 <td>64 GB</td>
 <td>—</td>
 <td>—</td>
@@ -536,7 +1059,8 @@ Vector 计算：GM → UB → [Vector] → UB → GM
 </tr>
 <tr>
 <td>910B3</td>
-<td>20 AIC @ 1.8 GHz</td>
+<td>20 @ 1.8 GHz</td>
+<td>40</td>
 <td>64 GB</td>
 <td>~1.6 TB/s</td>
 <td>~320 TFLOPS</td>
@@ -544,7 +1068,8 @@ Vector 计算：GM → UB → [Vector] → UB → GM
 </tr>
 <tr>
 <td>910B4</td>
-<td>20 AIC + 40 AIV</td>
+<td>20</td>
+<td>40</td>
 <td>32 GB</td>
 <td>~800 GB/s</td>
 <td>280 TFLOPS</td>
@@ -552,19 +1077,46 @@ Vector 计算：GM → UB → [Vector] → UB → GM
 </tr>
 </tbody>
 </table>
-<p>唯一的厂商一手口径是<strong>整机/板卡产品页</strong>：</p>
+<p>唯一的厂商一手口径是<strong>整机 / 板卡产品页</strong>：</p>
 <ul>
 <li><strong>Atlas 300T A2</strong>（采用 910B4 die）：20 个 AI Core、280 TFLOPS FP16、75 TFLOPS FP32 —— ✅ 披露</li>
-<li><strong>Atlas 800T A2</strong> 训练服务器（8 卡）：整机 2.56 PFLOPS FP16 —— ✅ 披露，反推单卡 320 TFLOPS —— ⚠️ 推断</li>
+<li><strong>Atlas 800T A2</strong> 训练服务器（8 卡）：整机 2.56 PFLOPS FP16 —— ✅ 披露；反推单卡 320 TFLOPS —— ⚠️ 推断</li>
+<li><strong>AIC : AIV = 1 : 2</strong> —— ✅ CANN 文档（所以表里的 AIV 列是由 AIC 列算出来的，不是独立来源）</li>
 </ul>
-<p>流传最广的两组数字是「320 TFLOPS FP16 / 640 TOPS INT8」和「256 TFLOPS FP16 / 512 TOPS INT8」，<strong>都无官方出处</strong>。带宽数字更乱，从 400 GB/s 到 2.4 TB/s 的说法都有人写，大概率是混淆了不同子型号和不同口径（单 die / 单卡、单向 / 双向）。</p>
+<blockquote>
+<p>⚠️ 流传最广的两组数字是「320 TFLOPS FP16 / 640 TOPS INT8」和「256 TFLOPS FP16 / 512 TOPS INT8」，<strong>都无官方出处</strong>。带宽数字更乱，从 400 GB/s 到 2.4 TB/s 的说法都有人写，大概率是混淆了不同子型号和不同口径（单 die / 单卡、单向 / 双向）。<strong>看到一个昇腾算力数字，第一件事是问它是哪个子型号、哪个精度、稠密还是稀疏。</strong></p>
+</blockquote>
 <p>粗略量级感知（⚠️ 全部为推断，仅用于建立直觉，<strong>不可用于选型</strong>）：</p>
 <div class="codehilite"><pre><span></span><code>910B3 ≈ A100 的算力量级（FP16 ~320 vs 312 TFLOPS）
-       但 HBM 带宽（~1.6 TB/s）低于 H100（3.35 TB/s）约一半
-       且没有 FP8 Tensor Core 对应物（见第 06 章：昇腾走的是 INT8 和 HiF8 路线）
+       但 HBM 带宽（~1.6 TB/s）大约是 H100（3.35 TB/s）的一半
+       且没有 FP8 Tensor Core 的对应物
+       （见 06 章 §6.10：昇腾走的是 INT8 和 HiF8 路线）
 </code></pre></div>
 
-<p>对照第 02 章的屋顶线：昇腾 910B3 的屋脊点 ≈ 320e12 / 1.6e12 ≈ <strong>200 FLOP/Byte</strong>（⚠️ 基于推断数字计算），比 H100 的 295 低。这意味着<strong>同一个算子，在昇腾上更容易落在 Compute Bound 一侧</strong>——第 02 章的诊断流程照用，但屋脊点要换。</p>
+<p><strong>把这组数字接到第 02 章的屋顶线上，会得到一个有意思的结论。</strong></p>
+<div class="codehilite"><pre><span></span><code>屋脊点 = 峰值算力 ÷ 峰值带宽
+
+  H100  ：989 TFLOPS ÷ 3.35 TB/s ≈ 295 FLOP/Byte   （✅ 官方数字）
+  910B3 ：320 TFLOPS ÷ 1.6  TB/s ≈ 200 FLOP/Byte   （⚠️ 基于推断数字）
+</code></pre></div>
+
+<p>屋脊点低意味着<strong>同一个算子在昇腾上更容易落到 Compute Bound 一侧</strong>。这不是抽象的，能找到具体落在中间那一段的算子：</p>
+<div class="codehilite"><pre><span></span><code>例：训练里的一个 GEMM，M = 256，N = K = 4096，BF16
+
+  FLOP  = 2 × 256 × 4096 × 4096 = 8.59 GFLOP
+  Byte  = (M×K + K×N + M×N) × 2
+        = (1,048,576 + 16,777,216 + 1,048,576) × 2 = 37.75 MB
+  算术强度 I = 8.59e9 ÷ 3.775e7 ≈ 228 FLOP/Byte
+
+  在 H100  上：228 &lt; 295  →  Memory Bound，该做的是减少搬运（融合、量化）
+  在 910B3 上：228 &gt; 200  →  Compute Bound，该做的是提高 Cube 利用率
+
+  ★ 同一个算子，两台机器上优化方向【相反】。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>第 02 章的诊断流程照用，但屋脊点必须换成你这张卡的</strong>。而且注意上面那个 200 是拿两个 ⚠️ 推断值相除得到的，误差会叠加——把它当成"比 H100 低、大概在 200 这个量级"来用，不要当成 200.0。</p>
+</blockquote>
 <h3 id="1242-910c-die">12.4.2 910C：双 die 封装</h3>
 <p>⚠️ 以下全部为第三方分析（SemiAnalysis 等）估算，华为未发布数据手册：</p>
 <div class="codehilite"><pre><span></span><code>910C = 两颗 910B 级的 die 封装在一起
@@ -573,9 +1125,19 @@ Vector 计算：GM → UB → [Vector] → UB → GM
   └─ HBM 带宽         ~3.2 TB/s
 </code></pre></div>
 
-<p>工程上最要紧的一点不是算力数字，而是：<strong>双 die 意味着卡内也存在 NUMA 效应</strong>。一张 910C 上的两个 die 之间通信，和 die 内通信的代价不同。做算子切分和通信编排时，把一张 910C 当成"一个均匀的加速器"会踩坑。</p>
+<p>工程上最要紧的一点不是算力数字，而是：<strong>双 die 意味着卡内也存在 NUMA（Non-Uniform Memory Access，非统一内存访问）效应</strong>。一张 910C 上两个 die 之间的通信代价，和 die 内部不同。</p>
+<div class="codehilite"><pre><span></span><code>把一张 910C 当成&quot;一个均匀的加速器&quot;会怎样：
+
+  ✗ 按&quot;一张卡 = 一个单元&quot;做 TP 切分
+    → 一半的通信悄悄跨了 die，比你估算的慢
+
+  ✓ 按&quot;一张卡 = 2 个单元&quot;做切分和通信编排
+    → 让高频通信尽量留在 die 内
+</code></pre></div>
+
+<p>这一条直接影响 <a href="14-GPU到NPU迁移实战.html">14 章 §14.3.3</a> 的 TP 规模决策。</p>
 <h3 id="1243">12.4.3 别信本节，去查你自己的卡</h3>
-<p>这是本章最有用的一段。三个办法：</p>
+<p><strong>这是本章最有用的一段，也是唯一一段你应该原样照抄的内容。</strong> 三个办法，可信度从低到高：</p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># 1) 看硬件实况：型号、HBM 容量、AICore 使用率、HBM 带宽占用</span>
 npu-smi<span class="w"> </span>info
 npu-smi<span class="w"> </span>info<span class="w"> </span>-t<span class="w"> </span>usages<span class="w"> </span>-i<span class="w"> </span><span class="m">0</span>
@@ -586,115 +1148,396 @@ npu-smi<span class="w"> </span>info<span class="w"> </span>-t<span class="w"> </
 find<span class="w"> </span>/usr/local/Ascend<span class="w"> </span>-type<span class="w"> </span>d<span class="w"> </span>-name<span class="w"> </span><span class="s2">&quot;platform_config&quot;</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null
 <span class="c1">#    然后查看对应 soc_version 的 .ini 文件，如 Ascend910B3.ini</span>
 
-<span class="c1"># 3) 代码里查</span>
+<span class="c1"># 3) 代码里查（算子里唯一正确的做法）</span>
 python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import torch, torch_npu; print(torch_npu.npu.get_device_name(0), torch_npu.npu.get_device_properties(0))&quot;</span>
 </code></pre></div>
 
-<p><code>platform_config</code> 里的 <code>.ini</code> 文件是写 Ascend C 算子时的必备参照——L1/L0/UB 的实际容量都在里面，第 13 章做 tiling 时要按它算。</p>
+<p>Host 侧写 Tiling 函数时，还有一组必须<strong>在代码里查、绝不能写死</strong>的数字——各级 Buffer 的容量（✅ CANN 平台 API）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">auto</span><span class="w"> </span><span class="n">platform</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">platform_ascendc</span><span class="o">::</span><span class="n">PlatformAscendC</span><span class="p">(</span><span class="n">context</span><span class="o">-&gt;</span><span class="n">GetPlatformInfo</span><span class="p">());</span>
+<span class="kt">uint64_t</span><span class="w"> </span><span class="n">ubSize</span><span class="p">,</span><span class="w"> </span><span class="n">l1Size</span><span class="p">;</span>
+<span class="n">platform</span><span class="p">.</span><span class="n">GetCoreMemSize</span><span class="p">(</span><span class="n">platform_ascendc</span><span class="o">::</span><span class="n">CoreMemType</span><span class="o">::</span><span class="n">UB</span><span class="p">,</span><span class="w"> </span><span class="n">ubSize</span><span class="p">);</span>
+<span class="n">platform</span><span class="p">.</span><span class="n">GetCoreMemSize</span><span class="p">(</span><span class="n">platform_ascendc</span><span class="o">::</span><span class="n">CoreMemType</span><span class="o">::</span><span class="n">L1</span><span class="p">,</span><span class="w"> </span><span class="n">l1Size</span><span class="p">);</span>
+<span class="kt">uint32_t</span><span class="w"> </span><span class="n">aicNum</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">platform</span><span class="p">.</span><span class="n">GetCoreNumAic</span><span class="p">();</span>
+<span class="kt">uint32_t</span><span class="w"> </span><span class="n">aivNum</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">platform</span><span class="p">.</span><span class="n">GetCoreNumAiv</span><span class="p">();</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <code>CoreMemType::UB</code> 这个枚举是核实过的（<a href="13-AscendC编程.html">13 章 §13.5.2</a> 有出处），但 <code>CoreMemType::L1</code> 的<strong>字面量</strong>我没找到一手文档确认——各级 Buffer 在不同 CANN 版本里的枚举名改过。用之前先在你装的版本的头文件里 grep 一下 <code>CoreMemType</code>，别照抄。这一节要你记住的是「<strong>查，不要写死</strong>」这个做法，不是这两行代码的确切拼写。</p>
+<p>⚠️ <strong>这不是洁癖，是踩过的坑。</strong> 一个真实例子：UB 容量的社区常见口径在 910B 上是 ≈192 KB，而 310B 上是 ≈248 KB——<strong>同一个昇腾家族，差了 30%</strong>。把 192 KB 写死在 tiling 里，换一张卡要么白白浪费四分之一的片上空间，要么直接超分配报错。L1 / L0A / L0B / L0C 的情况只会更乱，所以 §12.1 开头就说了：<strong>本章干脆不给这几个数。</strong> 完整的推导流程见 <a href="13-AscendC编程.html">13 章 §13.5.2</a>。</p>
+<p>★ <code>platform_config</code> 里的 <code>.ini</code> 文件是写 Ascend C 算子时的必备参照。<strong>如果你只记住本章一件事，记住这个路径。</strong></p>
+</blockquote>
 <hr />
 <h2 id="125-hccsub">12.5 互联：HCCS、UB 总线与超节点</h2>
-<h3 id="1251">12.5.1 单机内</h3>
-<p><strong>HCCS</strong>（Huawei Cache Coherent System）是华为自研的片间高速互联，地位等同 NVLink，支持硬件级缓存一致性。</p>
+<h3 id="1251-hccs">12.5.1 单机内：HCCS</h3>
+<p><strong>HCCS</strong>（Huawei Cache Coherence System，华为缓存一致性互联）是华为自研的片间高速互联，地位等同 NVLink，支持硬件级缓存一致性。</p>
 <ul>
 <li>服务器内基础拓扑是 <strong>Full Mesh 全互联</strong>（✅ HCCL 文档），8 卡两两直连，和 NVSwitch 的效果类似但实现路径不同。</li>
-<li>服务器间走 <strong>RoCE</strong>（RDMA over Converged Ethernet）组成 Fat Tree。</li>
-<li>⚠️ 推断：单链路约 100 GB/s 双向，社区常引用的卡间互联带宽为 392 GB/s。对比 H100 NVLink 的 900 GB/s，这是昇腾集群侧最明显的短板之一——直接影响第 08 章讲的 MoE All-to-All 和 TP（Tensor Parallel，张量并行）的可行规模。</li>
+<li>服务器之间走 <strong>RoCE</strong>（RDMA over Converged Ethernet，融合以太网上的远程直接内存访问）组成 Fat Tree。</li>
+<li>⚠️ 推断：单链路约 100 GB/s 双向，社区常引用的卡间互联带宽为 392 GB/s。</li>
 </ul>
-<h3 id="1252-cloudmatrix-384">12.5.2 CloudMatrix 384 超节点</h3>
+<p><strong>这个短板有多短，算一次 TP 通信就知道了</strong>（⚠️ 全部基于推断带宽，仅演示量级）：</p>
+<div class="codehilite"><pre><span></span><code>场景：TP = 8 的一层 AllReduce
+  激活形状 [seq 4096, hidden 8192]，BF16 → 4096 × 8192 × 2 = 67.1 MB
+
+  Ring AllReduce 每张卡要收发的量 ≈ 2 × D × (n−1)/n
+                                  = 2 × 67.1 × 7/8 ≈ 117 MB
+
+  在昇腾上：117 MB ÷ 392 GB/s  ≈ 0.30 ms   （⚠️ 社区口径带宽）
+  在 H100 上：117 MB ÷ 900 GB/s ≈ 0.13 ms   （NVLink 4.0）
+
+  慢 2.3 倍。
+  ★ 而 TP 的 AllReduce 在每一层都要做两次，80 层就是 160 次。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这是昇腾集群侧最明显的短板之一，直接影响可行的 TP（Tensor Parallel，张量并行）规模</strong>——TP 度越高，每层的 AllReduce 越频繁，互联带宽越容易变成瓶颈。它同样影响 <a href="08-MoE算子与通信.html">08 章</a> 讲的 MoE All-to-All。缓解手段有两条：一是少用 TP 多用其他并行维度，二是下一节的超节点。</p>
+</blockquote>
+<h3 id="1252-cloudmatrix-384">12.5.2 CloudMatrix 384 超节点：把短板换个方向解决</h3>
 <p>华为云 2025 年 4 月发布的 CM384（✅ 配置为官方发布）：</p>
 <div class="codehilite"><pre><span></span><code>384 颗 Ascend 910C + 192 颗鲲鹏 CPU
-    ↓ 全部经 UB（Unified Bus，统一总线）全互联，无阻塞 all-to-all
+  └─ 全部经 UB（Unified Bus，统一总线）全互联，无阻塞 all-to-all
+
 约 300 PFLOPS 稠密 BF16 算力（⚠️ SemiAnalysis 估算）
 约 48 TB HBM 总容量
 四层结构：计算节点（48 节点 × 8 NPU）→ L1 板级交换 → L2 机柜级交换 → RDMA 横向扩展
 光互联：6912 个 400G 硅光 LPO 光模块
 </code></pre></div>
 
-<p><strong>对算子开发者的意义</strong>：超节点把"跨机通信"变成了"节点内通信"级别的延迟（⚠️ 官方宣称跨节点带宽劣化 &lt;3%、时延增加 &lt;1 μs）。这改变了 MoE 专家并行的设计空间——在 GPU 集群上你要费尽心思把专家塞进 NVLink 域内，在超节点上 384 卡是一个平坦的通信域。第 08 章讲的分层 All-to-All 策略，在这里的最优解不一样。</p>
+<p><strong>对算子开发者的意义</strong>，用一句对比说清：</p>
+<div class="codehilite"><pre><span></span><code>GPU 集群（NVLink 域 = 8 卡，域外走 InfiniBand，慢一个量级）
+  → MoE 的专家并行要费尽心思把通信【塞进 8 卡的 NVLink 域内】
+  → 于是有了分层 All-to-All：域内一种算法，域外另一种（08 章 §8.3.6）
+
+CloudMatrix 384（一个平坦的 384 卡通信域）
+  → ⚠️ 官方宣称跨节点带宽劣化 &lt;3%、时延增加 &lt;1 μs
+  → &quot;域内 / 域外&quot;这个区分在很大程度上消失了
+  → 分层 All-to-All 的必要性下降（08 章 §8.9.3）
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>同一个 MoE 模型，在两种硬件上的最优通信策略不一样</strong>，因为"通信域的边界在哪"这个前提变了。华为的思路不是把单链路做得比 NVLink 快，而是<strong>把边界推到 384 卡之外</strong>。</p>
+</blockquote>
 <p>代价是能效：SemiAnalysis 的评价是 CM384 用封装、光互联和系统设计弥补了制程劣势，代价是显著更高的功耗。</p>
 <blockquote>
-<p>⚠️ 单 NPU 的 UB 带宽数字在公开资料里有 196 GB/s、~390 GB/s、2.8 Tbps 三种说法，量纲和口径（单 die / 单封装、单向 / 双向）都不统一，本章不给结论。</p>
+<p>⚠️ 单 NPU 的 UB 带宽数字在公开资料里有 196 GB/s、~390 GB/s、2.8 Tbps 三种说法，量纲和口径（单 die / 单封装、单向 / 双向）都不统一，<strong>本章不给结论</strong>。</p>
+<p>⚠️ 再提醒一次：这一节的 <strong>UB 是 Unified Bus（总线）</strong>，和 §12.3.1 里 Vector 单元用的 <strong>UB = Unified Buffer（片上缓冲）</strong>完全无关。昇腾体系里这个缩写撞车了，看到 UB 先判断语境——在讲互联就是总线，在讲算子就是缓冲区。</p>
 </blockquote>
 <hr />
 <h2 id="126-02">12.6 那么第 02 章的屋顶线还能用吗</h2>
-<p>能用，但要换三样东西。</p>
+<p>能用，但要换三样东西，而且要加一类它根本不覆盖的瓶颈。</p>
+<h3 id="1261">12.6.1 三处要换</h3>
 <div class="codehilite"><pre><span></span><code>第 02 章的 GPU 屋顶线：
   P = min(峰值算力, 峰值带宽 × 算术强度 I)
   瓶颈二选一：Compute Bound / Memory Bound
 
-昇腾的屋顶线：公式一样，但——
-  ① 屋脊点换成昇腾的（910B3 ⚠️ ≈ 200 FLOP/Byte）
-  ② 峰值算力要区分 Cube 和 Vector：
-     一个算子如果全是 Vector 运算（如 LayerNorm、Softmax），
-     它根本用不到 Cube，&quot;峰值算力&quot;对它毫无意义
+昇腾的屋顶线：公式一模一样，但——
+
+  ① 屋脊点换成你这张卡的（910B3 ⚠️ ≈ 200 FLOP/Byte，§12.4.1）
+
+  ② &quot;峰值算力&quot;要分开问：是 Cube 的还是 Vector 的？
+     一个算子如果全是 Vector 运算（LayerNorm、Softmax、SiLU），
+     它一条 Cube 指令都不会发——那个 320 TFLOPS 对它【毫无意义】，
+     拿它当分母算出来的&quot;算力利用率 0.3%&quot;是个假指标
+
   ③ 多一类瓶颈：MTE Bound（搬运受限）
 </code></pre></div>
 
-<p>第三条是昇腾独有的。在 GPU 上，访存受限就是访存受限；在昇腾上，因为搬运由独立的 MTE 流水线执行，你会遇到"HBM 带宽没跑满、Cube 也没跑满，但 MTE2 流水占满了"的情况——数据在 GM→L1→L0 的路上堵住了。</p>
-<p>所以昇腾的算子瓶颈分类是<strong>四选一</strong>：</p>
+<p>第 ② 条值得多说一句，因为它是昇腾性能报告里最常见的一种误读。GPU 上 CUDA Core 和 Tensor Core 虽然峰值差 15 倍，但<strong>一个 LayerNorm 至少还在 CUDA Core 上跑，用的是同一张芯片的浮点单元</strong>。昇腾上 Vector 算子跑在 AIV、Cube 算子跑在 AIC，<strong>是两组物理上分开的核</strong>。给一个纯 Vector 算子算"占 Cube 峰值算力的百分之几"，就像用卡车的载重量去衡量一辆摩托车。</p>
+<h3 id="1262-mte-bound">12.6.2 MTE Bound：屋顶线看不见的第三类瓶颈</h3>
+<p><strong>先说现象。</strong> 在 GPU 上，访存受限就是访存受限：HBM 带宽跑满了，你在 Nsight 里能看到 DRAM Throughput 接近 100%。在昇腾上，你会遇到一种新形态：</p>
+<div class="codehilite"><pre><span></span><code>指令流水图（13 章 §13.8.3 的读法）：
+  MTE2   占比 88%      ← 满了
+  Cube   占比  4%      ← 闲着
+  Vector 占比 22%      ← 也闲着
+
+同时 msprof 报的 HBM 实测带宽：只有峰值的 20%
+
+  → 算力没打满，带宽也没打满，但算子就是慢。
+     屋顶线上这个点离两条线都很远，模型解释不了。
+</code></pre></div>
+
+<p><strong>为什么会这样？把搬运次数的账算出来。</strong> 关键在于 <strong>MTE 的每一次搬运都有固定开销</strong>（发起、地址计算、格式转换的启动），这个开销和搬多少字节无关。</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 假设（仅为演示机理）：一次 DataCopy 的固定开销 ≈ 搬 2 KB 数据所需的时间。
+   真值随型号、方向、是否对齐而变，要用 msprof 实测。
+
+任务：把 1 MB 数据从 GM 搬进 UB
+
+  方案 A：tileLength 对应 512 字节
+    搬运次数 = 1 MB ÷ 512 B = 2048 次
+    每次等效代价 = 2 KB（固定） + 0.5 KB（数据） = 2.5 KB
+    总等效代价 = 2048 × 2.5 KB = 5120 KB = 5 MB
+    ★ MTE2 的有效利用率 = 0.5 / 2.5 = 20%
+
+  方案 B：tileLength 对应 16 KB
+    搬运次数 = 1 MB ÷ 16 KB = 64 次
+    每次等效代价 = 2 KB + 16 KB = 18 KB
+    总等效代价 = 64 × 18 KB = 1152 KB ≈ 1.125 MB
+    ★ MTE2 的有效利用率 = 16 / 18 = 89%
+
+  两者搬的【真实数据量都是 1 MB】，HBM 侧看到的流量一模一样，
+  但 MTE2 上的耗时差 5120 / 1152 = 4.4 倍。
+</code></pre></div>
+
+<p><strong>这就是屋顶线看不见它的原因</strong>：屋顶线只有两根资源轴——每秒多少 FLOP、每秒多少 Byte。MTE 是第三种资源，它的容量单位既不是 FLOPS 也不是 GB/s，而是<strong>每秒能完成多少次搬运事务</strong>。当瓶颈是"事务次数"而不是"字节数"时，这个算子在屋顶线图上会落在两条线的下方很远的地方——<strong>长得很像 <a href="02-屋顶线与性能剖析.html">02 章 §2.5 盲区二</a> 的"延迟受限"，但成因和对策都不同</strong>。</p>
+<p><strong>判据（三条同时成立才是 MTE Bound）：</strong></p>
+<div class="codehilite"><pre><span></span><code>① 指令流水图里 MTE2 或 MTE3 的占比 &gt; 85%
+② 实测 HBM 带宽 &lt; 峰值的 50%        ← 关键的一条，区别于真正的 Memory Bound
+③ Cube 和 Vector 的占比都不高
+
+  如果 ① 成立但 ② 不成立（带宽也跑满了），那是普通的 Memory Bound，
+  对策是减少搬运【总量】（融合、量化），不是调 tile 大小。
+</code></pre></div>
+
+<p><strong>四类常见成因，按排查顺序：</strong></p>
 <table>
 <thead>
 <tr>
-<th>瓶颈</th>
-<th>现象</th>
+<th>成因</th>
+<th>为什么会造成 MTE Bound</th>
+<th>怎么确认</th>
 <th>对策</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Cube Bound</td>
-<td>Cube 流水占比高</td>
-<td>已经最优，或换更大 tiling</td>
+<td><strong>没开双缓冲</strong></td>
+<td>流水塌回 §12.3.4 情况 A，四条线轮流空转</td>
+<td>各级占比都不高、总耗时却长</td>
+<td><code>BUFFER_NUM = 2</code>（<a href="13-AscendC编程.html">13 章 §13.4</a>）</td>
 </tr>
 <tr>
-<td>Vector Bound</td>
-<td>AIV 流水占比高，AIC 空转</td>
-<td>CV 流水并行；或把部分计算挪给 Cube</td>
+<td><strong>单次搬运太小</strong></td>
+<td>固定开销摊不薄，就是上面那笔账</td>
+<td>搬运次数 × 单次大小 ≈ 总量，且单次 &lt; 几 KB</td>
+<td>调大 tileLength（上界见 <a href="13-AscendC编程.html">13 章 §13.5.2</a>）</td>
 </tr>
 <tr>
-<td>MTE Bound</td>
-<td>MTE2/MTE3 占比高</td>
-<td>开双缓冲、调 tiling 块大小、改数据格式（ND→NZ）</td>
+<td><strong>没对齐到 32 字节</strong></td>
+<td>退到非对齐的慢路径</td>
+<td>尾块长度不是 32 B 的整数倍</td>
+<td>tiling 里保证整除，或尾块单独处理</td>
 </tr>
 <tr>
-<td>Scalar / 下发 Bound</td>
-<td>三个流水都不满，host 侧下发密</td>
-<td>开图模式（见 <a href="14-GPU到NPU迁移实战.html">14 章 §14.5</a>），减少算子下发次数</td>
+<td><strong>ND ↔ NZ 隐式转换</strong></td>
+<td>一次转换 = 整个张量读一遍写一遍（§12.3.3）</td>
+<td>算子列表里有 <code>TransData</code> / <code>Cast</code></td>
+<td>统一格式，减少横跳</td>
 </tr>
 </tbody>
 </table>
-<p>判断工具是 MindStudio Insight 的<strong>指令流水图</strong>，第 13 章会给完整的排查路径。</p>
+<h3 id="1263">12.6.3 四类瓶颈速查</h3>
+<p>所以昇腾的算子瓶颈分类是<strong>四选一</strong>，不是 GPU 那样的二选一：</p>
+<table>
+<thead>
+<tr>
+<th>瓶颈</th>
+<th>流水图现象</th>
+<th>屋顶线覆盖吗</th>
+<th>对策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Cube Bound</strong></td>
+<td>Cube 占比高</td>
+<td>✓ Compute Bound</td>
+<td>已接近最优；剩余收益在更大 tiling、更高 Cube 利用率</td>
+</tr>
+<tr>
+<td><strong>Vector Bound</strong></td>
+<td>AIV 占比高，AIC 空转</td>
+<td>✓（但要用 Vector 的峰值算）</td>
+<td>CV 流水并行；把能挪的计算挪给 Cube</td>
+</tr>
+<tr>
+<td><strong>MTE Bound</strong></td>
+<td>MTE2 / MTE3 高，带宽却没满</td>
+<td><strong>✗ 不覆盖</strong></td>
+<td>双缓冲 → 调大 tile → 查对齐 → 查 ND↔NZ</td>
+</tr>
+<tr>
+<td><strong>下发 Bound</strong></td>
+<td>三级都不满，Host 侧下发密</td>
+<td>✗ 不覆盖（<a href="02-屋顶线与性能剖析.html">02 章 §2.5 盲区三</a>）</td>
+<td>开图模式（<a href="14-GPU到NPU迁移实战.html">14 章 §14.5</a>）、合并小算子</td>
+</tr>
+</tbody>
+</table>
+<p>判断工具是 MindStudio Insight 的<strong>指令流水图</strong>，完整的采集命令、读图方法和四个案例在 <a href="13-AscendC编程.html">13 章 §13.8</a>。</p>
+<blockquote>
+<p>⚠️ <strong>排查顺序不能换：先确认瓶颈在不在算子里。</strong> 昇腾单算子的下发开销相对更显眼，推理 Decode 阶段算子又多又小，<strong>很大比例的"昇腾算子慢"最后查出来根本不是算子慢</strong>。第 0 步永远是"所有算子耗时之和 ≈ 端到端耗时吗"。</p>
+</blockquote>
 <hr />
-<h2 id="127">12.7 小结</h2>
-<div class="codehilite"><pre><span></span><code>达芬奇 = DSA，不是 SIMT
-  AI Core ≈ SM，但内部是 Cube / Vector / Scalar 三类专用单元
-  910B 起 Cube 和 Vector 拆成独立的核：AIC : AIV = 1 : 2
-  两者之间必须绕 GM 交换数据 → 融合算子要靠 CV 流水并行，不是靠&quot;不落盘&quot;
+<h2 id="127">12.7 本章小结</h2>
+<p><strong>一句话</strong></p>
+<div class="codehilite"><pre><span></span><code>GPU 用&quot;人多&quot;掩盖延迟（64 个 warp 轮转，硬件自动）
+昇腾用&quot;排班&quot;掩盖延迟（五条流水线错开，你手写）
 
-内存是 Scratchpad 不是 Cache
-  GM → L2 → L1 → L0A/L0B/L0C（Cube）
-                → UB（Vector）
-  每一级都要显式 DataCopy 搬，MTE 是独立硬件流水线
-  L0A/L0B/L0C、BT/FP Buffer、MTE 在 GPU 上没有对应物
-  warp、bank conflict、occupancy 在昇腾上没有对应物
-
-规格：查你自己的卡，别信任何二手数字
-  npu-smi info + CANN 的 platform_config/*.ini
-  910B 分 B1/B2/B3/B4，AI Core 数和带宽差异巨大
-  910C 是双 die，卡内有 NUMA 效应
-
-屋顶线照用，但屋脊点要换，且多一类 MTE Bound
-
-下一章：知道了硬件长什么样，开始用 Ascend C 写第一个算子。
+  ★ 这一个分岔，衍生出本章所有的&quot;没有对应物&quot;
 </code></pre></div>
 
+<p><strong>硬件地图</strong></p>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>昇腾</th>
+<th>GPU 对应物</th>
+<th>关键差异</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>芯片</td>
+<td>⚠️ 20 AIC + 40 AIV（910B3）</td>
+<td>132 个 SM</td>
+<td>核少 7 倍 → <strong>调度没有弹性</strong>，尾巴效应更致命</td>
+</tr>
+<tr>
+<td>核内计算</td>
+<td>Cube / Vector / Scalar</td>
+<td>Tensor Core / CUDA Core / —</td>
+<td>Cube 是<strong>核级</strong>接口，不用管线程分数据</td>
+</tr>
+<tr>
+<td>核内搬运</td>
+<td>MTE1 / MTE2 / MTE3 / FixPipe</td>
+<td><code>cp.async</code> / TMA 指令</td>
+<td>昇腾是<strong>独立硬件流水线</strong>，所以能真正重叠</td>
+</tr>
+<tr>
+<td>片上存储</td>
+<td>L1 / L0A / L0B / L0C / UB</td>
+<td>共享内存 / 寄存器</td>
+<td><strong>Scratchpad 不是 Cache</strong>，不搬就是空的</td>
+</tr>
+<tr>
+<td>片上唯一的 cache</td>
+<td>L2</td>
+<td>L2</td>
+<td>这一级两边一致</td>
+</tr>
+<tr>
+<td>卡间</td>
+<td>HCCS Full Mesh</td>
+<td>NVLink / NVSwitch</td>
+<td>⚠️ ~392 vs 900 GB/s，TP 规模受限</td>
+</tr>
+<tr>
+<td>超节点</td>
+<td>CloudMatrix 384（UB 总线）</td>
+<td>无对应物</td>
+<td>把通信域边界推到 384 卡外</td>
+</tr>
+</tbody>
+</table>
+<p><strong>数据要走几跳，谁负责</strong></p>
+<div class="codehilite"><pre><span></span><code>Cube 路径（5 跳）
+  GM ──MTE2──► L1 ──MTE1──► L0A/L0B ──► [Cube] ──► L0C ──FixPipe──► GM
+
+Vector 路径（3 跳）
+  GM ──MTE2──► UB ──► [Vector] ──► UB ──MTE3──► GM
+
+  ★ 每一跳都要你写一行 DataCopy。不写就没搬，没搬就读到垃圾。
+</code></pre></div>
+
+<p><strong>核心公式，全章就这两个</strong></p>
+<div class="codehilite"><pre><span></span><code>① 流水加速（§12.3.4，和 13 章 §13.4.3 同一个公式）
+     不排流水 = N × Σ T
+     排好流水 = (Σ T − max T) + N × max T
+     N 大时加速比上限 → Σ T / max T
+   ★ 排流水的前提是每级至少两份缓冲——错开时间必须先错开空间
+
+② 屋脊点（§12.4.1）
+     910B3 ⚠️ ≈ 320 TFLOPS ÷ 1.6 TB/s ≈ 200 FLOP/Byte
+     H100     ≈ 989 TFLOPS ÷ 3.35 TB/s ≈ 295 FLOP/Byte
+   ★ 屋脊点低 → 同一算子在昇腾上更容易落到 Compute Bound 一侧
+</code></pre></div>
+
+<p><strong>第 01 章里作废的概念（完整版见 §12.3.2）</strong></p>
+<table>
+<thead>
+<tr>
+<th>作废的</th>
+<th>因为</th>
+<th>换成了</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Thread / Block / Grid / Warp / SIMT</td>
+<td>昇腾没有线程这一层</td>
+<td>核 + 核内流水。⚠️ <code>blockDim</code> 撞名，在昇腾指核数</td>
+</tr>
+<tr>
+<td>合并访存、扇区</td>
+<td>没有 warp 就没有"32 个地址凑一起"</td>
+<td>32 字节对齐 + 连续搬运</td>
+</tr>
+<tr>
+<td>Bank Conflict</td>
+<td>32 个 bank 是为 32 线程的 warp 设计的</td>
+<td>不存在这个问题，padding / swizzle 全作废</td>
+</tr>
+<tr>
+<td>Occupancy</td>
+<td>没有多 warp 可轮转</td>
+<td><strong><code>BUFFER_NUM</code>，上限只有 2～3，而且要你自己写</strong></td>
+</tr>
+<tr>
+<td>寄存器溢出</td>
+<td>这一层对开发者不可见</td>
+<td>片上 Buffer 超分配，而且<strong>会报错</strong>不是静默变慢</td>
+</tr>
+</tbody>
+</table>
+<p><strong>没作废、反而更严重的</strong></p>
+<ul>
+<li><strong>尾巴效应</strong>：只有 20～40 个核，块数每跨过核数的整数倍一次就多一轮，摊不薄（§12.3.2）。</li>
+<li><strong>维度对齐</strong>：Cube 只吃 16×16 的块，<strong>没有通用核可以退回去</strong>，不对齐就必须补齐（§12.2.2）。</li>
+</ul>
+<p><strong>多出来的一类瓶颈</strong></p>
+<div class="codehilite"><pre><span></span><code>MTE Bound：Cube 没满、HBM 带宽也没满，但 MTE 流水满了
+  成因：搬运【次数】太多，而不是搬运【字节】太多
+  判据：MTE 占比 &gt;85% ＋ 实测带宽 &lt;50% 峰值 ＋ 计算单元都闲着
+  对策顺序：双缓冲 → 调大 tile → 查 32B 对齐 → 查 ND↔NZ 横跳
+</code></pre></div>
+
+<p><strong>关于数字</strong></p>
+<div class="codehilite"><pre><span></span><code>华为没有公开 910B/910C 的数据手册。本章的算力、带宽、互联数字
+大部分是 ⚠️ 推断，时间单位和固定开销全部是 ⚠️ 为举例而设的假设值。
+
+★ 唯一可信的数字来源是你手上那张卡：
+    npu-smi info
+    $ASCEND_HOME/.../platform_config/Ascend910B3.ini
+    GetCoreMemSize() / GetCoreNumAic() / GetCoreNumAiv()
+  本章连 L1 / L0 / UB 的容量都不给，就是因为它们跨型号差异太大（§12.4.3）。
+</code></pre></div>
+
+<p><strong>自测三题</strong>（答案在本章对应小节）</p>
+<ol>
+<li>某矩阵算子每块的四段耗时是 <code>T_MTE2 = 3</code>、<code>T_MTE1 = 1</code>、<code>T_Cube = 2</code>、<code>T_MTE3 = 1</code>（⚠️ 假设值），一个核处理 5 个块。不排流水和排好流水各耗时多少？加速比是多少？瓶颈是哪一级、占用率多少？块数趋于无穷时加速比的上限是多少？按 §12.6.3，这算哪一类瓶颈？</li>
+<li>要把 512 KB 数据从 GM 搬进 UB，⚠️ 假设一次搬运的固定开销等效于搬 2 KB。<code>tileLength</code> 对应 1 KB 和 8 KB 两种方案，各需要多少次搬运？MTE2 的有效利用率各是多少？两者的等效耗时差几倍？如果流水图显示 MTE2 占 90%、Cube 占 5%、实测 HBM 带宽只有峰值的 18%，判成哪类瓶颈？第一个该做的动作是什么？</li>
+<li>某算子的算术强度 <code>I = 150 FLOP/Byte</code>。在 910B3（⚠️ 320 TFLOPS / 1.6 TB/s）和 H100（989 TFLOPS / 3.35 TB/s）上分别属于哪类瓶颈？各自能达到的性能上限是多少？各占本机峰值算力的百分之几？这个对比说明了什么？</li>
+</ol>
+<h4 id="_1">参考答案</h4>
+<ol>
+<li><code>Σ T = 3 + 1 + 2 + 1 = 7</code>，<code>max T = 3</code>（<strong>MTE2</strong>）。不排流水 = <code>5 × 7</code> = <strong>35 个时间单位</strong>；排好流水 = <code>(7 − 3) + 5 × 3</code> = <code>4 + 15</code> = <strong>19 个时间单位</strong>；加速比 = <code>35 ÷ 19</code> ≈ <strong>1.84 倍</strong>。瓶颈是 <strong>MTE2</strong>，占用率 = <code>15 ÷ 19</code> ≈ <strong>79%</strong>。上限 = <code>Σ T ÷ max T</code> = <code>7 ÷ 3</code> ≈ <strong>2.33 倍</strong>。注意 Cube 只占 <code>10 ÷ 19</code> ≈ 53%——<strong>最贵的硬件有一半时间在等搬运</strong>，所以这是 <strong>MTE Bound</strong>，对策按 §12.6.3 走（先确认双缓冲、再调大 tile）。参见 §12.3.4 与 §12.6。</li>
+<li>1 KB 方案：<code>512 ÷ 1</code> = <strong>512 次</strong>，每次等效 <code>2 + 1 = 3 KB</code>，总计 <code>512 × 3</code> = 1536 KB，有效利用率 = <code>1 ÷ 3</code> ≈ <strong>33%</strong>。8 KB 方案：<code>512 ÷ 8</code> = <strong>64 次</strong>，每次等效 <code>2 + 8 = 10 KB</code>，总计 <code>64 × 10</code> = 640 KB，有效利用率 = <code>8 ÷ 10</code> = <strong>80%</strong>。等效耗时差 <code>1536 ÷ 640</code> = <strong>2.4 倍</strong>——而两者搬的真实数据量完全相同。给出的三个观测量同时满足 §12.6.2 的三条判据（MTE 占比 &gt; 85%、带宽 &lt; 50% 峰值、计算单元闲着），判成 <strong>MTE Bound</strong>。第一个动作<strong>不是</strong>调大 tile，而是<strong>先确认 <code>BUFFER_NUM = 2</code> 真的生效了</strong>——它代价最低，而且双缓冲没开时的表现会和这一模一样。参见 §12.6.2 那张成因表。</li>
+<li>910B3 屋脊点 ⚠️ ≈ 200，<code>150 &lt; 200</code> → <strong>Memory Bound</strong>；性能上限 = <code>1.6 TB/s × 150</code> = <strong>240 TFLOPS</strong>，占峰值 <code>240 ÷ 320</code> = <strong>75%</strong>。H100 屋脊点 295，<code>150 &lt; 295</code> → 也是 <strong>Memory Bound</strong>；上限 = <code>3.35 TB/s × 150</code> = <strong>502 TFLOPS</strong>，占峰值 <code>502 ÷ 989</code> ≈ <strong>51%</strong>。对比说明：<strong>屋脊点低的机器更容易"把算力用满"，但那是因为它的算力本来就配得少</strong>——绝对性能 240 vs 502 TFLOPS，昇腾仍然慢一半多。所以"算力利用率高"从来不是目标，绝对耗时才是（<a href="02-屋顶线与性能剖析.html">02 章 §2.6</a> 讲 MFU 时是同一个道理）。参见 §12.4.1 与 §12.6.1。</li>
+</ol>
 <hr />
+<blockquote>
+<p><strong>下一章</strong>：知道了硬件长什么样，开始用 Ascend C 写第一个算子——三段式骨架、<code>BUFFER_NUM = 2</code> 为什么是基本功、Host 侧 Tiling 怎么算、尾块为什么是静默精度 bug 的头号来源。见 <a href="13-AscendC编程.html">13 · Ascend C 编程</a>。</p>
+<p><strong>GPU 对照回看</strong>：本章 §12.3.2 的存废清单对着 <a href="01-GPU硬件基础.html">01 章 §1.2–§1.6</a> 逐条读一遍最有效；§12.3.4 的流水推演对应 <a href="00-总纲.html">00 章 §0.2.3</a> 的"流水重叠"这一通用手段；§12.6 的四类瓶颈对应 <a href="02-屋顶线与性能剖析.html">02 章 §2.7</a> 的三步漏斗。两种硬件为什么分岔，见 <a href="00-总纲.html">00 章 §0.3</a>。</p>
+</blockquote>
 <p><strong>延伸资料</strong>：<br />
-- <a href="https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/80RC2alpha002/devguide/opdevg/ascendcopdevg/atlas_ascendc_10_0008.html">CANN Ascend C 算子开发 · 硬件架构</a>（官方，讲 AIC/AIV 与内存单元最准确的一篇）<br />
-- <a href="https://www.hiascend.com/cann/hccl">HCCL 昇腾集合通信库</a>（官方）<br />
-- <a href="https://arxiv.org/pdf/2505.15112">Parallel Scan on Ascend AI Accelerators</a>（学术论文，含 910B 子型号核数的实测口径）<br />
-- <a href="https://www.fibermall.com/blog/semianalysis-of-huawei-cloudmatrix-910c.htm">SemiAnalysis：Huawei CloudMatrix 与 910C 分析</a>（第三方，910C 数字的主要来源）<br />
-- 本地最权威来源：<code>$ASCEND_HOME/.../platform_config/*.ini</code></p>
+- <a href="https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/80RC2alpha002/devguide/opdevg/ascendcopdevg/atlas_ascendc_10_0008.html">CANN Ascend C 算子开发 · 硬件架构</a>（官方，讲 AIC/AIV 与各级存储单元最准确的一篇，§12.2 和 §12.3 的一手来源）<br />
+- <a href="https://www.hiascend.com/document/detail/zh/canncommercial/81RC1/apiref/ascendcopapi/">Ascend C API 参考</a>（官方，<code>DataCopy</code> / <code>LoadData</code> / 各条流水线的枚举名以你所装 CANN 版本的这份为准）<br />
+- <a href="https://www.hiascend.com/cann/hccl">HCCL 昇腾集合通信库</a>（官方，§12.5.1 的拓扑口径）<br />
+- <a href="https://arxiv.org/pdf/2505.15112">Parallel Scan on Ascend AI Accelerators</a>（学术论文，含 910B 子型号核数的实测口径，§12.4.1 表格的来源之一）<br />
+- <a href="https://www.fibermall.com/blog/semianalysis-of-huawei-cloudmatrix-910c.htm">SemiAnalysis：Huawei CloudMatrix 与 910C 分析</a>（第三方，§12.4.2 和 §12.5.2 数字的主要来源，全部为估算）<br />
+- <strong>本地最权威来源</strong>：<code>$ASCEND_HOME/.../platform_config/*.ini</code> —— 本章所有硬件数字都应该被它覆盖（§12.4.3）</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

@@ -865,7 +865,18 @@ CPU 侧的调度间隙。屋顶线画的是「kernel 跑起来之后」的事，
 完全看不见 kernel 之间的空白。
 </code></pre></div>
 
-<p>这对应 <a href="00-总纲.html">00 章 §0.4</a> 诊断漏斗的<strong>第 ① 步</strong>，而屋顶线是<strong>第 ③ 步</strong>。<strong>顺序不能颠倒</strong>：如果 GPU 有 40% 的时间在空转，你把每个 kernel 都优化到屋顶线上，整体也只能快 60%。先看整体，再看单个。</p>
+<p>这对应 <a href="00-总纲.html">00 章 §0.4</a> 诊断漏斗的<strong>第 ① 步</strong>，而屋顶线是<strong>第 ③ 步</strong>。<strong>顺序不能颠倒</strong>，用数字说明为什么：假设一步 100 ms，其中 GPU 有 40 ms 在空转（等 CPU 下发）、60 ms 在真干活。你把每个 kernel 都优化到屋顶线上——哪怕计算时间压到 0——那 40 ms 的空转一秒都省不掉，整步最好也就是 40 ms。</p>
+<div class="codehilite"><pre><span></span><code>优化前：  空转 40 ms + 计算 60 ms = 100 ms
+kernel 优化到极限（计算 → 0）：
+          空转 40 ms + 计算  0 ms =  40 ms
+          → 时间减少 60%，即加速 2.5 倍，这就是天花板
+
+但如果先解决空转（第 ① 步）：
+          空转  0 ms + 计算 60 ms =  60 ms   ← 一行 kernel 代码没改
+          再优化 kernel 才有意义
+</code></pre></div>
+
+<p>⚠️ 「时间减少 60%」和「加速 60%」是两回事（后者只有 1.6 倍），描述收益时务必说清是哪一个。先看整体，再看单个。</p>
 <blockquote>
 <p>⚠️ 还有一个"打折"因素，严格说不算盲区但一定要记住：<strong>峰值带宽是跑不满的</strong>。实际能达到的最高有效带宽通常是峰值的 <strong>80–90%</strong>（⚠️ 实测量级）。所以判断"这个 Memory Bound 算子到顶了没有"，标准是有效带宽 ≥ 峰值的 80%，不是 100%。</p>
 </blockquote>

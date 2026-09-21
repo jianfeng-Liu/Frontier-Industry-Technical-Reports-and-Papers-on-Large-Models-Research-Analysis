@@ -249,125 +249,471 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="00">00 · 总纲：所有算子优化都在解同一个问题</h1>
 <blockquote>
 <p><strong>前置</strong>：无。这是全系列的入口，建议在读任何一章之前先读完。<br />
-<strong>目标</strong>：给你一个平台无关的骨架——算子优化到底在优化什么、有哪几种手段、两类硬件为什么长得不一样。有了这个骨架，后面每一章都是在往上挂具体技术。</p>
+<strong>目标</strong>：给你一个平台无关的骨架——算子优化到底在优化什么、一共有哪几种手段、两类硬件为什么长得不一样、性能出问题时按什么顺序查。有了这个骨架，后面每一章都是在往上挂具体技术。<br />
+<strong>读法</strong>：本章不讲任何一种具体实现，但<strong>每个抽象说法后面都跟一个带真实数字的小例子</strong>，例子里的算术都能自己验算。建议拿纸笔跟着算——本章的四个例子分别是后面第 03、05、03、06 章的缩微版，先在这里算一遍，进正文时就不会迷路。</p>
 </blockquote>
 <hr />
 <p><strong>本章关键词</strong></p>
-<p><strong>算子</strong>（Operator / Kernel）—— 在加速卡上执行的一个计算单元，如矩阵乘、Softmax、LayerNorm。PyTorch 里一行 <code>torch.matmul</code> 对应底层一个或多个算子。<br />
-<strong>带宽墙</strong>（Memory Wall）—— 算力增长长期快于内存带宽增长，导致越来越多的计算被"喂数据"的速度卡住。<br />
-<strong>算术强度</strong>（Arithmetic Intensity）—— 每搬运 1 字节数据能做多少次浮点运算，单位 FLOP/Byte。判断算子瓶颈的核心指标。<br />
-<strong>屋脊点</strong>（Ridge Point）—— 屋顶线模型上算力与带宽两条限制线的交点，是"算力受限"和"带宽受限"的分界算术强度。<br />
-<strong>SIMT</strong>（Single Instruction Multiple Threads，单指令多线程）—— NVIDIA GPU 的并行模型。<br />
-<strong>DSA</strong>（Domain Specific Architecture，特定域架构）—— 为特定领域定制的芯片架构，华为昇腾属于此类。<br />
-<strong>片上存储</strong>（On-chip Memory）—— SRAM 级的高速存储，容量以 KB 计，速度比片外 HBM 快两个数量级。<br />
-<strong>Cache vs Scratchpad</strong> —— 片上存储的两种管理方式：Cache 由硬件自动填充，Scratchpad 由软件显式搬运。这是 GPU 和 NPU 最根本的分歧之一。</p>
+<p><strong>算子</strong>（Operator / Kernel，核函数）—— 在加速卡上执行的一个计算单元，如矩阵乘、Softmax、LayerNorm。PyTorch 里一行 <code>torch.matmul</code> 对应底层一个或多个算子。<br />
+<strong>FLOP</strong>（Floating Point Operation，浮点运算次数）与 <strong>FLOPS</strong>（Floating Point Operations Per Second，每秒浮点运算次数）—— 前者是"总工作量"，后者是"干活速度"，只差一个大小写的 S，混了后面全错。<br />
+<strong>HBM</strong>（High Bandwidth Memory，高带宽显存）—— 加速卡的主内存，大（几十到上百 GB）但相对慢。本系列说"搬数据"，默认指 HBM 和芯片之间的往返。<br />
+<strong>片上存储</strong>（On-chip Memory）—— SRAM（Static Random-Access Memory，静态随机存储器）级的高速存储，容量以 KB 计，速度比片外 HBM 快一到两个数量级。<br />
+<strong>带宽墙</strong>（Memory Wall，内存墙）—— 算力增长长期快于内存带宽增长，导致越来越多的计算被"喂数据"的速度卡住。<br />
+<strong>算术强度</strong>（Arithmetic Intensity，简称 I）—— 每从 HBM 搬运 1 字节，能做多少次浮点运算，单位 FLOP/Byte。判断算子瓶颈的核心指标。<br />
+<strong>屋脊点</strong>（Ridge Point）—— 屋顶线模型上算力屋顶与带宽斜线的交点，是"算力受限"和"带宽受限"的分界算术强度。H100 的 BF16 屋脊点是 295 FLOP/Byte。<br />
+<strong>Memory Bound</strong>（带宽受限）/ <strong>Compute Bound</strong>（算力受限）—— 算术强度低于 / 高于屋脊点的两种状态。<br />
+<strong>Host Bound</strong>（下发受限）—— CPU 把命令发给加速卡的速度跟不上加速卡执行的速度，卡在饿着等命令。屋顶线模型看不见这一类。<br />
+<strong>SIMT</strong>（Single Instruction Multiple Threads，单指令多线程）—— NVIDIA GPU 的并行模型：一条指令同时驱动 32 个线程处理不同数据。<br />
+<strong>DSA</strong>（Domain-Specific Architecture，领域专用架构）—— 为特定领域定制的芯片架构，华为昇腾属于此类。<br />
+<strong>SM</strong>（Streaming Multiprocessor，流式多处理器）—— NVIDIA GPU 的基本计算单元，一块 H100 有 132 个。昇腾的对应物叫 <strong>AI Core</strong>。<br />
+<strong>MTE</strong>（Memory Transfer Engine，存储转换引擎）—— 昇腾上专门负责各级存储之间搬运的<strong>独立硬件单元</strong>。GPU 上没有对应的独立硬件，只有 <code>cp.async</code> 这类异步指令。<br />
+<strong>Cache vs Scratchpad</strong>（缓存 vs 便签存储）—— 片上存储的两种管理方式：Cache 由硬件自动填充，Scratchpad 由软件显式搬运。这是 GPU 和 NPU 最根本的分歧之一。<br />
+<strong>MFU</strong>（Model FLOPs Utilization，模型算力利用率）—— 模型<strong>必须</strong>完成的运算量 ÷ 硬件在同样时间内<strong>能</strong>提供的运算量，衡量一次训练"钱花得值不值"。</p>
 <hr />
 <h2 id="01">0.1 一个根本事实：算力涨得比带宽快</h2>
-<p>整个系列要解决的问题，可以压缩成一张表（✅ 均为厂商公开规格）：</p>
+<h3 id="011-v100-h100-8">0.1.1 先算一笔账：从 V100 换到 H100，为什么没快 8 倍</h3>
+<p>不讲概念，先做一道算术题。任务是推理 Decode（逐 token 生成）阶段的一个矩阵向量乘：权重矩阵 4096 × 4096，FP16（2 字节），一次只算 1 个 token。</p>
+<div class="codehilite"><pre><span></span><code>计算量 = 2 × 1 × 4096 × 4096 = 33.55 MFLOP
+搬运量 = 权重 4096 × 4096 × 2 B = 33.55 MB      ← 输入输出各 8 KB，忽略
+</code></pre></div>
+
+<p>把这个算子分别放到 V100 和 H100 上，两笔账各算一遍：</p>
 <table>
 <thead>
 <tr>
 <th></th>
-<th>发布</th>
-<th>FP16 算力</th>
-<th>HBM 带宽</th>
-<th>屋脊点</th>
+<th>V100 SXM2（2017）</th>
+<th>H100 SXM5（2022）</th>
+<th>倍数</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>V100</td>
+<td>FP16 稠密算力</td>
+<td>125 TFLOPS</td>
+<td>989 TFLOPS</td>
+<td><strong>7.9 ×</strong></td>
+</tr>
+<tr>
+<td>HBM 带宽</td>
+<td>900 GB/s</td>
+<td>3350 GB/s</td>
+<td><strong>3.7 ×</strong></td>
+</tr>
+<tr>
+<td>算完这 33.55 MFLOP 要多久</td>
+<td>33.55 M ÷ 125 T = 0.27 µs</td>
+<td>33.55 M ÷ 989 T = <strong>0.034 µs</strong></td>
+<td>7.9 ×</td>
+</tr>
+<tr>
+<td>搬完这 33.55 MB 要多久</td>
+<td>33.55 MB ÷ 900 GB/s = 37.3 µs</td>
+<td>33.55 MB ÷ 3350 GB/s = <strong>10.0 µs</strong></td>
+<td>3.7 ×</td>
+</tr>
+<tr>
+<td><strong>实际耗时 ≈ max(两者)</strong></td>
+<td><strong>37.3 µs</strong></td>
+<td><strong>10.0 µs</strong></td>
+<td><strong>3.7 ×</strong></td>
+</tr>
+<tr>
+<td>算力利用率 = 算 ÷ 实际</td>
+<td>0.27 ÷ 37.3 = <strong>0.72%</strong></td>
+<td>0.034 ÷ 10.0 = <strong>0.34%</strong></td>
+<td><strong>掉了一半</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>买了一张算力 7.9 倍的卡，这个算子只快了 3.7 倍，而且算力利用率还从 0.72% 掉到了 0.34%。</strong></p>
+<p>再看同一代硬件上的另一个算子作对照——4096×4096×4096 的大方阵乘法（FP16）：</p>
+<div class="codehilite"><pre><span></span><code>计算量 = 2 × 4096³ = 137.44 GFLOP
+搬运量 = 3 × 4096² × 2 B = 100.66 MB     ← 读 A、读 B、写 C 各一遍
+
+V100：算 137.44 G ÷ 125 T = 1100 µs ；搬 100.66 MB ÷ 900 GB/s = 112 µs → 耗时 1100 µs
+H100：算 137.44 G ÷ 989 T =  139 µs ；搬 100.66 MB ÷ 3350 GB/s = 30 µs → 耗时  139 µs
+
+1100 ÷ 139 = 7.9 倍   ← 算力那 7.9 倍，一分不少地吃到了
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>同一次换卡，两个算子拿到的红利差一倍。</strong> 差别不在算子写得好不好，而在它<strong>每搬 1 字节能算几次</strong>：Decode 那个算子是 1 次，大方阵那个是 1365 次。这个比值就叫<strong>算术强度</strong>，它决定了你这张卡的两个峰值——算力和带宽——哪一个会先见底。整个系列所有技术，都是在把这个比值往上推，或者把分母（字节数）往下压。</p>
+</blockquote>
+<h3 id="012">0.1.2 跨代际数字表：比值是怎么一步步恶化的</h3>
+<p>把五代硬件的两个峰值摆在一起（NVIDIA 侧 ✅ 均为厂商公开规格；屋脊点 = 算力 ÷ 带宽，可自行验算）：</p>
+<table>
+<thead>
+<tr>
+<th>硬件</th>
+<th>发布</th>
+<th>BF16/FP16 稠密算力</th>
+<th>HBM 带宽</th>
+<th>相对 V100 算力</th>
+<th>相对 V100 带宽</th>
+<th><strong>屋脊点</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V100 SXM2 (16 GB)</td>
 <td>2017</td>
 <td>125 TFLOPS</td>
 <td>900 GB/s</td>
+<td>1.0 ×</td>
+<td>1.0 ×</td>
 <td>139 FLOP/Byte</td>
 </tr>
 <tr>
-<td>A100</td>
+<td>A100 SXM (80 GB)</td>
 <td>2020</td>
 <td>312 TFLOPS</td>
 <td>2039 GB/s</td>
+<td>2.5 ×</td>
+<td>2.3 ×</td>
 <td>153 FLOP/Byte</td>
 </tr>
 <tr>
-<td>H100</td>
+<td>H100 SXM5 (80 GB)</td>
 <td>2022</td>
 <td>989 TFLOPS</td>
 <td>3350 GB/s</td>
+<td>7.9 ×</td>
+<td>3.7 ×</td>
 <td><strong>295 FLOP/Byte</strong></td>
+</tr>
+<tr>
+<td>H200 SXM (141 GB)</td>
+<td>2024</td>
+<td>989 TFLOPS</td>
+<td>4800 GB/s</td>
+<td>7.9 ×</td>
+<td>5.3 ×</td>
+<td>206 FLOP/Byte</td>
+</tr>
+<tr>
+<td>B200 (192 GB)</td>
+<td>2025</td>
+<td>⚠️ ~2250 TFLOPS</td>
+<td>~8000 GB/s</td>
+<td>~18 ×</td>
+<td>~8.9 ×</td>
+<td>⚠️ ~281 FLOP/Byte</td>
 </tr>
 <tr>
 <td>昇腾 910B3</td>
 <td>2023</td>
-<td>~320 TFLOPS ⚠️</td>
-<td>~1.6 TB/s ⚠️</td>
-<td>~200 FLOP/Byte ⚠️</td>
+<td>⚠️ ~320 TFLOPS</td>
+<td>⚠️ ~1.6 TB/s</td>
+<td>—</td>
+<td>—</td>
+<td>⚠️ ~200 FLOP/Byte</td>
 </tr>
 </tbody>
 </table>
-<p>五年里<strong>算力涨了 7.9 倍，带宽只涨了 3.7 倍</strong>。</p>
-<p>屋脊点从 139 涨到 295 的含义是：<strong>同一个算子，什么都不改，在新卡上更容易变成带宽受限</strong>。你买了算力 8 倍的卡，但如果算子的算术强度没跟上，实际只能吃到带宽那 3.7 倍的红利。</p>
-<div class="codehilite"><pre><span></span><code>算术强度 I = FLOPs / Bytes
+<p><strong>V100 到 H100 这五年，算力涨了 7.9 倍，带宽只涨了 3.7 倍</strong>，屋脊点从 139 抬到 295。</p>
+<p>屋脊点变大的物理含义只有一句话：<strong>同一个算子，一行代码都不改，在新卡上更容易变成带宽受限</strong>。你买的是算力，吃到的是带宽。</p>
+<div class="codehilite"><pre><span></span><code>屋脊点走势（数字越大，越难喂饱算力）
 
-I &gt; 屋脊点  →  Compute Bound（算力受限），硬件在满负荷算
-I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
-
-大模型里的真实情况：
-  训练时的大 GEMM        I ≈ 数百～上千   → Compute Bound ✅
-  推理 Decode 的矩阵向量乘 I ≈ 1          → Memory Bound ❌❌
-  LayerNorm / Softmax    I ≈ 2～5         → Memory Bound ❌❌
-  逐元素加法              I ≈ 0.25        → Memory Bound ❌❌
+  V100  139  ████████████
+  A100  153  █████████████
+  H100  295  █████████████████████████
+  H200  206  █████████████████
+  B200  281  ████████████████████████
+  910B3 200  █████████████████  (⚠️ 基于推断数字)
 </code></pre></div>
 
-<p><strong>所以这个系列从头到尾只在做一件事：想办法让数据少搬、或者搬的时候别让算力闲着。</strong> 后面所有的技术——分块、融合、双缓冲、量化、FlashAttention、PagedAttention——全都是这一件事的不同侧面。</p>
 <blockquote>
-<p>⚠️ 趋势不是单调的。H200（4.8 TB/s）和 B200 把带宽拉了上来，屋脊点回落。但"算力和带宽赛跑"这个结构性矛盾没有消失，只是快慢交替。</p>
+<p>⚠️ <strong>趋势不是单调的，也不该被讲成"末日论"。</strong> H200 靠 HBM3e 把带宽拉到 4.8 TB/s、屋脊点回落到 206，B200 又用更高的算力把它推回 281。快慢交替，但"算力和带宽赛跑、且带宽长期落后"这个结构性矛盾一直在。<strong>这个系列讲的所有技术，在屋脊点 139 的卡上和 295 的卡上都成立，只是收益大小不同。</strong></p>
+<p>⚠️ B200 那一行标 ⚠️ 的原因：Blackwell 的规格在发布后经历过修订，且官方口径里稀疏值和稠密值、单 die 和双 die 混着报。本系列一律用<strong>稠密值</strong>，和 <a href="附-速查表.html">附-速查表 §A</a> 一致。昇腾那两行标 ⚠️ 的原因见本章 §0.7。</p>
+</blockquote>
+<h3 id="013">0.1.3 算术强度：一把尺子，一条分界线</h3>
+<div class="codehilite"><pre><span></span><code>算术强度 I = 总浮点运算次数 (FLOP) ÷ 从 HBM 搬运的总字节数 (Byte)
+
+I &gt; 屋脊点  →  Compute Bound（算力受限），硬件在满负荷算，带宽有富余
+I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
+</code></pre></div>
+
+<p>把大模型里几个真实算子的 I 算出来，摆到同一条数轴上（全部按 H100，详细推导见 <a href="02-屋顶线与性能剖析.html">02 章 §2.3</a>）：</p>
+<div class="codehilite"><pre><span></span><code>算术强度数轴（对数刻度）
+
+  0.125      1        2                62      124        295         1365
+    A        B        C                 D       F        屋脊点         E
+    |        |        |                 |       |          |             |
+    +--------+--------+-----------------+-------+----------+-------------+
+    &lt;--------------- Memory Bound（带宽受限）-------------&gt;  &lt;- Compute -&gt;
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>点</th>
+<th>算子</th>
+<th>精度</th>
+<th><strong>I</strong></th>
+<th>屋顶线上界</th>
+<th>占对应峰值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>逐元素乘 <code>y = x * 2</code></td>
+<td>FP32</td>
+<td><strong>0.125</strong></td>
+<td>0.42 TFLOPS</td>
+<td>0.63%（峰值 67）</td>
+</tr>
+<tr>
+<td>B</td>
+<td>SiLU 激活 / Decode 的矩阵向量乘</td>
+<td>BF16</td>
+<td><strong>1.0</strong></td>
+<td>3.35 TFLOPS</td>
+<td>0.34%（峰值 989）</td>
+</tr>
+<tr>
+<td>C</td>
+<td>LayerNorm</td>
+<td>BF16</td>
+<td><strong>2.0</strong></td>
+<td>6.7 TFLOPS</td>
+<td>0.68%</td>
+</tr>
+<tr>
+<td>D</td>
+<td>训练 GEMM，M = 64</td>
+<td>BF16</td>
+<td><strong>62</strong></td>
+<td>208 TFLOPS</td>
+<td>21%</td>
+</tr>
+<tr>
+<td>F</td>
+<td>FlashAttention-2 前向</td>
+<td>BF16</td>
+<td>⚠️ <strong>124</strong></td>
+<td>415 TFLOPS</td>
+<td>42%</td>
+</tr>
+<tr>
+<td>E</td>
+<td>大方阵 GEMM 4096³</td>
+<td>BF16</td>
+<td><strong>1365</strong></td>
+<td>989 TFLOPS（屋顶）</td>
+<td>100%（理论）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>看这张表最该注意的一件事：六个算子里有五个在屋脊点左边，而它们占了大模型训练和推理 90% 的时间。</strong> 大方阵 GEMM 那一个 Compute Bound 的点，是整个列表里的少数派。</p>
+<blockquote>
+<p>★ <strong>所以这个系列从头到尾只在做一件事：想办法让数据少搬，或者搬的时候别让算力闲着。</strong> 后面所有的技术——分块、融合、双缓冲、量化、FlashAttention、PagedAttention、投机解码——全都是这一件事的不同侧面。下一节把"这一件事"拆成四个手段。</p>
 </blockquote>
 <hr />
 <h2 id="02">0.2 四个通用手段</h2>
-<p>不管在什么硬件上，减少"搬运税"的办法就这么四种。<strong>这四个手段是平台无关的，变的只是实现方式</strong>。</p>
-<h3 id="tiling">手段一：分块（Tiling）—— 用片上容量换搬运次数</h3>
-<div class="codehilite"><pre><span></span><code>朴素做法：每算一个结果元素，就去 HBM 取一次数据
-          → 同一份数据被反复搬运 N 次
+<p>不管在什么硬件上，减少"搬运税"的办法就这么四种。<strong>这四个手段是平台无关的，变的只是实现方式。</strong> 下面每一个都配一个带数字的最小例子，说清它到底在省什么。</p>
+<h3 id="021-tiling">0.2.1 手段一：分块（Tiling）—— 省的是"同一份数据被搬进来的次数"</h3>
+<p>朴素的矩阵乘，每算一个输出元素，就把 A 的一整行和 B 的一整列从 HBM 读一遍。同一行 A 会被重复读 N 次。</p>
+<div class="codehilite"><pre><span></span><code>不分块：
+  C[0][0] ← 读 A 第 0 行 + B 第 0 列
+  C[0][1] ← 又读 A 第 0 行 + B 第 1 列      ← A 第 0 行第二次进城
+  C[0][2] ← 又读 A 第 0 行 + B 第 2 列      ← 第三次
+   ...                                      ← 一共 N 次
 
-分块做法：把数据切成片上放得下的小块，搬一次，在片上反复用
-          → 搬运次数降到 1/N
-
-代价：要自己算块多大、怎么切、边界怎么处理
+分块（把 C 切成 128×128 的块，一个块负责 16384 个输出元素）：
+  C 的 (0,0) 块 ← 读 A 的第 0 条横条（128 行）+ B 的第 0 条竖条（128 列）
+                  搬进片上之后，这两条数据被这 16384 个输出元素共用
+                  → 同一份数据只进城 1 次，在城里被用 128 次
 </code></pre></div>
 
-<p>这是<strong>收益最大、也最费脑子</strong>的手段。GEMM 的三级分块（<a href="03-GEMM深度剖析.html">03 章</a>）、FlashAttention 的 KV 分块（<a href="04-FlashAttention全系.html">04 章</a>）、Ascend C 的 Tiling 函数（<a href="13-AscendC编程.html">13 章</a>）本质是同一件事。</p>
-<h3 id="fusion">手段二：融合（Fusion）—— 消灭中间结果的落盘</h3>
-<div class="codehilite"><pre><span></span><code>不融合：  GEMM → 写回 HBM → 读出 → Bias → 写回 → 读出 → GeLU → 写回
-          三个算子，六次 HBM 往返
+<p><strong>把数字算出来</strong>（M = N = K = 1024，FP32 4 字节，H100：HBM 3.35 TB/s，FP32 峰值 67 TFLOPS）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>从 HBM 读 A+B</th>
+<th>HBM 搬运时间</th>
+<th>纯计算时间</th>
+<th>实际耗时 ≈ max</th>
+<th>算力利用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不分块</td>
+<td>1024³ × 2 × 4 B = <strong>8590 MB</strong></td>
+<td>2564 µs</td>
+<td>32 µs</td>
+<td><strong>2564 µs</strong></td>
+<td><strong>1.25%</strong></td>
+</tr>
+<tr>
+<td>128×128 分块</td>
+<td>64 块 × 1.049 MB = <strong>67.1 MB</strong></td>
+<td>20 µs</td>
+<td>32 µs</td>
+<td><strong>32 µs</strong></td>
+<td><strong>100%</strong>（理论）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>HBM 流量降到 1/128，瓶颈从"访存把计算卡死 80 倍"翻成了"计算把访存盖住"。</strong> 那个 128 不是巧合，它就是你选的块边长——完整推导见 <a href="03-GEMM深度剖析.html">03 章 §3.3</a>。</p>
+<blockquote>
+<p>★ <strong>分块省的是次数，不是总量。</strong> 要读的原始数据（A 和 B 各 4 MB）一个字节都没少，省掉的是"同一份数据被重复搬进来"的那 8523 MB。代价是你得自己算块开多大、怎么切、边界怎么处理——这是四个手段里<strong>收益最大、也最费脑子</strong>的一个。</p>
+</blockquote>
+<p><strong>在哪一章展开</strong>：GEMM 的三级分块（<a href="03-GEMM深度剖析.html">03 章</a>）、FlashAttention 的 K/V 分块（<a href="04-FlashAttention全系.html">04 章</a>）、PagedAttention 对显存的分块（<a href="09-推理侧算子.html">09 章</a>）、昇腾的 Host 侧 Tiling 函数（<a href="13-AscendC编程.html">13 章 §13.5</a>）。</p>
+<h3 id="022-fusion-hbm">0.2.2 手段二：融合（Fusion）—— 省的是"中间结果往 HBM 跑的那一趟"</h3>
+<p>Transformer 每层都有这样一段：<code>n = layer_norm(x)</code> → <code>g = gelu(n)</code> → <code>y = x + g</code>。三个算子分开跑，<code>n</code> 和 <code>g</code> 这两个中间张量会各自完整地写进 HBM、再完整地读回来。</p>
+<div class="codehilite"><pre><span></span><code>融合前：3 个 kernel，中间结果两次落地
 
-融合：    GEMM → (片上) Bias → (片上) GeLU → 写回
-          一个算子，两次 HBM 往返
+  HBM: x ──读 T──→ [LayerNorm] ──写 T──→ HBM: n
+                                            │ 读 T   ← 这一读一写纯属浪费
+  HBM: n ──读 T──→ [GELU]      ──写 T──→ HBM: g
+                                            │ 读 T   ← 同上
+  HBM: g + x ──读 2T──→ [残差加] ──写 T──→ HBM: y
+
+融合后：1 个 kernel，中间结果全程待在寄存器里
+
+  HBM: x ──读 T──→ [LayerNorm → GELU → 残差加] ──写 T──→ HBM: y
+                    n 和 g 一个字节都没进过 HBM
+                    x 读进来后也一直留着，残差加直接取用，不必二次读
 </code></pre></div>
 
-<p>细节见 <a href="05-算子融合.html">05 章</a>。这里要先埋一个伏笔：<strong>融合的收益依赖于"中间结果真的能留在片上"</strong>。这个前提在 GPU 上基本成立，在昇腾 910B 上因为 Cube 和 Vector 是两个独立的核，<strong>并不总是成立</strong>（<a href="12-昇腾硬件基础.html">12 章 §12.2.3</a>）。同一个手段，在两个平台上收益来源不同——这正是本系列要讲清楚的那类差异。</p>
-<h3 id="pipelining">手段三：流水重叠（Pipelining）—— 让搬运和计算同时发生</h3>
-<div class="codehilite"><pre><span></span><code>串行：  [搬块0][算块0][搬块1][算块1][搬块2][算块2]
-        总耗时 = (T搬 + T算) × N
+<p><strong>把字节数算出来</strong>（token 数 8192、隐藏维度 4096、BF16，一个张量 T = 64 MiB）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>kernel 数</th>
+<th>HBM 读</th>
+<th>HBM 写</th>
+<th>合计</th>
+<th>时间（÷ 3.35 TB/s）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>融合前</td>
+<td>3</td>
+<td>5 T</td>
+<td>2 T</td>
+<td><strong>7 T = 448 MiB</strong></td>
+<td><strong>140.2 µs</strong></td>
+</tr>
+<tr>
+<td>融合后</td>
+<td>1</td>
+<td>1 T</td>
+<td>1 T</td>
+<td><strong>2 T = 128 MiB</strong></td>
+<td><strong>40.1 µs</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>加速 7 ÷ 2 = 3.5 倍，而浮点运算量一个 FLOP 都没变。</strong> 完整推导见 <a href="05-算子融合.html">05 章 §5.2</a>。</p>
+<blockquote>
+<p>★ <strong>注意这个 3.5 倍和张量多大无关。</strong> 换成别的形状、别的精度，7 T ÷ 2 T 的比值不变。决定加速比的是<strong>链的结构</strong>（几个算子、每个读写几份），张量大小只决定省下来的绝对时间是多少微秒。</p>
+<p>⚠️ <strong>融合的收益依赖于一个前提：中间结果真的能留在片上。</strong> 这个前提在 GPU 上基本成立，在昇腾 910B 上因为 Cube（矩阵单元）和 Vector（向量单元）被拆成了两个独立的核、之间必须绕一趟全局内存，<strong>并不总是成立</strong>（<a href="12-昇腾硬件基础.html">12 章 §12.2.3</a>）。同一个手段，在两个平台上收益来源不同——这正是本系列要讲清楚的那类差异。</p>
+</blockquote>
+<p><strong>在哪一章展开</strong>：三种融合模式与判据（<a href="05-算子融合.html">05 章</a>）、FlashAttention 把整个注意力融成一个 kernel（<a href="04-FlashAttention全系.html">04 章</a>）、昇腾的 CV 流水并行（<a href="13-AscendC编程.html">13 章</a>、<a href="14-GPU到NPU迁移实战.html">14 章</a>）。</p>
+<h3 id="023-pipelining">0.2.3 手段三：流水重叠（Pipelining）—— 省的是"等待的时间"，一个字节都不少搬</h3>
+<p>前两个手段都在减少字节。这一个不减字节，它只是让搬运和计算<strong>同时发生</strong>。</p>
+<div class="codehilite"><pre><span></span><code>单缓冲（一块片上缓冲区：搬完才能算，算完才能覆盖）
 
-流水：  [搬块0][搬块1][搬块2][搬块3]
-              [算块0][算块1][算块2]
-        总耗时 ≈ max(T搬, T算) × N
+  时间 →
+  搬运单元  [搬 t0]        [搬 t1]        [搬 t2]
+  计算单元         [算 t0]        [算 t1]        [算 t2]
+            └ 算的时候搬运单元全空，搬的时候计算单元全空
+            每轮 = T搬 + T算
+
+双缓冲（两块缓冲区 buf0 / buf1 交替：搬下一块的同时算这一块）
+
+  时间 →
+  搬运单元  [搬 t0][搬 t1][搬 t2][搬 t3][搬 t4]
+  计算单元         [算 t0][算 t1][算 t2][算 t3]
+            └ 两行同时在动。预热一轮之后，每轮 = max(T搬, T算)
 </code></pre></div>
 
-<p>前提是硬件上<strong>搬运和计算有独立的执行单元</strong>。GPU 上靠 <code>cp.async</code> 异步拷贝指令加双缓冲，昇腾上靠独立的 MTE（存储转换引擎）硬件流水线。见 <a href="03-GEMM深度剖析.html">03 章 §3.5</a> 和 <a href="13-AscendC编程.html">13 章 §13.4</a>。</p>
-<h3 id="quantization">手段四：降精度（Quantization）—— 直接减少要搬的字节</h3>
-<div class="codehilite"><pre><span></span><code>BF16 → INT8：要搬的字节直接减半 → 带宽受限的算子直接快一倍
-              同时 INT8 算力通常是 BF16 的 2 倍
+<p><strong>把周期数算出来</strong>（沿用 <a href="03-GEMM深度剖析.html">03 章 §3.5</a> 的配置：块 128×128×8，FP32，K = 1024 所以要循环 128 轮）：</p>
+<div class="codehilite"><pre><span></span><code>T搬 = 570 周期（8 KB ÷ 单 SM 分到的带宽，并受 HBM 延迟约束）
+T算 = 1024 周期（262144 FLOP ÷ 单 SM 每周期 256 FLOP）
+
+单缓冲：每轮 570 + 1024 = 1594 周期，总计 570 + 128 × 1594 ≈ 204,600 周期
+双缓冲：每轮 max(570, 1024) = 1024 周期，总计 570 + 128 × 1024 ≈ 131,600 周期
+
+204600 ÷ 131600 = 1.55 倍
 </code></pre></div>
 
-<p>见 <a href="06-量化算子.html">06 章</a>。代价是精度，所以整章都在讲怎么在精度和速度之间取舍。</p>
-<h3 id="_1">四个手段的全局索引</h3>
+<p><strong>算法没改、字节没少，快了 1.55 倍</strong>，省下来的正好是那 128 轮 × 570 周期的干等。</p>
+<blockquote>
+<p>★ <strong>这个手段的收益有一个硬上限：2 倍，而且只在 T搬 恰好等于 T算 时取到。</strong> 因为 <code>(T搬 + T算) ÷ max(T搬, T算) ≤ 2</code>。上例是 1594 ÷ 1024 = 1.56，已经接近这个配置能拿到的全部。<strong>如果搬运本身就远大于计算（T搬 ≫ T算），重叠之后 HBM 依然满负荷，这条路走到头了</strong>——这时必须回去用分块、融合或降精度把字节数真的减下来。</p>
+<p>⚠️ 前提是硬件上<strong>搬运和计算有各自独立的执行单元</strong>。GPU 上靠 <code>cp.async</code> 异步拷贝指令或 Hopper 的 TMA（Tensor Memory Accelerator，张量内存加速器）配合双缓冲实现；昇腾上靠 MTE 这个真正独立的硬件流水线实现（<a href="13-AscendC编程.html">13 章 §13.4</a>）。<strong>在 GPU 上这是一种优化技巧，在昇腾上这是基本写法</strong>——原因见本章 §0.3。</p>
+</blockquote>
+<h3 id="024-quantization">0.2.4 手段四：降精度（Quantization）—— 省的是"每个数占的字节"</h3>
+<p>最直白的一个：数还是那么多个，只是每个占的位数变少了。</p>
+<p>以 LLaMA-3-8B（80.3 亿参数）的 Decode 为例。Decode 每生成 1 个 token，都必须把<strong>整个模型的权重从 HBM 完整读一遍</strong>，所以每步耗时的下界就是"读权重的时间"：</p>
+<table>
+<thead>
+<tr>
+<th>权重格式</th>
+<th>每权重位数</th>
+<th>权重总大小</th>
+<th>每 token 下界（÷ 3.35 TB/s）</th>
+<th>吞吐上界</th>
+<th>相对 BF16</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16</td>
+<td>16</td>
+<td>16.06 GB</td>
+<td>4.79 ms</td>
+<td>209 token/s</td>
+<td>1.00 ×</td>
+</tr>
+<tr>
+<td>INT8</td>
+<td>8</td>
+<td>8.03 GB</td>
+<td>2.40 ms</td>
+<td>417 token/s</td>
+<td><strong>2.00 ×</strong></td>
+</tr>
+<tr>
+<td>INT4（group = 128）</td>
+<td>4.156</td>
+<td>4.17 GB</td>
+<td>1.25 ms</td>
+<td>803 token/s</td>
+<td><strong>3.85 ×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>注意 INT4 是 3.85 倍而不是 4 倍。</strong> 差的那 0.15 是 scale（缩放系数）占的空间：每 128 个权重要额外存一个 FP16 的 scale 和一个 zero-point，摊下来每个权重实际是 4.156 位而不是 4 位。这笔账在 <a href="06-量化算子.html">06 章 §6.2.6</a> 里算得很细。</p>
+<p>⚠️ <strong>这里有一个流传极广的错误推论，必须在总纲就掐掉</strong>：「INT8 Tensor Core 的算力是 BF16 的 2 倍，所以 W8A8 量化能快 2 倍」。这个推论只在 <strong>Compute Bound</strong> 的场景（大 batch 训练、长序列 Prefill）下成立。<strong>在 Decode 这种 Memory Bound 的场景里，算力根本没在用，那 2 倍算力是白送的，一分钱都兑现不了</strong>——上表里的 2 倍，100% 来自"字节少了一半"，和 INT8 算得快不快毫无关系。同一个量化动作，收益来源随场景完全不同，详见 <a href="06-量化算子.html">06 章 §6.1.2</a>。</p>
+</blockquote>
+<p><strong>在哪一章展开</strong>：INT8 / FP8 / GPTQ / AWQ 与精度取舍（<a href="06-量化算子.html">06 章</a>）、KV Cache 量化（<a href="06-量化算子.html">06 章 §6.8.5</a>、<a href="09-推理侧算子.html">09 章</a>）、昇腾没有 FP8 时怎么办（<a href="06-量化算子.html">06 章 §6.10</a>）。</p>
+<h3 id="025">0.2.5 四个手段并排：它们动的是同一张账单的不同行</h3>
+<p>一个算子的耗时可以写成这样一张账单，四个手段各改其中一项：</p>
+<div class="codehilite"><pre><span></span><code>耗时 ≈ max( 搬运时间 , 计算时间 ) + 等待时间
+
+  搬运时间 = (数据份数 × 每份被搬的次数 × 每个数的字节数) ÷ 带宽
+              ↑ 融合动这里      ↑ 分块动这里      ↑ 降精度动这里
+
+  等待时间 = 搬运和计算没能重叠上的那部分
+              ↑ 流水重叠动这里
+</code></pre></div>
+
 <table>
 <thead>
 <tr>
 <th>手段</th>
-<th>本质</th>
+<th>动账单的哪一项</th>
+<th>本节例子的收益</th>
+<th>收益上限</th>
 <th>GPU 上怎么做</th>
 <th>昇腾上怎么做</th>
 <th>章节</th>
@@ -376,140 +722,408 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 <tbody>
 <tr>
 <td><strong>分块</strong></td>
-<td>片上容量换搬运次数</td>
-<td>共享内存三级分块；FA 的 KV 分块</td>
+<td>每份数据被搬的<strong>次数</strong></td>
+<td>128 ×</td>
+<td>受片上容量限制，可以很大</td>
+<td>共享内存三级分块；FA 的 K/V 分块</td>
 <td>L1/L0/UB 分块 + <strong>Host 侧 Tiling 函数</strong></td>
 <td><a href="03-GEMM深度剖析.html">03</a> <a href="04-FlashAttention全系.html">04</a> · <a href="13-AscendC编程.html">13</a></td>
 </tr>
 <tr>
 <td><strong>融合</strong></td>
-<td>消灭中间结果落盘</td>
+<td>中间结果的<strong>份数</strong></td>
+<td>3.5 ×</td>
+<td>= 链上字节数的比值</td>
 <td>手写融合 kernel；<code>torch.compile</code></td>
 <td><code>cann-ops-adv</code> 现成算子；<strong>CV 流水并行</strong></td>
 <td><a href="05-算子融合.html">05</a> · <a href="13-AscendC编程.html">13</a> <a href="14-GPU到NPU迁移实战.html">14</a></td>
 </tr>
 <tr>
 <td><strong>流水重叠</strong></td>
-<td>搬运与计算并行</td>
-<td><code>cp.async</code> + 双缓冲；Warp Specialization</td>
+<td><strong>等待时间</strong></td>
+<td>1.55 ×</td>
+<td><strong>严格 &lt; 2 ×</strong></td>
+<td><code>cp.async</code> / TMA + 双缓冲；Warp Specialization</td>
 <td><strong><code>BUFFER_NUM=2</code> + MTE 独立流水</strong></td>
-<td><a href="03-GEMM深度剖析.html">03</a> · <a href="13-AscendC编程.html">13</a></td>
+<td><a href="03-GEMM深度剖析.html">03 §3.5</a> · <a href="13-AscendC编程.html">13 §13.4</a></td>
 </tr>
 <tr>
 <td><strong>降精度</strong></td>
-<td>减少字节数</td>
+<td>每个数的<strong>字节数</strong></td>
+<td>2.0 × / 3.85 ×</td>
+<td>= 位宽的比值</td>
 <td>FP8 / INT8 / GPTQ / AWQ</td>
 <td><strong>INT8 W8A8</strong>（无 FP8）；HiF8</td>
 <td><a href="06-量化算子.html">06</a></td>
 </tr>
 <tr>
 <td>（通信层）</td>
-<td>减少或重叠传输</td>
+<td>卡与卡之间的传输</td>
+<td>—</td>
+<td>—</td>
 <td>NCCL + 计算通信重叠；DeepEP</td>
 <td>HCCL + <strong>通算融合</strong>；超节点</td>
 <td><a href="08-MoE算子与通信.html">08</a></td>
 </tr>
 </tbody>
 </table>
-<p><strong>读法建议</strong>：遇到任何一个新技术，先问它属于这四类中的哪一类。绝大多数"新算子"都是这四种手段的重新组合。FlashAttention = 分块 + 融合 + 重计算；PagedAttention = 分块（针对显存碎片）；投机采样 = 把 Memory Bound 的 Decode 变成 Compute Bound 的批量验证。</p>
+<blockquote>
+<p>★ <strong>四个手段里只有"流水重叠"有一个硬性的 2 倍天花板</strong>，另外三个的收益取决于你能把字节压到多少。所以排优化顺序时，先用前面三个把字节数压下去，最后才用流水重叠把残留的等待抹平。</p>
+</blockquote>
+<h3 id="026">0.2.6 读法建议：遇到新技术，先归类</h3>
+<p>绝大多数"新算子"都是这四种手段的重新组合。先问它属于哪一类，再看它的具体实现：</p>
+<table>
+<thead>
+<tr>
+<th>技术</th>
+<th>拆成四个手段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FlashAttention</strong></td>
+<td>分块（K/V 切块）+ 融合（N×N 的分数矩阵从不落 HBM）+ 重计算（反向时重算而不是存）→ <a href="04-FlashAttention全系.html">04 章 §4.3.3</a></td>
+</tr>
+<tr>
+<td><strong>PagedAttention</strong></td>
+<td>分块，但切的是显存而不是计算——目标是消除碎片，不是提高算术强度 → <a href="09-推理侧算子.html">09 章 §9.3</a></td>
+</tr>
+<tr>
+<td><strong>连续批处理</strong></td>
+<td>提高算术强度的第五条路：把更多 token 塞进同一次权重读取 → <a href="09-推理侧算子.html">09 章 §9.4.2</a></td>
+</tr>
+<tr>
+<td><strong>投机解码</strong></td>
+<td>把 Memory Bound 的逐 token Decode，换成 Compute Bound 的批量验证 → <a href="09-推理侧算子.html">09 章 §9.6</a></td>
+</tr>
+<tr>
+<td><strong>CUDA Graph</strong></td>
+<td>都不属于——它治的是 Host Bound，不在这四个手段的射程内 → <a href="05-算子融合.html">05 章 §5.5</a></td>
+</tr>
+</tbody>
+</table>
+<p>最后一行值得停一下：<strong>有一整类性能问题，四个手段一个都治不了</strong>。那就是下一节要说的诊断漏斗里的第一步。</p>
 <hr />
 <h2 id="03">0.3 两种硬件哲学：延迟怎么掩盖</h2>
 <p>这是理解 GPU 和 NPU 一切差异的总开关。</p>
-<p><strong>共同的问题</strong>：访存很慢。从 HBM 取一次数据要 ~400 个时钟周期，这期间计算单元干等着就是浪费。</p>
-<p><strong>两种截然不同的答案</strong>：</p>
-<div class="codehilite"><pre><span></span><code>━━━ SIMT（NVIDIA GPU）：超额订阅 ━━━
+<h3 id="031-500">0.3.1 共同的问题：500 个周期的空档</h3>
+<p>两类硬件面对的是同一个物理事实：<strong>从 HBM 取一次数据要几百个时钟周期，而一次浮点运算只要 1 个周期。</strong></p>
+<div class="codehilite"><pre><span></span><code>⚠️ H100 上的实测量级（随代际和缓存命中情况浮动，见 01 章 §1.3）：
 
-  一个 SM 上同时挂 64 个 Warp。
-  Warp A 等内存 → 硬件立刻切到 Warp B → B 也等 → 切到 C……
-  只要挂的 Warp 足够多，总有一个能跑。
-
-  ┌─ 由此推出 ─────────────────────────────────┐
-  │ · 需要 occupancy（占用率）这个概念          │
-  │ · 切换由硬件调度，程序员写单线程代码即可    │
-  │ · 片上存储可以是 Cache（硬件自动填充）      │
-  │ · 编译器能自动做很多优化 → Triton 可行      │
-  └─────────────────────────────────────────────┘
-
-━━━ DSA（华为昇腾）：流水重叠 ━━━
-
-  搬运交给独立的硬件单元（MTE），它和计算单元真正并行。
-  MTE 搬第 k+1 块的同时，Cube 在算第 k 块。
-  没有&quot;切换到别的任务&quot;，只有&quot;把自己的流水排满&quot;。
-
-  ┌─ 由此推出 ─────────────────────────────────┐
-  │ · 没有 occupancy 这个概念                   │
-  │ · 流水靠软件排，程序员必须显式写搬运        │
-  │ · 片上存储是 Scratchpad（软件显式搬运）     │
-  │ · 编译器帮不上忙 → Ascend C 代码量必然大    │
-  └─────────────────────────────────────────────┘
+  寄存器      ~1 周期
+  共享内存   ~25 周期
+  L2 缓存   ~250 周期
+  HBM 显存  ~500 周期      ← 就是这个数字，逼出了两种完全不同的架构
 </code></pre></div>
 
-<p><strong>这一张图解释了后面所有的"为什么"</strong>：</p>
+<p>500 个周期里，如果计算单元干等着，就是 500 个周期的浪费。<strong>怎么把这 500 个周期填满，是两类硬件分岔的起点。</strong></p>
+<h3 id="032">0.3.2 同一个算子，两种执行方式</h3>
+<p>拿一个最简单的算子做对照：把 4 块数据从 HBM 搬进来、各做一点计算、再写回去。</p>
+<div class="codehilite"><pre><span></span><code>━━━ SIMT（NVIDIA GPU）：超额订阅 —— 多找几个人排队，总有一个能上 ━━━
+
+  一个 SM 上同时挂着最多 64 个 Warp（每个 Warp = 32 个线程）。
+  哪个 Warp 在等内存，硬件调度器立刻切到下一个就绪的 Warp。
+
+  时间 →     0        1        2      ...     500      520      540
+  Warp 0   [发读请求]···························等···[算 20]
+  Warp 1      [发读请求]························等········[算 20]
+  Warp 2         [发读请求]·····················等·············[算 20]
+   ...
+  Warp 24           [发读请求]··················等
+  ─────────────────────────────────────────────────────────────────
+  SM 在干嘛   发   发   发  ...（24 个 Warp 陆续发完）...   算 算 算 算
+
+  ★ 一个 Warp 等的那 500 个周期，被其他 23 个 Warp 的工作填满了。
+    需要多少个 Warp 才填得满？500 ÷ 20 = 25 个。这就是 occupancy 的来历。
+
+  你写的代码：只描述&quot;一个线程怎么处理一个元素&quot;。
+  谁上场、什么时候切：硬件调度器决定，代码里看不到、也控制不了。
+
+
+━━━ DSA（华为昇腾）：流水重叠 —— 一个人不换，但把三条流水线同时排满 ━━━
+
+  一个 AI Core 里，搬入（MTE2）、计算（Vector/Cube）、搬出（MTE3）
+  是三套真正独立的硬件单元，可以同时工作。
+
+  时间 →   ├─ t0 ─┼─ t1 ─┼─ t2 ─┼─ t3 ─┼─ t4 ─→
+  MTE2     [搬入 0][搬入 1][搬入 2][搬入 3]
+  Vector           [计算 0][计算 1][计算 2][计算 3]
+  MTE3                    [搬出 0][搬出 1][搬出 2]
+
+  ★ 三行同时在动 = 流水排满了。任何一行出现空格，就是一个&quot;气泡&quot;。
+    没有&quot;切换到别的任务&quot;这回事，只有&quot;把自己的流水排紧&quot;。
+
+  你写的代码：显式写 DataCopy（搬入）→ Compute → DataCopy（搬出），
+              并显式开 BUFFER_NUM = 2，好让三行能在时间上错开。
+</code></pre></div>
+
+<p><strong>把这两张图叠在一起看，差别只有一句话：GPU 用"换人"填空档，昇腾用"同一个人同时做三件事"填空档。</strong></p>
+<h3 id="033">0.3.3 由此推出的两串后果</h3>
+<div class="codehilite"><pre><span></span><code>SIMT 由此推出
+  ├── 需要 occupancy（占用率）这个概念 —— 手上得有足够多的 Warp 可换
+  ├── 切换由硬件负责，程序员写&quot;一个线程&quot;的代码就行
+  ├── 片上存储可以做成 Cache（硬件自动填充），不必显式搬
+  ├── 编译器能替你做很多事 → Triton 这种&quot;七行写一个算子&quot;的语言可行
+  └── 代价：巨大的寄存器文件 + 调度硬件，吃芯片面积和功耗
+
+DSA 由此推出
+  ├── 没有 occupancy 这个概念 —— 根本不存在&quot;换一个 Warp 上&quot;这件事
+  ├── 流水靠软件排，程序员必须显式写每一次搬运
+  ├── 片上存储是 Scratchpad（便签存储，软件显式搬运），没有自动填充
+  ├── 编译器帮不上忙 → Ascend C 代码量必然大
+  └── 代价：软件复杂度，以及&quot;忘了开双缓冲性能直接腰斩&quot;
+</code></pre></div>
+
+<h3 id="034">0.3.4 这一张图解释了后面所有的"为什么"</h3>
 <table>
 <thead>
 <tr>
 <th>现象</th>
 <th>根因</th>
+<th>在哪一章</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>为什么 GPU 有 occupancy、bank conflict，昇腾没有</td>
+<td>为什么 GPU 有 occupancy、bank conflict，昇腾完全没有这两个概念</td>
 <td>超额订阅 vs 流水重叠</td>
+<td><a href="01-GPU硬件基础.html">01 §1.5–1.6</a> vs <a href="12-昇腾硬件基础.html">12 §12.1</a></td>
 </tr>
 <tr>
-<td>为什么昇腾要手写 <code>DataCopy</code>，GPU 不用</td>
+<td>为什么昇腾要手写 <code>DataCopy</code>，GPU 上一句访存就完事</td>
 <td>Scratchpad vs Cache</td>
+<td><a href="12-昇腾硬件基础.html">12 §12.3</a></td>
 </tr>
 <tr>
 <td>为什么 Triton 七行能写完的算子，Ascend C 要七十行</td>
 <td>编译器能不能替你排流水</td>
+<td><a href="07-Triton编程.html">07</a> vs <a href="13-AscendC编程.html">13 §13.3</a></td>
 </tr>
 <tr>
-<td>为什么昇腾上双缓冲是"基本功"而非"优化"</td>
-<td>流水重叠是唯一的延迟掩盖手段</td>
+<td>为什么昇腾上双缓冲是"基本功"而不是"优化项"</td>
+<td>流水重叠是它<strong>唯一</strong>的延迟掩盖手段</td>
+<td><a href="13-AscendC编程.html">13 §13.4</a></td>
 </tr>
 <tr>
-<td>为什么昇腾多一类 MTE Bound 瓶颈</td>
-<td>搬运有独立硬件单元，它自己会成为瓶颈</td>
+<td>为什么昇腾多一类 GPU 上没有的 MTE Bound 瓶颈</td>
+<td>搬运有独立硬件单元，它自己会先成为瓶颈</td>
+<td><a href="12-昇腾硬件基础.html">12 §12.6</a></td>
+</tr>
+<tr>
+<td>为什么 GPU 上的"融合"在昇腾上有时候不省事</td>
+<td>Cube 和 Vector 是两个独立的核，中间结果得绕全局内存</td>
+<td><a href="12-昇腾硬件基础.html">12 §12.2.3</a></td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p><strong>不要把这理解成"谁更好"</strong>。超额订阅的代价是大量寄存器和调度硬件（面积、功耗）；流水重叠的代价是软件复杂度。两者是在不同约束下的合理选择。</p>
+<p>★ <strong>不要把这理解成"谁更好"。</strong> 超额订阅的代价是大量寄存器和调度硬件（面积、功耗）；流水重叠的代价是软件复杂度（每一次搬运都得你自己写）。两者是在不同约束下的合理选择。真正要记住的是：<strong>换平台时作废的不是某几个 API，而是"延迟怎么被掩盖"这个底层假设</strong>——你脑子里那张图要整个重画。</p>
 </blockquote>
 <hr />
 <h2 id="04">0.4 性能诊断的通用漏斗</h2>
-<p>不管什么平台，定位性能问题都按这个顺序，<strong>从外往里剥</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① Host 下发够快吗？
-   现象：Device 利用率低，但每个算子本身都不慢
-   查：时间线视图里 kernel 之间有大片空隙
-   解：CUDA Graph（GPU）/ ACLGraph 或图模式（昇腾）；合并小算子
-   ↓ 排除后
-
-② 通信是瓶颈吗？
-   现象：多卡时慢，单卡时不慢
-   查：通信算子耗时占比
-   解：计算通信重叠、换通信算法、调并行策略  → 08 章
-   ↓ 排除后
-
-③ 算力受限还是带宽受限？
-   查：算术强度 vs 屋脊点  → 屋顶线模型，02 章
-   解：Memory Bound → 分块/融合/量化
-       Compute Bound → 已接近上界，换更好的 kernel 或更低精度
-   ↓ 定位后
-
-④ 平台特有的瓶颈
-   GPU：occupancy 不足、bank conflict、寄存器溢出   → 01/02 章
-   昇腾：MTE Bound、CV 流水不均衡、核间负载不均     → 12/13 章
+<p>不管什么平台，定位性能问题都按同一个顺序，<strong>从外往里剥</strong>。这一节是本章最该贴在显示器边上的部分。</p>
+<h3 id="041">0.4.1 决策流程图</h3>
+<div class="codehilite"><pre><span></span><code>【入口】一个训练步（或一次推理）比预期慢
+   │
+   ├─ ① 加速卡到底有没有在干活？
+   │     看什么：所有 kernel 耗时之和 ÷ wall time（墙钟时间）
+   │     工具：  nsys stats --report cuda_gpu_kern_sum  /  msprof（昇腾）
+   │     判据：  &lt; 60%  →  Host Bound（下发受限），停在这里先治它
+   │             &gt; 90%  →  不是这个问题，往下走
+   │     解法：  CUDA Graph；算子融合减少 kernel 数；昇腾开图模式
+   │     去哪章：05 §5.5、09 §9.9、14 §14.5（昇腾）
+   │        │
+   │        └─ 排除后 ↓
+   │
+   ├─ ② 是多卡才慢吗？
+   │     看什么：nccl / hccl 开头的算子占总时间的比例，以及它和计算重不重叠
+   │     工具：  nsys 多卡时间线对齐；msprof 的通信分析
+   │     判据：  通信占比 &gt; 20% 且没和计算重叠  →  通信瓶颈
+   │             单卡按比例折算也一样慢          →  不是通信，往下走
+   │     解法：  计算通信重叠、换通信算法、调并行策略、治专家负载不均
+   │     去哪章：08 §8.3（All-to-All）、08 §8.5（负载不均）
+   │        │
+   │        └─ 排除后 ↓
+   │
+   ├─ ③ 算力受限，还是带宽受限，还是两个都不是？
+   │     看什么：先纸笔算算术强度 I，和屋脊点比；再用 profiler 验证
+   │     工具：  纸笔（先）+ ncu 的 Speed Of Light 一屏（后）
+   │     判据（ncu 四象限）：
+   │        · Memory 高（&gt;60%）、Compute 低（&lt;30%）  →  Memory Bound
+   │        · Compute 高、Memory 低                  →  Compute Bound
+   │        · 两个都高                               →  健康，别动了
+   │        · 两个都低（都 &lt;40%）                    →  Latency Bound（延迟受限）
+   │     去哪章：02 §2.4（屋顶线）、02 §2.7.3（ncu 四象限）
+   │        │
+   │        ├─ Memory Bound  →  回 §0.2 的四个手段挑一个
+   │        │                    字节太多 → 融合（05）/ 降精度（06）
+   │        │                    复用太少 → 分块（03、04）
+   │        │                    batch 太小 → 连续批处理（09）
+   │        │
+   │        ├─ Compute Bound →  已接近上界。只剩两条路：
+   │        │                    换更好的 kernel 实现（03 CUTLASS）
+   │        │                    或者把屋顶抬高 = 降精度（06）
+   │        │
+   │        └─ Latency Bound →  屋顶线看不见这一类，直接跳到 ④
+   │
+   └─ ④ 平台特有的瓶颈
+         GPU：  occupancy 不足、bank conflict、寄存器溢出、Warp 分歧、
+                kernel 太小（启动开销占大头）、尾巴效应
+                工具：ncu 的 Warp State / Stall Reasons  →  01 §1.5–1.6、02 §2.5
+         昇腾： MTE Bound（搬运流水占满）、CV 流水不均衡、核间负载不均
+                工具：MindStudio Insight 的指令流水图  →  12 §12.6、13 §13.8
 </code></pre></div>
 
-<p><strong>第 ① 步最容易被跳过，也最容易中招</strong>。尤其在推理 Decode 阶段：每步只算一个 token，算子多而小，Host 侧一个一个发，Device 算得比发得快。这类问题在昇腾上格外突出（<a href="13-AscendC编程.html">13 章 §13.8</a>），但 GPU 上同样存在——这也是 CUDA Graph 存在的理由（<a href="05-算子融合.html">05 章 §5.5</a>）。</p>
-<p>屋顶线模型（第 ③ 步）是<strong>跨平台通用的</strong>，只是屋脊点要换成对应硬件的。昇腾多了第 ④ 步里的 MTE Bound，是因为它把搬运做成了独立硬件单元——屋顶线模型不覆盖这一类。</p>
+<h3 id="042">0.4.2 四步的速查版</h3>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>一句话现象</th>
+<th>一句话判据</th>
+<th>一句话解法</th>
+<th>章节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① Host Bound</td>
+<td>加速卡利用率低，但每个算子本身都不慢；时间线上 kernel 之间大片空隙</td>
+<td>kernel 总时长 ÷ wall time &lt; 60%</td>
+<td>CUDA Graph / 融合 / 图模式</td>
+<td><a href="05-算子融合.html">05 §5.5</a>、<a href="09-推理侧算子.html">09 §9.9</a>、<a href="14-GPU到NPU迁移实战.html">14 §14.5</a></td>
+</tr>
+<tr>
+<td>② 通信瓶颈</td>
+<td>多卡慢、单卡不慢；卡与卡之间耗时差异大</td>
+<td>通信算子占比 &gt; 20% 且未重叠</td>
+<td>计算通信重叠、改并行策略</td>
+<td><a href="08-MoE算子与通信.html">08 §8.3</a>、<a href="08-MoE算子与通信.html">08 §8.5</a></td>
+</tr>
+<tr>
+<td>③ 带宽 / 算力受限</td>
+<td>单个 kernel 慢，且慢得有规律</td>
+<td>算术强度 I 对比屋脊点；ncu 四象限</td>
+<td>四个通用手段挑一个</td>
+<td><a href="02-屋顶线与性能剖析.html">02 §2.4</a>、<a href="02-屋顶线与性能剖析.html">02 §2.8</a></td>
+</tr>
+<tr>
+<td>④ 平台特有</td>
+<td>算力带宽都没打满，屋顶线解释不了</td>
+<td>两个 Throughput 都 &lt; 40%</td>
+<td>查 Stall Reason（GPU）/ 指令流水图（昇腾）</td>
+<td><a href="01-GPU硬件基础.html">01</a>、<a href="02-屋顶线与性能剖析.html">02 §2.5</a>、<a href="12-昇腾硬件基础.html">12 §12.6</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="043-1">0.4.3 为什么第 ① 步不能跳过：把账算出来</h3>
+<p><strong>第 ① 步最容易被跳过，也最容易中招。</strong> 用一个具体的数字说明代价。</p>
+<p>假设 nsys 显示：所有 kernel 耗时之和只占 wall time 的 <strong>60%</strong>，另外 <strong>40%</strong> 是加速卡在空转等命令。现在有两个方案：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>做了什么</th>
+<th>新的 wall time</th>
+<th>整体加速比</th>
+<th>工作量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A · 只优化 kernel</td>
+<td>把所有 kernel 都提速 1.5 倍</td>
+<td>0.60 ÷ 1.5 + 0.40 = <strong>0.80</strong></td>
+<td><strong>1.25 ×</strong></td>
+<td>通常按周算</td>
+</tr>
+<tr>
+<td>B · 只治空转</td>
+<td>开 CUDA Graph，把 40% 空转压掉四分之三</td>
+<td>0.60 + 0.10 = <strong>0.70</strong></td>
+<td><strong>1.43 ×</strong></td>
+<td>通常按天算</td>
+</tr>
+<tr>
+<td>A + B</td>
+<td>两件都做</td>
+<td>0.40 + 0.10 = <strong>0.50</strong></td>
+<td><strong>2.00 ×</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>理论上限（只做 A）</td>
+<td>把 kernel 时间优化到 0</td>
+<td>0 + 0.40 = <strong>0.40</strong></td>
+<td><strong>2.50 ×</strong></td>
+<td>不可能达到</td>
+</tr>
+</tbody>
+</table>
+<p><strong>花几天做 B，比花几周做 A 收益还大。</strong> 而且注意最后一行：只要那 40% 的空转还在，无论你把 kernel 优化到多完美，整体加速比都不可能超过 2.5 倍。<strong>先看整体，再看单个</strong>，这个顺序不能颠倒。</p>
+<blockquote>
+<p>⚠️ <strong>Host Bound 的判据经常被算错，这里说清楚。</strong> 一个 kernel 的启动<strong>延迟</strong>是 3–10 µs（从 CPU 调用到 GPU 第一个线程开跑），但这<strong>不是每个 kernel 都要串行付一遍的成本</strong>——连续启动时，CPU 发第 2 个 kernel 和 GPU 执行第 1 个是同时进行的，启动是<strong>流水化</strong>的。所以正确的判据是：</p>
+<p>```<br />
+每步耗时 ≈ max( kernel 数 × 单个下发成本(⚠️ 约 2 µs) , 加速卡执行总时间 )</p>
+<p>CPU 侧 &gt;  GPU 侧  →  Host Bound，GPU 在饿着等命令，该开 CUDA Graph<br />
+  CPU 侧 ≤  GPU 侧  →  开了也白开，收益是零<br />
+```</p>
+<p><strong>把启动开销按 kernel 数简单相加，会把 Host Bound 严重高估。</strong> 详见 <a href="01-GPU硬件基础.html">01 章 §1.8.2</a> 和 <a href="05-算子融合.html">05 章 §5.5.1</a>。</p>
+<p>★ 屋顶线模型（第 ③ 步）是<strong>跨平台通用的</strong>，只是屋脊点要换成对应硬件的（昇腾 910B3 ⚠️ ≈ 200）。但它是一个<strong>"kernel 内部"的模型</strong>：它看不见 kernel 之间的空隙（第 ① 步），也看不见通信（第 ② 步），还看不见昇腾那类 MTE Bound（第 ④ 步）。<strong>漏斗的存在，就是为了把屋顶线看不见的三类问题先筛掉。</strong> 屋顶线自己的三个盲区见 <a href="02-屋顶线与性能剖析.html">02 章 §2.5</a>。</p>
+</blockquote>
+<h3 id="044">0.4.4 把漏斗完整跑一遍</h3>
+<blockquote>
+<p>⚠️ <strong>本节的耗时和百分比是为演示流程构造的自洽数字</strong>，不是某次真实测量。但每一步的算术都是真的，可以自己验算。</p>
+</blockquote>
+<p><strong>现象</strong>：8 卡 H100 训练一个 13B 稠密模型，整机吞吐 20000 tokens/s。先算 MFU（口径见 <a href="02-屋顶线与性能剖析.html">02 章 §2.6</a>）：</p>
+<div class="codehilite"><pre><span></span><code>分子 = 20000 × 6 × 13 × 10⁹ = 1.56 × 10¹⁵ FLOP/s
+分母 = 8 × 989 × 10¹²       = 7.912 × 10¹⁵ FLOP/s
+MFU = 1.56 ÷ 7.912 = 19.7%      ← 低于 30%，一定有系统性问题（02 §2.6.4）
+</code></pre></div>
+
+<p><strong>第 ① 步 · 加速卡在不在干活</strong></p>
+<div class="codehilite"><pre><span></span><code>nsys stats：所有 kernel 耗时之和 ÷ wall time = 71%   → 29% 在空转
+时间线上：top-10 kernel 里有 6 个是几微秒的逐元素小算子
+
+→ 命中第 ① 步。先用 torch.compile 把这些小算子融掉（05 章）。
+   顺带一个副作用：融合同时也减少了 HBM 流量，两头都赚。
+
+复测：20000 → 26000 tokens/s，MFU = 26000 × 6 × 13e9 ÷ 7.912e15 = 25.6%
+</code></pre></div>
+
+<p><strong>第 ② 步 · 是不是通信</strong></p>
+<div class="codehilite"><pre><span></span><code>nccl 开头的算子占 7%，且在时间线上和计算 kernel 重叠良好
+→ 不是瓶颈，跳过。（单机 8 卡走 NVLink，本来就不容易在这里出问题。）
+</code></pre></div>
+
+<p><strong>第 ③ 步 · 算力还是带宽</strong></p>
+<div class="codehilite"><pre><span></span><code>主力 GEMM：M = 2048（每卡 micro-batch 的 token 数），K = N = 5120
+
+  FLOP = 2 × 2048 × 5120 × 5120 = 1.074 × 10¹¹
+  Byte = 2 × (2048×5120 + 5120×5120 + 2048×5120) = 9.44 × 10⁷
+  I    = 1.074e11 ÷ 9.44e7 = 1138 FLOP/Byte    ≫ 屋脊点 295
+
+→ Compute Bound。ncu 验证：Compute Throughput 68%、DRAM 24%，对得上。
+   68% 对一个真实训练 GEMM 来说已经不差，这里没有大空间了。
+</code></pre></div>
+
+<p><strong>第 ④ 步 · 那剩下的差距在哪</strong></p>
+<div class="codehilite"><pre><span></span><code>MFU 25.6%，但训练开了全量重计算（Activation Recomputation，梯度检查点）。
+全量重计算意味着硬件实际执行的是 8N 而不是 6N（多一遍前向）：
+
+  HFU = MFU × 8 ÷ 6 = 25.6% × 1.333 = 34.1%
+
+→ 8.5 个百分点的缺口，是重计算烧掉的，不是 kernel 写得差（02 §2.6.3）。
+   下一步不该继续调 kernel，而该问：&quot;显存够不够关掉一部分重计算？&quot;
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这个走查的结论是"问题不在算子层"，而这恰恰是漏斗最大的价值。</strong> 如果一上来就抓着主力 GEMM 用 ncu 猛看，会在一个 Compute Throughput 已经 68% 的 kernel 上耗掉两周，而真正的 6000 tokens/s 在第 ① 步、剩下的空间在第 ④ 步。<strong>先定位在哪一层，再决定花力气。</strong></p>
+</blockquote>
 <hr />
 <h2 id="05">0.5 本系列的结构</h2>
-<p>按"原理 → 平台 → 专题 → 迁移"分五卷。<strong>编号沿用历史顺序，实际阅读顺序看卷</strong>。</p>
-<h3 id="_2">卷零 · 方法论（平台无关）</h3>
+<p>按"原理 → 平台 → 专题 → 迁移"分五卷。<strong>编号沿用历史顺序，实际阅读顺序看卷。</strong></p>
+<h3 id="_1">卷零 · 方法论（平台无关）</h3>
 <table>
 <thead>
 <tr>
@@ -520,11 +1134,11 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 <tbody>
 <tr>
 <td><strong>00 · 总纲</strong>（本章）</td>
-<td>四个通用手段、两种硬件哲学、诊断漏斗</td>
+<td>带宽墙、四个通用手段、两种硬件哲学、诊断漏斗</td>
 </tr>
 </tbody>
 </table>
-<h3 id="_3">卷一 · 硬件与性能模型</h3>
+<h3 id="_2">卷一 · 硬件与性能模型</h3>
 <table>
 <thead>
 <tr>
@@ -562,7 +1176,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 <tbody>
 <tr>
 <td><a href="03-GEMM深度剖析.html">03 · GEMM 深度剖析</a></td>
-<td>三级分块、Tensor Core、CUTLASS</td>
+<td>三级分块、双缓冲、Tensor Core、CUTLASS</td>
 </tr>
 <tr>
 <td><a href="04-FlashAttention全系.html">04 · FlashAttention 全系</a></td>
@@ -570,7 +1184,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 </tr>
 <tr>
 <td><a href="05-算子融合.html">05 · 算子融合</a></td>
-<td>融合模式、CUDA Graph、torch.compile</td>
+<td>融合模式与判据、CUDA Graph、torch.compile</td>
 </tr>
 <tr>
 <td><a href="06-量化算子.html">06 · 量化算子</a></td>
@@ -595,7 +1209,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 <tr>
 <td><a href="07-Triton编程.html">07 · Triton 编程</a></td>
 <td>NVIDIA</td>
-<td>编程模型、autotune、与 CUDA 对比</td>
+<td>编程模型、autotune、三个旋钮、与 CUDA 对比</td>
 </tr>
 <tr>
 <td><a href="13-AscendC编程.html">13 · Ascend C 编程</a></td>
@@ -604,7 +1218,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 </tr>
 </tbody>
 </table>
-<h3 id="_4">卷四 · 场景专题</h3>
+<h3 id="_3">卷四 · 场景专题</h3>
 <table>
 <thead>
 <tr>
@@ -615,11 +1229,11 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 <tbody>
 <tr>
 <td><a href="09-推理侧算子.html">09 · 推理侧算子</a></td>
-<td>PagedAttention、连续批处理、投机采样、RadixAttention</td>
+<td>PagedAttention、连续批处理、投机解码、RadixAttention、Chunked Prefill</td>
 </tr>
 <tr>
 <td><a href="10-RL算子.html">10 · RL 算子</a></td>
-<td>Rollout 算子图、GAE、PPO clip、GRPO、多模型显存争用</td>
+<td>Rollout 长尾、GAE、PPO clip、GRPO、大词表 CE、多模型显存争用</td>
 </tr>
 <tr>
 <td><a href="11-训推一致性算子层.html">11 · 训推一致性：算子层</a></td>
@@ -627,7 +1241,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 </tr>
 </tbody>
 </table>
-<h3 id="_5">卷五 · 迁移实战</h3>
+<h3 id="_4">卷五 · 迁移实战</h3>
 <table>
 <thead>
 <tr>
@@ -642,7 +1256,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 </tr>
 </tbody>
 </table>
-<h3 id="_6">附录</h3>
+<h3 id="_5">附录</h3>
 <table>
 <thead>
 <tr>
@@ -661,6 +1275,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 <h2 id="06">0.6 怎么读</h2>
 <div class="codehilite"><pre><span></span><code>从零入门（只关心 GPU）
   00 → 01 → 02 → 03 → 04 → 05
+       └─ 01 和 02 是全系列的地基，后面每一章都在引用它们的小节号
 
 要写自定义 kernel（GPU）
   00 → 01 → 02 → 03 → 07
@@ -670,7 +1285,7 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
        └─ 01/02 不能跳：12 章通篇在和它们对照
 
 把已有模型从 GPU 迁到昇腾（最常见的实际任务）
-  00 → 12 → 14（先看 §14.3 的 checklist）
+  00 → 12 → 14（先看 §14.3 的四轮 checklist）
      → 只有需要自己写算子时才读 13
 
 关注推理部署
@@ -684,46 +1299,193 @@ I &lt; 屋脊点  →  Memory Bound（带宽受限），算力在空转等数据
 
 排查训推数值差异
   00 → 06 → 11
+
+性能出了问题，不知道从哪查
+  00 §0.4（漏斗）→ 02 §2.7（Nsight 工作流）→ 按漏斗指向的那一章
 </code></pre></div>
 
 <hr />
 <h2 id="07">0.7 关于数字的可信度约定</h2>
-<p>NVIDIA 侧的规格有完整白皮书，本系列直接引用。</p>
+<p>NVIDIA 侧的规格有完整白皮书，本系列直接引用，统一用<strong>稠密</strong>峰值（不是稀疏），并和 <a href="附-速查表.html">附-速查表 §A</a> 保持一致。</p>
 <p><strong>华为昇腾侧没有公开的完整数据手册</strong>，公开数字彼此矛盾的地方很多（同一款 910B 的 FP16 算力，公开资料里有 256 和 320 两种说法；HBM 带宽从 400 GB/s 到 2.4 TB/s 都有人写）。凡涉及昇腾规格，本系列标注：</p>
 <ul>
 <li><strong>✅ 披露</strong> —— 华为官方产品页 / CANN 官方文档明确写出</li>
 <li><strong>⚠️ 推断</strong> —— 第三方分析、芯片拆解、学术论文或社区实测，仅供量级参考</li>
 </ul>
-<p><strong>任何要写进方案、用于容量规划的数字，请在自己的卡上实测</strong>（<code>npu-smi info</code> + CANN 的 <code>platform_config/*.ini</code>，方法见 <a href="12-昇腾硬件基础.html">12 章 §12.4.3</a>），不要引用本系列。</p>
+<p>另外三类数字也一律标 ⚠️，请勿当作规格引用：</p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>举例</th>
+<th>为什么要标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>实测量级</td>
+<td>"HBM 延迟约 500 周期"、"有效带宽通常是峰值的 80–90%"</td>
+<td>随代际、时钟、功耗墙、缓存命中浮动</td>
+</tr>
+<tr>
+<td>推算值</td>
+<td>"单 SM 每周期约 4096 FLOP"、"DeepSeek-V3 的 MFU 约 34.6%"</td>
+<td>由几个官方数字反推，误差会叠加</td>
+</tr>
+<tr>
+<td>演示构造值</td>
+<td>本章 §0.4.4、<a href="02-屋顶线与性能剖析.html">02 章 §2.7.4</a> 的走查</td>
+<td>为了让流程自洽而编的，算术是真的、数字不是</td>
+</tr>
+</tbody>
+</table>
+<p><strong>任何要写进方案、用于容量规划的数字，请在自己的卡上实测</strong>（NVIDIA 侧用 nsys / ncu；昇腾侧用 <code>npu-smi info</code> + CANN 的 <code>platform_config/*.ini</code>，方法见 <a href="12-昇腾硬件基础.html">12 章 §12.4.3</a>），不要引用本系列。</p>
 <hr />
-<h2 id="08">0.8 小结</h2>
-<div class="codehilite"><pre><span></span><code>一个根本事实
-  算力五年涨 7.9×，带宽只涨 3.7× → 屋脊点从 139 升到 295
-  → 数据搬运是根本瓶颈，整个系列都在绕这一件事
+<h2 id="08">0.8 本章小结</h2>
+<p><strong>一个根本事实</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>V100（2017）</th>
+<th>H100（2022）</th>
+<th>倍数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16/FP16 稠密算力</td>
+<td>125 TFLOPS</td>
+<td>989 TFLOPS</td>
+<td>7.9 ×</td>
+</tr>
+<tr>
+<td>HBM 带宽</td>
+<td>900 GB/s</td>
+<td>3350 GB/s</td>
+<td>3.7 ×</td>
+</tr>
+<tr>
+<td>屋脊点</td>
+<td>139 FLOP/Byte</td>
+<td><strong>295 FLOP/Byte</strong></td>
+<td>2.1 ×</td>
+</tr>
+</tbody>
+</table>
+<p><strong>→ 同一个算子，一行不改，在新卡上更容易变成带宽受限。数据搬运是根本瓶颈，整个系列都在绕这一件事。</strong></p>
+<p><strong>四个通用手段（平台无关，变的只是实现方式）</strong></p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>省的是</th>
+<th>最小例子</th>
+<th>收益</th>
+<th>上限</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>分块 Tiling</td>
+<td>同一份数据被搬进来的<strong>次数</strong></td>
+<td>1024³ GEMM：8590 MB → 67.1 MB</td>
+<td>128 ×</td>
+<td>受片上容量限制</td>
+</tr>
+<tr>
+<td>融合 Fusion</td>
+<td>中间结果的<strong>份数</strong></td>
+<td>LayerNorm→GELU→残差：7T → 2T</td>
+<td>3.5 ×</td>
+<td>= 字节数的比值</td>
+</tr>
+<tr>
+<td>流水重叠</td>
+<td><strong>等待时间</strong>（字节一个不少）</td>
+<td>单缓冲 1594 → 双缓冲 1024 周期/轮</td>
+<td>1.55 ×</td>
+<td><strong>严格 &lt; 2 ×</strong></td>
+</tr>
+<tr>
+<td>降精度</td>
+<td>每个数的<strong>字节数</strong></td>
+<td>8B 模型 Decode：16.06 → 8.03 GB</td>
+<td>2.0 ×</td>
+<td>= 位宽的比值</td>
+</tr>
+</tbody>
+</table>
+<p><strong>→ 遇到任何新技术，先问它属于这四类中的哪一类。绝大多数"新算子"都是这四种的重新组合。</strong></p>
+<p><strong>两种硬件哲学（解释后面一切差异的总开关）</strong></p>
+<div class="codehilite"><pre><span></span><code>共同的问题：从 HBM 取一次数据要 ⚠️ 约 500 个周期，计算单元不能干等
 
-四个通用手段（平台无关，变的只是实现）
-  分块 Tiling      用片上容量换搬运次数
-  融合 Fusion      消灭中间结果落盘
-  流水重叠         让搬运和计算同时发生
-  降精度           直接减少要搬的字节
-  （通信层：减少或重叠传输）
-  遇到新技术先归类，绝大多数是这四种的重新组合
+  SIMT（GPU）   超额订阅：挂 64 个 Warp，谁等内存就换谁上
+                → 有 occupancy / Cache 自动填充 / 编译器能帮忙（Triton 可行）
 
-两种硬件哲学（解释后面一切差异的总开关）
-  SIMT  超额订阅掩盖延迟 → occupancy / Cache / 编译器能帮忙
-  DSA   流水重叠掩盖延迟 → 双缓冲 / Scratchpad / 必须手写搬运
-
-诊断漏斗（从外往里剥，别跳第一步）
-  ① Host 下发 → ② 通信 → ③ 屋顶线定算力/带宽 → ④ 平台特有瓶颈
-
-下一章：从 NVIDIA GPU 的硬件结构开始。
+  DSA（昇腾）   流水重叠：搬入、计算、搬出三条独立硬件流水线同时跑满
+                → 无 occupancy / Scratchpad 手动搬 / 双缓冲是基本功不是优化
 </code></pre></div>
 
+<p><strong>诊断漏斗（从外往里剥，别跳第一步）</strong></p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>问题</th>
+<th>判据</th>
+<th>解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>加速卡在空转吗</td>
+<td>kernel 总时长 ÷ wall time &lt; 60%</td>
+<td>CUDA Graph / 融合 / 图模式</td>
+</tr>
+<tr>
+<td>②</td>
+<td>是通信吗</td>
+<td>通信占比 &gt; 20% 且未重叠</td>
+<td>计算通信重叠、改并行策略</td>
+</tr>
+<tr>
+<td>③</td>
+<td>带宽还是算力</td>
+<td>算术强度 I 对比屋脊点；ncu 四象限</td>
+<td>四个手段挑一个</td>
+</tr>
+<tr>
+<td>④</td>
+<td>平台特有</td>
+<td>算力带宽都 &lt; 40%</td>
+<td>Stall Reason / 指令流水图</td>
+</tr>
+</tbody>
+</table>
+<p><strong>→ 第 ① 步跳过的代价：如果 40% 的时间在空转，无论 kernel 优化到多完美，整体加速比也超不过 2.5 倍。</strong></p>
+<p><strong>自测三题</strong>（答案在对应小节，建议先自己算）</p>
+<ol>
+<li>某张卡的 BF16 稠密算力是 400 TFLOPS、HBM 带宽 2.0 TB/s，INT8 稠密算力 800 TOPS。(a) 它的 BF16 屋脊点是多少？(b) 一个算术强度 I = 8 的算子在这张卡上的理论性能上界是多少 TFLOPS，占峰值百分之多少？(c) 把这个算子的权重从 BF16 换成 INT8，理论耗时变成原来的几分之几？它在屋顶线图上的<strong>相对位置</strong>变了吗？</li>
+<li>下面四件事各属于四个通用手段中的哪一个，各省的是账单上的哪一项？(a) 把 KV Cache 从 FP16 存成 FP8；(b) 把 RMSNorm 融进后面那个 GEMM 的 Prologue（前置段）；(c) FlashAttention 不把 N×N 的注意力分数矩阵写回 HBM；(d) 用 <code>cp.async</code> 在算第 k 块的同时把第 k+1 块搬进来。</li>
+<li>某 8 卡训练，nsys 显示所有 kernel 耗时之和只占 wall time 的 55%，其中最耗时的单个 kernel 占 wall time 的 20%。你手上有两个方案：(A) 花两周把那个最耗时的 kernel 优化到快 1.5 倍；(B) 花一天开 CUDA Graph，把空转时间压掉一半。分别算出两者的整体加速比，说明该先做哪个。</li>
+</ol>
+<h4 id="_6">参考答案</h4>
+<ol>
+<li>(a) 屋脊点 = 400 × 10¹² ÷ 2.0 × 10¹² = <strong>200 FLOP/Byte</strong>。(b) 上界 P = 带宽 × I = 2000 GB/s × 8 FLOP/Byte = <strong>16 TFLOPS</strong>，占峰值 16 ÷ 400 = <strong>4%</strong>——深陷 Memory Bound。(c) 字节数减半，而耗时 = 字节数 ÷ 带宽，所以耗时变成原来的 <strong>1/2</strong>。但相对位置<strong>没变</strong>：I 从 8 翻到 16，INT8 的屋脊点也从 200 翻到 800 ÷ 2.0 = 400，<code>I ÷ 屋脊点</code> 前后都是 0.04。<strong>收益 100% 来自字节变少，和 INT8 算得快没有关系。</strong> 参见 §0.1.3、§0.2.4。</li>
+<li>(a) <strong>降精度</strong>，省的是"每个数的字节数"——KV Cache 的读取量减半。(b) <strong>融合</strong>，省的是"中间结果的份数"——RMSNorm 的输出不再写进 HBM 又读回来，省掉一次完整的往返（一写一读）。(c) <strong>融合 + 分块两者都是</strong>：中间结果不落 HBM 是融合，把 K/V 切成块让 N×N 的分数矩阵从来没有完整存在过是分块——这也是为什么 FlashAttention 的收益比单纯融合大得多。(d) <strong>流水重叠</strong>，省的是"等待时间"，搬运的字节数一个都没少。参见 §0.2.1–§0.2.5。</li>
+<li>设 wall time = 1.0，kernel 合计 0.55，空转 0.45。<strong>方案 A</strong>：那个 kernel 从 0.20 降到 0.20 ÷ 1.5 = 0.133，新 wall = 1.0 − 0.067 = 0.933，加速比 = 1 ÷ 0.933 = <strong>1.07 倍</strong>。<strong>方案 B</strong>：空转从 0.45 降到 0.225，新 wall = 1.0 − 0.225 = 0.775，加速比 = 1 ÷ 0.775 = <strong>1.29 倍</strong>。<strong>B 的收益是 A 的四倍，工作量却是十四分之一，必须先做 B。</strong> 这正是漏斗第 ① 步要放在最前面的原因。参见 §0.4.3。</li>
+</ol>
 <hr />
+<blockquote>
+<p><strong>下一章</strong>：骨架搭完了，从 NVIDIA GPU 的硬件结构开始往上挂第一层——一个线程在哪里运行、数据在哪里存、为什么快、为什么会慢。见 <a href="01-GPU硬件基础.html">01 · GPU 硬件基础</a>。</p>
+</blockquote>
 <p><strong>延伸资料</strong>：<br />
-- <a href="https://dl.acm.org/doi/10.1145/1498765.1498785">Roofline: An Insightful Visual Performance Model</a>（屋顶线模型原始论文，2009）<br />
-- <a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-gpu-background/index.html">GPU Performance Background</a>（NVIDIA 官方性能文档）<br />
-- <a href="https://www.elsevier.com/books/computer-architecture/hennessy/978-0-12-811905-1">Computer Architecture: A Quantitative Approach</a>（第 7 章讲 DSA，理解昇腾这类架构的背景读物）</p>
+- Williams et al.（2009）<a href="https://dl.acm.org/doi/10.1145/1498765.1498785"><em>Roofline: An Insightful Visual Performance Model</em></a>（屋顶线模型原始论文，§0.1.3 那条分界线的出处）<br />
+- NVIDIA <a href="https://docs.nvidia.com/deeplearning/performance/dl-performance-gpu-background/index.html">GPU Performance Background</a>（官方性能文档，算术强度与瓶颈分类的官方版本）<br />
+- NVIDIA <a href="https://resources.nvidia.com/en-us-tensor-core/gtc22-whitepaper-hopper">H100 架构白皮书</a>（§0.1.2 表里 H100 一行的一手来源）<br />
+- Hennessy &amp; Patterson, <a href="https://www.elsevier.com/books/computer-architecture/hennessy/978-0-12-811905-1"><em>Computer Architecture: A Quantitative Approach</em></a>（第 7 章讲 DSA，理解昇腾这类架构的背景读物；"带宽墙"的经典论述也在这本书里）</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

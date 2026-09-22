@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="openpangu-20-pro">openPangu-2.0-Pro 架构与技术报告解析</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>来源</strong>：本文整理自 2026-08-05 的调研，架构、公式、超参、评测数字均从技术报告 PDF 正文提取核对（非二手解读）。</p>
 <table>
 <thead>
@@ -462,22 +462,206 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<h3 id="_2">参数量验算（配置表内部自洽）</h3>
-<div class="codehilite"><pre><span></span><code>路由专家   47 × 384 × 3 × 1792 × 5120 ≈ 496.8B
-共享专家   47 ×   1 × 3 × 1792 × 5120 ≈   1.29B
-Dense FFN   3 ×       3 × 16128 × 5120 ≈   0.74B
-注意力(MLA) 50 × ≈80M                  ≈   4.0B
-词嵌入+输出 2 × 151552 × 5120          ≈   1.55B
-                                        ─────────
-                                          ≈ 504.4B  ✓ 对得上 505B
+<h3 id="505b">★ 推演一：把 505B 一项一项加出来</h3>
+<p>⚠️ <strong>报告只给了 Table 8 的超参和"505B / 18B"两个数，没有给参数量拆解。下面这笔账是本文推的。</strong></p>
+<blockquote>
+<p>📖 <strong>完整的逐矩阵走查（含 MLA 七个矩阵怎么拆、为什么 98.7% 是专家）已经在 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.4.2</a> 用这个模型做过一遍</strong>，那边是教学版本，讲原理。这里只放结果表，不重复。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 505B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个专家</td>
+<td>$3 \times 5120 \times 1792$</td>
+<td>27.53 M</td>
+<td>—</td>
+</tr>
+<tr>
+<td>47 个 MoE 层的专家（384 路由 + 1 共享）</td>
+<td>$47 \times 385 \times 27.53\,\text{M}$</td>
+<td><strong>498.07 B</strong></td>
+<td><strong>98.7 %</strong></td>
+</tr>
+<tr>
+<td>50 层 MLA 注意力（⚠️ 逐矩阵拆解见 01 章）</td>
+<td>$50 \times 80.02\,\text{M}$</td>
+<td>4.00 B</td>
+<td>0.79 %</td>
+</tr>
+<tr>
+<td>词嵌入 + 输出层（按不绑定算）</td>
+<td>$2 \times 151552 \times 5120$</td>
+<td>1.55 B</td>
+<td>0.31 %</td>
+</tr>
+<tr>
+<td>3 个稠密层 FFN</td>
+<td>$3 \times (3 \times 5120 \times 16128)$</td>
+<td>0.74 B</td>
+<td>0.15 %</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>504.36 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ 报告写的</strong></td>
+<td></td>
+<td><strong>505 B</strong></td>
+<td>差 <strong>0.13 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>剩下那 0.6 B 是报告没有逐项披露的零碎项</strong>：各层 RMSNorm 权重、mHC 的门控系数、PAS（Parametric Attention Sink，参数化注意力汇聚点）每层 128 对可学习 KV 等。<strong>报告没给，这里不做进一步拆分。</strong></p>
+<p>⚠️ <strong>另外，✅ 报告的 3 个 MTP 层看起来没有被计入这 505B</strong>——否则总数会明显超出（见下）。</p>
+</blockquote>
+<p><strong>激活参数，同一张表换个问法：</strong></p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 18B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>47 个 MoE 层，每层只激活 8 + 1 个专家</td>
+<td>$47 \times 9 \times 27.53\,\text{M}$</td>
+<td>11.64 B</td>
+<td>64.9 %</td>
+</tr>
+<tr>
+<td>50 层注意力（<strong>每层都全量参与</strong>）</td>
+<td>$50 \times 80.02\,\text{M}$</td>
+<td>4.00 B</td>
+<td>22.3 %</td>
+</tr>
+<tr>
+<td>输出层 + 词嵌入</td>
+<td>$2 \times 151552 \times 5120$</td>
+<td>1.55 B</td>
+<td>8.6 %</td>
+</tr>
+<tr>
+<td>3 个稠密层 FFN</td>
+<td>同上表</td>
+<td>0.74 B</td>
+<td>4.1 %</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>17.94 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ 报告写的</strong></td>
+<td></td>
+<td><strong>18 B</strong></td>
+<td>差 <strong>0.3 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>541B 那个口径的核对</strong>：HF 侧栏标注 <strong>541B</strong>，通常的解释是"含 3 个 MTP 层的全量口径"。⚠️ <strong>但这个解释只对了一半</strong>：按一个 MTP 层 ≈ 一个完整 MoE transformer 层算，<code>10.60 B（385 个专家）+ 0.08 B（注意力）+ 0.05 B（拼接投影 2d×d）≈ 10.73 B</code>，三个就是 <strong>32.2 B</strong>，<code>505 + 32.2 = 537.2 B</code>——<strong>离 541B 还差约 3.8 B，口径差解释不掉</strong>。⚠️ 报告没有给 MTP 层的内部结构，<strong>这一格无法闭合</strong>。GLM-5 那边有同一类问题（744 / 753 / 754 三个数对不上），见 <a href="GLM-5.2.html">GLM-5.2.md</a> §一。</p>
+</blockquote>
+<h3 id="48-281">★ 推演二：⚠️ "稀疏度 48 倍"是错的，正确答案是 28.1 倍</h3>
+<p><strong>这一条是本文此前写错、现已更正的地方，单独拎出来说清楚。</strong></p>
+<div class="codehilite"><pre><span></span><code>❌ 之前的错法：&quot;384 选 8 = 48 倍稀疏，介于 V4 的 64x 和 GLM/M3 的 32x 之间&quot;
+   -&gt; 错在把【路由专家的选择比】当成了【模型的稀疏度】，
+      而且拿来对比的 64x / 32x 也全都是别家的路由选择比，
+      三个数一起错，看起来却很自洽。
 
-激活：47 × 9 × 3 × 1792 × 5120 ≈ 11.6B  + 0.74 + 4.0 + 1.55 ≈ 17.9B  ✓ 对得上 18B
+✅ 三个数字，三个不同的问题：
+   384 / 8   = 48.0 倍   &lt;- 只是【路由专家】的选择比
+   385 / 9   = 42.8 倍   &lt;- 算上 1 个共享专家后的 FFN 稀疏比
+   505 / 18  = 28.1 倍   &lt;- ★ 全模型 总参数 / 激活参数
+                            这才是&quot;显存账 vs 算力账差多少&quot;的正确口径
 </code></pre></div>
 
+<p><strong>为什么会从 48 掉到 28.1</strong>：注意力、稠密层、词嵌入、输出层<strong>一点都不稀疏</strong>，每个 token 都要全量走一遍。它们在总参数里只占 <strong>1.3%</strong>，在激活参数里却占了 <strong>35%</strong>。</p>
+<p><strong>换成正确口径之后，五家的排序也变了</strong>（⚠️ 全部为本文按各家总参/激活推算，不是报告披露值）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>DeepSeek-V4-Pro</th>
+<th>Kimi K3</th>
+<th>GLM-5.2</th>
+<th>MiniMax M3</th>
+<th><strong>openPangu-2.0-Pro</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总参 / 激活</td>
+<td>1.6T / 49B</td>
+<td>2.78T / 104B</td>
+<td>744B / 40B</td>
+<td>428B / 23B</td>
+<td><strong>505B / 18B</strong></td>
+</tr>
+<tr>
+<td>❌ 路由选择比（常被误当稀疏度）</td>
+<td>384/6 = 64×</td>
+<td>896/16 = 56×</td>
+<td>256/8 = 32×</td>
+<td>128/4 = 32×</td>
+<td>384/8 = 48×</td>
+</tr>
+<tr>
+<td>✅ <strong>真稀疏度</strong>（总 ÷ 激活）</td>
+<td><strong>32.7×</strong></td>
+<td><strong>26.7×</strong></td>
+<td><strong>18.6×</strong></td>
+<td><strong>18.6×</strong></td>
+<td><strong>28.1×</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p><strong>口径提示</strong>：HF 侧栏标注 <strong>541B</strong>，是<strong>含 3 个 MTP 层</strong>的全量口径（每个 MTP 层 ≈ 一个完整 transformer 层 ≈ 10.7B，×3 ≈ 32B）。<strong>505B 不含 MTP。</strong> 这和 GLM-5 的 744B / 753B 是同一类口径差异，见 <a href="GLM-5.2.html">GLM-5.2.md</a> §一。</p>
+<p>🔑 <strong>两套排序几乎没有关系</strong>：按路由比 openPangu 排第三，按真稀疏度它排第二。<strong>引用"稀疏 N 倍"时必须说清是哪一个。</strong> 通用解释见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.4.4</a>，同类错误在 <a href="GLM-5.2.html">GLM-5.2.md</a> §二 和 <a href="MiniMax-M3.html">MiniMax-M3.md</a> §三 也已一并更正。</p>
 </blockquote>
-<p><strong>稀疏度</strong>：384 选 8 = <strong>48×</strong>，介于 V4 的 64× 和 GLM/M3 的 32× 之间。<strong>18B 激活是五家里最低的</strong>（M3 23B / GLM 40B / V4 49B / K3 104B）。</p>
+<p><strong>18B 激活仍然是五家里最低的</strong>（M3 23B / GLM 40B / V4 49B / K3 104B），这一条没变。两个派生量（⚠️ 本文推算）：</p>
+<table>
+<thead>
+<tr>
+<th>派生指标</th>
+<th>怎么算</th>
+<th><strong>openPangu-2.0-Pro</strong></th>
+<th>对照</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>前向 FLOPs / token</strong>（不含注意力矩阵项）</td>
+<td>$\approx 2 \times$ 激活参数</td>
+<td>≈ <strong>36 GFLOP（五家最低）</strong></td>
+<td>M3 ≈ 46 · GLM-5.2 ≈ 80 · V4 ≈ 98 · K3 ≈ 208</td>
+</tr>
+<tr>
+<td><strong>深宽比</strong> $N/d$</td>
+<td>50 ÷ 5120</td>
+<td><strong>0.0098</strong></td>
+<td>K3 0.0130 · GLM-5.2 0.0127 · M3 0.0098 · V4 0.0085</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>四个方向同时压</strong>：<strong>最浅（50 层）+ 最窄（d = 5120）+ 多专家（384）+ 小专家（中间维 1792）</strong>。前两条压激活参数和串行深度，后两条把总容量堆回来。<strong>这是一个非常明确的"推理成本优先"的取向</strong>，和 §十一 那些昇腾侧优化是同一个方向上的。逐个杠杆的效力见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.6</a>。</p>
+</blockquote>
 <hr />
 <h2 id="dsa-swa-12">三、注意力：DSA + SWA 的 1:2 交错</h2>
 <p>底座仍是 <strong>MLA</strong>，在它之上做了四件事。</p>
@@ -581,6 +765,107 @@ SWA 层的 RoPE base 随上下文放大：1e4 @4K → 6.4e6 @512K
 </table>
 <p><strong>论证逻辑很干净</strong>：相比同构 DSA，把 DSA 限制在 1/3 的层上，全局选择成本按比例砍到 1/3；相比 FULL-SWA，把稠密全局注意力换成"轻量索引 + 稀疏检索"，把二次项从全注意力表示降到小得多的索引表示。<strong>两个方向各占一半便宜。</strong></p>
 <p>⚠️ 但注意：<strong>这是渐近系数分析，不是实测加速比。</strong> 报告的实测数字只有 TPOT / TPS（见 §十一），没有和任何基线对比。</p>
+<h3 id="table-1">★ 推演三：把 Table 1 那三个系数换算成真实字节</h3>
+<p>报告给的是领头系数（<code>⅓ D_Idx</code> 这种），<strong>读起来很抽象。下面把 Table 8 的超参代进去，换成"一条 128K 序列到底占多少显存"</strong>。⚠️ <strong>本节全部是本文推算，报告没有给任何 KV cache 的绝对数字。</strong></p>
+<p><strong>先把通式写准</strong>（推导见 <a href="大模型架构入门/07-MHA到MLA.html">大模型架构入门/07-MHA到MLA.md §7.2</a>）：</p>
+<div class="codehilite"><pre><span></span><code>    MHA / GQA / MQA：每 token 每层 = 2 x n_kv_heads x head_dim x 字节数
+                                     ^ K 和 V 各存一份
+
+    MLA：           每 token 每层 = (KV 潜向量维 + 解耦 RoPE 维) x 字节数
+                                   = (512 + 64) x 2 = 1152 B = 1.125 KiB
+                                   ★ 不乘 2（只存一个潜向量），也没有 head 数（全部头共用）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️⚠️ <strong>这里有一个极高频的反向错误，务必躲开</strong>：MLA 的"矩阵吸收"吸的是<strong>上投影矩阵 $W^{UK}/W^{UV}$，吸到 Q 侧和输出投影侧</strong>；cache 里放的<strong>永远还是那 576 维的潜向量 $c_{KV}$</strong>。任何写成"吸收之后就不用存 KV 了"的说法都是<strong>反的</strong>——那样等于压缩比归零，MLA 整个白做。openPangu 报告在 §10.3 讲训推失配时提到的 "Absorptive (MQA, decode)" 说的是<strong>算子形状变成 MQA</strong>，不是"不存了"。</p>
+</blockquote>
+<p><strong>代入 openPangu 的 DSA : SWA = 1:2（50 层 ≈ 17 DSA + 33 SWA）、SWA 窗口 512、BF16：</strong></p>
+<table>
+<thead>
+<tr>
+<th>层类型</th>
+<th>层数</th>
+<th>每层要缓存多少 token</th>
+<th>每层字节</th>
+<th>小计</th>
+<th>随上下文增长吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DSA（全局）层</strong></td>
+<td>17</td>
+<td>全部 131,072 个</td>
+<td>$576 \times 2$ B</td>
+<td><strong>2.57 GB</strong></td>
+<td>✅ <strong>线性增长</strong></td>
+</tr>
+<tr>
+<td><strong>SWA（滑窗）层</strong></td>
+<td>33</td>
+<td>只有窗口内的 512 个</td>
+<td>$576 \times 2$ B</td>
+<td><strong>0.019 GB</strong></td>
+<td>❌ <strong>恒定</strong></td>
+</tr>
+<tr>
+<td><strong>合计（一条 128K 序列）</strong></td>
+<td>50</td>
+<td>—</td>
+<td>—</td>
+<td><strong>≈ 2.59 GB</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>同规模换成别的方案会是多少</strong>（⚠️ 纯推演，openPangu 实际用的是 MLA）：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>每 token 每层</th>
+<th>一条 128K 序列（50 层全局）</th>
+<th>相对 MLA</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MHA</strong>（64 头 × 128 维）</td>
+<td>$2 \times 64 \times 128 \times 2$ = 32 KiB</td>
+<td>214.7 GB</td>
+<td>×28.4</td>
+</tr>
+<tr>
+<td><strong>GQA-8</strong></td>
+<td>$2 \times 8 \times 128 \times 2$ = 4 KiB</td>
+<td>26.8 GB</td>
+<td>×3.6</td>
+</tr>
+<tr>
+<td><strong>MLA-576</strong>（本模型，但假设 50 层全局）</td>
+<td>1.125 KiB</td>
+<td><strong>7.55 GB</strong></td>
+<td>×1</td>
+</tr>
+<tr>
+<td><strong>MLA-576 + DSA:SWA 1:2</strong>（✅ 实际配置）</td>
+<td>—</td>
+<td><strong>2.59 GB</strong></td>
+<td><strong>×0.34</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 两级压缩，各管一半：
+       MLA 把&quot;每层每 token 存多少字节&quot;从 32 KiB 压到 1.125 KiB   -&gt; 28.4 倍
+       1:2 混合把&quot;有多少层需要存全长&quot;从 50 层压到 17 层          -&gt;  2.9 倍
+       合起来 = 214.7 / 2.59 = 83 倍
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这笔账正好给 §十一 那个"Pro 从 8K 到 128K，TPOT 只涨 0.02 ms"一个物理解释</strong>：decode 是<strong>访存受限</strong>的，每步要读的字节里，<strong>33 个 SWA 层那部分完全不随长度变</strong>，只有 17 个 DSA 层在涨，而 DSA 层每 token 只挑 K = 2048 个历史 KV 来算。<strong>长度的影响被压到了三分之一的层上，再被 top-K 压掉一次。</strong></p>
+<p>⚠️ <strong>但报告 Table 1 也明说了 prefill 仍然有一个 $S^2$ 项</strong>，来自 lightning indexer（它要给所有历史打分）。⚠️ <strong>报告没有给 indexer 的头数和维度，所以这一项算不出来</strong>——上面那张表是 KV cache 的账，<strong>不是 FLOPs 的账</strong>，两者别混。</p>
+<p>⚠️ <strong>GB 和 GiB 要分清</strong>：上表用的是十进制 GB（$10^9$ 字节）。昇腾/H100 标称的显存容量也是十进制口径，但操作系统报的是 GiB，两者差 7.4%。</p>
+</blockquote>
 <hr />
 <h2 id="pas-vs-gpt-oss-sink">四、⭐ PAS vs gpt-oss sink：本报告最有独立价值的一处消融</h2>
 <p>这是本目录五家里<strong>唯一一份把 attention sink 的不同实现放在一起比过的材料</strong>。</p>
@@ -727,6 +1012,10 @@ openPangu： b_i ← b_i − γ · (F_i − Q_i) / RMS(F − Q)
 </table>
 <blockquote>
 <p><strong>四家的 MTP 现在有四种做法</strong>：V4 深度 1、GLM 3 层<strong>参数共享</strong>、K3 微调成 EAGLE-3 草稿模型、M3 <strong>7 个模块</strong>、openPangu <strong>3 层独立 + 内部滑窗 + 分阶段扩展</strong>。⚠️ 报告<strong>没有给接受长度（accept length）</strong>，无法和 GLM 的 2.76 / DeepSeek-V3.2 的 2.55 对比。</p>
+<p><strong>★ 推演六：就算报告给了接受长度，也别用错公式。</strong> 一轮猜 $\gamma$ 个 token 时，<strong>接受长度的期望是几何求和，不是 $\alpha \times \gamma$</strong>：</p>
+<p>$$\mathbb{E}[\text{accept length}] = \sum_{i=0}^{\gamma}\alpha^i = \frac{1-\alpha^{\gamma+1}}{1-\alpha},\qquad \text{天花板} = \frac{1}{1-\alpha}$$</p>
+<p>原因是<strong>草稿 token 串行依赖</strong>：第 2 个是在"第 1 个已被接受"的前提下生成的，第 1 个被拒则后面全部作废——<strong>几何分布，不是二项分布</strong>。把 GLM 的 2.76 反解回去（$\gamma=4$）得到单步接受率 $\alpha \approx 0.70$，DeepSeek-V3.2 的 2.55 对应 $\alpha \approx 0.655$（推演过程见 <a href="GLM-5.2.html">GLM-5.2.md</a> §四）。完整推导与逐 $\gamma$ 对照表见 <a href="大模型架构入门/12-MTP与投机解码.html">大模型架构入门/12-MTP与投机解码.md §12.5</a>。</p>
+<p>🔑 <strong>openPangu 这个"MTP 内部只看最近 2048 个 token"的设计，用这个公式看就很清楚了</strong>：窗口从 512K 砍到 2048，草稿模型的单步成本 $c$ 大幅下降，而 $\alpha$ 只掉一点点——加速比 $\approx E/(1+\gamma c)$ 的分母降得比分子快，<strong>净收益为正</strong>。⚠️ 但这是本文的解释，<strong>报告只说了"保留足够的局部上下文来产出高质量草稿"，没有给 $\alpha$ 或 $c$ 的数字</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="muon-4-head">八、Muon：分 4 组，不是逐 head</h2>
@@ -773,6 +1062,67 @@ Kimi K2/K3  → QK-Clip（直接裁剪，是"承认问题存在"的一方）</co
 </code></pre></div>
 
 <p><code>25T + 8T + 1.4T ≈ 34.4T</code> ✓ 与官方"约 34T"一致。</p>
+<h3 id="34t-token">★ 推演五：这 34T token 值多少算力</h3>
+<p>⚠️ <strong>报告没有披露训练总算力、卡数或训练时长，下面全部是本文推算</strong>，目的只是建立量级感。</p>
+<div class="codehilite"><pre><span></span><code>    训练总 FLOPs ≈ 6 x N x D
+      N = 【激活参数】18 B（★ MoE 这里用激活参数，不是总参数）
+      D = 34 万亿 token
+      ⟹ 6 x 18e9 x 34e12 = 3.67e24 FLOP
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong><code>6N</code> 的三项是</strong>：前向 $2N$ + 反向对输入求梯度 $2N$ + 反向对权重求梯度 $2N$。<strong>它不含优化器更新，也不含激活重计算。</strong> 补全式是 $6N + 12 \cdot L_{\text{layers}} \cdot s \cdot h$，但那一项假设的是全注意力；openPangu 的 DSA-SWA 让注意力矩阵项变成常数级，<strong>这个补正项在这里不适用</strong>。完整推导见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.5.2</a>。</p>
+</blockquote>
+<p>⚠️⚠️ <strong>openPangu 实际训练在昇腾 NPU 上（报告写明部署在 CloudMatrix 384 超节点），下表是"如果换成 H100"的等效换算，只用来和别家建立可比的量级感，不代表华为的真实机时。</strong></p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>数值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>H100 SXM5 稠密 BF16 峰值</td>
+<td><strong>989 TFLOPS</strong></td>
+<td>⚠️ 常被写成 1979 TFLOPS，<strong>那是 2:4 结构化稀疏值</strong></td>
+</tr>
+<tr>
+<td>假设 MFU（模型算力利用率）</td>
+<td><strong>35 %</strong></td>
+<td>⚠️ <strong>在 H100 + 千卡级 MoE 训练上的常见区间，无一手来源。MFU 数字脱离硬件平台无意义</strong></td>
+</tr>
+<tr>
+<td>有效算力</td>
+<td>346 TFLOPS</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>等效总机时</strong></td>
+<td><strong>≈ 295 万 H100·小时</strong></td>
+<td>$3.67\times10^{24} \div 3.46\times10^{14}$</td>
+</tr>
+<tr>
+<td>4096 张卡要跑多久</td>
+<td>≈ <strong>30 天</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>训练的显存账</strong>（⚠️ 同样是通用换算，不是报告数字）：</p>
+<div class="codehilite"><pre><span></span><code>    混合精度 + AdamW：每个参数 16 字节
+      权重 BF16 2 + 梯度 BF16 2 + FP32 主权重 4 + 一阶动量 m 4 + 二阶动量 v 4
+      ★ m 和 v 是【各】4 字节，少算一份整个预算会小 25%
+
+    Muon：不需要二阶动量 v  ⟹  12 字节 / 参数
+
+    505 B 参数：AdamW 8080 GB（7.35 TiB）  vs  Muon 6060 GB（5.51 TiB）
+</code></pre></div>
+
+<blockquote>
+<p>📌 ✅ <strong>报告原文说 Muon "只跟踪一阶动量，把优化器状态显存减半"——这句话是对的，但要注意减半的是"优化器状态"那一项</strong>（$m+v=8$ 字节降到 $m=4$ 字节），<strong>不是总显存</strong>：总显存从 16 降到 12，是<strong>减少 25%</strong>。⚠️ <strong>"某项减半" ≠ "总量减半"，这类偷换在读报告时非常常见。</strong></p>
+</blockquote>
 <p><strong>RoPE base 随长度逐级放大</strong>：<code>10K@4K → 100K@8K → 400K@32K → 1.6M@128K → 6.4M@512K</code>。</p>
 <p><strong>Tokenizer 的一个反直觉决定</strong>：报告对比了三种词表，<strong>3-digit 变体压缩率最好</strong>（中文 4.04、多语 3.37、行业 4.51，平均 2.71），但<strong>最终选了压缩率略差的 single-digit 变体</strong>（平均 2.59）。理由：</p>
 <blockquote>
@@ -871,12 +1221,44 @@ Phase II : Decode 对齐（解更深的 C 类），需要 kernel 级介入
 ⟹ ★ 所以这是 <strong>MLA 这条技术路线的隐性成本</strong>，不是"用了压缩 KV 就一定有"。V4 走压缩路线却绕开了它。</p>
 </blockquote>
 <hr />
-<h2 id="_3">十一、推理与量化</h2>
+<h2 id="_2">十一、推理与量化</h2>
 <h3 id="111-w8a8-4-bit">11.1 量化：W8A8，<strong>不是 4-bit</strong></h3>
 <div class="codehilite"><pre><span></span><code>静态对称的输出通道权重量化 + 动态 per-token 激活量化
 Pro：权重占用 1009 GB → 517 GB，压缩 1.95×
 </code></pre></div>
 
+<p><strong>★ 推演四：为什么是 1.95× 而不是正好 2×</strong></p>
+<p>这个"不到 2 倍"不是四舍五入，<strong>它是可以算出来的</strong>。⚠️ 以下为本文推算，报告只给了 1009 / 517 / 1.95× 三个数。</p>
+<div class="codehilite"><pre><span></span><code>    先核对 1009 GB 这个起点：505 B 参数 x 2 字节（BF16）= 1010 GB   ✓ 对得上
+    如果全部压到 INT8：505 x 1 = 505 GB，压缩正好 2.00 倍
+    报告实际是 517 GB，比&quot;理想 INT8&quot;多出 12 GB
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>多出来的 12 GB 花在哪</th>
+<th>为什么</th>
+<th>量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>per-channel scale 本身要存</strong></td>
+<td>输出通道量化 = 每个输出通道一个 FP16/FP32 的 scale，<strong>scale 不是免费的</strong></td>
+<td>小，但非零</td>
+</tr>
+<tr>
+<td><strong>✅ 报告明确保留 BF16 的模块</strong></td>
+<td>融合算子只吃 BF16 的、TopK 路由与 indexing（<strong>位于离散选择之前，对量化噪声敏感</strong>）、残差路径、小层</td>
+<td><strong>主要来源</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这和 INT4 那条规律是同一回事</strong>：INT4 配 group scale 之后<strong>有效位宽是 4.15625 bit，压缩比 3.85× 而不是 4×</strong>；W8A8 这里是 <strong>有效 8.2 bit 左右，压缩比 1.95× 而不是 2×</strong>。完整推导见 <a href="大模型架构入门/14-量化.html">大模型架构入门/14-量化.md §14.5</a>。</p>
+<p>🔑 <strong>"报告里看到 N-bit 量化就以为小 N 倍"是这一类文档最常见的读错方式</strong>。判断口诀：<strong>scale 要占字节，保高精度的层要占字节，所以实际压缩比永远小于标称位宽比。</strong></p>
+</blockquote>
 <p>校准用 channel-wise smoothing，并<strong>放松了 SmoothQuant 的 <code>a + b = 1</code> 硬约束</strong>，改成对解耦指数 <code>(a, b)</code> 做二维搜索；对关键的 up projection，输入侧与输出侧平滑系数<strong>交替迭代优化至收敛</strong>。</p>
 <p><strong>保持 BF16 的模块</strong>（报告给了明确的决策依据）：融合算子只接受 BF16 输入的、<strong>位于离散选择之前对量化噪声敏感的（TopK 路由和 indexing）</strong>、误差会累积的残差路径、开销大于收益的小层、已经被侧流窗口掩盖的算子。</p>
 <blockquote>
@@ -1097,15 +1479,33 @@ Pro：权重占用 1009 GB → 517 GB，压缩 1.95×
       ⟹ 只能【32 张卡各存一份完全相同的 KV cache】
 </code></pre></div>
 
-<p>⚠️ 按 KV 秩 512 + RoPE 维 64 = 576、bf16、DSA:SWA = 1:2 推算：</p>
-<div class="codehilite"><pre><span></span><code>    单条 128K 序列的 KV cache
-      17 个 DSA 层：17 × 576 × 2B × 131072 ≈ 2.5 GB    ← 随长度线性增长
-      33 个 SWA 层：33 × 576 × 2B × 512    ≈  19 MB    ← 窗口 512，★ 恒定
-      ───────────────────────────────────── ≈ 2.5 GB / 条
-
-    若 decode 也用 TP=32：32 卡各存同一条 ⟹ 80 GB 只服务【1 个】用户
-    改用 Attention DP=32：32 卡各存不同条 ⟹ 同样 80 GB 服务【32 个】用户
-                                          ★★★ 并发差 32 倍
+<p>⚠️ 单条 128K 序列的 KV cache 是 <strong>≈ 2.59 GB</strong>（按 KV 秩 512 + RoPE 维 64 = 576、BF16、DSA:SWA = 1:2 推算，完整拆解见 §3.6 推演三）。把它代进两种切法：</p>
+<table>
+<thead>
+<tr>
+<th>切法</th>
+<th>32 张卡上各放什么</th>
+<th>32 卡合计显存</th>
+<th>能同时服务几个用户</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TP = 32</strong>（按头切）</td>
+<td>每张卡都要存<strong>同一条</strong>序列的 cache</td>
+<td>32 × 2.59 = <strong>83 GB</strong></td>
+<td>★ <strong>1 个</strong></td>
+</tr>
+<tr>
+<td><strong>Attention DP = 32</strong></td>
+<td>每张卡存<strong>不同一条</strong>序列的 cache</td>
+<td>32 × 2.59 = <strong>83 GB</strong></td>
+<td>★ <strong>32 个</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    同样 83 GB 显存，并发差【32 倍】。
+    这就是 decode 侧必须换成 DP 的第一理由。
 </code></pre></div>
 
 <blockquote>
@@ -1127,7 +1527,7 @@ Pro：权重占用 1009 GB → 517 GB，压缩 1.95×
 </code></pre></div>
 
 <hr />
-<h2 id="_4">十二、评测</h2>
+<h2 id="_3">十二、评测</h2>
 <h3 id="121-table-5-hf">12.1 官方全表（报告 Table 5，与 HF 模型卡完全一致）</h3>
 <p>解码设置 <code>top_p 0.8, temperature 1.0</code>。<strong>加粗为 openPangu-2.0 系列内部最优。</strong></p>
 <table>
@@ -1558,7 +1958,7 @@ Agent / 工具 ：−12 ~ −26      ← 差一代，且是最大的一处
 <h3 id="124-in-house-harness">12.4 报告自己的 in-house harness</h3>
 <p>报告另有 §5.2 两节：<strong>Deep Research 与交互式可视化</strong>、<strong>全栈迷你应用生成</strong>。这两节是内部 harness 的定性/对比展示，<strong>同样没有外部模型对照</strong>。</p>
 <hr />
-<h2 id="_5">十三、这份报告真正的贡献在哪</h2>
+<h2 id="_4">十三、这份报告真正的贡献在哪</h2>
 <p><strong>如果只看榜单，openPangu-2.0-Pro 是"数学接近第一梯队、Agent 差一代"。但这不是它的重点。</strong></p>
 <table>
 <thead>
@@ -1588,7 +1988,7 @@ Agent / 工具 ：−12 ~ −26      ← 差一代，且是最大的一处
 </table>
 <p><strong>最值得记的一句</strong>：这份报告在<strong>它自己关心的问题上</strong>（怎么在国产硬件上把 500B MoE 训稳、推快）披露得比另外四家都细——训推不一致那一章的颗粒度，五家里没有第二份。<strong>它的"薄"只出现在能力对比上，而那恰好是它选择不谈的部分。</strong></p>
 <hr />
-<h2 id="_6">十四、可靠性说明</h2>
+<h2 id="_5">十四、可靠性说明</h2>
 <table>
 <thead>
 <tr>
@@ -1609,9 +2009,39 @@ Agent / 工具 ：−12 ~ −26      ← 差一代，且是最大的一处
 <td>一手</td>
 </tr>
 <tr>
-<td>541B 的口径拆解、参数量验算</td>
+<td><strong>§二 推演一</strong>（504.36B 参数拆解、17.94B 激活拆解）</td>
 <td><strong>本文推算</strong>（基于 Table 8）</td>
-<td>推算，两项均与官方数字吻合</td>
+<td>推算，与官方 505B / 18B 分别差 0.13% / 0.3%</td>
+</tr>
+<tr>
+<td><strong>§二 推演二</strong>（真稀疏度 28.1×、FLOPs/token、深宽比、五家对照）</td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算</strong>。⚠️ <strong>本文此前把"384 选 8 = 48×"当成稀疏度，是错的，已更正</strong></td>
+</tr>
+<tr>
+<td><strong>541B 的口径拆解</strong></td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算，且没有闭合</strong>：505 + 3×10.73 = 537.2，离 541 还差 3.8 B</td>
+</tr>
+<tr>
+<td><strong>§3.6 推演三</strong>（一条 128K 序列 2.59 GB、与 MHA/GQA 的对照）</td>
+<td><strong>本文推算</strong>（基于 Table 8）</td>
+<td>⚠️ <strong>推算，报告未给任何 KV cache 绝对数字</strong></td>
+</tr>
+<tr>
+<td><strong>§九 推演五</strong>（3.67e24 FLOP、295 万等效 H100·小时、16 字节/参数）</td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算</strong>。⚠️ <strong>openPangu 实训在昇腾上，H100 换算只是等效量级，MFU 35% 无一手来源</strong></td>
+</tr>
+<tr>
+<td><strong>§十一 推演四</strong>（1.95× 为什么不是 2×）</td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算</strong>，报告只给了 1009 / 517 / 1.95×</td>
+</tr>
+<tr>
+<td><strong>§七 推演六</strong>（接受长度的几何求和式、α 反解）</td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算</strong>，openPangu 报告根本没给接受长度</td>
 </tr>
 <tr>
 <td>§11.4 的并行切法（MoE 走 EP、prefill DSA CP + SWA TP、decode Attention DP、Felix）</td>
@@ -1635,16 +2065,18 @@ Agent / 工具 ：−12 ~ −26      ← 差一代，且是最大的一处
 </tr>
 </tbody>
 </table>
-<p><strong>最需要保留怀疑的五处</strong>：</p>
+<p><strong>最需要保留怀疑的七处</strong>：</p>
 <ol>
 <li><strong>没有任何对照模型</strong>——所有横向结论都不是华为的主张，是我拼的。</li>
 <li><strong>完全没有长上下文评测</strong>。全文 <code>RULER</code> 出现 0 次，MRCR、NIAH 也没有。<strong>它宣称 512K，但没有任何逐长度召回数据</strong>——比 GLM-5.2 的"1M 无曲线"更彻底。而且它是五家里唯一<strong>不到 1M</strong> 的。</li>
 <li><strong>所有消融都在 15B/2B 上做</strong>（mHC 1T tokens、PAS 250B tokens、负载均衡同理），<strong>离 505B 很远</strong>。PAS 那一组只给曲线不给数值表。</li>
 <li><strong>官方博客的"单卡吞吐 2 倍于业界主流开源模型"在报告正文里找不到出处</strong>，Table 6/7 全部是自己和自己比。</li>
 <li><strong>MTP 没有给接受长度</strong>，无法与 GLM 的 2.76 / DeepSeek-V3.2 的 2.55 对比；<strong>量化没有提 QAT</strong>，看起来是 PTQ，与另外四家的训练时量化不是一回事。</li>
+<li><strong>HF 的 541B 口径对不上</strong>（见 §二）。"505B + 3 个 MTP 层"只能推到 537.2 B，还差 3.8 B。报告没给 MTP 层的内部结构。</li>
+<li><strong>报告一个 FLOPs / 显存 / 机时的绝对数字都没有给。</strong> Table 1 只有渐近系数，Table 6/7 只有延迟吞吐。<strong>本文 §3.6 / §九 那两笔账全部是推算</strong>，只能当量级参考，且换算成 H100 口径时另有一层假设。</li>
 </ol>
 <hr />
-<h2 id="_7">参考来源</h2>
+<h2 id="_6">参考来源</h2>
 <ul>
 <li><strong>openPangu-2.0: Towards Reliable and Efficient Agentic Reasoning</strong>（45 页技术报告，无 arXiv 编号）— 本地：<a href="papers/openPangu-2.0-Tech-Report.pdf">papers/openPangu-2.0-Tech-Report.pdf</a></li>
 <li><a href="https://huggingface.co/openpangu/openPangu-2.0-Pro">openpangu/openPangu-2.0-Pro (Hugging Face)</a> — 完整评测表与模型卡</li>

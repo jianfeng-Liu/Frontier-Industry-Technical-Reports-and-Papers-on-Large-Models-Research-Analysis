@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="deepseek-v4">DeepSeek-V4 架构与技术报告解析</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>来源</strong>：本文整理自 2026-08-03 的调研对话记录，内容基于技术报告 arXiv:2606.19348（2026-04-26）与官方模型卡。<br />
 <strong>本地论文</strong>：<a href="papers/arxiv-2606.19348.pdf">papers/arxiv-2606.19348.pdf</a>（58 页技术报告）、<a href="papers/DeepSeek-V4-model-card-EN.pdf">papers/DeepSeek-V4-model-card-EN.pdf</a>（8 页官方模型卡）<br />
 <strong>横向对比</strong>：见 <a href="模型技术对比.html">模型技术对比.md</a>（DeepSeek-V4 / Kimi K3 / GLM-5.2 / MiniMax M3 / openPangu-2.0 五方）<br />
@@ -321,13 +321,174 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <p>下面逐个用最小例子讲。</p>
+<h3 id="v3">⚠️ 先把上一代 V3 的基线数字钉死（本文后面多处拿它做对照）</h3>
+<p><strong>读 V4 报告最容易出问题的地方，是拿一个记错的 V3 去当参照物。</strong> 下面这些是本仓库已核实的 ✅ 官方口径：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>✅ DeepSeek-V3 的官方数字</th>
+<th>❌ 常见错法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>层数</td>
+<td><strong>61 层</strong>：前 <strong>3 层稠密 FFN</strong> + <strong>58 层 MoE</strong></td>
+<td>"61 层全是 MoE"</td>
+</tr>
+<tr>
+<td>专家</td>
+<td><strong>256 个路由专家 + 1 个共享</strong>，每 token <strong>Top-8</strong></td>
+<td>"384 选 8"（那是 openPangu）／"896"（那是 Kimi K3）</td>
+</tr>
+<tr>
+<td>训练并行</td>
+<td><strong>EP=64 / PP=16 / TP=1</strong>，<strong>2048 张 H800</strong></td>
+<td>写成用了 TP</td>
+</tr>
+<tr>
+<td>丢 token</td>
+<td><strong>训练和推理都不丢 token</strong>（官方明确声明）</td>
+<td>"MoE 必然丢 token"</td>
+</tr>
+<tr>
+<td>负载均衡</td>
+<td>无辅助损失的<strong>偏置法</strong>：偏置<strong>训练时每 step 更新、推理时固定</strong>；⚠️ V3 <strong>并非完全不用</strong>辅助损失，它保留了一个<strong>极小的序列级 aux loss</strong></td>
+<td>"V3 完全废除了辅助损失"</td>
+</tr>
+<tr>
+<td>MTP</td>
+<td><strong>第二个 token 的接受率 85%~90%、TPS 提升 1.8×</strong></td>
+<td>"提速 3×"</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📘 这几条的出处与完整展开：层型分布和专家配置见 <a href="大模型架构入门/01-鸟瞰全景.html">01 章 §1.6</a> 与 <a href="大模型架构入门/10-MoE.html">10 章 §10.5</a>，MTP 的 1.8× 见 <a href="大模型架构入门/12-MTP与投机解码.html">12 章 §12.12</a>，并行配置见 <a href="../训练框架/分布式训练入门/12-并行策略组合与MFU.html">训练框架 §12</a>。</p>
+</blockquote>
+<h3 id="16t-49b">★ 把 1.6T / 49B 这两个数字拆开：一笔你能自己按出来的账</h3>
+<p>报告给了总参数和激活参数，但<strong>没有给每个专家多大</strong>。好在这两个数字加上 MoE 配置就足够<strong>反解</strong>出来了。</p>
+<p><strong>关键观察</strong>：总参数和激活参数的<strong>差</strong>，只由"没被选中的那些路由专家"贡献——注意力、共享专家、Embedding、稠密层这些在两笔账里一模一样，相减就消掉了。于是（$M$ = MoE 层数、$E$ = 单个专家参数量）：</p>
+<div class="codehilite"><pre><span></span><code>1600 B − 49 B = 1551 B = M x (384 − 6) x E
+
+取 M = 61（V4 把原来的稠密层也换成了哈希路由的 MoE 层，所以 61 层全是 MoE）：
+   E = 1551 B / (61 x 378) = 67.3 M
+   一个专家 = 3 x 7168 x d_ff_e   ⟹   d_ff_e = 67.3 M / (3 x 7168) ≈ 3130
+</code></pre></div>
+
+<p>⚠️ <strong>这是本文的反推，不是报告写的。</strong> 而且精度上限很低：<strong>报告给的 "1.6T" 只有两位有效数字</strong>，$\pm 0.05$T 的不确定度直接对应 $d_{ff}^{e}$ 上 $\pm 100$ 的摆幅——所以只能说<strong>专家中间维在 3100 上下，3072 和 3200 都落在误差里</strong>。</p>
+<p>拿 $E = 67.3$ M 回代，两笔账同时列出来做一致性检查：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>总参数</th>
+<th>激活参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>61 层 × 384 个路由专家</td>
+<td>$61 \times 384 \times 67.3\,\text{M}$ ／ 激活 $61 \times 6 \times 67.3\,\text{M}$</td>
+<td><strong>1576 B</strong></td>
+<td><strong>24.6 B</strong></td>
+</tr>
+<tr>
+<td>61 层 × 1 个共享专家</td>
+<td>$61 \times 67.3\,\text{M}$</td>
+<td>4.1 B</td>
+<td>4.1 B</td>
+</tr>
+<tr>
+<td><strong>小计</strong></td>
+<td></td>
+<td><strong>1580 B</strong></td>
+<td><strong>28.7 B</strong></td>
+</tr>
+<tr>
+<td><strong>✅ 报告值</strong></td>
+<td></td>
+<td><strong>1600 B</strong></td>
+<td><strong>49 B</strong></td>
+</tr>
+<tr>
+<td><strong>差额</strong>（注意力 + Embedding + RMSNorm + mHC 的 A/B/C）</td>
+<td></td>
+<td><strong>20.0 B</strong></td>
+<td><strong>20.3 B</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>这张表真正的价值在最后一行</strong>：两个差额是 <strong>20.0 B 和 20.3 B</strong>，<strong>几乎相等</strong>——本来就该相等，因为注意力和 Embedding <strong>一点都不稀疏</strong>。两条独立路径撞到同一个数，说明前面那个 $E \approx 67.3$ M 的反推没错得离谱。平摊下来 <strong>每层注意力 ≈ 3.3 亿参数</strong>（⚠️ 推算；V4 每层同时挂着 CSA、HCA 和 Lightning Indexer 三套投影，这个量级合理）。</p>
+</blockquote>
+<h3 id="384-6-64">★ 稀疏度：<code>384 / 6 = 64×</code> 这个说法要小心</h3>
+<div class="codehilite"><pre><span></span><code>❌ 常见说法：&quot;384 选 6，所以 V4-Pro 稀疏 64 倍&quot;
+
+✅ 三个数字，三个不同的问题：
+   384 / 6     = 64.0 倍   &lt;- 只是【路由专家】的选择比
+   385 / 7     = 55.0 倍   &lt;- 算上共享专家后的 FFN 稀疏比
+   1600 / 49   = 32.7 倍   &lt;- ★ V4-Pro 全模型 总参数/激活参数（正确口径）
+   284  / 13   = 21.8 倍   &lt;- ★ V4-Flash 同口径
+
+⟹ 显存按【总参数】付钱，算力按【激活参数】付钱。
+   只有第三行那个口径才回答&quot;这两笔账差多少&quot;。
+</code></pre></div>
+
+<p>同一个陷阱在 <a href="大模型架构入门/01-鸟瞰全景.html">01 章 §1.4.4</a> 拿 openPangu 演示过（那里是「384/8 = 48×」应为「505/18 = 28.1×」）。</p>
+<h3 id="_1">★ 算力与显存：三个可以直接算的数</h3>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>通式</th>
+<th>V4-Pro 代入</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每 token <strong>前向</strong> FLOPs</td>
+<td>$2N_{\text{激活}}$</td>
+<td>$2 \times 49\,\text{B} = \mathbf{98}$ GFLOPs</td>
+<td>不含注意力打分项</td>
+</tr>
+<tr>
+<td>每 token <strong>训练</strong> FLOPs</td>
+<td>$6N_{\text{激活}}$</td>
+<td>$6 \times 49\,\text{B} = \mathbf{294}$ GFLOPs</td>
+<td>⚠️ 6N = 2N 前向 + 4N 反向，<strong>不含优化器</strong></td>
+</tr>
+<tr>
+<td>预训练<strong>总算力</strong></td>
+<td>$6N \times D$</td>
+<td>$6 \times 49\,\text{B} \times 33\,\text{T} = \mathbf{9.7 \times 10^{24}}$ FLOPs</td>
+<td>$D$ = 33T tokens</td>
+</tr>
+<tr>
+<td>训练态<strong>显存</strong></td>
+<td>16 字节/参数</td>
+<td>$1.6\,\text{T} \times 16 = \mathbf{25.6}$ TB</td>
+<td>FP32 主权重 4 + 梯度 4 + Adam 的 $m$、$v$ <strong>各</strong> 4</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"9.7e24 FLOPs 等于多少卡时"必须带硬件平台，否则这个数字没有意义。</strong> 用 V3 反过来标定一次：V3 是 $6 \times 37\,\text{B} \times 14.8\,\text{T} = 3.29\times10^{24}$ FLOPs，官方公布 <strong>2.788 M H800 卡时</strong>；<strong>H800 的 BF16 稠密峰值是 989 TFLOPS</strong>（⚠️ 另一个常见数字 <strong>1979 是 2:4 稀疏值，不能拿来算 MFU</strong>），于是<br />
+<code>V3 的 MFU = 3.29e24 / (2.788e6 x 3600 s x 989e12) = 33.1%   &lt;- H800 / BF16 口径
+V4-Pro 按同一 MFU： 9.7e24 / (0.331 x 989e12) ≈ 8.2e6 卡时  &lt;- 约等于 V3 的 2.9 倍</code><br />
+⚠️ <strong>这 8.2 M 卡时是本文的推算，报告没有公布训练卡时。</strong> 而且它只算了 <code>6N</code> 那一项：V4 训到 1M 上下文，注意力打分那一项 <code>12·L·s·h</code> 在稠密基线下是 $12 \times 61 \times 10^6 \times 7168 = 5247$ GFLOPs/token，<strong>是 6N(294) 的 17.8 倍</strong>——<strong>这恰恰就是 CSA + HCA 要解决的那个问题</strong>，也是"1M 上下文下单 token FLOPs 只有 V3.2 的 27%"这句话的来源。</p>
+<p>那 25.6 TB 的训练显存也值得停一下：按 H800 每卡 80 GB 算，<strong>光是放下权重和优化器状态就要 320 张卡</strong>，一个样本都还没跑。显存都去哪了、ZeRO 怎么切，见 <a href="../训练框架/分布式训练入门/02-显存去哪了.html">训练框架 §2 / §5</a>。</p>
+</blockquote>
 <hr />
 <h2 id="1-csa-hca">二、改进点 1：混合注意力 CSA + HCA（最核心）</h2>
-<h3 id="_1">问题是什么</h3>
+<h3 id="_2">问题是什么</h3>
 <p>假设上下文有 <strong>100 万个 token</strong>。传统注意力（哪怕是 MLA）要为每个 token 存一份 KV，生成第 1000001 个 token 时，要和前面 100 万个逐一算相似度。这就是 1M 上下文贵的根源。</p>
 <p>V4 的思路很朴素：<strong>先把序列"压缩"成更短的序列，再在压缩后的序列上做注意力。</strong></p>
 <h3 id="csa">CSA：压缩稀疏注意力（"精读"）</h3>
-<h4 id="_2">最小例子</h4>
+<h4 id="_3">最小例子</h4>
 <p>假设序列只有 16 个 token，压缩率 <code>m = 4</code>：</p>
 <div class="codehilite"><pre><span></span><code>原始 KV:  [t0 t1 t2 t3] [t4 t5 t6 t7] [t8 t9 t10 t11] [t12 t13 t14 t15]
               ↓              ↓              ↓                ↓
@@ -342,7 +503,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <p>所以每个压缩条目实际看到 <code>2m = 8</code> 个 token，但序列长度仍然只压到 1/4。<strong>相邻条目共享信息，块边界的硬切断被抹平了。</strong></p>
-<h4 id="_3">压完之后：只挑重要的看</h4>
+<h4 id="_4">压完之后：只挑重要的看</h4>
 <p>压缩之后 1M token → 25 万条目，还是多。于是用 <strong>Lightning Indexer</strong>（V3.2 就有，V4 沿用）打分：</p>
 <div class="codehilite"><pre><span></span><code>I(t,s) = Σ_h  w_h · ReLU( q_h · K_s )
 </code></pre></div>
@@ -359,22 +520,84 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <p>7800 条已经很便宜了，直接全量注意力，<strong>保证全局连贯性不丢</strong>。</p>
-<h3 id="_4">两者交替 = 精读 + 泛读</h3>
+<h3 id="_5">两者交替 = 精读 + 泛读</h3>
 <div class="codehilite"><pre><span></span><code>CSA 层：看得细（1/4 压缩），但只挑 top-k 看 → 局部精度
 HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
 </code></pre></div>
 
 <p>层与层之间交错排列。这就是 1M 上下文能被"扛住"的全部秘密——<strong>没有一层同时既看得细又看得全，但堆起来两者都有。</strong></p>
-<h3 id="_5">还有几个工程细节</h3>
+<h3 id="_6">还有几个工程细节</h3>
 <ul>
 <li><strong>QK-RMSNorm</strong>：对 query 和压缩 KV 条目直接做 RMSNorm，防止 attention logits 爆炸。副作用是 Muon 里<strong>不需要 QK-Clip</strong> 了。</li>
 <li><strong>Partial RoPE + 反向 RoPE</strong>：只在最后 64 维加 RoPE。但因为压缩条目<strong>同时充当 key 和 value</strong>，输出会带上绝对位置信息；于是对输出 <code>o_i</code> 的最后 64 维再施加一次位置为 <code>−i</code> 的 RoPE，把绝对位置抵消掉，恢复相对位置性质。这个 trick 挺巧。</li>
 <li><strong>KV 存储混合精度</strong>：RoPE 维度用 BF16，其余用 FP8，KV cache 再砍一半。Indexer 的注意力计算用 FP4。</li>
 <li><strong>最终效果</strong>：以 BF16 / GQA-8 / head_dim=128 为基线，1M 上下文下 KV cache 只有约 <strong>2%</strong>。</li>
 </ul>
+<h3 id="_7">⚠️⚠️ 讲压缩注意力时最容易写反的一句话</h3>
+<blockquote>
+<p>❌ "CSA 把 KV 压缩掉了，所以<strong>不用缓存</strong> KV 了。"</p>
+<p>★ <strong>这是反的，而且是把整个设计讲没的那种反。</strong> CSA 和 HCA <strong>照样要缓存</strong>——只不过缓存的是<strong>压缩后的条目</strong>（<code>1M / 4 = 25 万条</code>、<code>1M / 128 ≈ 7800 条</code>），不是原始的 100 万份 KV。省显存的全部来源<strong>正是"缓存的是压缩条目"</strong>这件事本身。</p>
+<p>同一个坑在 MLA 上有个孪生版本：MLA 的"矩阵吸收"吸的是<strong>上投影矩阵</strong>（吸到 Q 侧和输出侧），它<strong>照样缓存压缩后的潜向量 $c_{KV}$</strong>。任何推出"不用存了"的说法都一定错了。两个坑的完整对照见 <a href="大模型架构入门/07-MHA到MLA.html">07 章 §7.2 / §7.4</a>。</p>
+<p>判断口诀：<strong>压缩注意力省的是"缓存里有几条"，不是"要不要缓存"。</strong></p>
+</blockquote>
+<h3 id="2">★ 把那个 "2%" 拆成三个可乘的因子</h3>
+<p>报告只给了一个百分比。<strong>百分比最容易骗人</strong>——它取决于拿谁当基线。这里把它拆开，顺便把 §一 那张表里的 "vs V3.2 的 10%" 和这里的 "vs GQA-8 的 2%" 对齐。</p>
+<p><strong>先把两条基线的绝对值算出来</strong>（通式 <code>每 token 每层 = 2 × n_kv_heads × head_dim × 字节数</code>，61 层）：</p>
+<table>
+<thead>
+<tr>
+<th>基线</th>
+<th>算式</th>
+<th>每 token</th>
+<th>1M 上下文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>报告用的 <strong>GQA-8 / head_dim 128 / BF16</strong></td>
+<td>$61 \times 2 \times 8 \times 128 \times 2$</td>
+<td><strong>244 KiB</strong>（249,856 字节）</td>
+<td><strong>250 GB</strong>（= 233 GiB）</td>
+</tr>
+<tr>
+<td>V3 / V3.2 的 <strong>MLA-576 / BF16</strong>（⚠️ MLA 那行不乘 2、也没有头数）</td>
+<td>$61 \times 576 \times 2$</td>
+<td><strong>68.6 KiB</strong>（70,272 字节）</td>
+<td><strong>70.3 GB</strong>（= 65.4 GiB）</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>注意这两条基线本身就差 3.56 倍</strong>（$249856 / 70272$；⚠️ 顺带提醒 <strong>GB 和 GiB 差 7.4%</strong>，1M 这里按 $10^6$ 个 token 算）——所以"降到 2%"和"降到 10%"<strong>根本不是同一个陈述</strong>，不能互相印证。</p>
+<p><strong>再把 V4 相对 MLA-BF16 省的那部分拆成三个正交方向</strong>（这个"三维度"的分法是 V4.1-Flash 报告里明确写出来的，见 <a href="DeepSeek-V4.1-Flash.html">DeepSeek-V4.1-Flash.md</a> 第四节）：</p>
+<div class="codehilite"><pre><span></span><code>① 序列方向：CSA m=4 与 HCA m′=128 层层交替
+     CSA 层每 token 的条目数 = 1/4      = 0.250
+     HCA 层每 token 的条目数 = 1/128    = 0.0078
+     两种层各占一半 ⟹ 平均 = (0.250 + 0.0078)/2 = 0.129  →  省 7.76 倍
+
+② 条目大小方向：主体 FP8（1 字节）+ RoPE 那 64 维 BF16，相对全 BF16
+                                                       →  省 约 2 倍
+
+③ 层方向：V4 没动（61 层每层都有自己的 KV）            →  省 1 倍
+
+合计 ≈ 7.76 x 2 = 15.5 倍   （相对同规模的 MLA-576 / BF16）
+</code></pre></div>
+
+<p><strong>最后对账</strong>（⚠️ 以下是本文的推算，报告只给了百分比）：</p>
+<div class="codehilite"><pre><span></span><code>相对 GQA-8 基线 = 15.5 x 3.56 = 55.2 倍  →  1/55.2 = 1.81%   ≈ 报告的&quot;约 2%&quot;  ★ 对上了
+相对 MLA 基线   = 1/15.5 = 6.4%                             ⚠️ 报告说的是 10%，差 1.6 倍
+
+⟹ 两条口径换算到绝对值：4.4 ~ 6.9 KiB/token，1M 上下文约 4.5 ~ 7 GB。
+   差的那 1.6 倍本文对不齐 —— V3.2 的 DSA 本身也改了缓存内容，
+   而且 CSA 层还要额外存 128 个滑动窗口位置的【未压缩】原始 KV。
+   ⚠️ 这一处如实标出，不替报告圆。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>不管取哪一端，结论是同一个</strong>：1M 上下文的 KV cache 从"<strong>250 GB，得拿 4 张 80 GB 的卡只用来装它</strong>"变成"<strong>5~7 GB，一张卡的零头</strong>"。这就是"1M 便宜到可以当默认值"这句话的全部含金量。KV cache 为什么是长上下文的第一成本项，见 <a href="大模型架构入门/06-KV-cache.html">06 章 §6.3</a>；压缩注意力这条路的隐藏代价（它<strong>依然是平方复杂度</strong>，只是常数小了）见 <a href="大模型架构入门/08-高效注意力.html">08 章 §8.4</a>。</p>
+</blockquote>
 <hr />
 <h2 id="2mhc">三、改进点 2：mHC —— 把残差连接换掉</h2>
-<h3 id="_6">问题：残差为什么会炸</h3>
+<h3 id="_8">问题：残差为什么会炸</h3>
 <p>标准残差：<code>x_{l+1} = x_l + F(x_l)</code>。只有一条"车道"，信号一路加上去。层数一深、参数量一大，数值就容易爆。</p>
 <p><strong>Hyper-Connections (HC)</strong> 的想法是把这一条车道<strong>加宽成 n 条</strong>：</p>
 <div class="codehilite"><pre><span></span><code>x_{l+1} = B_l · x_l  +  C_l · F(A_l · x_l)
@@ -401,7 +624,11 @@ HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
 <p>而且双随机矩阵集合对乘法封闭，所以 61 层连乘下来仍然不放大。<strong>这就把 3000× 的放大压到了 2× 以内。</strong></p>
 <p>实现上：先 <code>exp()</code> 保证元素为正，再用 <strong>Sinkhorn-Knopp 交替归一化行和列 20 次</strong>，逼近双随机。<code>A = σ(Ã) ∈ (0,1)</code>，<code>C = 2σ(C̃) ∈ (0,2)</code>，都用 Sigmoid 卡住范围。</p>
 <p><code>A/B/C</code> 还是<strong>动态的</strong>（由当前 token 的 hidden state 算出来）+ 静态偏置 + 一个初始化为很小值的门控 <code>α</code>，让训练早期约等于普通残差，再慢慢学。</p>
-<p><strong>代价</strong>：mHC 让墙钟时间多了 <strong>6.7%</strong>（已经通过融合 kernel、选择性重计算、调 DualPipe 优化过了）。</p>
+<p><strong>代价</strong>：mHC 让墙钟时间多了 <strong>6.7%</strong>（✅ V4 报告实测；已经通过融合 kernel、选择性重计算、调 DualPipe 优化过了）。</p>
+<blockquote>
+<p>⚠️ <strong>"时间 +6.7%" 不等于 "吞吐 −6.7%"，这两个数不是同一个。</strong> 换算一次：吞吐变成 $1/1.067 = 93.7\%$，也就是<strong>降速 6.3%</strong>，不是 6.7%。倍数小的时候差别不大，但这条换算纪律在读"提速 1.5 倍 / 时间减少 50%"这类句子时会救命——<strong>时间减少 50% = 提速 2 倍</strong>，不是 1.5 倍。</p>
+<p>⚠️ 还要注意这 6.7% 的<strong>归属</strong>：它是 mHC <strong>一个组件</strong>的开销，不是 V4 整体的。V4 那些"更快"的结论来自 CSA/HCA、MegaMoE、FP4，mHC 是从那笔提速预算里<strong>扣掉</strong>的一项，买回来的是 1.6T 规模下的训练稳定性。⚠️ mHC 为什么贵在<strong>访存和串行</strong>而不在 FLOP（Sinkhorn 20 次迭代是 20 个串行的小 kernel），见 <a href="大模型架构入门/03-残差流.html">03 章 §3.5.5</a>。</p>
+</blockquote>
 <hr />
 <h2 id="3muon">四、改进点 3：Muon 优化器</h2>
 <p><strong>Adam 的逻辑</strong>：对每个参数<strong>单独</strong>看历史梯度大小，梯度大的方向步子迈小点。</p>
@@ -410,14 +637,77 @@ HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
 <p>真做 SVD 太贵，所以用 <strong>Newton-Schulz 迭代</strong>近似。V4 用了个<strong>混合系数</strong>方案，共 10 步：</p>
 <ul>
 <li>前 8 步：<code>(3.4445, −4.7750, 2.0315)</code> —— 激进，快速把奇异值推向 1</li>
-<li>后 2 步：<code>(2, −1.5, 0.5)</code> —— 温和，把奇异值稳稳收在 1</li>
+<li>
+<p>后 2 步：<code>(2, −1.5, 0.5)</code> —— 温和，把奇异值稳稳收在 1</p>
+</li>
+<li>
+<p><strong>哪些参数用 Muon</strong>：矩阵形参数（MoE 专家、注意力投影）全用。</p>
+</li>
+<li><strong>哪些不用</strong>：embedding、预测头、mHC 的静态偏置和门控、所有 RMSNorm 权重 —— 这些继续用 AdamW。</li>
 </ul>
-<p><strong>哪些参数用 Muon</strong>：矩阵形参数（MoE 专家、注意力投影）全用。<br />
-<strong>哪些不用</strong>：embedding、预测头、mHC 的静态偏置和门控、所有 RMSNorm 权重 —— 这些继续用 AdamW。</p>
-<p>工程上有个坑：Muon 需要<strong>完整的梯度矩阵</strong>，而 ZeRO 会把参数切碎。V4 为此设计了混合 ZeRO 分桶（背包算法分配矩阵、保证不切分逻辑独立矩阵、padding 开销 &lt; 10% 显存）。</p>
+<p>⚠️ <strong>"embedding 不用 Muon"不是工程偷懒，是有硬理由的</strong>：Muon 的整个论证建立在"把梯度矩阵的奇异值全部拉平"上，而 embedding 的两个维度性质完全不同（一边是词表、一边是特征），它更像 $V$ 个独立的向量而不是一个矩阵，谱范数那套几何在它身上讲不通。完整推导见 <a href="大模型架构入门/13-优化器与Muon.html">13 章 §13.6</a>。</p>
+<p>工程上有个坑：Muon 需要<strong>完整的梯度矩阵</strong>，而 ZeRO（Zero Redundancy Optimizer，零冗余优化器）会把参数切碎。V4 为此设计了混合 ZeRO 分桶（背包算法分配矩阵、保证不切分逻辑独立矩阵、padding 开销 &lt; 10% 显存）。ZeRO 三个阶段各切什么、为什么会和 Muon 冲突，见 <a href="../训练框架/分布式训练入门/05-ZeRO与FSDP.html">训练框架 §5</a>。</p>
 <hr />
 <h2 id="4moe-deepseekmoe">五、改进点 4：MoE 的三处小调整（沿用 DeepSeekMoE）</h2>
 <p>V4-Pro 配置：<strong>61 层、hidden 7168、384 个路由专家 + 1 共享专家、每 token 激活 6 个</strong>。</p>
+<p><strong>和 V3 并排看，改的是"更多更细的专家、每次选更少"</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>✅ DeepSeek-V3</th>
+<th>✅ DeepSeek-V4-Pro</th>
+<th>方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>层数</td>
+<td>61（前 3 层稠密 + 58 层 MoE）</td>
+<td>61（<strong>全部 MoE</strong>，浅层改哈希路由）</td>
+<td>稠密层消失</td>
+</tr>
+<tr>
+<td>路由专家</td>
+<td><strong>256</strong></td>
+<td><strong>384</strong></td>
+<td>+50%</td>
+</tr>
+<tr>
+<td>每 token 激活</td>
+<td><strong>Top-8</strong></td>
+<td><strong>Top-6</strong></td>
+<td>−25%</td>
+</tr>
+<tr>
+<td>共享专家</td>
+<td>1</td>
+<td>1</td>
+<td>=</td>
+</tr>
+<tr>
+<td>每个专家多大</td>
+<td>—</td>
+<td>⚠️ 反推 ≈ 67 M（见 §一）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>路由节点数上限</td>
+<td><strong>每 token 最多 4 个节点</strong></td>
+<td><strong>取消</strong></td>
+<td>靠新并行策略兜</td>
+</tr>
+<tr>
+<td>负载均衡</td>
+<td>无辅助损失偏置法（⚠️ 仍保留极小的序列级 aux loss）</td>
+<td>沿用</td>
+<td>=</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>"更多更细的专家 + 每次选更少"是这一代的共同方向</strong>，背后是一个组合数论证：$\binom{384}{6} \approx 5.6\times10^{12}$ 种组合，而 $\binom{256}{8} \approx 4.1\times10^{14}$——⚠️ 注意 V4 的组合数其实<strong>更少</strong>，所以这次的动机不是组合数，而是<strong>单个专家更小 ⟹ 激活参数更少 ⟹ 每 token 更便宜</strong>。细粒度专家的完整论证在 <a href="大模型架构入门/10-MoE.html">10 章 §10.7.2</a>。</p>
+</blockquote>
 <ol>
 <li>
 <p><strong>亲和度打分函数：Sigmoid → <code>Sqrt(Softplus(·))</code></strong><br />
@@ -432,9 +722,16 @@ HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
    V3 限制每个 token 最多路由到 4 个节点（省通信），V4 直接取消，靠新的并行策略解决。</p>
 </li>
 </ol>
-<p><strong>MTP 完全没改</strong>，原文说 "we adopt the same strategy for DeepSeek-V4 series without modification"，深度为 1，用于投机解码。</p>
+<p><strong>MTP 完全没改</strong>（MTP = Multi-Token Prediction，多 token 预测），原文说 "we adopt the same strategy for DeepSeek-V4 series without modification"，深度为 1，用于投机解码。</p>
+<blockquote>
+<p>⚠️ <strong>既然"完全没改"，那 V3 的官方口径就可以直接搬过来用</strong>：<strong>第二个 token 的接受率 85%~90%、TPS 提升 1.8×</strong>（✅ V3 报告披露）。<strong>不是社区常传的 3×。</strong> 深度为 1 意味着 $\gamma = 1$，代进期望接受长度的公式可以对一下：<br />
+<code>E = (1 − α^(γ+1)) / (1 − α) = 1 + α        (γ = 1)
+α = 0.85  →  E = 1.85          α = 0.90  →  E = 1.90
+⟹ 和官方的"TPS 提升 1.8×"几乎完全吻合 ✅（差的那一点是草稿层本身的开销）</code><br />
+⚠️ <strong>别写成 <code>α × γ</code></strong>：草稿 token 是<strong>串行依赖</strong>的（第 2 个建立在"第 1 个被接受"的前提上），期望接受长度是几何求和 $\frac{1-\alpha^{\gamma+1}}{1-\alpha}$，$\gamma$ 越大这个错法错得越离谱。逐 $\gamma$ 的完整推演表见 <a href="大模型架构入门/12-MTP与投机解码.html">12 章 §12.5</a>，工程实现见 <a href="../推理框架/推理优化入门/08-投机解码.html">推理框架 §8</a>。</p>
+</blockquote>
 <hr />
-<h2 id="_7">六、训练稳定性的两个"土办法"</h2>
+<h2 id="_9">六、训练稳定性的两个"土办法"</h2>
 <p>报告很坦诚，这两个是<strong>经验性的、没有理论解释</strong>：</p>
 <ul>
 <li><strong>前瞻路由（Look-ahead Routing）</strong>：第 t 步计算特征用 <code>θ_t</code>，但<strong>路由索引用 <code>θ_{t−Δt}</code></strong>（一个稍旧的快照）。打破"路由决策"和"骨干网络"的同步耦合，几乎零开销地消除 loss spike。</li>
@@ -444,12 +741,59 @@ HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
 <h2 id="infra">七、Infra 层：为什么便宜</h2>
 <ul>
 <li><strong>MegaMoE 融合 kernel</strong>：把专家切成多个 wave 流水，做到「算当前 wave + 发上一 wave + 收下一 wave」三者并行，相比非融合基线加速 <strong>1.50~1.73×</strong>，RL rollout 场景最高 <strong>1.96×</strong>。</li>
-<li><strong>FP4 QAT</strong>：MoE 专家权重走 <code>FP32 主权重 → FP4 存储 → FP8 计算</code>。关键点是 <strong>FP4→FP8 反量化是无损的</strong>（E4M3 指数位更多），所以能直接复用现有 FP8 训练框架。</li>
-<li><strong>TileLang</strong>：自研 kernel DSL，把 kernel 启动的 CPU 侧开销从几十~几百微秒压到 <strong>&lt; 1 微秒</strong>，还集成 Z3 SMT 求解器做索引约束的形式化验证。</li>
-<li><strong>逐位确定性</strong>：注意力用双 kernel 替代 split-KV，矩阵乘用 DeepGEMM 替代 cuBLAS，反向传播给每个 SM 独立累加 buffer 消除 atomicAdd 不确定性 —— 训练/推理 bitwise 可复现。</li>
-<li><strong>推理侧缓存</strong>：把滑动窗口和未压缩尾部视为"状态空间模型"（大小固定、只取决于当前位置），可以<strong>预分配固定大小缓存池</strong>；共享前缀（如同一套 system prompt）的 KV cache 存到<strong>磁盘</strong>复用。这就是 cache hit 价格能做到 $0.0036/M 的原因。</li>
-<li><strong>给硬件厂商的建议</strong>（报告专门写了一节）：算力/带宽比 <code>C/B ≤ 6144 FLOPs/Byte</code> 比绝对带宽更重要；预留功耗余量；提供低延迟信令支持 push 模式；设计比 SwiGLU 更简单的激活函数。</li>
+<li><strong>FP4 QAT</strong>（QAT = Quantization-Aware Training，量化感知训练）：MoE 专家权重走 <code>FP32 主权重 → FP4 存储 → FP8 计算</code>。关键点是 <strong>FP4→FP8 反量化是无损的</strong>（E2M1 只能表示 $\pm{0, 0.5, 1, 1.5, 2, 3, 4, 6}$ 这 15 个值，E4M3 全都能精确表示），所以能直接复用现有 FP8 训练框架。</li>
 </ul>
+<blockquote>
+<p>⚠️⚠️ <strong>"复用现有 FP8 训练框架"指的是 V3 那一套，而 V3 的 FP8 方案在中文资料里有四处几乎总被写反。</strong> V4 篇里只要提到 FP8，就该按下面这个口径（✅ 全部按 DeepSeek-V3 报告 §3.3 / §3.5.2 原文）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>❌ 常见错法</th>
+<th>✅ 论文原文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>注意力计算也走 FP8</td>
+<td><strong>注意力算子保持原精度</strong>；走 FP8 的只有 Fprop / Dgrad / Wgrad 三个 GEMM</td>
+</tr>
+<tr>
+<td>②</td>
+<td>前向 E4M3、梯度 E5M2</td>
+<td><strong>所有张量统一用 E4M3</strong>（这正是 V3 和前人混合格式方案最大的区别）</td>
+</tr>
+<tr>
+<td>③</td>
+<td>scale 用历史最大值的 EMA 延迟更新</td>
+<td><strong>在线逐 tile / 逐 block 现场算 max</strong>，论文明说就是为了避开延迟缩放</td>
+</tr>
+<tr>
+<td>④</td>
+<td>"PPL &lt; 0.02% / 提速 1.6 倍 / 省显存 30%"</td>
+<td>⚠️ <strong>这三个数字论文里都没有。</strong> 唯一的结论是<strong>相对 BF16 基线的 loss 相对误差 &lt; 0.25%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>逐条还原与那条"scale 沿内维变 ⟹ 标准 FP8 GEMM 不支持 ⟹ 所以有了 DeepGEMM"的因果链，见 <a href="大模型架构入门/14-量化.html">14 章 §14.11</a> 和 <a href="../大模型算子开发/06-量化算子.html">大模型算子开发 §6</a>。<br />
+- <strong>TileLang</strong>：自研 kernel DSL，把 kernel 启动的 CPU 侧开销从几十~几百微秒压到 <strong>&lt; 1 微秒</strong>，还集成 Z3 SMT 求解器做索引约束的形式化验证。<br />
+- <strong>逐位确定性</strong>：注意力用双 kernel 替代 split-KV，矩阵乘用 DeepGEMM 替代 cuBLAS，反向传播给每个 SM 独立累加 buffer 消除 atomicAdd 不确定性 —— 训练/推理 bitwise 可复现。<br />
+- <strong>推理侧缓存</strong>：把滑动窗口和未压缩尾部视为"状态空间模型"（大小固定、只取决于当前位置），可以<strong>预分配固定大小缓存池</strong>；共享前缀（如同一套 system prompt）的 KV cache 存到<strong>磁盘</strong>复用。这就是 cache hit 价格能做到 $0.0036/M 的原因。分页与前缀缓存的工程实现见 <a href="../推理框架/推理优化入门/05-PagedAttention与前缀缓存.html">推理框架 §5</a>。<br />
+- <strong>给硬件厂商的建议</strong>（报告专门写了一节）：算力/带宽比 <code>C/B ≤ 6144 FLOPs/Byte</code> 比绝对带宽更重要；预留功耗余量；提供低延迟信令支持 push 模式；设计比 SwiGLU 更简单的激活函数。</p>
+<p>★ <strong>那个 <code>C/B ≤ 6144</code> 值得代进真实硬件看一眼</strong>（这正是屋脊线模型里的"屋脊点"，见 <a href="大模型架构入门/06-KV-cache.html">06 章 §6.4</a> 与 <a href="../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发 §2</a>）：<br />
+```<br />
+H100 SXM5：HBM3 80 GB / 3.35 TB/s<br />
+   BF16 稠密 989 TFLOPS  -&gt;  屋脊点 = 989e12 / 3.35e12 = 295 FLOPs/Byte<br />
+   FP8  稠密 1979 TFLOPS -&gt;  屋脊点 = 1979e12 / 3.35e12 = 591 FLOPs/Byte<br />
+   ⚠️ BF16 那一栏另一个常见数字 1979 是【2:4 稀疏】值，不是稠密峰值，别混用</p>
+<p>⟹ 现役硬件的屋脊点是 295 / 591，DeepSeek 要求的上限是 6144。<br />
+   它不是在说"现在太高了"，而是在说"★ 别再往上飙了" ——<br />
+   算力涨得比带宽快，屋脊点就会一路右移，<br />
+   decode 这种算术强度只有个位数的负载会被越甩越远。<br />
+```<br />
+⚠️ 顺带把两个常被写错的带宽数字也钉住：<strong>NVLink 的 900 GB/s 是双向聚合，单向是 450</strong>；<strong>InfiniBand 400 Gb/s ÷ 8 = 50 GB/s</strong>（是 Gb 不是 GB，差 8 倍）。见 <a href="../训练框架/分布式训练入门/03-通信原语.html">训练框架 §3</a>。</p>
+</blockquote>
 <hr />
 <h2 id="on-policy">八、后训练：领域专家 → on-policy 蒸馏合并</h2>
 <p>这块和 on-policy distillation survey 正好对上（该综述在本仓库上一级目录）。</p>
@@ -479,7 +823,7 @@ HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
 <li><strong>RL Infra</strong>：可抢占 rollout 服务 + token 粒度 WAL 日志（被抢占后从最后完成的 token 恢复）；Rust 写的 DSec 沙箱平台管理数十万并发沙箱。</li>
 </ul>
 <hr />
-<h2 id="_8">九、效果与代价</h2>
+<h2 id="_10">九、效果与代价</h2>
 <p><strong>强的地方</strong>（V4-Pro-Max）：</p>
 <ul>
 <li>Codeforces Rating <strong>3206</strong>（开源首次匹敌闭源，约等于人类第 23 名）</li>
@@ -495,7 +839,7 @@ HCA 层：看得糙（1/128 压缩），但全都看   → 全局视野
 <p>报告自己给的结论很值得记：<strong>推理能力更依赖架构与训练方法，知识能力更依赖数据。</strong> 差距主要在训练语料的质量与知识密度上，落后前沿约"3 到 6 个月"。</p>
 <p><strong>报告承认的局限</strong>：组件堆叠导致架构"不够优雅"；前瞻路由和 SwiGLU 截断缺乏理论解释；事实性知识仍落后顶尖闭源模型。</p>
 <hr />
-<h2 id="_9">十、一张图串起来</h2>
+<h2 id="_11">十、一张图串起来</h2>
 <p>一个 token 走完 V4 的完整路径：</p>
 <div class="codehilite"><pre><span></span><code>输入 token
    ↓
@@ -518,12 +862,75 @@ MTP 头（深度 1，投机解码）
 </code></pre></div>
 
 <hr />
-<h2 id="_10">十一、可靠性说明</h2>
+<h2 id="_12">十一、可靠性说明</h2>
 <p>1.6T/49B、284B/13B、1M 上下文、32T tokens、27%/10% 效率数字、CSA+HCA、mHC、Muon 这些来自 arXiv 摘要和官方模型卡，可靠。</p>
 <p>而具体超参（<code>m=4</code>、<code>m′=128</code>、61 层、384 专家、滑窗 128、Sinkhorn 20 次、Newton-Schulz 系数）来自社区对报告 §4.2.1 配置表的解读——数值高度自洽，但建议以本地 PDF <a href="papers/arxiv-2606.19348.pdf">papers/arxiv-2606.19348.pdf</a> 原文核对一遍。</p>
+<p><strong>本文自己算出来的数（全部标了 ⚠️，不要当成报告结论转引）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>推算</th>
+<th>在哪一节</th>
+<th>依据</th>
+<th>报告有没有给</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单个专家 ≈ <strong>67 M</strong>、专家中间维 <strong>≈ 3100</strong></td>
+<td>一</td>
+<td>由「总参数 − 激活参数 = 未选中的专家」反解</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>注意力 + Embedding ≈ <strong>20 B</strong>，每层 ≈ <strong>3.3 亿</strong></td>
+<td>一</td>
+<td>参数量差额</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>全模型稀疏度 <strong>32.7×</strong>（Pro）／ <strong>21.8×</strong>（Flash）</td>
+<td>一</td>
+<td>$1600/49$、$284/13$</td>
+<td>⚠️ 只给两个绝对值</td>
+</tr>
+<tr>
+<td>训练总算力 <strong>9.7e24 FLOPs</strong>、<strong>≈ 8.2 M H800 卡时</strong></td>
+<td>一</td>
+<td>$6ND$ + 用 V3 标定的 33.1% MFU</td>
+<td>❌ 未公布卡时</td>
+</tr>
+<tr>
+<td>训练态显存 <strong>25.6 TB</strong>、<strong>至少 320 张 80 GB 卡</strong></td>
+<td>一</td>
+<td>16 字节/参数</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>KV cache 拆成 <strong>7.76× (序列) × 2× (精度) = 15.5×</strong></td>
+<td>二</td>
+<td>由 <code>m=4</code>、<code>m′=128</code>、FP8 代入通式</td>
+<td>⚠️ 只给百分比</td>
+</tr>
+<tr>
+<td>1M 上下文 KV <strong>4.5~7 GB</strong></td>
+<td>二</td>
+<td>把报告的两条百分比换算到绝对值</td>
+<td>⚠️ 两条口径差 1.6 倍，本文没对齐</td>
+</tr>
+<tr>
+<td><code>1 + α = 1.85~1.90</code> 与官方 <strong>1.8× TPS</strong> 吻合</td>
+<td>五</td>
+<td>几何求和式，$\gamma=1$</td>
+<td>✅ 1.8× 是 V3 官方值</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>一条通用纪律</strong>：本文里凡是带 ⚠️ 的都是<strong>本文的推断</strong>，带 ✅ 的才是<strong>报告/官方的结论</strong>。报告解析类文章最容易犯的错就是把这两者混为一谈——引用时请连同标记一起看。</p>
+<p><strong>横向定位不在本文</strong>：V4 和 Kimi K3 / GLM-5.2 / MiniMax M3 / openPangu 的对照（谁先做了什么、五条长上下文路线怎么分岔）在 <a href="模型技术对比.html">模型技术对比.md</a>，本文只做<strong>单家纵向</strong>解析：这一代改了什么、为什么、代价是什么。<strong>后一代 V4.1-Flash 怎么把 CSA 推进成 CSA2、把 mHC 推进成 Single-Pass mHC</strong>，见 <a href="DeepSeek-V4.1-Flash.html">DeepSeek-V4.1-Flash.md</a>。</p>
 <p>另外网上有些解读（比如说专家数是 896、说 Engram 进了 V4）是错的：<strong>Engram 是独立论文 arXiv:2601.07372，没有进 V4</strong>（本地已存 <a href="papers/arxiv-2601.07372.pdf">papers/arxiv-2601.07372.pdf</a>）。"896 专家"实际上是 Kimi K3 的配置，参见 <a href="Kimi-K3.html">Kimi-K3.md</a>。</p>
 <hr />
-<h2 id="_11">参考来源</h2>
+<h2 id="_13">参考来源</h2>
 <ul>
 <li><a href="https://arxiv.org/abs/2606.19348">DeepSeek-V4: Towards Highly Efficient Million-Token Context Intelligence (arXiv:2606.19348)</a> — 本地：<a href="papers/arxiv-2606.19348.pdf">papers/arxiv-2606.19348.pdf</a></li>
 <li><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro">DeepSeek-V4-Pro 官方模型卡 (Hugging Face)</a></li>

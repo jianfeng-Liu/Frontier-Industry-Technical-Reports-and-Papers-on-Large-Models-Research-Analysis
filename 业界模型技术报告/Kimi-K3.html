@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="kimi-k3">Kimi K3 架构与技术报告解析</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>来源</strong>：本文整理自 2026-08-04 的调研对话记录，架构、公式、超参、评测数字均从技术报告 arXiv:2607.24653 PDF 正文提取核对（非二手解读）。<br />
 <strong>本地论文</strong>：<a href="papers/Kimi-K3-Open-Frontier-Intelligence-arXiv-2607.24653.pdf">papers/Kimi-K3-Open-Frontier-Intelligence-arXiv-2607.24653.pdf</a>（47 页）、正文提取 <a href="papers/Kimi-K3-正文提取.txt">papers/Kimi-K3-正文提取.txt</a><br />
 <strong>横向对比</strong>：见 <a href="模型技术对比.html">模型技术对比.md</a>（DeepSeek-V4 / Kimi K3 / GLM-5.2 / MiniMax M3 / openPangu-2.0 五方）<br />
@@ -388,9 +388,139 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<h3 id="_2">★ 先把这张表自己验算一遍：四笔账，全部只用上表里的数字</h3>
+<p>报告给的是结论，这一节把算式补上。<strong>四笔账都只用上表里已披露的超参，你可以拿计算器跟着按一遍。</strong></p>
+<p><strong>① 层的排布：69 KDA + 24 MLA 是怎么凑出 93 的</strong></p>
+<div class="codehilite"><pre><span></span><code>3:1 混合 = 每个 block 3 层 KDA + 1 层 Gated MLA
+   23 个 block x 4 层 = 92 层   (69 KDA + 23 MLA)
+   主干末尾再加 1 层 MLA        (+1 MLA)
+   ------------------------------------------
+   合计 93 层 = 69 KDA + 24 MLA        &lt;-- 和报告 Table 1 完全对上
+</code></pre></div>
+
+<p><strong>✅ 这一条完全自洽</strong>：<code>69 = 23 x 3</code>、<code>24 = 23 + 1</code>，报告的三个数字（93 / 69 / 24）互相锁死，没有自由度。</p>
+<p><strong>② 参数量：2.78T 是怎么加出来的 —— 顺便反推出"有几层是稠密层"</strong></p>
+<p>一个路由专家就是一个 SwiGLU（三个矩阵：gate / up / down），但它活在 <strong>latent 空间</strong>里——宽度只有 3584，不是 7168：</p>
+<div class="codehilite"><pre><span></span><code>一个路由专家 = 3 x 3584 x 3072 = 33.03 M
+一个全宽共享专家 = 3 x 7168 x 3072 = 66.06 M
+每层的 W↓ 和 W↑ = 2 x 7168 x 3584 = 51.38 M
+</code></pre></div>
+
+<p>⚠️ 报告没有直接说"93 层里有几层是 MoE 层"。但<strong>总参数和激活参数的【差】只由没被选中的那些专家贡献</strong>，其余部分（注意力、共享专家、Embedding、投影矩阵）在两笔账里是一模一样的，会被减掉。于是设 MoE 层数为 $M$：</p>
+<div class="codehilite"><pre><span></span><code>2.78T − 104.2B = 2675.8 B          &lt;-- 只剩&quot;没被选中的路由专家&quot;
+每层没选中的专家 = (896 − 16) x 33.03 M = 29.07 B
+M = 2675.8 / 29.07 = 92.06   →   ★ M = 92
+</code></pre></div>
+
+<p>⚠️ <strong>这是本文的反推，报告没有明说。</strong> 结论是 <strong>93 层里有 92 个 MoE 层 + 1 个稠密层</strong>——这和 Kimi K2 的做法一致（⚠️ 按 K2 的开源配置，它也只有第 1 层是稠密 FFN）。拿 $M=92$ 回代，两笔账同时列出来：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>总参数</th>
+<th>激活参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>92 层的 896 个路由专家</td>
+<td>$92 \times 896 \times 33.03\,\text{M}$ ／ 激活 $92 \times 16 \times 33.03\,\text{M}$</td>
+<td><strong>2722.7 B</strong></td>
+<td><strong>48.62 B</strong></td>
+</tr>
+<tr>
+<td>92 层的 2 个全宽共享专家</td>
+<td>$92 \times 2 \times 66.06\,\text{M}$</td>
+<td>12.16 B</td>
+<td>12.16 B</td>
+</tr>
+<tr>
+<td>92 层的 W↓ / W↑</td>
+<td>$92 \times 51.38\,\text{M}$</td>
+<td>4.73 B</td>
+<td>4.73 B</td>
+</tr>
+<tr>
+<td><strong>已披露项小计</strong></td>
+<td></td>
+<td><strong>2739.6 B</strong></td>
+<td><strong>65.51 B</strong></td>
+</tr>
+<tr>
+<td><strong>✅ 报告值</strong></td>
+<td></td>
+<td><strong>2780 B</strong></td>
+<td><strong>104.2 B</strong></td>
+</tr>
+<tr>
+<td><strong>差额</strong>（注意力 + Embedding + 那 1 个稠密层 + AttnRes 的伪 query + RMSNorm）</td>
+<td></td>
+<td><strong>40.4 B</strong></td>
+<td><strong>38.7 B</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这张表最该带走的一句话</strong>：<strong>2.78T 里有 97.9% 是路由专家。</strong> 和 <a href="大模型架构入门/01-鸟瞰全景.html">01 章 §1.4.2</a> 给 openPangu 算出的 98.7% 是同一个结论——MoE 时代的"大模型很大"，基本等价于"<strong>专家很多</strong>"。</p>
+<p>⚠️ <strong>差额那一行能不能对上？这是本文的推断，报告未披露注意力的维度。</strong> 报告只给了"96 个注意力头"，没给 head_dim（注意 $7168/96 = 74.7$ 不是整数，所以 head_dim <strong>不等于</strong> $d/H$）。反过来推：40.4 B 减掉 Embedding + LM Head（⚠️ 词表未披露，按 K2 的约 16 万估 $2 \times 160000 \times 7168 = 2.29$ B）后剩 <strong>38.1 B / 93 层 ≈ 410 M 每层</strong>。K3 的注意力每层有 <strong>5 个</strong>大投影（q、k、v、输出，外加 §二讲的<strong>全秩输出门</strong>），所以 $5 \times 7168 \times D = 410\,\text{M} \Rightarrow D \approx 11440$。<strong>取 head_dim = 128 时 $96 \times 128 = 12288$，每层 440 M、93 层 40.9 B，和差额 40.4 B 差 1.2%。</strong> 所以 <strong>head_dim 大概率是 128</strong>——但这是本文从两个数字倒推出来的，不是报告的结论。</p>
+</blockquote>
+<p><strong>③ 稀疏度：<code>896 / 16 = 56×</code> 这个说法要小心</strong></p>
+<div class="codehilite"><pre><span></span><code>❌ 常见说法：&quot;896 选 16，所以稀疏 56 倍&quot;
+
+✅ 三个数字，三个不同的问题：
+   896  / 16    = 56.0 倍   &lt;- 只是【路由专家】的选择比
+   29778 / 712  = 41.8 倍   &lt;- 一个 MoE 层里 FFN 侧的参数稀疏比
+                               (分子 = 896x33.03 + 2x66.06 + 51.38 = 29778 M)
+                               (分母 = 16x33.03 + 2x66.06 + 51.38 =   712 M)
+   2780 / 104.2 = 26.7 倍   &lt;- ★ 全模型 总参数 / 激活参数
+                               这才是&quot;显存账 vs 算力账差多少&quot;的正确口径
+</code></pre></div>
+
+<p><strong>为什么从 56 掉到 26.7</strong>：注意力（约 40 B）、2 个全宽共享专家、W↓/W↑、Embedding 这些<strong>一点都不稀疏</strong>，每个 token 都要全量走一遍。它们在总参数里只占 2.1%，在激活参数里却占了 <strong>53%</strong>——超过一半。同一个陷阱在 <a href="大模型架构入门/01-鸟瞰全景.html">01 章 §1.4.4</a> 已经拿 openPangu 演示过一次（那里是「384/8 = 48×」应为「505/18 = 28.1×」）。</p>
+<p><strong>④ 三个派生量</strong></p>
+<table>
+<thead>
+<tr>
+<th>派生量</th>
+<th>算式</th>
+<th>Kimi K2</th>
+<th><strong>Kimi K3</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>深宽比</strong> $d/L$</td>
+<td>hidden ÷ 层数</td>
+<td>$7168/61 = 117.5$</td>
+<td>$7168/93 = \mathbf{77.1}$</td>
+</tr>
+<tr>
+<td><strong>每 token 前向 FLOPs</strong>（不含注意力打分）</td>
+<td>$2N_{\text{激活}}$</td>
+<td>$2 \times 32.6\,\text{B} = 65$ GFLOPs</td>
+<td>$2 \times 104.2\,\text{B} = \mathbf{208}$ GFLOPs</td>
+</tr>
+<tr>
+<td><strong>每 token 训练 FLOPs</strong>（不含优化器）</td>
+<td>$6N_{\text{激活}}$</td>
+<td>196 GFLOPs</td>
+<td><strong>625 GFLOPs</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⭐ <strong>注意力那一项才是长上下文的真正大头，而它正好解释了 K3 为什么要上线性注意力。</strong> 补全式是 <code>6N + 12·L·s·h</code>（$L$ = 层数、$s$ = 序列长度、$h$ = hidden，见 <a href="大模型架构入门/01-鸟瞰全景.html">01 章 §1.5.2</a>）。⚠️ K3 只有 <strong>24 层 MLA</strong> 是平方复杂度的，69 层 KDA 是线性的，所以那一项只按 24 层算：<br />
+```<br />
+s = 8K  ：12 x 24 x 8192   x 7168 = 16.9 GFLOPs   &lt;-  占 6N(625) 的 2.7%<br />
+s = 1M  ：12 x 24 x 1000000 x 7168 = 2064 GFLOPs   &lt;- ★ 是 6N 的 3.3 倍</p>
+<p>如果 93 层【全部】是 MLA：s = 1M 时这一项变成 7999 GFLOPs = 6N 的 12.8 倍<br />
+```<br />
+<strong>同样跑 1M 上下文，3:1 混合把注意力那笔账砍到了 24/93 = 25.8%。</strong> 这一笔账就是 §二整节的全部动机。⚠️ 这几个数字都是本文按通式算的，报告没有直接给。</p>
+</blockquote>
 <hr />
 <h2 id="1kda">二、改进点 1：KDA —— 把"图书馆"换成"记事本"</h2>
-<h3 id="_2">最简单的类比</h3>
+<h3 id="_3">最简单的类比</h3>
 <ul>
 <li><strong>Transformer 的 softmax 注意力</strong>：读过的每一页都留在桌上，随时可以翻回去查。<strong>精确，但桌子越堆越大</strong>（KV cache 随长度线性增长）。</li>
 <li><strong>KDA（线性注意力）</strong>：边读边往<strong>一个固定大小的记事本</strong>上记。<strong>成本恒定，但会遗忘</strong>。</li>
@@ -408,9 +538,35 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong>朴素线性注意力</strong>直接累加：<code>S += k vᵀ</code>。问题是同一栏反复写，会越叠越糊。</p>
 <p><strong>Delta rule 的做法是"先擦再写"</strong>：</p>
 <div class="codehilite"><pre><span></span><code>S_t = (I − β_t k_t k_tᵀ) · Diag(α_t) · S_{t−1}  +  β_t k_t v_tᵀ
-       └── 擦掉 k_t 栏的旧内容 ──┘  └遗忘┘        └── 写入新值 ──┘
 </code></pre></div>
 
+<p>式子里三个因子各干一件事：</p>
+<table>
+<thead>
+<tr>
+<th>因子</th>
+<th>干什么</th>
+<th>类比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$(I - \beta_t k_t k_t^\top)$</td>
+<td><strong>擦掉 <code>k_t</code> 这一栏的旧内容</strong></td>
+<td>先把要写的那一格橡皮擦一下</td>
+</tr>
+<tr>
+<td>$\mathrm{Diag}(\alpha_t)$</td>
+<td><strong>逐通道遗忘</strong></td>
+<td>整本笔记按行各自褪色</td>
+</tr>
+<tr>
+<td>$\beta_t k_t v_t^\top$</td>
+<td><strong>写入新值</strong></td>
+<td>在擦干净的格子里落笔</td>
+</tr>
+</tbody>
+</table>
 <ul>
 <li><code>(I − β k kᵀ)S</code>：把 <code>k_t</code> 这一栏的旧内容<strong>按比例擦掉</strong>。<code>β=1</code> 完全覆盖，<code>β=0</code> 不动。这就是"<strong>改写</strong>"而不是"叠加"。</li>
 <li><code>Diag(α_t)</code>：<strong>channel-wise 遗忘门</strong>——这是 Kimi 的核心贡献。不是整本笔记统一褪色，而是<strong>每一行（每个 key 通道）有自己的遗忘速度</strong>："这栏记的是人名，慢点忘；那栏是临时数字，快点忘。"</li>
@@ -436,15 +592,87 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <h3 id="gated-mla-14">Gated MLA 那 1/4 层</h3>
 <ul>
-<li>沿用 DeepSeek-V2 的 MLA（把 KV 压成低维 latent 缓存，用时再上投影）</li>
+<li>沿用 DeepSeek-V2 的 MLA（Multi-head Latent Attention，多头潜在注意力）：把 KV 压成低维 latent <strong>缓存这个 latent</strong>，用时再上投影</li>
 <li><strong>同样加了全秩输出门</strong>，让每个 token 自己调制"从全局注意力里读哪些通道"</li>
 <li>训练时把 flash attention 的输出<strong>保持 FP32</strong>，修正舍入偏差；代价是片上占用翻倍，所以重新设计 kernel，让它和 KV staging buffer 重叠而不是和 query tile 重叠</li>
 </ul>
+<blockquote>
+<p>⚠️⚠️ <strong>读 MLA 时最容易写反的一处，这里先钉住</strong>：MLA 的"矩阵吸收"<strong>吸的是【上投影矩阵】$W^{UK}/W^{UV}$，而且是吸到 Q 侧和输出投影侧</strong>；它<strong>照样把压缩后的潜向量 $c_{KV}$ 缓存起来</strong>——那正是 MLA 省显存的全部来源。任何写成"吸收之后就不用存 $c_{KV}$ 了"的说法都是反的：那样会得到全尺寸的 K，KV cache 一个字节都没压缩，整个设计白做。完整推导见 <a href="大模型架构入门/07-MHA到MLA.html">07 章 §7.4</a>。</p>
+</blockquote>
+<h3 id="kv">★ 混合注意力的 KV 账：一半是"会长的"，一半是"不会长的"</h3>
+<p>这是 3:1 混合最值得算的一笔账。<strong>两种层的显存行为性质完全不同</strong>：</p>
+<div class="codehilite"><pre><span></span><code>MLA 层（24 层）：每来一个 token 就多存一份 c_KV  -&gt; 随长度【线性增长】
+KDA 层（69 层）：只有一个固定大小的状态矩阵 S    -&gt; 和长度【完全无关】
+</code></pre></div>
+
+<p>⚠️ <strong>下面这张表里的两个维度报告都没披露</strong>，本文按同代模型的常见取值代入（MLA latent = 512 + 解耦 RoPE 64 = 576，KDA 的 $d_k = d_v = 128$，精度 BF16 = 2 字节），<strong>数量级可信，绝对值请自行核对</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>每 token 每层</th>
+<th>全模型每 token</th>
+<th>1M 上下文总量</th>
+<th>性质</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>假想：93 层全 MHA（96 头 × 128）</td>
+<td>$2{\times}96{\times}128{\times}2$ = 48 KiB</td>
+<td><strong>4.36 MiB</strong></td>
+<td><strong>4.57 TB</strong></td>
+<td>线性增长，完全不可行</td>
+</tr>
+<tr>
+<td>假想：93 层全 MLA-576</td>
+<td>$576{\times}2$ = 1.125 KiB</td>
+<td><strong>104.6 KiB</strong></td>
+<td><strong>107 GB</strong></td>
+<td>线性增长</td>
+</tr>
+<tr>
+<td><strong>★ K3 的 24 层 MLA 部分</strong></td>
+<td>$576{\times}2$ = 1.125 KiB</td>
+<td><strong>27.0 KiB</strong></td>
+<td><strong>27.6 GB</strong></td>
+<td>线性增长</td>
+</tr>
+<tr>
+<td><strong>★ K3 的 69 层 KDA 部分</strong></td>
+<td>不适用</td>
+<td>不适用</td>
+<td><strong>0.217 GB</strong>（$69 \times 96 \times 128 \times 128 \times 2$）</td>
+<td>★ <strong>常数，不随长度变</strong></td>
+</tr>
+<tr>
+<td><strong>K3 合计</strong></td>
+<td></td>
+<td></td>
+<td><strong>≈ 27.8 GB</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>两个可以直接带走的读数</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 相对&quot;93 层全 MLA&quot;：107 GB -&gt; 27.8 GB，省 3.85 倍
+   省的倍数 ≈ 93/24 = 3.875，几乎完全等于【MLA 层占比的倒数】
+   ⟹ 混合注意力省 KV 的倍数，就是你把多少层换成了线性的
+
+② 交叉点：217 MB(KDA 常数) ÷ 27.6 KB(每 token 的 MLA 增量) ≈ 7850 token
+   ⟹ ★ 上下文短于约 8K 时，KDA 那个&quot;固定状态&quot;反而比 MLA cache 还大。
+      线性注意力是【长上下文】的方案，短上下文上它是净亏的。
+</code></pre></div>
+
+<p>⚠️ 上面两条都是本文按通式 <code>2 × n_kv_heads × head_dim × 字节数</code>（MLA 那行不乘 2、也没有头数，原因见 <a href="大模型架构入门/07-MHA到MLA.html">07 章 §7.2</a>）算出来的，<strong>报告只给了"扩展效率提升约 2.5×"这类相对数字，没有给绝对字节</strong>。线性注意力为什么能把 cache 变成常数、代价是什么，见 <a href="大模型架构入门/08-高效注意力.html">08 章 §8.5</a>。</p>
 <h3 id="nope">最关键的一个决定：全模型 NoPE</h3>
 <p><strong>K3 彻底不用任何位置编码</strong>——没有 RoPE，没有 ALiBi，什么都没有。</p>
 <p>位置信息<strong>完全由 KDA 的衰减和门控隐式提供</strong>（越久远衰减越多，天然就是位置信号）；MLA 层则纯粹负责"无位置偏好的全局内容交互"。</p>
 <p><strong>直接收益</strong>：扩展到 1M 上下文时<strong>不需要动任何位置编码参数</strong>——不用重调 RoPE frequency base，不用 YaRN 插值。模型直接外推。</p>
-<p>这是第一个前沿级别模型全面采用 NoPE。</p>
+<p>这是第一个前沿级别模型全面采用 NoPE（No Positional Encoding，无位置编码）。</p>
+<blockquote>
+<p>📘 <strong>为什么「不给位置编码」模型还知道谁在前谁在后</strong>、以及它和 RoPE / PI / NTK-aware / YaRN 这四条外推路线的关系，见 <a href="大模型架构入门/11-位置编码RoPE.html">11 章 §11.7</a>。⚠️ 那一章同时指出：<strong>NoPE 能成立的前提是模型里有【带衰减的】通路</strong>——K3 靠的就是 KDA 的 channel-wise 遗忘门，纯 softmax 注意力的模型直接去掉位置编码是不行的。</p>
+</blockquote>
 <hr />
 <h2 id="2attnres">三、改进点 2：AttnRes —— 把残差从"累加"变成"检索"</h2>
 <blockquote>
@@ -459,13 +687,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
   ⚠️ 它同时暴露了成本：即便配上融合 Triton kernel，吞吐也只有 baseline 的 <strong>0.55~0.88×</strong>（不融合时仅 0.2~0.5×）。</p>
 <p>🔑 <strong>注意这两篇攻击的，正好是让 AttnRes 便宜的那两处简化</strong>："每层只有一个 query"和"源该怎么取"。<strong>这是三家残差改动里唯一一个已经长出独立研究线的。</strong></p>
 </blockquote>
-<h3 id="_3">问题</h3>
+<h3 id="_4">问题</h3>
 <p>标准残差 <code>h_l = h_{l-1} + f_l(h_{l-1})</code> 把<strong>所有历史层的信息压进单个状态</strong>。报告的原话很精准：</p>
 <blockquote>
 <p>这是一个瓶颈，<strong>让人想起 RNN 在时间维度上的问题</strong>——只不过这次发生在深度维度上。</p>
 </blockquote>
 <p>Transformer 当年就是用注意力替换了时间上的递归。<strong>AttnRes 就是把同样的方法论用在深度上。</strong></p>
-<h3 id="_4">机制</h3>
+<h3 id="_5">机制</h3>
 <p>第 <code>l</code> 层有一个<strong>可学习的"伪 query"</strong> <code>w_l</code>（注意：它不依赖输入，是这一层固定的一个"提问"）。拿它去和前面每一层的输出做注意力：</p>
 <div class="codehilite"><pre><span></span><code>key = value = { 第 i 层【写出的那一份】f_i(h_i) },  其中 i = 0 时是 token embedding
          ★★ 注意是【增量】f_i(h_i)，不是【累加状态】h_i
@@ -481,7 +709,10 @@ h_l = Σ_{i=0}^{l−1} α_{i→l} · v_i
 <p><code>RMSNorm</code> 的作用：防止某一层输出幅度特别大就霸占全部权重。</p>
 <h3 id="block">Block 版本：控制开销</h3>
 <p>朴素实现要保留所有层的输出，内存和流水线并行的跨阶段通信是 <code>O(Ld)</code>。</p>
-<p>于是分块：<strong>93 层切成 8 个 block，每块 12 层</strong>（算上 embedding 层共 9 个源）。</p>
+<p>于是分块：<strong>93 层切成 8 个 block</strong>（算上 embedding 层共 9 个源）。</p>
+<blockquote>
+<p>⚠️ <strong>一处数字对不上，如实标出</strong>：$93 / 8 = 11.625$，<strong>不是整数</strong>，所以"每块 12 层"讲不通（$8 \times 12 = 96 \neq 93$）。要么各块层数不等（例如 5 块 12 层 + 3 块 11 层 = 93），要么 $N$ 不是恰好 8。报告只写了 <code>N ≈ 8</code>，<strong>没有给出逐块的层数表</strong>——这里不替它编一个。</p>
+</blockquote>
 <ul>
 <li><strong>块内</strong>：层输出直接<strong>求和</strong></li>
 <li><strong>块间</strong>：只对 N 个 block 级表示做全注意力</li>
@@ -532,8 +763,22 @@ u = Σ_{i∈T_k(x)}  p_i · E_i^routed( W↓ x )
 y = Σ_j E_j^shared(x)  +  W↑ · RMSNorm(u)
 </code></pre></div>
 
-<p><strong>通信量和专家权重流量直接减半，省下的预算换成了专家数翻倍。</strong> 于是 K3 能做到 <strong>896 个路由专家、每 token 激活 16 个（稀疏度 56×）+ 2 个全宽共享专家</strong>。</p>
-<h3 id="_5">极端稀疏放大了两个失效模式</h3>
+<p><strong>通信量和专家权重流量直接减半，省下的预算换成了专家数翻倍。</strong> 于是 K3 能做到 <strong>896 个路由专家、每 token 激活 16 个 + 2 个全宽共享专家</strong>。</p>
+<p>⚠️ <strong>这里别顺手写成"稀疏度 56×"</strong>：<code>896/16 = 56</code> 只是<strong>路由专家的选择比</strong>，全模型的 <code>总参数/激活参数</code> 是 <strong>26.7×</strong>（推演见 §一的第 ③ 笔账）。两个数字回答的是两个不同的问题，混用会把显存账和算力账搞反。</p>
+<p><strong>★ 减半具体减在哪里</strong>（这是 LatentMoE 唯一真正省钱的地方，值得单独看清楚）：</p>
+<div class="codehilite"><pre><span></span><code>普通 MoE：每个被选中的专家要收到全宽 7168 的 token
+   -&gt; 一个 token 的 all-to-all 发送量 = 16 x 7168 = 114,688 个数
+
+LatentMoE：先降到 3584 再分发
+   -&gt; 一个 token 的 all-to-all 发送量 = 16 x 3584 =  57,344 个数   ← 正好一半
+   -&gt; 多付的成本：每层一对 W↓/W↑ 共 51.38 M 参数（全模型 4.73 B，占 0.17%）
+
+⚠️ 注意省的是【通信量】和【专家权重的读取流量】，不是【FLOPs】：
+   专家内部的矩阵乘是 3584x3072 而不是 7168x3072，FLOPs 也减半了，
+   但这份预算被&quot;专家数从 384 翻到 896&quot;吃回去了 —— 这是一次【换】，不是【省】。
+</code></pre></div>
+
+<h3 id="_6">极端稀疏放大了两个失效模式</h3>
 <p>报告很坦率地列出了问题：</p>
 <ol>
 <li><strong>激活爆炸</strong>：路由路径变成了 <code>W↓ → 门控多分支专家 FFN → W↑</code> 这样<strong>近乎四次连续矩阵乘</strong>的病态链条，配上 2.8T 的规模，内部激活会炸。</li>
@@ -580,7 +825,7 @@ K3 取 β₁ = 4（门分支）, β₂ = 25（up 分支）  →  |f(x)| ≤ β�
 </blockquote>
 <p><strong>训推一致来自一个不对称</strong>：最优解里 token 侧阈值 <code>α</code> 对同一行是常数、不影响行内排序，于是被消掉——<strong>路由只需要专家侧的 n 个阈值</strong>，<code>α</code> 是绑在当前 batch 上的中间变量，用完即弃。<strong>部署时就是固定 Top-k + 一个冻结的 bias，不需要算任何分位数。</strong></p>
 <blockquote>
-<p>📘 <strong>完整推导（对偶、交替求解器、直方图误差界、以及报告自己给的 BIP 负面结果）见</strong> <a href="大模型架构入门/10-MoE.html">大模型架构入门 §10.5</a>。</p>
+<p>📘 <strong>完整推导（对偶、交替求解器、直方图误差界、以及报告自己给的 BIP 负面结果）见</strong> <a href="大模型架构入门/10-MoE.html">大模型架构入门 §10.5</a>。旧的 aux-loss-free 偏置法本身（包括 <strong>DeepSeek-V3 的口径：偏置在训练时每 step 更新、推理时固定，且 V3 并非完全不用辅助损失——它保留了一个极小的序列级 aux loss</strong>）也在同一节。Stable LatentMoE 的结构讲解见 <a href="大模型架构入门/10-MoE.html">§10.8</a>。</p>
 </blockquote>
 <p>工程上，全局 batch 的 margin 有几百万个、散在各个 rank 上，精确分位数不可行。K3 用<strong>直方图估计</strong>：每个 rank 统计自己的 bin 计数，一次 all-reduce 求和，从池化后的计数读出分位数。因为计数是可加的，<strong>不管 token 怎么切分，直方图代表的都是完整的全局 batch</strong>，通信成本只有每专家几百个 bin。</p>
 <p>（另外：bias <code>b</code> 只参与 Top-k 选择，<strong>不进入混合权重 <code>p_i</code></strong>，所以它调度而不干扰梯度。推理时 bias 冻结。）</p>
@@ -607,7 +852,7 @@ K3 取 β₁ = 4（门分支）, β₂ = 25（up 分支）  →  |f(x)| ≤ β�
 </blockquote>
 <p>架构细节：27 层 ViT、约 0.4B 参数、patch size 14、用 RMSNorm、<strong>移除所有线性层和注意力投影的 bias 项</strong>（进一步稳定从零优化）。图像和视频<strong>完全共享参数</strong>：注意力分解成帧内空间 + 帧间时间两趟，时间维再做池化压缩。投影前用 <strong>2×2 pixel shuffle</strong> 把视觉 token 数降 4 倍，让 3584×3584 的输入在 1M 上下文里放得下。</p>
 <hr />
-<h2 id="_6">七、预训练</h2>
+<h2 id="_7">七、预训练</h2>
 <p><strong>四阶段渐进扩上下文</strong>：</p>
 <div class="codehilite"><pre><span></span><code>预训练：8K → 64K
 冷却期：256K → 1M
@@ -650,18 +895,23 @@ K3 取 β₁ = 4（门分支）, β₂ = 25（up 分支）  →  |f(x)| ≤ β�
 <blockquote>
 <p>⚠️ <strong>优先权提示</strong>：GLM-5 报告 §3.5 的 <strong>On-Policy Cross-Stage Distillation</strong> 用的是同一个形式——<code>Â = sg[log(π_teacher / π_θ)]</code> 当 GRPO 的 advantage，<strong>同样早五个月</strong>。区别在用途：GLM 用它<strong>跨阶段找回被后续 RL 冲掉的能力</strong>，K3 用它<strong>把 9 个专家合并成一个模型</strong>。另外 GLM 挖出了这个形式的一个额外好处——advantage 既然直接来自与教师的差距，GRPO 的 group size 就可以设成 1，吞吐直接拉满（K3 报告没提这一点）。见 <a href="GLM-5.2.html">GLM-5.2.md</a> §八。</p>
 </blockquote>
-<h3 id="_7">部署导向的后训练</h3>
+<h3 id="_8">部署导向的后训练</h3>
 <ul>
-<li><strong>MXFP4 QAT</strong>：MoE 专家权重量化到 MXFP4、激活 MXFP8；注意力投影、latent MoE 投影、共享专家、路由器<strong>保持高精度</strong>。<strong>从 SFT 一路贯穿到 RL 全程做 QAT</strong>，RL 阶段 rollout 和训练用同一套量化方案，<strong>彻底消除 train–inference mismatch</strong>。</li>
+<li><strong>MXFP4 QAT</strong>（QAT = Quantization-Aware Training，量化感知训练）：MoE 专家权重量化到 MXFP4、激活 MXFP8；注意力投影、latent MoE 投影、共享专家、路由器<strong>保持高精度</strong>。<strong>从 SFT 一路贯穿到 RL 全程做 QAT</strong>，RL 阶段 rollout 和训练用同一套量化方案，<strong>彻底消除 train–inference mismatch</strong>。MX 系列格式为什么要"每 32 个元素配一个共享指数"、以及"省显存 ≠ 省算力"这条铁律，见 <a href="大模型架构入门/14-量化.html">14 章 §14.5 / §14.9</a>。</li>
 <li><strong>Draft model</strong>：把预训练的 MTP 层微调成 EAGLE-3 风格的草稿模型。输入融合<strong>第 1、第 4、最后一个 AttnRes block</strong> 的低/中/高层特征，融合矩阵 <code>W_E3</code> 初始化为 <code>[0 0 I]</code>——<strong>初始时刻等价于只用高层特征</strong>（也就是 MTP 层原本被训练的输入），再慢慢学着吸收低中层。<br />
   训练目标也换了：不优化常规 KL 代理，而<strong>直接优化 LK loss</strong>——接受率的负对数 <code>−log Σ_x min(p(x), q(x))</code>。因为对容量受限的草稿模型来说，最小化 KL 并不保证最大化接受率。</li>
 </ul>
+<blockquote>
+<p>⭐ <strong>这个目标函数为什么是"对的"，以及一个必须避开的算错法</strong>：$\sum_x \min(p(x), q(x)) = 1 - \mathrm{TV}(p,q)$ <strong>正好等于单步接受率 $\alpha$</strong>，所以 LK loss 就是"直接优化接受率"，一点代理都不打。而一轮猜 $\gamma$ 个时，<strong>期望接受长度不是 $\alpha \times \gamma$</strong>——草稿 token 是<strong>串行依赖</strong>的（第 2 个建立在"第 1 个被接受"的前提上），所以是几何求和：</p>
+<p>$$\mathbb{E}[\text{接受长度}] = \frac{1 - \alpha^{\gamma+1}}{1 - \alpha}$$</p>
+<p>⚠️ 报告没有公布 K3 草稿模型的 $\alpha$ 或实测接受长度，<strong>所以本文不给 K3 的加速倍数</strong>。作为量级参照，<strong>DeepSeek-V3 的官方口径是"第二个 token 的接受率 85%~90%、TPS 提升 1.8×"</strong>（✅ V3 报告披露，⚠️ 注意不是社区常传的 3×）。完整推导、逐 $\gamma$ 的推演表和"实测总是低于理论"的反例见 <a href="大模型架构入门/12-MTP与投机解码.html">12 章 §12.5</a>。</p>
+</blockquote>
 <hr />
 <h2 id="infra">九、Infra 亮点</h2>
 <ul>
-<li><strong>FlashKDA</strong>：针对 KDA 状态的串行依赖，<strong>每个执行 regime 一个专用 kernel</strong>（训练/prefill 用 chunkwise，解码另设）。已开源。</li>
+<li><strong>FlashKDA</strong>：针对 KDA 状态的串行依赖，<strong>每个执行 regime 一个专用 kernel</strong>（训练/prefill 用 chunkwise，解码另设）。已开源。⚠️ "为什么必须一个 regime 一个 kernel"属于算子层问题，本文不展开——分块扫描类算子的 tiling 与流水在 <a href="../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 §4</a> 和 <a href="../大模型算子开发/05-算子融合.html">§5 算子融合</a>。</li>
 <li><strong>KDA Context Parallelism</strong> + <strong>state-aware prefix caching</strong>：把 KDA 固定大小状态"便宜可传输"这个特性用满——设备内、跨设备、跨请求三个层次。</li>
-<li><strong>MoonEP</strong>：<strong>完美均衡</strong>的专家并行。因为 QB 保证了均衡，<strong>每个 rank 收到的 token 数恰好是 S×K，所有层的计算形状静态可知</strong>——于是消除了每层的 MoE host 同步（传统实现必须每层等设备回报实际形状才能启动）。融合的 permute/unpermute 算子做<strong>零拷贝</strong>通信：规划 kernel 预先算好每个 token 的目的地，直接发到远端 rank 的专家分组位置。最坏不均衡下 DeepEP 需要 <code>S×K×R</code> 的缓冲区，MoonEP 只要固定的 <code>S×K</code>。</li>
+<li><strong>MoonEP</strong>：<strong>完美均衡</strong>的专家并行（EP = Expert Parallelism）。因为 QB 保证了均衡，<strong>每个 rank 收到的 token 数恰好是 S×K，所有层的计算形状静态可知</strong>——于是消除了每层的 MoE host 同步（传统实现必须每层等设备回报实际形状才能启动）。融合的 permute/unpermute 算子做<strong>零拷贝</strong>通信：规划 kernel 预先算好每个 token 的目的地，直接发到远端 rank 的专家分组位置。最坏不均衡下 DeepEP 需要 <code>S×K×R</code> 的缓冲区，MoonEP 只要固定的 <code>S×K</code>。EP 的通信原语、all-to-all 的代价模型，以及"为什么 MoE 层必须等设备回报形状"的实现细节，见 <a href="../训练框架/分布式训练入门/09-专家并行EP.html">训练框架 §9 专家并行</a> 和 <a href="../推理框架/推理优化入门/11-MoE推理与专家并行.html">推理框架 §11</a>；MoE 算子侧在 <a href="../大模型算子开发/08-MoE算子与通信.html">大模型算子开发 §8</a>。⚠️ 报告没有公布 K3 的训练并行配置（对照：<strong>DeepSeek-V3 用 EP=64 / PP=16 / TP=1，2048 张 H800，且官方明确训练和推理都不丢 token</strong>），所以这里不给 K3 的并行切法。</li>
 <li><strong>统一激活管理器</strong>：重计算、量化、offload 都只是同一个存储抽象下的"策略"，可以在<strong>张量粒度</strong>自由组合，用轻量标注声明，<strong>和模型代码完全解耦</strong>。</li>
 <li><strong>1M agentic RL</strong>：外部 KV cache pool（写回策略，空闲前缀淘汰出 GPU 时才写到 CPU DRAM，下次复用前预取；<strong>KDA 状态和对应的 MLA KV 块一起 offload/prefetch，生命周期对齐</strong>）+ 可恢复的 microVM 沙箱。</li>
 </ul>
@@ -870,8 +1120,57 @@ K3 取 β₁ = 4（门分支）, β₂ = 25（up 分支）  →  |f(x)| ≤ β�
 <p><strong>一个值得注意的脚注</strong>：BrowseComp 的 91.2 是在 300K 处做上下文压缩得到的；<strong>完整 1M 上下文不做任何上下文管理时是 90.4</strong> —— 两者几乎持平，某种程度上说明 1M 窗口本身是真能用的。</p>
 <p><strong>报告承认的局限</strong>：不回传 thinking history（或中途切换会话）会导致行为不稳定；对模糊指令<strong>过度自主</strong>；相比 Fable 5 和 GPT-5.6 Sol 在<strong>用户体验上有明显差距</strong>。</p>
 <hr />
-<h2 id="_8">十一、可靠性说明</h2>
+<h2 id="_9">十一、可靠性说明</h2>
 <p>本文的架构、公式、超参、评测数字均从技术报告 PDF 正文提取核对（本地 PDF 与正文提取见文首链接）。</p>
+<p><strong>本文新增的推算（全部标了 ⚠️，请勿当成报告结论引用）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>推算</th>
+<th>在哪一节</th>
+<th>依据</th>
+<th>报告有没有给</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>93 层里有 <strong>92 个 MoE 层 + 1 个稠密层</strong></td>
+<td>§一 ②</td>
+<td>由「总参数 − 激活参数 = 未选中的专家」反解</td>
+<td>❌ 未披露层型分布</td>
+</tr>
+<tr>
+<td><strong>head_dim ≈ 128</strong></td>
+<td>§一 ②</td>
+<td>由参数量差额 40.4 B 倒推</td>
+<td>❌ 只给了"96 头"</td>
+</tr>
+<tr>
+<td>全模型稀疏度 <strong>26.7×</strong></td>
+<td>§一 ③</td>
+<td>$2780/104.2$</td>
+<td>⚠️ 报告只给两个绝对值</td>
+</tr>
+<tr>
+<td>1M 上下文 KV cache <strong>≈ 27.8 GB</strong>、交叉点 <strong>≈ 7850 token</strong></td>
+<td>§二</td>
+<td>代入了未披露的 MLA latent(576) 与 KDA $d_k{=}d_v{=}128$</td>
+<td>❌ 只给相对倍数</td>
+</tr>
+<tr>
+<td>每 token FLOPs <strong>208 / 625 GFLOPs</strong>、注意力项 <strong>2064 GFLOPs @1M</strong></td>
+<td>§一 ④</td>
+<td>通式 <code>6N + 12·L·s·h</code></td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong>AttnRes 分块层数对不上</strong>（$93/8$ 非整数）</td>
+<td>§三</td>
+<td>算术</td>
+<td>⚠️ 报告只写 <code>N ≈ 8</code></td>
+</tr>
+</tbody>
+</table>
 <p><strong>已剔除的二手数字</strong>：</p>
 <ol>
 <li>~~AttnRes 的"训练 +4% / 推理 +2%"~~ —— <strong>已删除，不再引用</strong>。经报告全文检索确认，<strong>K3 报告没有给出任何百分比形式的 AttnRes 开销</strong>，只给了 <code>O(Ld) → O(Nd)</code> 的渐近界；独立论文 <a href="https://arxiv.org/abs/2603.15031">arXiv:2603.15031</a> 的摘要页也只有定性的 "minimal overhead"。社区流传的 4%/2%、&lt;2%、1.25× 互相不一致且均回溯不到一手来源。</li>
@@ -882,7 +1181,7 @@ K3 取 β₁ = 4（门分支）, β₂ = 25（up 分支）  →  |f(x)| ≤ β�
 </ol>
 <p><strong>另需说明</strong>：报告参考文献 [58] 只写了 "Kimi Team. <em>Attention Residuals</em>. Preprint. 2026."，<strong>没有 arXiv 编号</strong>；本文用的 2603.15031 及两篇后续工作的编号、日期、论点，均由 arXiv 独立检索并逐条核对摘要得到，<strong>不是报告提供的</strong>。</p>
 <hr />
-<h2 id="_9">参考来源</h2>
+<h2 id="_10">参考来源</h2>
 <ul>
 <li><a href="https://arxiv.org/abs/2607.24653">Kimi K3: Open Frontier Intelligence (arXiv:2607.24653)</a> — 本地：<a href="papers/Kimi-K3-Open-Frontier-Intelligence-arXiv-2607.24653.pdf">papers/Kimi-K3-Open-Frontier-Intelligence-arXiv-2607.24653.pdf</a></li>
 <li><a href="https://github.com/MoonshotAI/Kimi-K3">MoonshotAI/Kimi-K3 (GitHub)</a> — 权重、配置表、部署说明</li>

@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="glm-53-glm-53-flash">GLM-5.3 / GLM-5.3-Flash 架构与技术报告解析</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>重要前提一：这一代是"两个模型、一篇文档"</strong></p>
 <p>智谱在 2026 年 8 月连发两个模型，它们的性质完全不同，<strong>必须分开看</strong>：</p>
 <table>
@@ -1040,22 +1040,335 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<p><strong>DSA 层（那 11 层全局注意力）的 MLA 维度</strong> ✅（同样出自 <code>config.json</code>，本文补齐，上表未列）：</p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>q_lora_rank</code></td>
+<td>1536</td>
+<td>Q 的降维秩</td>
+</tr>
+<tr>
+<td><code>kv_lora_rank</code></td>
+<td><strong>512</strong></td>
+<td><strong>KV 潜向量的维度，KV cache 只存这一份</strong></td>
+</tr>
+<tr>
+<td><code>qk_nope_head_dim</code></td>
+<td>256</td>
+<td>不带位置编码的 QK 维</td>
+</tr>
+<tr>
+<td><code>qk_rope_head_dim</code></td>
+<td><strong>0</strong></td>
+<td>★ <strong>RoPE 维是 0</strong> —— 这正是 §5.5 那个 <code>mla_use_nope</code> 的直接后果</td>
+</tr>
+<tr>
+<td><code>v_head_dim</code></td>
+<td>256</td>
+<td></td>
+</tr>
+<tr>
+<td><code>num_attention_heads</code></td>
+<td>64</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="321b">★ 推演一：把 321B 一项一项加出来</h3>
+<p>⚠️ <strong>官方只给了"320B / 18B"和一个权重实测数 321,323,031,390。下面整笔账是本文按 <code>config.json</code> 推的</strong>，目的是让你能自己验一遍。通用方法见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.4</a>，这里不重复讲原理。</p>
+<p><strong>先算单个组件。</strong></p>
+<div class="codehilite"><pre><span></span><code>一个专家            3 x 4096 x 2048                       =  25.17 M
+一个 MoE 层的专家    289 x 25.17 M （288 路由 + 1 共享）      =   7.27 B
+
+一层 KDA（projection_size = 64 头 x 128 = 8192）
+  in_proj_qkvgfab   4096 x (3x8192 + 8192 + 128 + 64)     = 135.00 M
+                            \qkv/    \g/   \f_a/ \beta/
+  f_b_proj          128 x 8192                            =   1.05 M
+  conv1d            3 x 8192 x 4                          =   0.10 M
+  o_proj            8192 x 4096                           =  33.55 M
+  ------------------------------------------------------------------
+  每层合计                                                 = 169.70 M
+
+一层 DSA（MLA-NoPE，★ 注意没有 W_KR 那一项）
+  W_DQ   4096 x 1536                                      =   6.29 M
+  W_UQ   1536 x 64 x 256                                  =  25.17 M
+  W_DKV  4096 x 512                                       =   2.10 M
+  W_UK   512 x 64 x 256                                   =   8.39 M
+  W_UV   512 x 64 x 256                                   =   8.39 M
+  W_O    64 x 256 x 4096                                  =  67.11 M
+  ------------------------------------------------------------------
+  每层合计                                                 = 117.45 M
+
+一层的 lightning indexer（32 头 x 128 维）
+  W_q^idx 4096 x 32 x 128 = 16.78 M ; W_k^idx 4096 x 128 = 0.52 M  =  17.30 M
+</code></pre></div>
+
+<p><strong>再加总。</strong></p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>42 个 MoE 层的专家</td>
+<td>$42 \times 7.27\,\text{B}$</td>
+<td><strong>305.47 B</strong></td>
+<td><strong>95.1 %</strong></td>
+</tr>
+<tr>
+<td>1 个 MTP 层（按完整 MoE 层 + 拼接投影算）</td>
+<td>$7.27 + 0.17 + 0.03$</td>
+<td>7.48 B</td>
+<td>2.3 %</td>
+</tr>
+<tr>
+<td>34 层 KDA</td>
+<td>$34 \times 169.70\,\text{M}$</td>
+<td>5.77 B</td>
+<td>1.8 %</td>
+</tr>
+<tr>
+<td>11 层 DSA 注意力</td>
+<td>$11 \times 117.45\,\text{M}$</td>
+<td>1.29 B</td>
+<td>0.40 %</td>
+</tr>
+<tr>
+<td>词嵌入 + 输出层</td>
+<td>$2 \times 154880 \times 4096$</td>
+<td>1.27 B</td>
+<td>0.39 %</td>
+</tr>
+<tr>
+<td>3 个稠密层 FFN</td>
+<td>$3 \times (3 \times 4096 \times 12288)$</td>
+<td>0.45 B</td>
+<td>0.14 %</td>
+</tr>
+<tr>
+<td>视觉塔（24 层 × 12.58 M）+ 投影头</td>
+<td>$0.30 + 0.08$</td>
+<td>0.39 B</td>
+<td>0.12 %</td>
+</tr>
+<tr>
+<td>11 层的 indexer</td>
+<td>$11 \times 17.30\,\text{M}$</td>
+<td>0.19 B</td>
+<td>0.06 %</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>322.31 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ HF 权重实测</strong></td>
+<td></td>
+<td><strong>321.32 B</strong></td>
+<td>差 <strong>+0.31 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>和 GLM-5.2 摆在一起看，这一代砍掉的到底是什么就很清楚了</strong>（⚠️ 下表左列来自 <a href="GLM-5.2.html">GLM-5.2.md</a> §二 的同一套推演）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GLM-5.2（744B / 40B）</th>
+<th><strong>GLM-5.3-Flash（321B / 18B）</strong></th>
+<th>变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>专家占总参数</td>
+<td>97.8 %</td>
+<td><strong>95.1 %</strong></td>
+<td>差不多</td>
+</tr>
+<tr>
+<td>注意力 + indexer 占总参数</td>
+<td>1.89 %</td>
+<td><strong>2.26 %</strong>（KDA 5.77 + DSA 1.29 + idx 0.19）</td>
+<td>略升</td>
+</tr>
+<tr>
+<td><strong>一层注意力多大</strong></td>
+<td>154.5 M（MLA）+ 26.0 M（idx）</td>
+<td><strong>KDA 169.7 M / DSA 117.5 M</strong></td>
+<td>★ <strong>KDA 反而更大</strong></td>
+</tr>
+<tr>
+<td>层数</td>
+<td>78</td>
+<td><strong>45</strong></td>
+<td><strong>−42 %</strong></td>
+</tr>
+<tr>
+<td>hidden dim</td>
+<td>6144</td>
+<td><strong>4096</strong></td>
+<td><strong>−33 %</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>一个反直觉的事实</strong>：<strong>KDA 层的参数量（169.7 M）比 DSA 层（117.5 M）还多 44%。</strong> 线性注意力省的是<strong>显存和算力随长度增长的那一部分</strong>，<strong>不是参数</strong>——<code>in_proj_qkvgfab</code> 要一次投出 <code>3×8192 + 8192</code> 共 32960 维，比 MLA 那套低秩投影贵得多。<strong>"线性注意力更轻"这句话只对 KV cache 和长序列 FLOPs 成立，对参数量不成立。</strong></p>
+</blockquote>
+<h3 id="18b">★ 推演二：18B 激活与稀疏度</h3>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 18B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>42 个 MoE 层，每层只激活 8 + 1 个专家</td>
+<td>$42 \times 9 \times 25.17\,\text{M}$</td>
+<td><strong>9.51 B</strong></td>
+<td>52.8 %</td>
+</tr>
+<tr>
+<td>34 层 KDA</td>
+<td>$34 \times 169.70\,\text{M}$</td>
+<td>5.77 B</td>
+<td>32.0 %</td>
+</tr>
+<tr>
+<td>11 层 DSA + indexer</td>
+<td>$11 \times (117.45 + 17.30)\,\text{M}$</td>
+<td>1.48 B</td>
+<td>8.2 %</td>
+</tr>
+<tr>
+<td>词嵌入 + 输出层</td>
+<td>同上表</td>
+<td>1.27 B</td>
+<td>7.0 %</td>
+</tr>
+<tr>
+<td>3 个稠密层 FFN</td>
+<td>同上表</td>
+<td>0.45 B</td>
+<td>2.5 %</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>18.48 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ 官方口径</strong></td>
+<td></td>
+<td><strong>18 B</strong></td>
+<td>差 <strong>+2.7 %</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>❌ 常见错法：&quot;288 选 8，所以稀疏 36 倍&quot;
+
+✅ 三个数字，三个不同的问题：
+   288 / 8   = 36.0 倍   &lt;- 只是【路由专家】的选择比
+   289 / 9   = 32.1 倍   &lt;- 算上 1 个共享专家后的 FFN 稀疏比
+   320 / 18  = 17.8 倍   &lt;- ★ 全模型 总参数 / 激活参数
+                            这才是&quot;显存账 vs 算力账差多少&quot;的正确口径
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>Flash 的非稀疏部分比别家都重</strong>。把"注意力 + indexer"这一块在激活参数里的占比横过来看（⚠️ 都是本文按各自配置推的）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>GLM-5.3-Flash</strong></th>
+<th>GLM-5.2</th>
+<th>MiniMax M3</th>
+<th>openPangu-2.0-Pro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注意力 + indexer 的激活参数</td>
+<td><strong>7.25 B</strong></td>
+<td>14.08 B</td>
+<td>6.65 B</td>
+<td>4.00 B</td>
+</tr>
+<tr>
+<td>占该模型激活参数的比例</td>
+<td>★ <strong>39.2 %</strong></td>
+<td>35.0 %</td>
+<td>28.3 %</td>
+<td>22.3 %</td>
+</tr>
+</tbody>
+</table>
+<p><strong>占比最高的原因就是那 34 层 KDA</strong>——它参数多（169.7 M / 层），而且每层都必须全量走，一点都不稀疏。再加上稠密层和词表，Flash 的激活参数里有 <strong>8.97 B（48.5%）完全不走稀疏路径</strong>。<strong>这就是稀疏度从 36 掉到 17.8 的主因。</strong> 通用解释见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.4.4</a>。</p>
+</blockquote>
+<p><strong>两个派生量</strong>（⚠️ 本文推算，不是官方披露值）：</p>
+<table>
+<thead>
+<tr>
+<th>派生指标</th>
+<th>怎么算</th>
+<th><strong>GLM-5.3-Flash</strong></th>
+<th>GLM-5.3（= 5.2）</th>
+<th>对照</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>前向 FLOPs / token</strong>（不含随长度变化的项）</td>
+<td>$\approx 2 \times$ 激活参数</td>
+<td>≈ <strong>37 GFLOP</strong></td>
+<td>≈ 80</td>
+<td>M3 ≈ 46 · openPangu ≈ 36 · V4 ≈ 98 · K3 ≈ 208</td>
+</tr>
+<tr>
+<td><strong>深宽比</strong> $N/d$</td>
+<td>层数 ÷ hidden dim</td>
+<td>45 / 4096 = <strong>0.0110</strong></td>
+<td>78 / 6144 = 0.0127</td>
+<td>K3 0.0130 · M3 0.0098 · V4 0.0085</td>
+</tr>
+</tbody>
+</table>
 <h3 id="53-3-kda-1-dsa">5.3 混合注意力：3 层 KDA + 1 层 DSA</h3>
 <p><strong>官方的分工说明</strong> ✅：</p>
 <blockquote>
 <p>✅ <strong>官方原文</strong>：<em>"Linear attention captures local dependencies through state modeling, while sparse attention retrieves relevant global context through a lightweight indexer."</em>（线性注意力通过状态建模捕获局部依赖，稀疏注意力通过轻量索引器召回全局上下文。）</p>
 </blockquote>
 <p><strong>具体排布</strong>（<code>config.json</code> 的 <code>layer_types</code> / <code>kda_layers</code> / <code>full_attn_layers</code> 三处互相印证 ✅）：</p>
-<div class="codehilite"><pre><span></span><code>层号  0    1    2    3     4    5    6    7    …   40   41   42   43   44
-     KDA  KDA  KDA  DSA   KDA  KDA  KDA  DSA   …  KDA  KDA  KDA  DSA  KDA
-     └────── block 1 ──┘  └────── block 2 ──┘         └── block 11 ──┘  ↑
-                                                                  多出的第 45 层
+<div class="codehilite"><pre><span></span><code>层号   0    1    2    3      4    5    6    7     ...   40   41   42   43     44
+类型  KDA  KDA  KDA  DSA    KDA  KDA  KDA  DSA    ...  KDA  KDA  KDA  DSA    KDA
+       \______block 1______/  \______block 2_____/       \____block 11_____/   ^
+                                                                    多出来的第 45 层
 
-kda_layers      = 0,1,2, 4,5,6, 8,9,10, … 44   （34 层）
-full_attn_layers= 3, 7, 11, 15, 19, …, 43      （11 层，间隔 4）
+kda_layers       = 0,1,2, 4,5,6, 8,9,10, ... 44    （34 层）
+full_attn_layers = 3, 7, 11, 15, 19, ..., 43       （11 层，间隔 4）
 </code></pre></div>
 
-<p><strong>顺序是先 KDA 后 DSA</strong>，DSA 落在每个 block 的第 4 位。</p>
+<p><strong>顺序是先 KDA 后 DSA</strong>，DSA 落在每个 block 的第 4 位。<strong>11 个 block × 4 层 = 44，再多出一层 KDA，凑成 45。</strong></p>
 <blockquote>
 <p>📌 <strong>和 Kimi K3 的一处实质差异</strong>：K3 是 <code>3 KDA + 1 Gated MLA</code> 循环之后，<strong>在主干末尾额外补一层全局注意力</strong>，保证最后一层能看全局（见 <a href="Kimi-K3.html">Kimi-K3.md</a>）。GLM-5.3-Flash 的第 45 层反而是 KDA，<strong>最后一个全局层停在第 43 层</strong>。</p>
 <p>⚠️ 官方没有解释这个选择。⚠️ 我的推断：Flash 的全局层是 DSA（本身就带 top-k 检索），可能不需要 K3 那种"末层兜底"；但这是推断，<strong>无一手依据</strong>。</p>
@@ -1143,24 +1456,56 @@ full_attn_layers= 3, 7, 11, 15, 19, …, 43      （11 层，间隔 4）
 <blockquote>
 <p>🔑 <strong><code>gate_lower_bound = -5.0</code> 是最值得记的一个数</strong>。门控在 log 空间被夹在 –5 以上，即每步衰减率不低于 $e^{-5} \approx 0.0067$。<strong>目的是防止某个通道把历史一次性清空</strong>——线性注意力的状态一旦被冲掉就永远找不回来了。这个下界机制来自 Kimi K3，GLM 原样沿用了同一个数值。</p>
 </blockquote>
-<p><strong>用 vLLM 源码交叉验证结构</strong> ✅（本地：<a href="推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py">推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py</a>，类 <code>KimiK3DeltaAttention(GatedDeltaNetAttention)</code>）：</p>
-<div class="codehilite"><pre><span></span><code>hidden_states
-   │
-   └─ in_proj_qkvgfab  ← 一个融合投影，一次算出 6 样东西：
-        ├─ mixed_qkv (3×projection_size) ─→ conv1d(kernel=4) ─→ q, k, v
-        ├─ g_proj_states (projection_size) ────────────→ g2  【输出门】
-        ├─ f_a (head_dim=128) ─→ f_b_proj ────────────→ g1  【逐通道遗忘门，低秩】
-        └─ beta (num_heads) ──────────────────────────→ β   【每头一个标量，delta 写入强度】
-   │
-   ├─ dt_bias / A_log  ← 门控的可学习偏置与衰减基（Mamba 系传统）
-   │
-   ├─ KDA 递推核（chunkwise 并行）
-   │
-   ├─ o_norm = FusedRMSNormGated(head_dim, activation=&quot;sigmoid&quot;)  【门控 RMSNorm 输出】
-   │
-   └─ o_proj
+<p><strong>用 vLLM 源码交叉验证结构</strong> ✅（本地：<a href="../推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py">推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py</a>，类 <code>KimiK3DeltaAttention(GatedDeltaNetAttention)</code>）：</p>
+<p><strong>一层 KDA 的数据流，从上到下五步</strong>：</p>
+<div class="codehilite"><pre><span></span><code>hidden_states -&gt; in_proj_qkvgfab -&gt; [KDA 递推核，chunkwise 并行] -&gt; o_norm -&gt; o_proj
+                 ^ 一个融合投影                                      ^ 门控 RMSNorm
+                   一次算出下表 4 样东西                                （sigmoid 激活）
 </code></pre></div>
 
+<p><strong><code>in_proj_qkvgfab</code> 这一个融合投影切出来的 4 样东西</strong>（名字里 <code>q k v g f a b</code> 各对应一路）：</p>
+<table>
+<thead>
+<tr>
+<th>切片</th>
+<th>输出维度</th>
+<th>后面接什么</th>
+<th>最终变成</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mixed_qkv</code></td>
+<td>3 × 8192</td>
+<td><code>conv1d(kernel=4)</code></td>
+<td><strong>q, k, v</strong></td>
+<td>主路；短因果卷积补局部建模</td>
+</tr>
+<tr>
+<td><code>g_proj_states</code></td>
+<td>8192</td>
+<td>—</td>
+<td><strong>g2</strong></td>
+<td><strong>输出门</strong></td>
+</tr>
+<tr>
+<td><code>f_a</code></td>
+<td>128（= head_dim）</td>
+<td><code>f_b_proj</code> 升回 8192</td>
+<td><strong>g1</strong></td>
+<td><strong>逐通道遗忘门</strong>（低秩分解）</td>
+</tr>
+<tr>
+<td><code>beta</code></td>
+<td>64（= num_heads）</td>
+<td>—</td>
+<td><strong>β</strong></td>
+<td><strong>每头一个标量</strong>，delta 写入强度</td>
+</tr>
+</tbody>
+</table>
+<p>另有 <code>dt_bias</code> / <code>A_log</code> 两组可学习参数，是门控的偏置与衰减基（Mamba 系传统）。</p>
 <blockquote>
 <p>📌 <strong>注意 <code>f_a</code> 的维度是 128（= head_dim），再由 <code>f_b_proj</code> 升回 8192</strong>。这正是 Kimi Linear 论文里的<strong>低秩门控分解</strong> $\mathbb{R}^{d} \to \mathbb{R}^{d_h} \to \mathbb{R}^{n_h d_h}$——如果每个通道的门都独立参数化，光门控就要 4096×8192 的矩阵，低秩分解把它压到 1/64。</p>
 <p>📌 <strong><code>beta</code> 是每头一个标量，<code>g1</code> 是每通道一个值</strong>——两个门的粒度不同，别搞混：<strong>β 控制"这次写多少"，α 控制"旧的忘多少"</strong>。</p>
@@ -1291,7 +1636,109 @@ full_attn_layers= 3, 7, 11, 15, 19, …, 43      （11 层，间隔 4）
 </tr>
 </tbody>
 </table>
+<h3 id="444">★ 推演三：自己把 4.44× 算出来，并且看清它低估了什么</h3>
+<p><strong>这两个数字里，KV cache 那个可以完整复算。</strong> ⚠️ 以下为本文按两边的 <code>config.json</code> 推算，官方只给了倍数。</p>
+<p><strong>先把两边每层每 token 要缓存什么写清楚。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>GLM-5.3（= 5.2 的基座）</strong></th>
+<th><strong>GLM-5.3-Flash</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>全局层数 / 总层数</td>
+<td>78 / 78（全是 MLA + DSA）</td>
+<td><strong>11 / 45</strong></td>
+</tr>
+<tr>
+<td>全局层每 token 缓存</td>
+<td>MLA 潜向量 <code>512 + 64</code>（含解耦 RoPE）× 2 B = <strong>1152 B</strong></td>
+<td>MLA 潜向量 <code>512 + 0</code>（★ <strong>NoPE，没有 RoPE 那一支</strong>）× 2 B = <strong>1024 B</strong></td>
+</tr>
+<tr>
+<td>indexer key 每 token</td>
+<td>128 维 × 2 B = 256 B，<strong>IndexShare 只有 1/4 层有</strong> → 摊薄 <strong>64 B/层</strong></td>
+<td>128 维 × 2 B = 256 B，<strong>IndexPool 4 合 1</strong> → <strong>64 B/层</strong></td>
+</tr>
+<tr>
+<td>线性层</td>
+<td>无</td>
+<td>34 层 KDA，<strong>状态固定大小，完全不随 token 数增长</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>代入算：</strong></p>
+<div class="codehilite"><pre><span></span><code>GLM-5.3   每 token = 78 x (1152 + 64)            = 94,848 B = 92.63 KiB
+          每层平均 = 94,848 / 78                 = 1216 B
+
+Flash     每 token = 11 x (1024 + 64) + 34 x 0   = 11,968 B = 11.69 KiB
+          每层平均 = 11,968 / 45                 =  266 B    &lt;- ★ 分母是 45，不是 11
+
+          官方口径（average KV cache size per layer）= 1216 / 266 = 4.57 倍
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>口径</th>
+<th>算法</th>
+<th>结果</th>
+<th>对照官方</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>官方口径，<strong>算 indexer key</strong></td>
+<td>1216 ÷ 266</td>
+<td><strong>4.57×</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>官方口径，<strong>不算 indexer key</strong></td>
+<td>1152 ÷ 250</td>
+<td><strong>4.61×</strong></td>
+<td><strong>官方 4.44×</strong></td>
+</tr>
+<tr>
+<td>官方口径，<strong>算 GLM 的 indexer 但不算 Flash 的 IndexPool 折扣</strong></td>
+<td>1216 ÷ 313</td>
+<td><strong>3.89×</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>🔑 <strong>复算落在 3.9 ~ 4.6 之间，官方的 4.44 正好在区间里</strong>。⚠️ 差异来自"indexer 的 key cache 算不算进 KV cache"这个口径，<strong>官方没说</strong>。但可以确认：<strong>4.44× 这个量级是真的，不是营销数字。</strong></p>
+</blockquote>
+<p><strong>★ 但更值得注意的是：这个"每层平均"的口径，其实低估了 Flash 的真实优势。</strong></p>
+<div class="codehilite"><pre><span></span><code>    绝对口径（一条 1M 序列到底占多少显存，batch = 1）
+      GLM-5.3 ：92.63 KiB/token x 1,048,576 = 92.6 GiB     &lt;- ★ 一张 H100（80 GB）装不下
+      Flash   ：11.69 KiB/token x 1,048,576 = 11.7 GiB     &lt;- ★ 装得下，还剩一大半
+
+      绝对倍数 = 92.6 / 11.7 = 7.9 倍      &lt;-- 比官方的 4.44 倍还多
+      差的那一截 = 78 / 45 = 1.73          &lt;-- 就是层数少的那部分
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>官方为什么要用"per layer"这种把自己说小了的口径</strong>：✅ 博客原文写了理由——<em>"For a fair comparison among different scales"</em>，<strong>为了让不同规模的模型可比</strong>。层数不同、hidden 不同的两个模型直接比总量是不公平的。<strong>这是一个克制的口径选择，值得记一笔</strong>；但读者要知道，<strong>在"我这张卡能不能装下一条 1M 序列"这个真实问题上，起作用的是 7.9 倍那个数。</strong></p>
+</blockquote>
+<p><strong>★ 还有一笔账官方完全没提：KDA 的状态显存。</strong></p>
+<p>线性注意力的状态是<strong>固定大小</strong>的，但它<strong>不随序列长度变，却随 batch size 线性变</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    一层 KDA 的状态 S = 64 头 x 128 x 128 x 2 B(BF16) = 2 MiB
+    34 层                                            = 68 MiB / 每条序列
+
+    ⟹ 和 11 层 DSA 的 KV cache 比，什么时候谁大？
+       11 x 1088 B x L = 68 MiB   -&gt;   L ≈ 5,958 token
+
+    ★ 上下文短于约 6K 时，【KDA 的状态反而是显存大头】；
+      长于 6K 之后，DSA 那 11 层的 cache 才超过它。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这一条对高并发短请求的场景很要命</strong>：batch = 256、每条只有 2K 上下文时，KDA 状态要吃 <code>68 MiB × 256 = 17 GiB</code>，而 DSA 的 KV cache 只有 <code>11 × 1088 × 2048 × 256 ≈ 5.9 GiB</code>。<strong>线性注意力"显存恒定"这句话，恒定的是"不随长度变"，不是"不占地方"。</strong> ⚠️ 官方博客完全没有讨论这一项，<strong>这是本文的推算</strong>。这也正好解释了 §9.4 里 SGLang 那条注记——<strong>PD 分离要同时搬运"分页的 DSA KV"和"KDA 的循环状态"</strong>，后者就是这 68 MiB/条。</p>
 <p>📌 <strong>官方的自我批评值得原样保留</strong> ✅：</p>
 <p><em>"GLM-5.3-Flash has the lowest attention compute among all models compared. The KV cache size is still slightly larger than Kimi-K3 and DeepSeek-V4-Flash, leaving further room for improvement."</em></p>
 <p><strong>注意力计算量是全场最低，但 KV cache 仍略大于 Kimi K3 和 DeepSeek-V4-Flash。</strong> 一个厂商在自己的发布博客里承认某项指标输给对手，这个坦诚度值得记一笔。</p>
@@ -1672,9 +2119,29 @@ GLM-5.3-Flash 的 EPD：Encode 池 → Prefill 池 → Decode 池
 <td>SGLang 官方 cookbook</td>
 <td>一手</td>
 </tr>
+<tr>
+<td><strong>DSA 层的 MLA 维度</strong>（<code>kv_lora_rank 512</code>、<code>q_lora_rank 1536</code>、<code>qk_nope 256</code>、<strong><code>qk_rope 0</code></strong>、<code>v_head_dim 256</code>）</td>
+<td><strong>HF <code>config.json</code></strong></td>
+<td><strong>一手，可逐字复核</strong></td>
+</tr>
+<tr>
+<td><strong>§5.2 推演一/二</strong>（322.31B 参数拆解、18.48B 激活拆解、稀疏度 17.8×、深宽比、FLOPs/token）</td>
+<td><strong>本文按 <code>config.json</code> 推算</strong></td>
+<td>⚠️ <strong>推算</strong>；与 HF 权重实测 321.32B 差 0.31%，与官方 18B 差 2.7%</td>
+</tr>
+<tr>
+<td><strong>§5.8 推演三</strong>（4.57× 的复算、7.9× 的绝对口径、KDA 状态 68 MiB/条与 ~6K 的交叉点）</td>
+<td><strong>本文按两边 <code>config.json</code> 推算</strong></td>
+<td>⚠️ <strong>推算</strong>；复算区间 3.9~4.6 覆盖官方的 4.44×。⚠️ <strong>KDA 状态显存那一段官方完全没提</strong></td>
+</tr>
+<tr>
+<td><strong>"KDA 层参数比 DSA 层还多 44%"</strong></td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算</strong>，官方未披露逐层参数量</td>
+</tr>
 </tbody>
 </table>
-<p><strong>最需要保留怀疑的六处</strong>：</p>
+<p><strong>最需要保留怀疑的八处</strong>：</p>
 <ol>
 <li>⚠️ <strong>ExploitGym 的时间预算折算，独独缺了对标模型 Mythos 5 的缩放系数</strong>，而 GLM-5.3 拿到的 115 TPS 是列出模型中最高的。这个折算对自己有利且无法复核。</li>
 <li>⚠️ <strong>Z.ai Code Bench 是私有基准</strong>。防污染的理由成立，但代价是第三方无法复现；且 GLM-5.3 与 Flash 的分数是否同版本可比，博客未标明。</li>
@@ -1682,6 +2149,8 @@ GLM-5.3-Flash 的 EPD：Encode 池 → Prefill 池 → Decode 池
 <li>⚠️ <strong>国产芯片的 3× 是相对自己的初始基线</strong>，"单 token 成本追平主流 N 卡"没有给卡型、功耗、集群规模，无法独立验证。</li>
 <li>⚠️ <strong>mHC 只有一句话</strong>，没有消融、没有收益数字。这是 Flash 架构里一手材料最薄的一项。</li>
 <li>⚠️ <strong>基座评测（"18B 激活追平 GLM-5-Base"）只有定性结论</strong>，支撑它的表是图片。而这恰恰是整个成本优势叙事的地基。</li>
+<li>⚠️ <strong>"3.01× 注意力计算量"这一项本文没能复算出来</strong>。KV cache 那个 4.44× 可以复现（§5.8 推演三），但<strong>"attention compute per head per layer"这个归一化方式官方没有定义清楚</strong>——是算主注意力还是含 indexer、是 prefill 还是 decode、上下文长度取多少，全都没说。<strong>这个数只能照抄，不能验算。</strong></li>
+<li>⚠️ <strong>KDA 的状态显存官方一字未提</strong>。它不随长度增长，但<strong>随 batch 线性增长</strong>：34 层 × 2 MiB = 68 MiB 每条序列。在短上下文高并发场景下这是一笔真实成本（§5.8 推演三末段），而所有对外的效率数字都没有把它算进去。</li>
 </ol>
 <p><strong>另外两处口径不一致，已在正文标注</strong>：</p>
 <ul>
@@ -1700,7 +2169,7 @@ GLM-5.3-Flash 的 EPD：Encode 池 → Prefill 池 → Decode 池
 <li><a href="https://github.com/zai-org/GLM-5">zai-org/GLM-5 (GitHub)</a></li>
 <li><a href="https://docs.z.ai/guides/llm/glm-5.3">Z.ai 开发者文档 — GLM-5.3</a> ｜ <a href="https://docs.z.ai/guides/llm/glm-5.3-flash">GLM-5.3-Flash</a> ｜ <a href="https://docs.z.ai/guides/overview/pricing">定价页</a></li>
 <li><a href="https://cookbook.sglang.io/autoregressive/GLM/GLM-5.3-Flash">SGLang Cookbook — GLM-5.3-Flash</a></li>
-<li>本地源码交叉验证：<a href="推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py">推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py</a></li>
+<li>本地源码交叉验证：<a href="../推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py">推理框架/源码/vLLM/vllm/models/kimi_k3/amd/kda.py</a></li>
 </ul>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

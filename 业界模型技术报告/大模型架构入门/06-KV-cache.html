@@ -253,82 +253,148 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一章的目标</strong>：这是全教程<strong>第二关键</strong>的一章。五份技术报告里那些看起来五花八门的注意力改造，<strong>动机全部来自本章的两个事实</strong>。<br />
 读完你应该能回答：KV cache 是什么、有多大？为什么"生成第 10001 个字"比"读完 10000 个字"更贵？<strong>为什么省 KV cache 几乎等于直接提速</strong>？</p>
+<p>📌 <strong>本章的定位</strong>：这里讲的是<strong>模型架构侧</strong>的账——为什么结构非得这么设计。同一笔账在推理服务侧还有一份更细的版本（vLLM 怎么分块、一张卡的显存怎么逐行扣、Paged KV 怎么管），在 <a href="../../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架 02 章</a>；算子实现侧（FlashAttention 的在线 softmax、三代 kernel 改了什么）在 <a href="../../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 04 章</a>。<strong>本章不重复那两份，需要深入时直接跳过去。</strong></p>
 </blockquote>
 <hr />
 <h2 id="61">6.1 先看一个反直觉的事实</h2>
 <div class="codehilite"><pre><span></span><code>    你给模型一个 10 万字的文档，让它总结。
 
     阶段 A：模型&quot;读完&quot;这 10 万字        ← 大概 3 秒
-    阶段 B：模型吐出 500 字的总结        ← 大概 5 秒
+    阶段 B：模型吐出 500 字的总结       ← 大概 5 秒
 
-    读 10 万字用了 3 秒，写 500 字用了 5 秒。
-    ★ 写字比读字慢了【400 倍】（按每字算）
+    读 10 万字用了 3 秒 → 每个字 0.03 毫秒
+    写   500 字用了 5 秒 → 每个字 10   毫秒
+    ★ 按每个字算，写字比读字慢了【约 330 倍】
 </code></pre></div>
 
 <p><strong>这不是模型"思考"得慢。这是两个阶段的硬件瓶颈完全不同。</strong></p>
-<div class="codehilite"><pre><span></span><code>┌─── Prefill（预填充）：处理你的输入 ────────────────────┐
-│  一次前向，【并行】处理全部 L 个 token                   │
-│  每个权重矩阵读进来一次，要给 L 个 token 用              │
-│  → 计算多、访存少  → 【算力受限 compute-bound】          │
-└────────────────────────────────────────────────────────┘
-
-┌─── Decode（解码）：一个一个吐字 ──────────────────────┐
-│  每次前向只处理【1 个】token                            │
-│  每个权重矩阵还是要完整读进来一次，但只给 1 个 token 用   │
-│  → 计算少、访存多  → 【访存受限 memory-bound】           │
-└────────────────────────────────────────────────────────┘
-</code></pre></div>
-
-<h3 id="_1">★ 先把四个缩写认清楚（后面各章会反复出现）</h3>
-<p><strong>这两个阶段各自对应一个延迟指标，业界几乎只用缩写称呼它们。本教程从这里开始也会用，所以先在这里讲清楚：</strong></p>
-<div class="codehilite"><pre><span></span><code>┌─ TTFT ─ Time To First Token ─「首字延迟」──────────────────┐
-│                                                            │
-│  你按下回车  →  屏幕上蹦出【第一个字】，中间等了多久        │
-│                                                            │
-│  由 Prefill 决定 → 算力受限 → 只有【减少 FLOPs】才有用      │
-│  单位：秒（s）。上面例子里那「3 秒」就是 TTFT               │
-└────────────────────────────────────────────────────────────┘
-
-┌─ TPOT ─ Time Per Output Token ─「每字延迟」────────────────┐
-│                                                            │
-│  第一个字出来【之后】，每多蹦一个字要等多久                 │
-│  （有些论文写作 ITL = Inter-Token Latency，是同一个东西）   │
-│                                                            │
-│  由 Decode 决定 → 访存受限 → 只有【减少字节数】才有用       │
-│  单位：毫秒（ms）                                           │
-│  ★ 它就是你肉眼看到的「打字速度」：                         │
-│    TPOT = 10 ms  →  每秒 100 个字，比人读得快，体感流畅      │
-│    TPOT = 100 ms →  每秒 10 个字，明显一顿一顿              │
-└────────────────────────────────────────────────────────────┘
-
-  一次完整对话的耗时  ≈  TTFT  +  TPOT × 输出字数
-                         └首字┘   └──── 后续每个字 ────┘
-</code></pre></div>
-
-<p><strong>还有两个描述"量"而不是"延迟"的缩写：</strong></p>
-<div class="codehilite"><pre><span></span><code>TPS   Tokens Per Second「吞吐量」—— 一块卡每秒总共吐出多少字
-      ★★ 和 TPOT 不是一回事，这是最容易混的一对：
-         TPOT 问的是「我这一个用户要等多久」        ← 延迟，越小越好
-         TPS  问的是「这块卡一共干了多少活」        ← 产能，越大越好
-      两者靠 batch（同时服务几个用户）联系起来：
-         TPS ≈ batch ÷ TPOT
-      ⚠️ 而且它们【互相打架】：batch 开大 → TPS 涨，但每个用户的 TPOT 也变长
-         （openPangu 的实测就是这样：TPOT 9.53 ms 那一档和
-           1727 TPS 那一档【不是同一个配置】，见 §6.7）
-
-ISL   Input Sequence Length  —— 输入有多少 token（报告表格里常见）
-OSL   Output Sequence Length —— 输出有多少 token
-      「8K+1K」就是 ISL=8192、OSL=1024 的意思
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Prefill（预填充）</strong></th>
+<th><strong>Decode（解码）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>在干什么</td>
+<td>处理你输入的提示词</td>
+<td>一个一个往外吐字</td>
+</tr>
+<tr>
+<td>一次前向处理几个 token</td>
+<td><strong>并行处理全部 L 个</strong></td>
+<td>★ <strong>只有 1 个</strong></td>
+</tr>
+<tr>
+<td>权重矩阵读几遍</td>
+<td>每个读 1 遍，摊给 L 个 token</td>
+<td>每个还是读 1 遍，<strong>只摊给 1 个 token</strong></td>
+</tr>
+<tr>
+<td>计算 : 访存</td>
+<td>计算多、访存少</td>
+<td>计算少、访存多</td>
+</tr>
+<tr>
+<td><strong>瓶颈</strong></td>
+<td><strong>算力受限（compute-bound）</strong></td>
+<td><strong>访存受限（memory-bound）</strong></td>
+</tr>
+<tr>
+<td>对应的延迟指标</td>
+<td>TTFT（首字延迟）</td>
+<td>TPOT（每字延迟）</td>
+</tr>
+<tr>
+<td>唯一有效的优化方向</td>
+<td><strong>减少 FLOPs</strong></td>
+<td><strong>减少搬运的字节数</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>FLOPs</strong>（<strong>FL</strong>oating-point <strong>OP</strong>eration<strong>s</strong>，浮点运算次数）—— 一次乘法或一次加法各算 1 次。注意它和 <strong>FLOPS</strong>（每秒浮点运算次数，带 /s 的那个）只差一个大小写，前者是"活有多少"，后者是"干活的速度"。本教程一律写成 <code>FLOPs</code>（活）和 <code>FLOP/s</code> 或 <code>TFLOPS</code>（速度）。</p>
+</blockquote>
+<h3 id="_1">★ 先把五个缩写认清楚（后面各章会反复出现）</h3>
+<p><strong>五份技术报告在"推理性能"一节几乎只报这几个数。看不懂缩写，那一整节就等于没读。</strong></p>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>全称</th>
+<th>中文</th>
+<th>单位</th>
+<th>由哪个阶段决定</th>
+<th>怎么才能改善</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TTFT</strong></td>
+<td><strong>T</strong>ime <strong>T</strong>o <strong>F</strong>irst <strong>T</strong>oken</td>
+<td><strong>首字延迟</strong></td>
+<td>秒（s）</td>
+<td>Prefill</td>
+<td>减少 FLOPs</td>
+</tr>
+<tr>
+<td><strong>TPOT</strong></td>
+<td><strong>T</strong>ime <strong>P</strong>er <strong>O</strong>utput <strong>T</strong>oken</td>
+<td><strong>每字延迟</strong></td>
+<td>毫秒（ms）</td>
+<td>Decode</td>
+<td>减少字节数</td>
+</tr>
+<tr>
+<td><strong>TPS</strong></td>
+<td><strong>T</strong>okens <strong>P</strong>er <strong>S</strong>econd</td>
+<td><strong>吞吐量</strong></td>
+<td>token/s</td>
+<td>两个阶段合起来</td>
+<td>省显存 → 开大 batch</td>
+</tr>
+<tr>
+<td><strong>ISL</strong></td>
+<td><strong>I</strong>nput <strong>S</strong>equence <strong>L</strong>ength</td>
+<td>输入长度</td>
+<td>token</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>OSL</strong></td>
+<td><strong>O</strong>utput <strong>S</strong>equence <strong>L</strong>ength</td>
+<td>输出长度</td>
+<td>token</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>TTFT 是"你按下回车，到屏幕上蹦出第一个字"等的时间</strong>。上面例子里那 3 秒就是它。有些论文把 TPOT 写作 <strong>ITL</strong>（<strong>I</strong>nter-<strong>T</strong>oken <strong>L</strong>atency，字间延迟），是同一个东西的另一个名字。报告表格里的"8K+1K"就是 <code>ISL=8192、OSL=1024</code> 的意思。</p>
+<p><strong>TPOT 就是你肉眼看到的「打字速度」</strong>：<code>TPOT = 10 ms</code> → 每秒 100 个字，比人读得快，体感是流畅地淌出来；<code>TPOT = 100 ms</code> → 每秒 10 个字，明显一顿一顿。</p>
+<div class="codehilite"><pre><span></span><code>    一次完整对话的耗时  ≈  TTFT（等第一个字）  +  TPOT × 输出字数（后面每个字）
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>为什么要专门强调这四个词</strong>：五份技术报告在"推理性能"一节几乎只报这几个数。<strong>看不懂缩写，那一整节就等于没读。</strong></p>
+<p>⚠️ <strong>TPOT 和 TPS 是最容易混的一对</strong>，务必分开：<br />
+```<br />
+    TPOT 问的是「我这一个用户要等多久」   ← 延迟指标，越小越好<br />
+    TPS  问的是「这块卡一共干了多少活」   ← 产能指标，越大越好</p>
+<div class="codehilite"><pre><span></span><code>两者靠 batch（同时服务几个用户）联系起来：   TPS ≈ batch / TPOT
+</code></pre></div>
+
+<p>```<br />
+<strong>而且它们互相打架</strong>：batch 开大 → TPS 涨，但每个用户排队等的时间变长，TPOT 也跟着变长。<br />
+所以看到一家报"TPOT 9.53 ms"又报"1727 TPS"，第一件事是去确认这两个数是不是同一个配置测出来的——openPangu 那两个数就<strong>不是</strong>，见 §6.7。</p>
 </blockquote>
 <hr />
 <blockquote>
 <p>🔑 <strong>一句必须记住的话</strong>：<br />
 <strong>Decode 阶段，GPU 的算力几乎是闲置的。它 99% 的时间在等数据从显存搬到计算单元。</strong></p>
-<p>这句话是理解这一代所有推理优化的钥匙。</p>
+<p>这句话是理解这一代所有推理优化的钥匙。§6.4 会把这个 99% 算出来。</p>
 </blockquote>
 <hr />
 <h2 id="62-cache">6.2 为什么需要 cache</h2>
@@ -336,164 +402,536 @@ OSL   Output Sequence Length —— 输出有多少 token
 <div class="codehilite"><pre><span></span><code>生成第 1 个：Q1 · [K1]                       V: [V1]
 生成第 2 个：Q2 · [K1, K2]                   V: [V1, V2]
 生成第 3 个：Q3 · [K1, K2, K3]               V: [V1, V2, V3]
-                    ↑↑↑↑↑↑
+                    ^^^^^^^^
               这些每次都完全一样！
 </code></pre></div>
 
-<p><strong>K1 是从 token 1 算出来的，token 1 不会变，所以 K1 永远不变。</strong></p>
-<div class="codehilite"><pre><span></span><code>❌ 不 cache：每生成一个 token，重算前面所有 K、V     → O(L²) 重复计算
-✅ cache：  算过就存下来，只算新 token 的 K、V       → O(L) 
+<p><strong>K1 是从 token 1 算出来的，token 1 不会变，所以 K1 永远不变。</strong> 于是只有两种做法：</p>
+<div class="codehilite"><pre><span></span><code>❌ 不 cache：每生成一个 token，把前面所有 K、V 全部重算一遍
+✅ 会 cache：算过就存下来，每步只算【新来这一个 token】的 K、V
 </code></pre></div>
 
-<p><strong>所以 KV cache 是必须的。问题是它太大了。</strong></p>
 <blockquote>
-<p>⚠️ <strong>为什么不 cache Q</strong>：因为 $Q_t$ 只在生成第 $t$ 个 token 时用一次，用完就没用了。<strong>K 和 V 要被后面所有 token 反复用，Q 不会。</strong></p>
+<p>⚠️ <strong>为什么不 cache Q</strong>：因为 $Q_t$ 只在生成第 $t$ 个 token 时用一次，用完就没用了。<strong>K 和 V 要被后面所有 token 反复用，Q 不会。</strong> 这个不对称是 KV cache 这个名字里只有 K 和 V 的全部原因。</p>
 </blockquote>
+<h3 id="cache">★ 把这笔交易算出来：cache 到底换掉了什么</h3>
+<p><strong>这一节是本章的第一个推演。</strong> 很多材料只说"不 cache 是 $O(L^2)$，cache 是 $O(L)$"就结束了，但<strong>大 O 记号会把最重要的东西藏起来</strong>：cache 并不是凭空变快的，它是<strong>用访存换算力</strong>——省下的是计算，多付的是显存和搬运。把两边的绝对值都算出来，才能看懂 §6.4 为什么说"省 KV cache 等于提速"。</p>
+<p><strong>设定一个具体场景</strong>（用 openPangu-2.0-Pro 的规模：$N=50$ 层、$d=5120$，MHA，BF16）：</p>
+<div class="codehilite"><pre><span></span><code>    prompt 有 1000 个 token，要生成 1000 个字。
+    ★ 只算「K、V 两个投影」这一项，不含 FFN、不含注意力本身——
+      这样两边的差别才是干净的，看的就是&quot;重算 vs 存下来&quot;这一件事。
+</code></pre></div>
+
+<p><strong>先算单价</strong>。一个 token、一层的 K 投影是 <code>[1,d] × [d,d]</code>，乘加各一次记 2 FLOPs：</p>
+<table>
+<thead>
+<tr>
+<th>算什么</th>
+<th>式子（乘加各记 1 FLOP）</th>
+<th>FLOPs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一层的 K 投影</td>
+<td><code>2 × d × d = 2 × 5120 × 5120</code></td>
+<td>52.4 M</td>
+</tr>
+<tr>
+<td>一层的 K + V</td>
+<td>再 <code>× 2</code></td>
+<td>104.9 M</td>
+</tr>
+<tr>
+<td><strong>全模型 50 层</strong></td>
+<td>再 <code>× 50</code></td>
+<td>★ <strong>5.24 G</strong> —— 每个 token 的 K/V 投影单价</td>
+</tr>
+</tbody>
+</table>
+<p><strong>再数要算几个 token</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>生成到第几个字</th>
+<th>❌ 不 cache：本步要算 K/V 的 token 数</th>
+<th>✅ 有 cache：本步要算的 token 数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>第 1 个</td>
+<td>1001</td>
+<td>1</td>
+</tr>
+<tr>
+<td>第 2 个</td>
+<td>1002</td>
+<td>1</td>
+</tr>
+<tr>
+<td>第 500 个</td>
+<td>1500</td>
+<td>1</td>
+</tr>
+<tr>
+<td>第 1000 个</td>
+<td>2000</td>
+<td>1</td>
+</tr>
+<tr>
+<td><strong>1000 步累计</strong></td>
+<td><strong>1,500,500</strong></td>
+<td><strong>1,000</strong></td>
+</tr>
+</tbody>
+</table>
+<p>（累计公式：不 cache 是 $\sum_{t=1}^{1000}(1000+t) = 1000\times1000 + \frac{1000\times1001}{2} = 1{,}500{,}500$；有 cache 就是 1000。）</p>
+<p><strong>★ 把两边的 FLOPs 和字节数并排列出来</strong>（⚠️ 我的推演，用于建立量级感，不是任何一家的官方数字）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>❌ 不 cache</th>
+<th>✅ 有 cache</th>
+<th>倍数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>K/V 投影总 FLOPs</td>
+<td>5.24 G × 1,500,500 = <strong>7.87 PFLOPs</strong></td>
+<td>5.24 G × 1000 = <strong>5.24 TFLOPs</strong></td>
+<td>★ <strong>1500×</strong></td>
+</tr>
+<tr>
+<td>跑完这些计算的理想耗时（H100 BF16 满算力 989 TFLOP/s）</td>
+<td><strong>约 8.0 秒</strong></td>
+<td>约 5.3 毫秒</td>
+<td>1500×</td>
+</tr>
+<tr>
+<td>额外要从显存读回的 KV 字节</td>
+<td><strong>0</strong>（重算，不读）</td>
+<td>每步读整份 cache，累计 <strong>约 1.54 TB</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>搬这些字节的理想耗时（H100 HBM3 3.35 TB/s）</td>
+<td>0</td>
+<td><strong>约 0.46 秒</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>峰值显存占用（KV）</td>
+<td><strong>0</strong></td>
+<td>2000 token × 1 MB ≈ <strong>2.0 GB</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>★ 两项相加的下界</strong></td>
+<td><strong>约 8.0 秒</strong></td>
+<td><strong>约 0.46 秒</strong></td>
+<td>★ <strong>约 17×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>三个结论，逐条看</strong>：<br />
+```<br />
+① FLOPs 差了 1500 倍，墙钟时间只差 17 倍 —— 差距被"吃掉"了<br />
+   因为重算那条路是【算力受限】的（算得多但不搬数据），<br />
+   而 cache 那条路是【访存受限】的（几乎不算，全在搬 1.54 TB）。<br />
+   ★ 这两条路撞在硬件的两面墙上，这就是 §6.4 屋顶线的雏形。</p>
+<p>② cache 换掉的不是"计算"，是把计算【换成了搬运】<br />
+   5.24 GFLOPs/token 的重算  →  1 MB/token 的读回<br />
+   这笔交易在任何长度上都划算（17×），所以 KV cache 不是优化，是前提。</p>
+<p>③ ★ 但注意那 1.54 TB 是【随长度平方增长】的：<br />
+   第 t 步要读 t 个 token 的 cache，累计就是 ΣL ∝ L²。<br />
+   ⟹ cache 把"平方的计算"换成了"平方的搬运"。<br />
+   ⟹ 长上下文下，搬运这一项会重新变成瓶颈 —— 这就是 07、08 两章要解决的事。<br />
+```</p>
+<p>⚠️ <strong>上表的口径说明</strong>：① 两边都还要读权重矩阵（$2d^2$ 个数，两条路一样多），我把它约掉了，只看差异项；② "理想耗时"假设满算力、满带宽，真实效率远低于此（FlashAttention-2 在 H100 上只跑到峰值的 <strong>35% 左右</strong>，见 <a href="../../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 §4.4.6</a>），所以这两个数只能互相比，不能当成实测值；③ 这里只数了 K/V 投影，<strong>整个前向</strong>的重算代价还要大得多——那份"每步要前向几个 token"的完整账（同样的场景差 509 倍）在 <a href="../../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架 §2.1</a>。</p>
+</blockquote>
+<p><strong>所以 KV cache 是必须的，没有任何生产框架提供"关掉它"的选项。问题只在于它太大了。</strong></p>
 <hr />
 <h2 id="63-kv-cache">6.3 KV cache 到底有多大：算一笔账</h2>
-<p>$$\text{KV cache 大小} = 2 \times N \times H_{kv} \times d_h \times L \times B \times \text{bytes}$$</p>
+<p>$$\text{KV cache 字节数} = 2 \times N \times H_{kv} \times d_h \times L \times B \times \text{bytes}$$</p>
 <table>
 <thead>
 <tr>
 <th>符号</th>
 <th>含义</th>
+<th>常见取值</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>2</td>
-<td>K 和 V 各一份</td>
+<td>K 和 V 各存一份</td>
+<td>固定</td>
 </tr>
 <tr>
 <td>$N$</td>
-<td>层数（每层都有自己的 KV）</td>
+<td>层数（每层都有自己独立的 KV）</td>
+<td>32 ~ 93</td>
 </tr>
 <tr>
 <td>$H_{kv}$</td>
-<td>KV 头数</td>
+<td>★ <strong>KV 头数</strong>（不是 Q 头数！）</td>
+<td>MHA 等于 Q 头数；GQA 少几倍；MQA = 1</td>
 </tr>
 <tr>
 <td>$d_h$</td>
-<td>每个头的维度</td>
+<td>每个头的维度（head_dim）</td>
+<td>通常 64 / 80 / 128</td>
 </tr>
 <tr>
 <td>$L$</td>
 <td>当前序列长度</td>
+<td>8K ~ 1M</td>
 </tr>
 <tr>
 <td>$B$</td>
 <td>batch size（同时服务几个用户）</td>
+<td>1 ~ 几百</td>
+</tr>
+<tr>
+<td>bytes</td>
+<td>每个数占几字节</td>
+<td>BF16 = 2，FP8 = 1，INT4 = 0.5</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>⚠️⚠️ <strong>本教程最高频的一个算错点，先说在这里。</strong> 很多文章会把公式简写成 <strong>「每 token 每层 = $4\times d_{\text{model}}$ 字节」</strong>（BF16 下）。这个简写<strong>只对 MHA 成立</strong>——因为只有 MHA 才有 $H_{kv}\times d_h = d_{\text{model}}$。拿它去套 GQA / MQA / MLA 模型，会高估很多倍：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>真实配置</th>
+<th>✅ 正确算法</th>
+<th>❌ 用 $4d_{\text{model}}$ 硬套</th>
+<th>高估</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Llama-3-70B</strong>（GQA）</td>
+<td>80 层，64 Q 头 / <strong>8 KV 头</strong>，$d_h$=128，$d_{\text{model}}$=8192</td>
+<td>$2\times8\times128\times2\times80$ = <strong>320 KiB / token</strong></td>
+<td>$4\times8192\times80$ = 2560 KiB</td>
+<td>★ <strong>8 倍</strong></td>
+</tr>
+<tr>
+<td>同规模改成 <strong>MQA</strong></td>
+<td><strong>1 KV 头</strong></td>
+<td>$2\times1\times128\times2\times80$ = <strong>40 KiB / token</strong></td>
+<td>同上 2560 KiB</td>
+<td>★ <strong>64 倍</strong></td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V3</strong>（MLA）</td>
+<td>61 层，latent 512 + 解耦 RoPE 64，$d_{\text{model}}$=7168</td>
+<td>$(512{+}64)\times2\times61$ = <strong>68.6 KiB / token</strong></td>
+<td>$4\times7168\times61$ = 1708 KiB</td>
+<td>★ <strong>25 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>判断法则：公式里那个头数必须是 <code>n_kv_heads</code>，不是 <code>n_heads</code>。</strong> 看到任何 KV cache 估算，第一件事是去模型的 <code>config.json</code> 里确认 <code>num_key_value_heads</code>。这条口径与 <a href="../../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架 §2.2</a> 一致，那边还逐行演示了 Llama-3-8B 的七步累乘。</p>
+<p>⚠️ <strong>单位口径，全章统一</strong>：算<strong>容量</strong>一律用 <strong>GiB / KiB</strong>（$1\ \text{GiB}=2^{30}$ 字节），因为显存的一切数字都是 2 的幂；算<strong>带宽</strong>才用十进制 GB/TB（3.35 TB/s 是十进制）。两套差 7%，<strong>混着用是这个主题最常见的错账来源</strong>。厂商报告里的权重占用（1009 GB、517 GB）是<strong>十进制 GB</strong>，本章引用时会标出来。</p>
+</blockquote>
 <h3 id="_2">代入真实数字</h3>
-<p><strong>用一个 openPangu 规模的假想 MHA 模型</strong>（$N=50$，$d=5120$，即 $H\cdot d_h = 5120$），BF16（2 字节）：</p>
-<div class="codehilite"><pre><span></span><code>每个 token 每层：  2 × 5120 × 2 字节 = 20,480 字节 = 20 KB
-每个 token 全模型：20 KB × 50 层 = 1,024,000 字节 ≈ 1 MB   ★
-
-    L = 8K：      8 GB
-    L = 128K：  128 GB      ← 已经超过单卡显存
-    L = 512K：  512 GB      ← 需要 7 张 80GB 卡【只放 cache】
-    L = 1M：   1024 GB
+<p><strong>用一个 openPangu-2.0-Pro 规模的假想 MHA 模型</strong>（✅ 报告披露：$N=50$ 层、$d_{\text{model}}=5120$、64 个注意力头，所以 $d_h = 5120/64 = 80$；这里<strong>假设它是 MHA</strong>，即 $H_{kv}=64$），BF16：</p>
+<div class="codehilite"><pre><span></span><code>每 token、每层    ：2 × 64 × 80 × 2 字节 = 20,480 字节 = 20 KiB
+每 token、全部 50 层：20 KiB × 50 = 1,024,000 字节 = 1000 KiB      ★ 记住这个数
 </code></pre></div>
 
+<p><strong>1000 KiB 换成别的单位</strong>：$= 1.024$ MB（十进制）$\approx 0.98$ MiB。后文一律简称「<strong>约 1 MB / token</strong>」。</p>
+<p><strong>★ 随序列长度怎么涨</strong>（batch = 1，一张 H100 的可用显存是 79.6 GiB）：</p>
+<table>
+<thead>
+<tr>
+<th>序列长度 $L$</th>
+<th>KV cache</th>
+<th>占一张 H100</th>
+<th>只装 cache 要几张卡</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8K（8192）</td>
+<td>7.81 GiB</td>
+<td>9.8%</td>
+<td>不到 1 张</td>
+</tr>
+<tr>
+<td>32K</td>
+<td>31.25 GiB</td>
+<td>39%</td>
+<td>不到 1 张</td>
+</tr>
+<tr>
+<td><strong>128K</strong></td>
+<td><strong>125 GiB</strong></td>
+<td>★ <strong>157%</strong></td>
+<td><strong>2 张</strong></td>
+</tr>
+<tr>
+<td><strong>512K</strong></td>
+<td><strong>500 GiB</strong></td>
+<td>628%</td>
+<td><strong>7 张</strong></td>
+</tr>
+<tr>
+<td><strong>1M</strong></td>
+<td><strong>1000 GiB</strong></td>
+<td>1256%</td>
+<td><strong>13 张</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>记住这个量级：一个 500B 级模型，MHA 下大约 1 MB / token。</strong></p>
-<p>而这还只是 <strong>batch=1</strong>。真实服务要同时服务几十上百个用户：<br />
-<code>B = 32，L = 128K：128 GB × 32 = 4 TB    ← 完全不可能</code></p>
+<p>🔑 <strong>记住这个量级：一个 500B 级模型，MHA 下大约 1 MB / token。</strong> 于是 128K 上下文的 KV cache 就已经<strong>装不进一张卡</strong>了。</p>
+<p>而这还只是 <strong>batch = 1</strong>。真实服务要同时服务几十上百个用户，而 KV cache 是<strong>随用户数线性增长</strong>的：<br />
+<code>B = 32，L = 128K：125 GiB × 32 = 4000 GiB ≈ 3.9 TiB    ← 完全不可能</code></p>
 </blockquote>
 <h3 id="_3">对比：模型权重本身多大</h3>
-<div class="codehilite"><pre><span></span><code>openPangu-2.0-Pro：505B 参数
-    BF16：  505B × 2 字节 = 1010 GB     ← 报告实测 1009 GB ✅
-    W8A8：  505B × 1 字节 ≈ 505 GB      ← 报告实测 517 GB ✅（1.95× 压缩）
-</code></pre></div>
-
-<div class="codehilite"><pre><span></span><code>    权重（固定）    ████████████████████  1009 GB
-    KV cache 128K   ██                     128 GB   ← MHA 假想值
-    KV cache 512K   ██████████             512 GB   ← 和权重同一量级了！
-</code></pre></div>
-
+<p><strong>openPangu-2.0-Pro 是 505B 总参数</strong>，权重占用按参数量直接乘就行：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>算式</th>
+<th>结果</th>
+<th>报告实测</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>BF16 权重</strong></td>
+<td>$505\times10^9\times2$ 字节</td>
+<td>1010 GB（十进制）</td>
+<td>✅ <strong>1009 GB</strong></td>
+</tr>
+<tr>
+<td><strong>W8A8 权重</strong></td>
+<td>$505\times10^9\times1$ 字节</td>
+<td>约 505 GB</td>
+<td>✅ <strong>517 GB</strong>（压缩 1.95×）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>把权重和 cache 画在同一把尺子上</strong>（⚠️ 为了可比，全部换算成 GiB；KV 那两行是上面那个假想 MHA 的推演值）：</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>大小（GiB）</th>
+<th>相对长度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型权重 BF16（✅ 报告 1009 GB）</td>
+<td>940 GiB</td>
+<td><code>####################</code></td>
+</tr>
+<tr>
+<td>模型权重 W8A8（✅ 报告 517 GB）</td>
+<td>482 GiB</td>
+<td><code>##########</code></td>
+</tr>
+<tr>
+<td>KV cache @ 128K（⚠️ 假想 MHA）</td>
+<td>125 GiB</td>
+<td><code>###</code></td>
+</tr>
+<tr>
+<td>KV cache @ 512K（⚠️ 假想 MHA）</td>
+<td>500 GiB</td>
+<td><code>###########</code></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>这就是问题的全貌</strong>：短上下文时 KV cache 可以忽略，<strong>长上下文时它会追上甚至超过模型权重本身</strong>。而它还<strong>随用户数线性增长</strong>。</p>
-<p>✅ <strong>对照真实数据</strong>：DeepSeek-V4 报告称在 <strong>1M 上下文下，KV cache 只占约 2%</strong>。这不是 MHA 能做到的——是 <a href="07-MHA到MLA.html">07 章</a> 的压缩技术做到的。</p>
+<p>🔑 <strong>这就是问题的全貌</strong>：短上下文时 KV cache 可以忽略，<strong>长上下文时它会追上甚至超过模型权重本身</strong>。而权重是<strong>固定的一份</strong>，KV cache 却<strong>随用户数线性增长</strong>。</p>
+<p>✅ <strong>对照真实数据</strong>：DeepSeek-V4 报告称在 <strong>1M 上下文下，KV cache 只占约 2%</strong>。这不是 MHA 能做到的——是 <a href="07-MHA到MLA.html">07 章</a> 的低秩压缩加上 <a href="08-高效注意力.html">08 章</a> 的稀疏化一起做到的。</p>
 </blockquote>
 <hr />
 <h2 id="64-roofline">6.4 Roofline：为什么"省显存"就等于"提速"</h2>
 <p>这一节是本章的技术核心。<strong>它解释了为什么所有厂商都在省 KV cache，而不是省计算。</strong></p>
 <h3 id="arithmetic-intensity">算术强度（arithmetic intensity）</h3>
-<p>对任何一段计算，定义：</p>
+<blockquote>
+<p>📌 <strong>算术强度</strong>（arithmetic intensity，也叫计算访存比）—— 一段计算里「做了多少次浮点运算」除以「从显存搬了多少字节」，单位 FLOP/byte。它衡量的是<strong>这段计算有多"值得"搬数据</strong>。</p>
+</blockquote>
 <p>$$I = \frac{\text{做了多少次浮点运算 (FLOPs)}}{\text{从显存搬了多少字节 (bytes)}}$$</p>
-<p><strong>硬件有一个"脊点"（ridge point）</strong>：</p>
+<p><strong>硬件有一个"屋脊点"（ridge point，也译脊点）</strong>，它只由硬件决定，和跑什么模型无关：</p>
 <p>$$I_{\text{ridge}} = \frac{\text{峰值算力 (FLOP/s)}}{\text{显存带宽 (byte/s)}}$$</p>
-<p>以 <strong>H100 SXM</strong>（BF16 稠密约 989 TFLOPS，HBM3 带宽约 3.35 TB/s）为例：</p>
-<p>$$I_{\text{ridge}} \approx \frac{989\times10^{12}}{3.35\times10^{12}} \approx \mathbf{295\ \text{FLOP/byte}}$$</p>
-<div class="codehilite"><pre><span></span><code>      性能
-        ▲
- 峰值算力├──────────────────────  ← 算力受限区（compute-bound）
-        │                ╱
-        │              ╱  斜率 = 显存带宽
-        │            ╱
-        │          ╱  ← 访存受限区（memory-bound）
-        │        ╱     性能完全由带宽决定，算力再强也没用
-        └──────╱────────────────────────→ 算术强度 I
-                     ↑
-                I_ridge ≈ 295 FLOP/byte
+<p>以 <strong>H100 SXM5</strong> 为例：</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BF16 <strong>稠密</strong>峰值算力</td>
+<td><strong>989 TFLOP/s</strong></td>
+</tr>
+<tr>
+<td>HBM3 容量 / 带宽</td>
+<td>80 GB（实际可用 79.6 GiB）/ <strong>3.35 TB/s</strong></td>
+</tr>
+<tr>
+<td><strong>屋脊点</strong></td>
+<td>$989 / 3.35 \approx$ ★ <strong>295 FLOP/byte</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>一个到处流传的错数</strong>：H100 的 BF16 峰值<strong>不是 1979 TFLOPS</strong>。1979 是 <strong>2:4 结构化稀疏</strong>下的值（要求权重里每 4 个数有 2 个是 0），<strong>稠密只有 989</strong>。用 1979 去算屋脊点会得到 591，把后面所有的判断全部带偏一倍。看到任何算力数字，先问：稠密还是稀疏？</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>       性能 (FLOP/s)
+        ^
+  989 --|--------+------------------------------   &lt;- 算力受限区（compute-bound）
+        |       /|                                     性能已贴在天花板上
+        |      / |                                     再加带宽也没用
+        |     /  |
+        |    /   |     斜率 = 显存带宽（3.35 TB/s）
+        |   /    |
+        |  /     |
+        | /      |     &lt;- 访存受限区（memory-bound）
+      0 +--------+------------------------------&gt;  算术强度 I（FLOP/byte）
+                 |
+            I_ridge = 989 / 3.35 ≈ 295 FLOP/byte
 </code></pre></div>
 
 <blockquote>
-<p><strong>要跑满 H100 的算力，每从显存读 1 个字节，必须做 295 次浮点运算。</strong> 达不到，就是在浪费算力。</p>
+<p><strong>要跑满 H100 的算力，每从显存读 1 个字节，必须做 295 次浮点运算。</strong> 达不到，性能就被那条斜线按住了——这时算力再强也没用，<strong>你买的是带宽，不是 TFLOPS</strong>。</p>
+<p>📌 屋顶线模型的完整用法（怎么测算术强度、它有哪三个盲区、昇腾上屋脊点是多少）在 <a href="../../大模型算子开发/02-屋顶线与性能剖析.html">大模型算子开发 02 章</a>。</p>
 </blockquote>
 <h3 id="decode">Decode 的算术强度是多少</h3>
-<p>对一个权重矩阵 $W\in\mathbb{R}^{m\times n}$，BF16 存储：</p>
-<div class="codehilite"><pre><span></span><code>搬运：m × n × 2 字节
-计算：每个 batch 元素做 2mn FLOPs（乘 + 加），共 B 个
-
-    I = (2mn × B) / (2mn) = B
-</code></pre></div>
-
+<p>对一个权重矩阵 $W\in\mathbb{R}^{m\times n}$，BF16 存储，batch 里有 $B$ 个 token 要过它：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>量</th>
+<th>和 batch $B$ 的关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>搬运</strong></td>
+<td>$m\times n\times 2$ 字节</td>
+<td>❌ <strong>无关</strong>——矩阵只搬一次，来几个 token 都一样</td>
+</tr>
+<tr>
+<td><strong>计算</strong></td>
+<td>每个 token 做 $2mn$ FLOPs，共 $B$ 个</td>
+<td>✅ <strong>正比</strong></td>
+</tr>
+</tbody>
+</table>
+<p>$$I = \frac{2mn\times B}{2mn} = B$$</p>
 <p>$$\boxed{I_{\text{decode}} \approx B\ \text{（batch size）}}$$</p>
-<div class="codehilite"><pre><span></span><code>B = 1：    I = 1        vs   I_ridge = 295
-                             → 算力利用率 【1/295 ≈ 0.3%】
-B = 32：   I = 32       →  利用率 ~11%
-B = 295：  I = 295      →  刚好跑满
-
-★ 但 B=295 意味着 KV cache 要 ×295 —— 显存根本放不下
+<p><strong>这个结论简单到有点可疑，但它就是对的</strong>：权重只搬一次，来几个 token 就摊薄几倍。</p>
+<table>
+<thead>
+<tr>
+<th>batch $B$</th>
+<th>算术强度 $I$</th>
+<th>对比 $I_{\text{ridge}}=295$</th>
+<th>算力利用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td>1</td>
+<td>差 295 倍</td>
+<td>★ <strong>约 0.3%</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>8</td>
+<td>差 37 倍</td>
+<td>约 2.7%</td>
+</tr>
+<tr>
+<td>32</td>
+<td>32</td>
+<td>差 9 倍</td>
+<td>约 11%</td>
+</tr>
+<tr>
+<td>128</td>
+<td>128</td>
+<td>差 2.3 倍</td>
+<td>约 43%</td>
+</tr>
+<tr>
+<td><strong>295</strong></td>
+<td>295</td>
+<td>★ 刚好相等</td>
+<td><strong>100%（跑满）</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 但 B = 295 意味着 KV cache 也要 ×295。
+  回到 §6.3 那张表：L = 8K 时单用户 7.81 GiB，×295 = 2304 GiB。
+  ⟹ 显存根本放不下，batch 被【KV cache 的体积】卡死了。
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>这就是完整的因果链，请仔细看</strong>：</p>
-<p><code>① decode 每次只处理 1 个 token → 算术强度 ≈ batch size
+<p><code>① decode 每次只处理 1 个 token   →  算术强度 ≈ batch size
 ② 要跑满算力，需要 batch ≈ 295
 ③ 但 batch 越大，KV cache 越大（线性）
-④ 显存被 KV cache 占满 → batch 开不大 → 算力浪费 99%
-             ↓
+④ 显存被 KV cache 占满  →  batch 开不大  →  算力浪费 99%
+             |
+             v
 ⑤ ★★ 省下 KV cache = 能开更大 batch = 直接换成吞吐量 ★★</code></p>
 <p><strong>"省显存"和"提速"在 decode 阶段是【同一件事】。这就是五家全都在死磕 KV cache 的原因。</strong></p>
 </blockquote>
 <h3 id="decode_1">换个角度：单次 decode 的时间下界</h3>
-<p>即使 batch=1，每生成一个 token 也<strong>必须至少把所有激活的权重读一遍</strong>：</p>
-<div class="codehilite"><pre><span></span><code>openPangu-2.0-Pro 激活参数 18B，W8A8（1 字节）：
-    每 token 至少搬运 18 GB
-    在 3 TB/s 带宽下：18 / 3000 ≈ 6 ms
+<p>即使 batch=1，每生成一个 token 也<strong>必须至少把所有激活的权重完整读一遍</strong>——不读完就算不出结果。这给出一个谁都绕不过去的下界：</p>
+<div class="codehilite"><pre><span></span><code>一个「18B 激活参数、W8A8（1 字节/参数）」的模型，权重全放在一张 H100 上：
 
-✅ 报告实测 TPOT = 9.53 ms @ 8K，9.55 ms @ 128K
-   （TPOT = 每吐一个字的间隔，见 §6.1；8K/128K 是 ISL 输入长度）
-   → 和这个量级完全吻合（差的部分是 KV cache 读取 + 通信 + 非理想效率）
+    每 token 至少搬运 18 GB
+    18 GB ÷ 3.35 TB/s ≈ ★ 5.4 ms     ← 延迟下界，再怎么优化也快不过它
+
+    ⟹ 这也解释了 MoE 为什么流行：总参数 505B 但只激活 18B，
+       搬运量按【激活参数】算，不按总参数算（见 10 章 MoE）。
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>注意 openPangu 那两个数字</strong>：<strong>8K 和 128K 的 TPOT 几乎一样</strong>（9.53 vs 9.55 ms）。<br />
-这说明它的 KV cache 读取开销在 128K 下<strong>依然没有成为主导项</strong>——正是 MLA + SWA + DSA 组合起来的效果（<a href="07-MHA到MLA.html">07</a>/<a href="08-高效注意力.html">08</a> 章）。</p>
-<p><strong>反过来说</strong>：如果一个模型用朴素 MHA，128K 的 TPOT 会明显高于 8K，因为每步都要多读 128 GB 的 cache。</p>
+<p>✅ <strong>openPangu-2.0-Pro 报告实测 TPOT = 9.53 ms @ 8K、9.55 ms @ 128K</strong>（超低延迟档）。</p>
+<p>⚠️ <strong>但不要拿上面那个 5.4 ms 当它的下界——两个口径都对不上</strong>：<br />
+<code>① 它跑在昇腾 NPU 上，不是 H100。910B3 的 HBM 带宽约 1.6 TB/s
+   （⚠️ 推断值，见 大模型算子开发 12 章 §12.4.1），只有 H100 的一半。
+② 更关键：它是 MoE，报告的部署是 2P1D 八节点、MoE 走 EP（专家并行）。
+   那 18 GB 激活权重被【摊到几十张卡上并行读】，每卡只读自己那一份。
+   ⟹ 「18 GB ÷ 单卡带宽」既不是它的下界也不是上界，这个除法做不成。</code><br />
+📌 <strong>那这两个数还能读出什么？</strong> 能安全读出的只有一条，而且恰好是最重要的那条 ↓</p>
+<p>🔑 <strong>注意 openPangu 那两个数字的【差值】</strong>：<strong>8K 和 128K 的 TPOT 几乎一样</strong>（9.53 vs 9.55 ms，只差 0.02 ms）。<br />
+差值不受带宽口径和并行方式影响——<strong>它说明 KV cache 的读取开销在 128K 下依然没有成为主导项</strong>。这正是 MLA + SWA + DSA 组合起来的效果（<a href="07-MHA到MLA.html">07</a> / <a href="08-高效注意力.html">08</a> 章）。</p>
+<p><strong>反过来说</strong>：如果这个模型用的是朴素 MHA，按 §6.3 的表，128K 时每步要多读 125 GiB 的 cache，TPOT 会明显高于 8K。<strong>"TPOT 与上下文长度脱钩"本身就是注意力改造成功的标志。</strong></p>
+<p>📌 想看"KV 读取什么时候会反超权重读取"的逐行表格（Llama-3-8B，从 1.8% 一路到 70%），在 <a href="../../推理框架/推理优化入门/07-注意力变体MQA-GQA-MLA.html">推理框架 §7.6</a>。</p>
 </blockquote>
 <hr />
-<h2 id="65">6.5 三个可以下手的方向</h2>
-<p>现在你有了完整的问题定义，<strong>解法只有三个方向</strong>，五家全部落在这三格里：</p>
-<div class="codehilite"><pre><span></span><code>    KV cache 大小 = 2 × N × H_kv × d_h × L × B × bytes
-                        ↑    ↑↑↑↑↑↑↑↑↑↑    ↑        ↑
-                        │        │          │        │
-                     ① 层数    ② 每层存多少  ③ 存几个  ④ 每个几字节
-                                                token
+<h2 id="65">6.5 四个可以下手的方向</h2>
+<p>现在你有了完整的问题定义。<strong>公式里只有四个乘数可以动，五家的所有方案全部落在这四格里</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    KV cache 字节数 = 2 × N × H_kv × d_h × L × B × bytes
+
+    ① 动 N            —— 有几层要存
+    ② 动 H_kv × d_h   —— 每层每 token 存多宽
+    ③ 动 L × B        —— 一共要存几个 token
+    ④ 动 bytes        —— 每个数占几字节
 </code></pre></div>
 
 <table>
@@ -501,100 +939,191 @@ B = 295：  I = 295      →  刚好跑满
 <tr>
 <th>方向</th>
 <th>怎么做</th>
+<th>代表技术</th>
 <th>在哪章</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>② 每层存多少</strong></td>
-<td>MQA / GQA / <strong>MLA</strong>（低秩压缩）</td>
-<td><strong><a href="07-MHA到MLA.html">07 章</a></strong></td>
+<td><strong>② 每层存多宽</strong></td>
+<td>让多个 Q 头共用一份 KV，或把 KV 压成低维潜向量</td>
+<td>MQA / GQA / <strong>MLA</strong></td>
+<td>★ <strong><a href="07-MHA到MLA.html">07 章</a></strong></td>
 </tr>
 <tr>
 <td><strong>③ 存几个 token</strong></td>
-<td>滑动窗口 / 稀疏选择 / 线性注意力（根本不存）</td>
-<td><strong><a href="08-高效注意力.html">08 章</a></strong></td>
+<td>只看最近的 / 只看最相关的 / 打包成摘要 / 根本不存</td>
+<td>滑动窗口、稀疏选择、压缩、线性注意力</td>
+<td>★ <strong><a href="08-高效注意力.html">08 章</a></strong></td>
 </tr>
 <tr>
 <td><strong>④ 每个几字节</strong></td>
-<td>KV cache 量化（BF16 → FP8 → INT4）</td>
+<td>KV cache 量化</td>
+<td>BF16 → FP8 → INT4</td>
 <td><strong><a href="14-量化.html">14 章 §14.10</a></strong></td>
 </tr>
 <tr>
-<td><strong>① 层数</strong></td>
-<td>只在部分层保留全量 KV（跨层共享）</td>
-<td><a href="08-高效注意力.html">08 章</a>（GLM 的 IndexShare 是相关思路）</td>
+<td><strong>① 有几层</strong></td>
+<td>只在部分层保留全量 KV，其余层跨层共享或用廉价注意力</td>
+<td>GLM 的 IndexShare、K3 的 KDA/MLA 3:1 交错</td>
+<td><a href="08-高效注意力.html">08 章</a></td>
 </tr>
 </tbody>
 </table>
-<p><strong>这就是 06→07→08 三章的分工，也是 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1 那张表的组织逻辑。</strong></p>
+<blockquote>
+<p>📌 <strong>注意 ③ 里的 $B$（batch）是个例外</strong>：它不是"架构可以改小"的东西，而是<strong>服务端想开大</strong>的东西。所以 ①②④ 和"改 $L$"是<strong>架构侧</strong>的活（本教程），"把省下来的显存换成更大 $B$"是<strong>推理服务侧</strong>的活（<a href="../../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架 §2.3~2.5</a> 逐行扣了一张 H100 的显存账，并给出三个能改变这笔账的旋钮）。</p>
+</blockquote>
+<p><strong>这就是 06 → 07 → 08 三章的分工，也是 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1 那张表的组织逻辑。</strong></p>
 <hr />
 <h2 id="66-prefill-ttft">6.6 Prefill 侧的账：TTFT（首字延迟）</h2>
-<p>Prefill 是<strong>算力受限</strong>的，所以它的账完全不同。</p>
-<p>$$\text{prefill FLOPs} \approx 2 \times N_{\text{active}} \times L + \underbrace{\text{注意力的 } L^2 \text{ 项}}_{\text{长序列时主导}}$$</p>
-<p>回忆 <a href="01-鸟瞰全景.html">01 章 §1.5</a>：</p>
-<div class="codehilite"><pre><span></span><code>L = 4K：   注意力项占 ~12%，可忽略
-L = 1M：   注意力项占 ~97%，【完全主导】
-
-    而且它是【平方】的：128K → 1M 是 8 倍长度，这一项涨 64 倍
+<p>Prefill 是<strong>算力受限</strong>的，所以它的账和 decode 完全不同——<strong>这里要数的是 FLOPs，不是字节。</strong></p>
+<h3 id="flops">先把注意力的 FLOPs 写准</h3>
+<p>对序列长 $s$、$d = d_{\text{model}}$ 的<strong>一层</strong>，注意力里有两个跟 $s^2$ 相关的矩阵乘：</p>
+<p>$$\underbrace{QK^\top}<em 2s_2d="2s^2d">{2s^2d} \;+\; \underbrace{PV}</em>\qquad \approx 2s^2d$$} \;=\; 4s^2d \qquad\xrightarrow{\ \text{因果掩码只算下三角}\ </p>
+<blockquote>
+<p>⚠️ <strong>那个"约一半"极容易被漏掉，是估算长序列 prefill 时最常见的 2 倍误差来源。</strong> 因果掩码下第 $i$ 个 query 只和 $j\le i$ 的 key 配对，配对总数是 $s^2/2$ 而不是 $s^2$。<br />
+（$QK^\top$ 是 <code>[s,d]×[d,s]</code>，$PV$ 是 <code>[s,s]×[s,d]</code>，两者都是 $s^2 d$ 次乘加 = $2s^2d$ FLOPs。跨头求和已经包含在 $d = H\cdot d_h$ 里了。）</p>
+</blockquote>
+<p><strong>其余部分和 $s$ 只是线性关系</strong>：四个投影 $QKVO$ 合计 $8sd^2$，FFN 约 $6\,s\,d\,d_{ff}$。所以每层每 token 的非注意力项是常数 $8d^2 + 6d\,d_{ff}$——代入 $d=5120$、$d_{ff}=16128$（openPangu 的激活 FFN 宽度）得 <strong>约 $7.05\times10^8$ FLOPs</strong>。</p>
+<h3 id="_4">交叉点在哪</h3>
+<table>
+<thead>
+<tr>
+<th>序列长度 $s$</th>
+<th>注意力项（每 token 每层）</th>
+<th>占一层总 FLOPs 的比例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>4K</strong></td>
+<td>$2sd = 4.2\times10^7$</td>
+<td>约 <strong>6%</strong>，可以忽略</td>
+</tr>
+<tr>
+<td>32K</td>
+<td>$3.4\times10^8$</td>
+<td>约 <strong>32%</strong></td>
+</tr>
+<tr>
+<td><strong>128K</strong></td>
+<td>$1.34\times10^9$</td>
+<td>约 <strong>66%</strong>，已经过半</td>
+</tr>
+<tr>
+<td><strong>1M</strong></td>
+<td>$1.07\times10^{10}$</td>
+<td>★ 约 <strong>94%</strong>，完全主导</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 而且它是【平方】的：128K → 1M 是 8 倍长度，这一项涨 64 倍。
+      这就是为什么&quot;把上下文从 128K 拉到 1M&quot;不是把机器多开 8 台就能解决的事。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>和 <a href="01-鸟瞰全景.html">01 章 §1.5</a> 的口径差异</strong>：01 章给的是 <strong>12% / 97%</strong>，因为它用的是<strong>未计因果掩码</strong>的 $4sd$。两套数字的结论完全一样（长序列时注意力唯一主导），但<strong>绝对值差一倍</strong>——做容量规划、估 TTFT 的时候，记得那约一半的折扣。</p>
+</blockquote>
 <div class="codehilite"><pre><span></span><code>✅ openPangu 报告实测：TTFT = 3.0 s @ 128K 输入、单 batch
-   （TTFT = Time To First Token = 首字延迟，见 §6.1）
-   → 读 12.8 万字要等 3 秒才开始出字，这 3 秒【全部花在 Prefill 上】
+   （Flash 版是 2.6 s）
+   → 读 12.8 万 token 要等 3 秒才开始出字，这 3 秒【全部花在 Prefill 上】
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>两个阶段要用完全不同的手段优化</strong>：<br />
 ```<br />
-Prefill 慢  →  是【算力】问题  →  要减少 FLOPs  →  稀疏注意力、滑窗<br />
-Decode 慢   →  是【访存】问题  →  要减少字节数  →  压缩 KV cache、量化</p>
-<p>★ 稀疏注意力同时帮两边：既少算，又少存<br />
-  这就是为什么 DSA / MSA / SWA 这类技术是五家的主流选择<br />
+Prefill 慢  -&gt;  是【算力】问题  -&gt;  要减少 FLOPs   -&gt;  稀疏注意力、滑窗、压缩<br />
+Decode 慢   -&gt;  是【访存】问题  -&gt;  要减少字节数   -&gt;  压缩 KV cache、量化</p>
+<p>★ 稀疏注意力是少数【两边都帮】的技术：既少算，又少存<br />
+  这就是为什么 DSA / MSA / SWA 这类技术是五家的主流选择（<a href="08-高效注意力.html">08 章</a>）<br />
 ```</p>
+<p>📌 <strong>还有一类手段两边都不改数学，只改 kernel 怎么写</strong>：FlashAttention 把 $[s,s]$ 那张大表按块吃掉，从不落 HBM——它把注意力的<strong>显存</strong>从 $O(s^2)$ 降到 $O(s)$、把<strong>搬运量</strong>降了一个量级，但 <strong>FLOPs 一个都没少</strong>。三代 kernel 各改了哪一层（在线 softmax、循环顺序、split-Q、Hopper 异步流水），在 <a href="../../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 04 章</a>。</p>
 </blockquote>
 <hr />
 <h2 id="67">6.7 还有一个方向：一次多吐几个字</h2>
 <p><strong>如果 decode 的瓶颈是"每步都要把 18 GB 权重读一遍"，那么——</strong></p>
-<div class="codehilite"><pre><span></span><code>    读一遍权重，只吐 1 个 token   →  每 token 成本 = 18 GB
-    读一遍权重，吐出 5 个 token   →  每 token 成本 = 3.6 GB    ★ 5 倍
+<div class="codehilite"><pre><span></span><code>    读一遍权重，只吐 1 个 token   →  每 token 的搬运成本 = 18 GB
+    读一遍权重，吐出 5 个 token   →  每 token 的搬运成本 = 3.6 GB    ★ 5 倍
 </code></pre></div>
 
 <p><strong>权重只读一次，能多产出几个 token，就等于直接提速几倍。</strong></p>
-<p>这正是 <strong>MTP + 投机解码</strong>的全部动机，见 <a href="12-MTP与投机解码.html">12 章</a>。<strong>五家全部上了 MTP，一个不落</strong>，因为它是在不改主模型的前提下最直接的 decode 加速手段。</p>
+<p>这正是 <strong>MTP</strong>（<strong>M</strong>ulti-<strong>T</strong>oken <strong>P</strong>rediction，多 token 预测）<strong>+ 投机解码</strong>的全部动机，见 <a href="12-MTP与投机解码.html">12 章</a>。<strong>五家全部上了 MTP，一个不落</strong>，因为它是在不改主模型的前提下最直接的 decode 加速手段。</p>
 <blockquote>
-<p>📌 <strong>注意这和"省 KV cache"是两条独立的路</strong>：<br />
-<code>省 KV cache  →  能开更大 batch  →  提【吞吐量 TPS】（这块卡每秒总共吐多少字）
-MTP          →  每次多吐几个字  →  降【单用户延迟 TPOT】（我这一个人要等多久）</code><br />
+<p>⚠️ <strong>上面那个"5 倍"是理想值</strong>，实际拿不到：投机出来的 5 个候选 token <strong>不一定全被主模型接受</strong>，一旦某个位置被否，它后面的全部作废。真实加速比等于<strong>平均接受长度</strong>——✅ DeepSeek-V3.2 是 <strong>2.55</strong>，GLM-5.2 自己的消融里从 4.56 提到 5.47（见 <a href="12-MTP与投机解码.html">12 章</a>）。</p>
+<p>📌 <strong>注意这和"省 KV cache"是两条独立的路，改善的指标都不一样</strong>：<br />
+<code>省 KV cache  -&gt;  能开更大 batch  -&gt;  提【吞吐量 TPS】（这块卡每秒总共吐多少字）
+MTP          -&gt;  每次多吐几个字  -&gt;  降【单用户延迟 TPOT】（我这一个人要等多久）</code><br />
 ✅ openPangu 报告的 <strong>1727 TPS/NPU</strong> 是<strong>吞吐量</strong>指标，<strong>9.53 ms TPOT</strong> 是<strong>延迟</strong>指标——回到 §6.1 那组定义。</p>
-<p>⚠️ <strong>但这两个数字不能凑在一起吹</strong>，它们来自报告里<strong>两张不同的表、两个不同的配置</strong>：<br />
-```<br />
-「超低延迟」那档：  TPOT 9.53 ms                    ← 牺牲吞吐换延迟<br />
-「低延迟吞吐」那档：TPOT 23.2 ms，batch 40，1727 TPS ← 牺牲延迟换吞吐</p>
+<p>⚠️ <strong>而这两个数字不能凑在一起吹</strong>，它们来自报告里<strong>两张不同的表、两个不同的配置</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>报告里的档位</th>
+<th>TPOT</th>
+<th>Batch</th>
+<th>TPS/NPU</th>
+<th>取舍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>超低延迟</strong></td>
+<td><strong>9.53 ms</strong></td>
+<td>报告未给</td>
+<td>报告未给</td>
+<td>牺牲吞吐换延迟</td>
+</tr>
+<tr>
+<td><strong>低延迟吞吐</strong></td>
+<td>23.2 ms</td>
+<td>40</td>
+<td><strong>1727</strong></td>
+<td>牺牲延迟换吞吐</td>
+</tr>
+</tbody>
+</table>
+<p>```<br />
+★ 同一个模型，batch 调到 40 之后 TPOT 从 9.53 ms 变成 23.2 ms（慢 2.4 倍），<br />
+  换来吞吐量大涨。这就是延迟与吞吐的取舍，也是 §6.1 说它们"互相打架"的实证。</p>
 <p>验算一下这组数是否自洽（⚠️ 我的推算，不是报告写的）：<br />
-    40 个用户 ÷ 0.0232 秒 ≈ 1724 tokens/s  ✅ 和 1727 对得上<br />
-    —— 正好印证 §6.1 那条 TPS ≈ batch ÷ TPOT<br />
-```<br />
-<strong>同一个模型，batch 从小调到 40，TPOT 从 9.53 ms 变成 23.2 ms（慢了 2.4 倍），换来吞吐量大涨。这就是延迟与吞吐的取舍。</strong></p>
+    40 ÷ 0.0232 秒 ≈ 1724 tokens/s   ← 和 1727 只差 0.2%<br />
+⚠️ 但这个吻合要打个问号：报告那一列的表头写的是「per NPU」，<br />
+   而 batch 40 是【整个部署】（2P1D 八节点）的并发数。<br />
+   严格来说这两个数不该直接相除，吻合得这么好可能是巧合。<br />
+   ★ 能确定的是趋势方向，不是这个等式。<br />
+```</p>
 </blockquote>
 <hr />
 <h2 id="68">6.8 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>① Prefill（读输入）是【算力受限】，Decode（吐字）是【访存受限】
-   → decode 时 GPU 算力利用率可能只有 0.3%，全在等数据
-② KV cache = 2·N·H_kv·d_h·L·B·bytes
+   -&gt; decode 时 GPU 算力利用率可能只有 0.3%，99% 的时间在等数据
+
+② KV cache 不是&quot;优化&quot;而是&quot;前提&quot;：它把 O(L²) 的重算换成 O(L) 的读回
+   ★ 但换来的是搬运，而搬运量累计同样 ∝ L² —— 长上下文下它会重新变成瓶颈
+
+③ KV cache 字节数 = 2 · N · H_kv · d_h · L · B · bytes
+   ⚠️ 那个头数必须是 H_kv（KV 头数），不是 Q 头数
+      用 4·d_model 硬套 GQA 模型高估 8 倍，套 MQA 高估 64 倍，套 MLA 高估 25 倍
    500B 级 MHA 模型 ≈ 1 MB / token
-   → 128K 就是 128 GB，512K 追上模型权重本身，且随用户数线性增长
-③ ★ Roofline：decode 的算术强度 ≈ batch size，而脊点是 ~295
-   → KV cache 占满显存 → batch 开不大 → 算力浪费
-   → 【省 KV cache 就是直接提吞吐】，这两件事在 decode 阶段是同一件事
-④ 只有四个下手点：改层数 / 改每层存多少 / 改存几个 token / 改每个几字节
-   → 分别对应 08 / 07 / 08 / 14 章
-⑤ Prefill 慢是 FLOPs 问题（L² 项），Decode 慢是字节数问题，手段不同
+   -&gt; 128K 就装不进一张卡，512K 追上模型权重本身，且随用户数线性增长
+
+④ ★ Roofline：decode 的算术强度 ≈ batch size，H100 的屋脊点是 295
+   （989 TFLOP/s ÷ 3.35 TB/s；⚠️ 别用 1979，那是 2:4 稀疏值）
+   -&gt; KV cache 占满显存 -&gt; batch 开不大 -&gt; 算力浪费 99%
+   -&gt; 【省 KV cache 就是直接提吞吐】，这两件事在 decode 阶段是同一件事
+
+⑤ 公式里只有四个乘数可动：层数 / 每层多宽 / 存几个 token / 每个几字节
+   -&gt; 分别对应 08 / 07 / 08 / 14 章
+
+⑥ Prefill 慢是 FLOPs 问题（注意力项 ≈ 2s²d，⚠️ 因果掩码下只有一半）
+   Decode 慢是字节数问题，两边手段不同
    稀疏注意力是少数【两边都帮】的技术
-⑥ 另一条独立的路：MTP —— 权重只读一次，多吐几个字（12 章）
+
+⑦ 另一条独立的路：MTP —— 权重只读一次，多吐几个字（12 章）
+   ⚠️ 实际加速 = 平均接受长度（2.5~5.5），不是候选个数
 </code></pre></div>
 
-<p><strong>下一章</strong>开始给答案：怎么把每层存的东西从 20 KB 压到 1 KB。</p>
+<p><strong>下一章</strong>开始给答案：怎么把每层存的东西从 20 KiB 压到 1.1 KiB。</p>
 <hr />
 <blockquote>
 <p><a href="05-注意力机制.html">← 05 注意力机制</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="07-MHA到MLA.html">07 从 MHA 到 MLA</a></p>

@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="deepseek-v41-flash">DeepSeek-V4.1-Flash 架构与技术报告解析</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>来源</strong>：本文整理自技术报告 <em>DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression</em>（51 页，2026-09-10 发布）。<br />
 <strong>本地论文</strong>：<a href="papers/DeepSeek_V41_Tech_Report.pdf">papers/DeepSeek_V41_Tech_Report.pdf</a>（51 页）<br />
 <strong>权重</strong>：<a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash">https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash</a>（MIT 许可）<br />
@@ -308,7 +308,175 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <p><strong>一句话</strong>：模型骨干大了近一倍，KV cache 却小了 4 倍，效果还更好。</p>
-<p><strong>最直观的对比</strong> ✅：跑满 1M 上下文时，每 token 全局 KV 只要 <strong>890 字节</strong>。报告给出的代际对比是相对 V4-Flash 降 4 倍、相对 <strong>V1 降 437 倍</strong>。⚠️ 按这个倍数反推，V1 存同样 1M 上下文约需 <strong>389 GB</strong>，而 V4.1-Flash 只要 <strong>890 MB</strong> —— 从「一台机器装不下」变成「一张卡的零头」。（389 GB 是我用 890×437×1M 算的，报告只给了倍数。）</p>
+<p><strong>最直观的对比</strong> ✅：跑满 1M 上下文时，每 token 全局 KV 只要 <strong>890 字节</strong>。报告给出的代际对比是相对 V4-Flash 降 4 倍、相对 <strong>V1 降 437 倍</strong>。⚠️ 按这个倍数反推，V1 存同样 1M 上下文约需 <strong>389 GB</strong>（十进制 GB；换算成 GiB 是 362 GiB），而 V4.1-Flash 只要 <strong>890 MB</strong>（= 849 MiB）—— 从「一台机器装不下」变成「一张卡的零头」。（389 GB 是我用 890×437×1M 算的，报告只给了倍数。）</p>
+<h3 id="552b-8b-16b">★ 把 552B / 8B / 16B 这三个数字自己加出来</h3>
+<p>报告在第十二节给了完整的架构超参表，<strong>所以这三个数字是可以一项一项加出来验的</strong>，不用信任何二手解读。用到的输入全部来自那张表：<code>40 层 / hidden 5120 / 1 共享 + 384 路由、激活 6 / 专家中间维 2304 / 编码器 20 层 + 解码器 20 层</code>。</p>
+<p><strong>第一步：一个专家多大。</strong> 一个专家就是一个 SwiGLU，三个矩阵（gate / up / down），每个 <code>5120 × 2304</code>：</p>
+<div class="codehilite"><pre><span></span><code>一个专家 = 3 x 5120 x 2304 = 35.39 M
+</code></pre></div>
+
+<p><strong>第二步：总参数。</strong></p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 552B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>40 层 × 384 个路由专家</td>
+<td>$40 \times 384 \times 35.39\,\text{M}$</td>
+<td><strong>543.6 B</strong></td>
+<td><strong>98.5 %</strong></td>
+</tr>
+<tr>
+<td>40 层 × 1 个共享专家</td>
+<td>$40 \times 35.39\,\text{M}$</td>
+<td>1.42 B</td>
+<td>0.26 %</td>
+</tr>
+<tr>
+<td><strong>已披露项小计</strong></td>
+<td></td>
+<td><strong>545.0 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ 报告写的骨干参数</strong></td>
+<td></td>
+<td><strong>552 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>差额</strong>（注意力 + Embedding + mHC + RMSNorm）</td>
+<td></td>
+<td><strong>7.0 B</strong></td>
+<td>1.3 %</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第三步：那 7.0 B 能不能对上？</strong> ⚠️ 这一步是本文的推算。报告给了注意力的各个维度，按标准参数化拆开：</p>
+<div class="codehilite"><pre><span></span><code>W_DQ   Q 降维        5120 x 1280                    =  6.55 M
+W_UQ   Q 升维        1280 x (64 头 x 512 头维)        = 41.94 M
+W_DKV  KV 降到 512   5120 x 512                     =  2.62 M
+输出投影（分 8 组，每组中间维 1024）
+       组内          8 x (4096 x 1024)              = 33.55 M
+       组外          8192 x 5120                    = 41.94 M
+索引器 Q（32 头 x 128）  5120 x 4096                 = 20.97 M
+索引器 K（从主 KV 投影） 512 x 4096                   =  2.10 M
+--------------------------------------------------------------
+每层合计                                            ≈ 149.7 M
+40 层                                               ≈ 5.99 B
++ Embedding &amp; LM Head（⚠️ 词表未在表里，按 DeepSeek 一贯的 12.9 万估）
+                     2 x 129280 x 5120              =  1.32 B
+==============================================================
+合计 ≈ 7.31 B    vs   差额 7.0 B    -&gt;   差 4.4%   ★ 对上了
+</code></pre></div>
+
+<p><strong>第四步：激活参数 —— 这一步直接验证了 CED。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>每层</th>
+<th>prefill（只跑 20 层）</th>
+<th>decode（跑满 40 层）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE（6 路由 + 1 共享）</td>
+<td>$7 \times 35.39 = 247.7$ M</td>
+<td>4.95 B</td>
+<td>9.91 B</td>
+</tr>
+<tr>
+<td>注意力</td>
+<td>149.7 M</td>
+<td>2.99 B</td>
+<td>5.99 B</td>
+</tr>
+<tr>
+<td><strong>小计</strong></td>
+<td>397.4 M</td>
+<td><strong>7.94 B</strong></td>
+<td><strong>15.90 B</strong></td>
+</tr>
+<tr>
+<td><strong>✅ 报告值</strong></td>
+<td></td>
+<td><strong>8 B</strong></td>
+<td><strong>16 B</strong></td>
+</tr>
+<tr>
+<td>误差</td>
+<td></td>
+<td><strong>0.7 %</strong></td>
+<td><strong>0.6 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这张表最该带走的一句话</strong>：<strong><code>8 = 16 / 2</code>，而 <code>20 = 40 / 2</code>。</strong> "prefill 8B / decode 16B"这个乍看神秘的写法，<strong>全部内容就是"prefill 只跑一半的层"</strong>——也就是第三节要讲的 CED。两笔账误差都在 1% 以内，说明 CED 确实没有在别的地方偷偷加回成本。</p>
+</blockquote>
+<h3 id="flops">★ 稀疏度、FLOPs、深宽比：四个派生量</h3>
+<div class="codehilite"><pre><span></span><code>❌ 常见说法：&quot;384 选 6，所以稀疏 64 倍&quot;
+
+✅ 四个数字，四个不同的问题：
+   384 / 6         = 64.0 倍   &lt;- 只是【路由专家】的选择比
+   552 / 8         = 69.0 倍   &lt;- prefill 时的 总参数/激活参数
+   552 / 16        = 34.5 倍   &lt;- ★ decode 时的 总参数/激活参数（显存 vs 算力的正确口径）
+   (552+196) / 16  = 46.8 倍   &lt;- ★ 把 196B 的 Engram 表也算进存储之后
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>派生量</th>
+<th>通式</th>
+<th>V4.1-Flash</th>
+<th>对照：V4-Pro</th>
+<th>对照：Kimi K3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每 token <strong>prefill</strong> FLOPs</td>
+<td>$2N_{\text{激活}}$</td>
+<td><strong>16</strong> GFLOPs</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>每 token <strong>decode</strong> FLOPs</td>
+<td>$2N_{\text{激活}}$</td>
+<td><strong>32</strong> GFLOPs</td>
+<td>98 GFLOPs</td>
+<td>208 GFLOPs</td>
+</tr>
+<tr>
+<td>每 token <strong>训练</strong> FLOPs</td>
+<td>$6N_{\text{激活}}$</td>
+<td><strong>96</strong> GFLOPs</td>
+<td>294 GFLOPs</td>
+<td>625 GFLOPs</td>
+</tr>
+<tr>
+<td><strong>深宽比</strong> $d/L$</td>
+<td>hidden ÷ 层数</td>
+<td>$5120/40 = \mathbf{128}$</td>
+<td>$7168/61 = 117.5$</td>
+<td>$7168/93 = 77.1$</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⭐ <strong>Engram 的 196B 在这张表里【一个 FLOP 都没贡献】</strong>——它是查表，不是矩阵乘。所以 <code>2N_激活</code> 那个通式对它不适用：<strong>它是"参数量涨、FLOPs 不涨"那一类加法里最彻底的一种</strong>（加 MoE 专家也能做到 FLOPs 几乎不涨，但 all-to-all 通信会变贵；三条路的对照见第九节）。这也是为什么把 196B 算进"激活参数"是错的。</p>
+<p>⚠️ 上面所有数字都是本文按通式算的；报告只给了 <code>8B / 16B</code> 两个激活参数，没有给 FLOPs 的绝对值。<code>6N = 2N 前向 + 4N 反向</code>，<strong>不含优化器</strong>；长上下文下还要加 <code>12·L·s·h</code> 那一项，而 CSA2 改的正是那一项（见 <a href="大模型架构入门/01-鸟瞰全景.html">01 章 §1.5</a>）。</p>
+</blockquote>
 <hr />
 <h2 id="_2">二、贯穿全文的一个例子</h2>
 <p>后面每个创新点都用这同一个场景讲：</p>
@@ -323,11 +491,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="1ced-prefill">三、创新点 1：CED —— prefill 只跑一半的层 ★最核心</h2>
 <h3 id="_3">问题是什么</h3>
 <p>40 层的模型读 10 万 token，传统做法是<strong>每一层都要过一遍所有 token</strong>：</p>
-<div class="codehilite"><pre><span></span><code>层  0 ──── 处理 10 万 token ────▶ 产出本层 KV
-层  1 ──── 处理 10 万 token ────▶ 产出本层 KV
- ⋮
-层 39 ──── 处理 10 万 token ────▶ 产出本层 KV
-                                  ↑ 40 层 × 10 万 = 400 万「层·token」
+<div class="codehilite"><pre><span></span><code>层  0   ----  处理 10 万 token  ----&gt;  产出本层 KV
+层  1   ----  处理 10 万 token  ----&gt;  产出本层 KV
+ ...
+层 39   ----  处理 10 万 token  ----&gt;  产出本层 KV
+
+合计：40 层 x 10 万 = 400 万「层·token」
 </code></pre></div>
 
 <p>agent 每次调用工具都会产生新的 prompt，缓存一旦没命中，这 400 万就得重算一遍。<strong>这是 agent 场景最大的一笔开销。</strong></p>
@@ -338,17 +507,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <li><strong>后 20 层 = 解码器</strong>（decoder）</li>
 </ul>
 <p>关键在于 ✅：<strong>后 20 层的全局 KV，不再由各自那层算，而是直接从第 20 层的输出「一次性投影」出来</strong>。</p>
-<div class="codehilite"><pre><span></span><code>             prompt 10 万 token
-                    │
-   ┌────────────────▼────────────────┐
-   │  编码器 层 0~19  真的跑 10 万 token │   ← 20 层 × 10 万 = 200 万
-   └────────────────┬────────────────┘
-                    │ H₂₀（第 20 层的输出）
-                    │
-        ┌───────────┼───────────┬─────────┐
-        ▼           ▼           ▼         ▼
-      层20的KV    层21的KV    层22的KV   ...  ← 一次矩阵乘直接投影出来
-                                              不用真的跑这些层！
+<div class="codehilite"><pre><span></span><code>prompt 10 万 token
+   |
+   v
+【编码器 层 0~19】真的跑 10 万 token          &lt;- 20 层 x 10 万 = 200 万「层·token」
+   |
+   +--&gt; H20 = 第 20 层的输出
+          |
+          +--&gt; 层 20 的全局 KV  =  H20 x W_20
+          +--&gt; 层 21 的全局 KV  =  H20 x W_21
+          +--&gt; 层 22 的全局 KV  =  H20 x W_22
+          +--&gt; ...
+          +--&gt; 层 39 的全局 KV  =  H20 x W_39
+                  ^ 一次矩阵乘直接投影出来，这 20 层根本不用真的跑
 </code></pre></div>
 
 <p>报告的公式（式 1）写成大白话就是 <code>第 l 层的 KV = H₂₀ × 该层专属的投影矩阵 W_l</code>（对所有 l &gt; 20 成立）。<strong>每层的投影矩阵不同，所以各层 KV 仍然不一样</strong>，只是都从同一个 H₂₀ 变出来 —— 省的是「跑那 20 层」的钱，不是「KV 的多样性」。</p>
@@ -385,7 +556,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h3 id="swa">一个尾巴：SWA 怎么办</h3>
 <p>模型每层还有一条 <strong>SWA（Sliding Window Attention，滑动窗口注意力）</strong> 支路 —— 只看最近 128 个 token 的局部注意力。这条支路<strong>没法投影</strong>，必须每层老老实实算。</p>
-<p>严格重建解码器的 SWA 状态，要重跑 <code>20 层 × 128 = 2560</code> 个 token。报告用 <strong>SWA Bounded Replay</strong> 把它压到只重跑 128 个（见第七节）。</p>
+<p>严格重建解码器的 SWA 状态，要重跑 <code>20 层 × 128 = 2560</code> 个「层·token」。报告用 <strong>SWA Bounded Replay</strong> 把它压到只重跑 <strong>128 个 token 的一趟完整前向</strong>（见第七节）。</p>
+<blockquote>
+<p>⚠️ <strong>这里的 2560 和第七节的 5120 不矛盾，但口径不同，本文统一一下</strong>：<code>20 × 128 = 2560</code> 只算<strong>解码器那一半</strong>，<code>40 × 128 = 5120</code> 算的是<strong>全模型 40 层</strong>。两个数字都是「层·token」而不是「token」。Bounded Replay 之后只跑 <strong>128 个 token × 40 层</strong>，所以省的倍数是 <strong>40 倍</strong>（$5120/128$），按解码器单独算则是 20 倍。下文按<strong>全模型 40 倍</strong>的口径写。</p>
+</blockquote>
 <hr />
 <h2 id="2csa2-kv">四、创新点 2：CSA2 —— 三种模式，跨层借 KV</h2>
 <h3 id="kv">先复习：压缩 KV 有三个正交方向</h3>
@@ -528,6 +702,108 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>两个工程细节 ✅：<br />
 - <strong>在 RoPE 之后量化</strong>。之前量化精度只好一点点，却会给 decode 增加开销。<br />
 - <strong>SWA 的 KV 仍用 FP8</strong>，因为它对量化更敏感。</p>
+<h3 id="890-token">★ 把 890 字节/token 自己加出来</h3>
+<p>到这里，报告披露的超参已经足够把那个 890 算出来了。<strong>⚠️⚠️ 先钉住一句话：CSA2 照样缓存 KV</strong>，只不过缓存的是<strong>压缩后的条目</strong>、而且只有 4 层存。任何写成"压缩了所以不用存"的说法都是反的——那样 KV cache 一个字节都省不下来，整篇报告就白写了（这个坑在 MLA 上的孪生版本见 <a href="大模型架构入门/07-MHA到MLA.html">07 章 §7.2</a>）。</p>
+<p><strong>第一步：一个缓存条目多少字节。</strong></p>
+<div class="codehilite"><pre><span></span><code>KV latent 512 个通道
+   每个通道 E2M1（4 比特）             = 0.5    字节
+   每 16 个通道配 1 个 E4M3 缩放因子    = 1/16 = 0.0625 字节/通道
+   ---------------------------------------------------
+   每通道 0.5625 字节  x  512 通道      = 288 字节/条目
+
+⚠️ 有效位宽不是 4 比特，是 4.5 比特 —— 缩放因子不是免费的。
+   （同一条纪律在 INT4 上是&quot;有效位宽 4.15 而不是 4&quot;，见 14 章 §14.5）
+</code></pre></div>
+
+<p><strong>第二步：哪几层存、每层每 token 摊到几条。</strong></p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>位置</th>
+<th>模式</th>
+<th>压缩率</th>
+<th>每 token 的条目数</th>
+<th>每 token 字节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>层 2</td>
+<td>编码器</td>
+<td>Full</td>
+<td>$m=2$</td>
+<td>0.5</td>
+<td>144</td>
+</tr>
+<tr>
+<td>层 8</td>
+<td>编码器</td>
+<td>Full</td>
+<td>$m=2$</td>
+<td>0.5</td>
+<td>144</td>
+</tr>
+<tr>
+<td>层 14</td>
+<td>编码器</td>
+<td>Full</td>
+<td>$m=2$</td>
+<td>0.5</td>
+<td>144</td>
+</tr>
+<tr>
+<td>层 20</td>
+<td>解码器</td>
+<td>Full</td>
+<td>$m=1$</td>
+<td>1.0</td>
+<td>288</td>
+</tr>
+<tr>
+<td><strong>主 KV 合计</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>2.5</strong></td>
+<td><strong>720</strong></td>
+</tr>
+<tr>
+<td><strong>✅ 报告写的运行时 KV</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>890</strong></td>
+</tr>
+<tr>
+<td><strong>差额</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><strong>170</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>那 170 字节本文没法从已披露超参里拆出来，如实标出。</strong> 最可能的去处是<strong>索引器的 K</strong>：报告说索引器 K 从主 KV 投影、头维 128，若同样按 E2M1 + 每 16 通道一个 E4M3 存，则 $128 \times 0.5625 = 72$ 字节/条目，四层摊下来 $3 \times 36 + 72 = 180$ 字节——<strong>合计 900 vs 报告的 890，差 1.1%</strong>。这是个<strong>吻合得很好的猜测，但仍然只是猜测</strong>，报告没有列缓存的逐项明细。</p>
+<p>⚠️ 另外注意 890 的<strong>口径</strong>：它是<strong>常驻显存的运行时全局 KV</strong>，<strong>不含 SWA KV</strong>（SWA KV 被挪进了宿主内存池，见第七节）。拿它和别家"每 token KV 字节数"直接比之前，先确认对方算没算滑窗那部分。</p>
+</blockquote>
+<p><strong>第三步：用报告自己的"三个正交维度"把这 64 倍拆开。</strong> 基线取"40 层每层都存一份 MLA-576 的 BF16 latent"，也就是 DeepSeek-V3 那种做法：$40 \times 576 \times 2 = 46080$ 字节/token。</p>
+<div class="codehilite"><pre><span></span><code>① 层方向   ：40 层 -&gt; 只有 4 层存                     省 10.0 倍
+② 条目大小 ：576 维 BF16 (1152 B) -&gt; 512 维 FP4 (288 B)  省  4.0 倍
+③ 序列方向 ：4 个存 KV 的层里有 3 个是 m=2
+             4 / (3 x 0.5 + 1) = 4 / 2.5              省  1.6 倍
+   ---------------------------------------------------------------
+   10.0 x 4.0 x 1.6 = 64.0 倍
+
+   验算：46080 / 720 = 64.0   ✅ 严丝合缝
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是报告标题里"把 KV cache 压缩推到极限"的全部含义</strong>：<strong>三个维度是可乘的，而前人每次只吃一个维度。</strong> 层方向那 10 倍是 CSA2 的 Full/Reuse/Reindex，条目大小那 4 倍是 FP4 + latent，序列方向那 1.6 倍是 $m=2$ 的块压缩。⚠️ 上面这三个因子是本文按披露超参算的，报告只给了 890 这个最终值和"相对 V4-Flash 降 4 倍"的倍数。</p>
+</blockquote>
 <hr />
 <h2 id="5swa-bounded-replay">七、创新点 5：SWA Bounded Replay —— 用一点重算换掉一半硬盘</h2>
 <h3 id="_11">问题</h3>
@@ -535,8 +811,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>但 SWA KV 有个特点：<strong>它只在一次会话内的几分钟窗口里被复用，会话一结束就是死数据</strong>。而全局 KV 是长尾复用的（V4 的部署里保证存活 72 小时以上 ✅）。用同一套长期存储策略对待两者，很浪费。</p>
 <p>V4 提过 <strong>Zero SWA Caching</strong>（干脆不存，要用时重算），但严格重建要跑 <code>层数 × 窗口</code> 个 token 的完整前向，<strong>在生产环境里代价高到不可接受</strong> ✅。</p>
 <h3 id="128-token">解法：只重放最近 128 个 token</h3>
-<div class="codehilite"><pre><span></span><code>严格重建： 重跑 L × n_win = 40 × 128 = 5120 个 token
-Bounded ： 只跑         n_win =      128 个 token     ← 40 倍差距
+<div class="codehilite"><pre><span></span><code>  严格重建：窗口里【每一层】都要拿到自己那份精确的 SWA 状态，
+            所以要为 40 层各重跑一遍 128 个 token  -&gt;  5120「层·token」
+  Bounded ：只重放最近 128 个 token 的【一趟】前向，
+            让 40 层顺带都拿到（近似的）状态      -&gt;   128 个 token
+
+  ⟹ 省 5120 / 128 = 40 倍
 </code></pre></div>
 
 <p>代价是<strong>拿到的是近似状态</strong>：从位置 <code>s</code> 开始重放时，位置 <code>i</code> 的 query 只能看到 <code>max(s, i-127) ~ i</code> 这段键 —— 靠近重放起点的那几个 token，窗口比理论上的 128 短。报告的结论 ✅：<strong>几乎不损失回答质量</strong>。</p>
@@ -616,6 +896,18 @@ Bounded ： 只跑         n_win =      128 个 token     ← 40 倍差距
 <blockquote>
 <p>⚠️ 我在报告出来前只凭 config.json 估算 Engram 约 197B 参数，报告给的是 <strong>196B</strong> —— 估得很准，但现在该用官方数字。</p>
 </blockquote>
+<h3 id="196b">★ 这 196B 可以一步算出来（全表五个数字全都用上）</h3>
+<div class="codehilite"><pre><span></span><code>2 个模块 x 3 个 n-gram 阶（2/3/4 阶）x 8 个哈希头 x 1600 万条 x 每头 256 维
+                                                          ^ 2048 / 8 = 256
+
+= 2 x 3 x 8 x 16,000,000 x 256
+= 196.6 B            vs   ✅ 报告写的 196 B   -&gt;   差 0.3 %
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>这是本文里最干净的一次验算</strong>：上面那张配置表里的<strong>每一个数字都被用上了</strong>，而且一次就撞到官方值。顺带也解释了第十五节那张总图里"每个模块 98B"是怎么来的——$196 / 2 = 98$。</p>
+<p>⭐ <strong>顺带看清一件事：Engram 的参数量是【纯乘法】堆出来的，和 hidden、和层数都无关。</strong> MoE 的参数量还要乘 <code>层数 × 3 × hidden × 专家中间维</code>，跟着骨干一起长；Engram 只要把表调大就行。<strong>这是"记忆"和"计算"被真正解耦的直接后果</strong>——完整论证见 <a href="大模型架构入门/18-Engram与条件记忆.html">18 章</a>。</p>
+</blockquote>
 <h3 id="_14">⭐ 它到底换了什么：一笔要拆成四格看的交易</h3>
 <p>这一节我最初写成了「为什么它不拖慢推理」，<strong>那个标题是错的</strong>。Engram 是<strong>拖慢</strong>推理的，只是拖得很少。把它的账拆开：</p>
 <div class="codehilite"><pre><span></span><code>    参数量    ↑  +196B
@@ -665,6 +957,7 @@ Bounded ： 只跑         n_win =      128 个 token     ← 40 倍差距
 <p>报告称之为 <strong>deterministic addressing（确定性寻址）</strong> ✅。这是 Engram 相对 MoE 的结构性优势：MoE 要先算出隐状态才知道走哪个专家，地址是运行时才知道的，没法预取，所以专家必须常驻显存。</p>
 <blockquote>
 <p>⚠️ 论文那个 −2.8% 还是<strong>保守下界</strong>：该实验强制<strong>所有</strong>检索都走 PCIe，没有用 §2.5 设计的 Zipf 局部性缓存（热的 n-gram 留在 HBM）。真实系统里应该更小——<strong>但更小不等于零，更不等于提速</strong>。</p>
+<p>⚠️ 顺带把口径钉一下：<strong>"吞吐 −2.8%" 不等于 "耗时 +2.8%"</strong>。吞吐掉到 $97.2\%$，对应耗时变成 $1/0.972 = 102.9\%$，也就是<strong>耗时 +2.9%</strong>。倍数小时差别可以忽略，但这条换算纪律在读"提速 2 倍 / 时间减少 50%"这类句子时必须记住——<strong>时间减少 50% = 提速 2 倍</strong>，两者不是一回事。</p>
 <p>📖 这个模块的完整原理（tokenizer 压缩 / 后缀 n-gram / 多头哈希 / 门控为什么是「只有一个 key 的注意力」/ MoE 与 Engram 的 U 形预算分配律）见 <a href="大模型架构入门/18-Engram与条件记忆.html">大模型架构入门/18-Engram与条件记忆.md</a>。</p>
 </blockquote>
 <h3 id="_15">相比原版的两处改动 ✅</h3>
@@ -717,7 +1010,83 @@ Markov 头  → 建模这 5 个草稿 token 之间的依赖
 </table>
 <p>这样做的好处 ✅：DSpark 始终跟得上不断演化的策略，<strong>既加速线上服务，也加速 RL 和 OPD 的 rollout 生成</strong>。</p>
 <blockquote>
-<p>⚠️ 社区实测的 507 tokens/s 大概率主要来自 DSpark，但报告没有给这个数字，别混着引用。</p>
+<p>⚠️ 社区实测的 507 tokens/s 大概率主要来自 DSpark，但报告没有给这个数字，别混着引用。这类"实测"数字在没有标明硬件平台、batch size、上下文长度之前，<strong>不具备可比性</strong>。</p>
+</blockquote>
+<h3 id="5-5">⚠️ 读"一次猜 5 个"时，别把加速倍数算成 <code>α × 5</code></h3>
+<p>报告没有公布 DSpark 的接受率 $\alpha$，所以<strong>本文不给 V4.1-Flash 的加速倍数</strong>。但这里要先把最高频的那个错法堵掉，因为它在解读投机解码时几乎必犯：</p>
+<blockquote>
+<p>❓ 「接受率 70%，一次猜 5 个，那平均接受 $0.7 \times 5 = 3.5$ 个。」<br />
+<strong>错。正确值是 2.94</strong>——高估了 19%。</p>
+</blockquote>
+<p>错在哪：<strong>草稿 token 是【串行依赖】的。</strong> 第 2 个草稿是在"第 1 个已被接受"的前提下生成的；第 1 个一旦被拒，后面 4 个<strong>就算内容碰巧对也全部作废</strong>。所以这是一条"从头走、第一次失败就停"的链——<strong>几何分布，不是二项分布</strong>：</p>
+<p>$$\mathbb{E}[\text{接受长度}] = \sum_{i=0}^{\gamma} \alpha^i = \frac{1-\alpha^{\gamma+1}}{1-\alpha}$$</p>
+<p><strong>$\gamma = 5$（DSpark 的配置）时逐 $\alpha$ 的推演表</strong>（末尾那个 bonus token 已含在内）：</p>
+<table>
+<thead>
+<tr>
+<th>接受率 $\alpha$</th>
+<th>✗ 错法 $\alpha\times\gamma$</th>
+<th>✅ 正确 $(1-\alpha^6)/(1-\alpha)$</th>
+<th>天花板 $1/(1-\alpha)$</th>
+<th>错法偏差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.95</td>
+<td>4.75</td>
+<td><strong>5.30</strong></td>
+<td>20.0</td>
+<td>−10 %</td>
+</tr>
+<tr>
+<td>0.90</td>
+<td>4.50</td>
+<td><strong>4.69</strong></td>
+<td>10.0</td>
+<td>−4 %</td>
+</tr>
+<tr>
+<td>0.85</td>
+<td>4.25</td>
+<td><strong>4.15</strong></td>
+<td>6.7</td>
+<td>+2 %</td>
+</tr>
+<tr>
+<td>0.80</td>
+<td>4.00</td>
+<td><strong>3.69</strong></td>
+<td>5.0</td>
+<td>+8 %</td>
+</tr>
+<tr>
+<td>0.70</td>
+<td>3.50</td>
+<td><strong>2.94</strong></td>
+<td>3.3</td>
+<td>+19 %</td>
+</tr>
+<tr>
+<td>0.60</td>
+<td>3.00</td>
+<td><strong>2.38</strong></td>
+<td>2.5</td>
+<td>+26 %</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>注意这张表的符号会翻转</strong>：$\gamma = 5$ 时两条曲线大约在 $\alpha \approx 0.87$ 处交叉——<strong>高接受率区间 <code>α×γ</code> 偏低（漏掉了末尾白送的 bonus token），低接受率区间它偏高（没算串行截断）</strong>。所以"误差小"只是某个 $\alpha$ 上的巧合，<strong>这个式子在任何区间都不是对的</strong>。</p>
+<div class="codehilite"><pre><span></span><code>两个可以直接带走的结论：
+  ① 天花板 = 1/(1−α)，任凭你猜多长都突破不了
+     ⟹ ★ 提高 α 的回报远大于加大 γ —— 这正是 DSpark 要加
+        【Markov 头】和【置信度头】的原因，两个头都是在抬 α
+  ② γ=5 时 α=0.8 已经吃掉天花板的 74%，再加 γ 收益很薄
+     ⟹ 所以 DSpark 的【调度器】去动态决定&quot;这次验证多长&quot;才有意义
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>别把 E 当成实测加速比</strong>：还要扣掉草稿器本身的开销，$\text{speedup} \approx \mathbb{E}/(1+\gamma c)$。作为量级参照，<strong>DeepSeek-V3 的 MTP 官方口径是"第二个 token 接受率 85%~90%、TPS 提升 1.8×"</strong>（✅ V3 报告披露，⚠️ <strong>不是社区常传的 3×</strong>）；那是 $\gamma=1$ 的配置，代进公式得 $1+\alpha = 1.85 \sim 1.90$，和 1.8× 吻合得很好。完整推导与"理论 2.75× / 实测 2.1×"的反例见 <a href="大模型架构入门/12-MTP与投机解码.html">12 章 §12.5</a> 和 <a href="../推理框架/推理优化入门/08-投机解码.html">推理框架 §8</a>。</p>
 </blockquote>
 <hr />
 <h2 id="_16">十一、多模态：原生，但克制</h2>
@@ -876,7 +1245,7 @@ Markov 头  → 建模这 5 个草稿 token 之间的依赖
 </tbody>
 </table>
 <p>两个值得注意的点：</p>
-<p><strong>① head-wise Muon</strong> ✅：把 Muon 看作预条件梯度下降，原版对所有头用同一个预条件子，head-wise 给每个头单独的预条件子，<strong>更好地处理注意力头之间的异质性</strong>。报告特别提到 <strong>GLM-5 和 Kimi-K3 也验证了这一点</strong> —— 三家独立收敛到同一结论，可信度高。</p>
+<p><strong>① head-wise Muon</strong> ✅：把 Muon 看作预条件梯度下降，原版对所有头用同一个预条件子，head-wise 给每个头单独的预条件子，<strong>更好地处理注意力头之间的异质性</strong>。报告特别提到 <strong>GLM-5 和 Kimi-K3 也验证了这一点</strong> —— 三家独立收敛到同一结论，可信度高。⚠️ <strong>谁先做的不在本文讨论</strong>（时间线在 <a href="模型技术对比.html">模型技术对比.md</a> §6）；正交化"粒度"这个问题本身、以及三家的解法对照，见 <a href="大模型架构入门/13-优化器与Muon.html">13 章 §13.7</a>。</p>
 <p><strong>② 为什么 Engram 不用 Adam</strong> ✅：196B 参数用 Adam，优化器状态的显存开销受不了。改用「只需要动量缓冲」的 Sinkhorn 平衡方案，<strong>实测还比 Adam 好</strong>。Sinkhorn 平衡做的事是：让更新矩阵的<strong>行 RMS 和列 RMS 都约等于 1</strong> —— 一行对应一个 token 或 n-gram 身份，一列对应一个隐藏特征，正好利用了这种 token-特征结构。</p>
 <blockquote>
 <p>⚠️ Engram 的学习率被<strong>放大 5 倍</strong> ✅，这是沿用前作的设定。</p>
@@ -963,6 +1332,14 @@ Markov 头  → 建模这 5 个草稿 token 之间的依赖
 </tbody>
 </table>
 <p>报告的说法 ✅：用 <strong>1/3 的总参数、1/4 的激活参数</strong>，达到与 V4-Pro-Base 相当的水平，held-out 评测上还有 5%~10% 提升。</p>
+<blockquote>
+<p>⚠️ <strong>"1/4 的激活参数"对应的是哪个口径？报告没说，这里把三种算法都列出来</strong>：<br />
+<code>总参数：  552 / 1600 = 34.5%  ≈ 1/3        &lt;- 和报告说的"1/3"对上  ✅
+激活参数： 16 /   49 = 32.7%  ≈ 1/3        &lt;- decode 口径
+           8 /   49 = 16.3%  ≈ 1/6        &lt;- prefill 口径
+          12 /   49 = 24.5%  ≈ 1/4        &lt;- ★ (8+16)/2 的平均口径，唯一能得到"1/4"的算法</code><br />
+⚠️ <strong>所以"1/4"最可能是 prefill 与 decode 的平均——但这是本文的解读，不是报告写的。</strong> 报告解析里这类"对不上的分母"很值得标出来：<strong>引用一个比值之前，先确认它的分子分母各是什么。</strong></p>
+</blockquote>
 <p>⚠️ 但要看清楚：<strong>知识密集型任务（SimpleQA 42.3 vs 55.2）和长上下文（LongBench-V2 45.2 vs 51.5）明显不如 V4-Pro</strong>。参数量终究是有用的，报告没有掩饰这点。</p>
 <h3 id="_24">后训练模型对比 ✅</h3>
 <table>
@@ -1085,53 +1462,140 @@ Markov 头  → 建模这 5 个草稿 token 之间的依赖
 </ol>
 <hr />
 <h2 id="_27">十五、一张图串起来</h2>
-<div class="codehilite"><pre><span></span><code>                      图片            文字
-                       │               │
-                 DeepSeek-ViT      Text Embedding
-                 (32层, patch14)        │
-                       │ 3×3合一         │
-                   MLP投影器 ──────┬────┘
-                                  │
-            ┌─────────────────────▼──────────────────────┐
-            │  层 0,1    纯 SWA                           │
-            │  层 1      ← Engram 模块 A（98B 参数查表）   │
-            │                                            │  编码器
-            │  层 2  CSA2 Full  ─┐                       │  20 层
-            │  层 3~7  Reuse    ─┤ 借层2的KV              │
-            │  层 8  Full        │                       │  ← prefill
-            │  层 9~13 Reuse     │                       │    只跑到这
-            │  层 14 Full  ← Engram 模块 B                │
-            │  层 15~19 Reuse                            │
-            └─────────────────────┬──────────────────────┘
-                                  │ H₂₀
-                    ┌─────────────┴─────────────┐
-                    │  一次投影，产出后20层全局KV  │  ← CED 的核心
-                    └─────────────┬─────────────┘
-            ┌─────────────────────▼──────────────────────┐
-            │  层 20 Full → 建【候选池】16384 个位置       │
-            │  层 21~23 Reuse                            │  解码器
-            │  层 24 Reindex → 只在候选池里选 Top-512     │  20 层
-            │  层 25~27 Reuse                            │
-            │  层 28/32/36 Reindex + 各带 3 个 Reuse      │
-            └─────────────────────┬──────────────────────┘
-                                  │
-                              DSpark 一次猜 5 个 token
-                                  │
-                                 输出
+<div class="codehilite"><pre><span></span><code>  图片                                   文字
+   |                                      |
+ DeepSeek-ViT (32 层, patch 14)      Text Embedding
+   |  3x3 合一，视觉 token 数 /9          |
+ MLP 投影器 ---------------------------- +
+                                         |
+                                         v
+--- 编码器 20 层（prefill 只跑到这里）------------------------------
+   层 0, 1       纯 SWA，没有全局注意力
+   层 1          + Engram 模块 A（98B 参数的查找表）
+   层 2          CSA2 Full     存全局 KV  &lt;--+
+   层 3 ~ 7      CSA2 Reuse    借层 2 的 KV -+
+   层 8          CSA2 Full     存全局 KV  &lt;--+
+   层 9 ~ 13     CSA2 Reuse    借层 8 的 KV -+
+   层 14         CSA2 Full     存全局 KV  &lt;--+   + Engram 模块 B
+   层 15 ~ 19    CSA2 Reuse    借层 14 的 KV -+
+-------------------------------------------------------------------
+                                         |
+                                         v  H20（第 20 层的输出）
+             【一次投影，产出后 20 层的全部全局 KV】   &lt;- CED 的核心
+                                         |
+                                         v
+--- 解码器 20 层 ---------------------------------------------------
+   层 20         CSA2 Full     存全局 KV，并建【候选池】16384 个位置
+   层 21 ~ 23    CSA2 Reuse
+   层 24         CSA2 Reindex  只在候选池里重选 Top-512
+   层 25 ~ 27    CSA2 Reuse
+   层 28/32/36   CSA2 Reindex  各带 3 个 Reuse
+-------------------------------------------------------------------
+                                         |
+                                         v
+                          DSpark：一次前向猜 5 个 token
+                                         |
+                                         v
+                                        输出
 
-  全局 KV：只有 4 层真存 → FP4 量化 → 890 字节/token
-  SWA KV：不进 SSD，放内存池，miss 就重放 128 token
+全局 KV：40 层里只有 4 层真存（2 / 8 / 14 / 20）-&gt; FP4 -&gt; 890 字节/token
+SWA  KV：不进 SSD，放宿主内存池，miss 就重放最近 128 个 token
 </code></pre></div>
 
 <hr />
 <h2 id="_28">十六、可靠性说明</h2>
 <ul>
 <li>✅ 标记的内容<strong>直接来自技术报告原文</strong>，可以引用。本文所有架构描述、超参数、评测数字都对照过 <a href="papers/DeepSeek_V41_Tech_Report.pdf">papers/DeepSeek_V41_Tech_Report.pdf</a> 原文。</li>
-<li>⚠️ 标记的是<strong>我的推算或提醒</strong>，引用前请自己验证。主要有三处：1M 上下文下 389 GB 的反推、分层索引器 61 倍的省法、Engram 参数量的早期估算。</li>
-<li><strong>一个需要注意的出入</strong>：Hugging Face 模型页标的是 <strong>485B</strong>，而技术报告写的是 <strong>552B 骨干 + 196B Engram</strong>。⚠️ 我推测 HF 的数字是按 FP8/FP4 存储的实际权重文件统计的，但<strong>报告没有解释这个差异</strong>，以报告为准。</li>
-<li><strong>架构参数已与 <code>config.json</code> 逐项核对</strong>，两者一致。特别是 <code>kv_source_layer_ids: [2, 8, 14, 20]</code>、<code>index_topk: 512</code>、<code>candidate_topk_blocks: 2048</code>、<code>n_routed_experts: 384</code> 等关键项。</li>
-<li>本文写于 <strong>2026-09-10</strong>，即报告发布当天。后续若有勘误或补充材料，以官方为准。</li>
+<li>⚠️ 标记的是<strong>我的推算或提醒</strong>，引用前请自己验证。完整清单如下：</li>
 </ul>
+<table>
+<thead>
+<tr>
+<th>推算</th>
+<th>在哪一节</th>
+<th>依据</th>
+<th>和报告值差多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V1 的 1M KV ≈ <strong>389 GB</strong></td>
+<td>一</td>
+<td>$890 \times 437 \times 10^6$</td>
+<td>报告只给倍数</td>
+</tr>
+<tr>
+<td>骨干参数 <strong>545.0 + 7.3 = 552.3 B</strong></td>
+<td>一</td>
+<td>逐项加超参表</td>
+<td><strong>+0.05 %</strong> ✅</td>
+</tr>
+<tr>
+<td>每层注意力 ≈ <strong>149.7 M</strong></td>
+<td>一</td>
+<td>按标准参数化拆投影矩阵</td>
+<td>反推值 142 M，差 5 %</td>
+</tr>
+<tr>
+<td>激活 <strong>7.94 B / 15.90 B</strong></td>
+<td>一</td>
+<td>$20$ 层 / $40$ 层 × 每层 397.4 M</td>
+<td><strong>0.7 % / 0.6 %</strong> ✅</td>
+</tr>
+<tr>
+<td>稀疏度 <strong>34.5×（decode）／ 46.8×（含 Engram）</strong></td>
+<td>一</td>
+<td>$552/16$、$748/16$</td>
+<td>报告未给</td>
+</tr>
+<tr>
+<td>每 token FLOPs <strong>16 / 32 / 96 GFLOPs</strong></td>
+<td>一</td>
+<td>$2N$、$6N$</td>
+<td>报告未给</td>
+</tr>
+<tr>
+<td>主 KV <strong>720 字节/token</strong>、索引器 K ≈ <strong>180</strong></td>
+<td>六</td>
+<td>E2M1 + 每 16 通道一个 E4M3</td>
+<td>合计 900 vs 890，<strong>1.1 %</strong></td>
+</tr>
+<tr>
+<td>KV 压缩 <strong>10 × 4 × 1.6 = 64 倍</strong></td>
+<td>六</td>
+<td>报告自己的三个正交维度</td>
+<td>$46080/720 = 64.0$ ✅</td>
+</tr>
+<tr>
+<td>Engram <strong>196.6 B</strong></td>
+<td>九</td>
+<td>$2\times3\times8\times1600\text{万}\times256$</td>
+<td><strong>0.3 %</strong> ✅</td>
+</tr>
+<tr>
+<td>分层索引器省 <strong>61 倍</strong></td>
+<td>五</td>
+<td>$10^6 / 16384$</td>
+<td>报告未给</td>
+</tr>
+<tr>
+<td>「1/4 激活参数」= prefill/decode 平均</td>
+<td>十三</td>
+<td>$(8+16)/2 \div 49$</td>
+<td>⚠️ 本文的解读</td>
+</tr>
+<tr>
+<td>$\gamma=5$ 的接受长度表</td>
+<td>十</td>
+<td>$(1-\alpha^6)/(1-\alpha)$</td>
+<td>⚠️ $\alpha$ 报告未给，表是通式</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>一条通用纪律</strong>：本文里带 ✅ 的是<strong>报告的结论</strong>，带 ⚠️ 的是<strong>本文的推断</strong>。报告解析类文章最容易犯的错就是把后者写成前者——引用时请连同标记一起看。<br />
+- <strong>一个需要注意的出入</strong>：Hugging Face 模型页标的是 <strong>485B</strong>，而技术报告写的是 <strong>552B 骨干 + 196B Engram</strong>。⚠️ 我推测 HF 的数字是按 FP8/FP4 存储的实际权重文件统计的，但<strong>报告没有解释这个差异</strong>，以报告为准。<br />
+- <strong>架构参数已与 <code>config.json</code> 逐项核对</strong>，两者一致。特别是 <code>kv_source_layer_ids: [2, 8, 14, 20]</code>、<code>index_topk: 512</code>、<code>candidate_topk_blocks: 2048</code>、<code>n_routed_experts: 384</code> 等关键项。<br />
+- 本文写于 <strong>2026-09-10</strong>，即报告发布当天。后续若有勘误或补充材料，以官方为准。</p>
 <hr />
 <h2 id="_29">参考来源</h2>
 <ol>
@@ -1148,7 +1612,9 @@ Markov 头  → 建模这 5 个草稿 token 之间的依赖
 </ol>
 <hr />
 <blockquote>
-<p><strong>下一步阅读</strong>：<a href="模型技术对比.html">模型技术对比.md</a> 看它和 Kimi-K3 / GLM-5.3 / MiniMax-M3 的横向位置 ｜ <a href="DeepSeek-V4.html">DeepSeek-V4.md</a> 看 CSA、mHC 的第一代设计</p>
+<p><strong>下一步阅读</strong>：<a href="模型技术对比.html">模型技术对比.md</a> 看它和 Kimi-K3 / GLM-5.3 / MiniMax-M3 的<strong>横向位置</strong>（本文只做单家纵向解析，横向对比不在这里）｜ <a href="DeepSeek-V4.html">DeepSeek-V4.md</a> 看 CSA、mHC 的第一代设计</p>
+<p><strong>想补前置知识</strong>：KV cache 为什么是长上下文的第一成本项 → <a href="大模型架构入门/06-KV-cache.html">06 章</a> ｜ 压缩/稀疏/线性三条路的总账 → <a href="大模型架构入门/08-高效注意力.html">08 章</a> ｜ FP4 的格式、粒度与"scale 不是免费的" → <a href="大模型架构入门/14-量化.html">14 章</a> ｜ Engram → <a href="大模型架构入门/18-Engram与条件记忆.html">18 章</a></p>
+<p><strong>想看实现侧</strong>：prefill/decode 两阶段与 PD 分离 → <a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">推理框架 §3 / §10</a> ｜ 前缀缓存与分页 → <a href="../推理框架/推理优化入门/05-PagedAttention与前缀缓存.html">推理框架 §5</a> ｜ 量化算子 → <a href="../大模型算子开发/06-量化算子.html">大模型算子开发 §6</a> ｜ 算子融合（Mega-mHC 那类"合成一个 kernel"） → <a href="../大模型算子开发/05-算子融合.html">大模型算子开发 §5</a></p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

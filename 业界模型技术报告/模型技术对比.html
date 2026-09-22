@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="deepseek-v41-flash-vs-kimi-k3-vs-glm-52-vs-minimax-m3-vs-openpangu-20">模型技术对比：DeepSeek-V4.1-Flash vs Kimi K3 vs GLM-5.2 vs MiniMax M3 vs openPangu-2.0</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>来源</strong>：整理自 2026-08-03 / 08-04 / 08-05 三次调研对话记录 + 2026-09-10 对 DeepSeek-V4.1-Flash 技术报告的回填 + GLM-5 / IndexCache / MSA / MiniMax-M2 / openPangu-2.0 / DeepSeek-V4.1-Flash 六篇论文正文核对。<br />
 <strong>单模型详解</strong>：<a href="DeepSeek-V4.1-Flash.html">DeepSeek-V4.1-Flash.md</a> ｜ <a href="DeepSeek-V4.html">DeepSeek-V4.md</a>（上一代，已被 V4.1 取代）｜ <a href="Kimi-K3.html">Kimi-K3.md</a> ｜ <a href="GLM-5.2.html">GLM-5.2.md</a> ｜ <a href="MiniMax-M3.html">MiniMax-M3.md</a> ｜ <a href="openPangu-2.0-Pro.html">openPangu-2.0-Pro.md</a></p>
 <p>⚠️ <strong>DeepSeek 一列已从 V4 换成 V4.1-Flash</strong>（2026-09-10 发布，同日回填）。<strong>这是一次换代而不是补一版</strong>：V4.1 去掉了 V4 的 CSA+HCA 混合，改成纯 CSA2，整个模型的立意也从「综合架构升级」收窄成<strong>一件事——把 KV cache 压到极限</strong>。下面所有涉及 DeepSeek 的行都给了 V4.1 的数字；V4 的原始数字在 §2.9 单独保留，因为本文多处论证依赖它。<br />
@@ -310,7 +310,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h3 id="openpangu">⚠️ openPangu 的资料不对称是另一种性质：报告很全，但没有对手</h3>
 <p>openPangu 有一份 45 页的完整一手报告，架构、超参、课程、后训练、Infra、消融都披露得很细——<strong>这一维度上它和 V4/K3 是同一档的。</strong></p>
 <p><strong>但它的报告里没有任何对照模型。</strong> 全文关键词计数：</p>
-<div class="codehilite"><pre><span></span><code>Kimi / MiniMax / Claude / GPT- / Gemini  →  0 次
+<div class="codehilite"><pre><span></span><code>Kimi / MiniMax / Claude / GPT- / Gemini   →  0 次
 Qwen                                      →  1 次（仅参考文献）
 GLM                                       →  2 次（1 次参考文献，1 次说明自家 OPD 与 GLM-5 的实现差异）
 </code></pre></div>
@@ -323,13 +323,9 @@ GLM                                       →  2 次（1 次参考文献，1 次
 横向性能      →  V4.1/K3/GLM/M3 之间有桥接节点；openPangu 是孤岛，只能拼
 长上下文验证  →  只有 K3（BrowseComp 1M）、V4（MRCR 1M）、MSA（RULER-128K）三家有数字
 版本增量      →  GLM 5.1→5.2、MiniMax M2→M3 完全不可比
-
-⭐ V4.1 有一项别家全都没有的可验证性：它把**逐字节的 KV 成本**写进了正文
-   （890 字节/token、相对 V4-Flash 1/4、相对 V1 的 1/437）。其余四家给的都是
-   「压缩比」「top-k 预算」这类相对量，**没人换算到绝对字节数**。
-   所以 §4 里只有 DeepSeek 一列能被独立复算。
 </code></pre></div>
 
+<p>⭐ <strong>V4.1 有一项别家全都没有的可验证性</strong>：它把<strong>逐字节的 KV 成本</strong>写进了正文（890 字节/token、相对 V4-Flash 的 1/4、相对 V1 的 1/437）。其余四家给的都是「压缩比」「top-k 预算」这类相对量，<strong>没人换算到绝对字节数</strong>。所以 §四 里只有 DeepSeek 一列能被独立复算 —— 本文在 §3.1 补了一张用<strong>同一条通式</strong>把五家都换算到「字节/token」的派生表，能算的算、不能算的标空。</p>
 <hr />
 <h2 id="_2">一、核心分歧：五条不同的长上下文路线</h2>
 <p>五家都把「原生百万级上下文」当成这一代的目标（openPangu 是唯一的例外，停在 512K），但赌的是不同的东西：</p>
@@ -344,11 +340,13 @@ GLM                                       →  2 次（1 次参考文献，1 次
 <ul>
 <li><strong>V4.1-Flash（压缩派·三维相乘）</strong> 是这一代唯一把压缩当作<strong>乘法问题</strong>来做的。报告明说前人工作分布在三个正交维度上、<strong>没有一个方法同时覆盖三者</strong> ✅：</li>
 </ul>
-<p><code>条目大小方向  GQA / MLA          ── CSA2 继承 MLA 的低秩 latent
-  序列方向      V4 的 CSA / HCA     ── CSA2 每 m 个 token 压成 1 条
-  层方向        CLA / IndexCache    ── CSA2 的 Reuse / Reindex 模式
-  ────────────────────────────────────────────────
-  三者相乘 ＋ CED 再砍掉「一半的层需要产生 KV」这件事本身</code></p>
+<p>```<br />
+  条目大小方向  GQA / MLA           ── CSA2 继承 MLA 的低秩 latent<br />
+  序列方向      V4 的 CSA / HCA     ── CSA2 每 m 个 token 压成 1 条<br />
+  层方向        CLA / IndexCache    ── CSA2 的 Reuse / Reindex 模式</p>
+<hr />
+<p>三者相乘 ＋ CED 再砍掉「一半的层需要产生 KV」这件事本身<br />
+  ```</p>
 <p>结果：<strong>40 层里只有 4 层真正存全局 KV</strong>（层 2、8、14、20）✅，每 token 890 字节 ✅。注意 V4.1 <strong>去掉了 V4 的 CSA+HCA 混合</strong>，改成纯 CSA2 —— 架构反而更简单了。<br />
 - <strong>K3（换核派）</strong> 直接换掉 75% 的注意力层：KDA 是线性注意力，状态是<strong>固定大小的矩阵</strong>，与序列长度无关；只留 25% 的 Gated MLA 承担"精确回忆"。<br />
 - <strong>GLM-5.2（选择派·token 级）</strong> 走 DeepSeek 的 DSA 路线：KV 全量保留、注意力仍是 softmax，只用一个轻量 indexer 给每个 query 选 top-2048。它的独创点不在稀疏本身，而在<strong>发现 indexer 已经变成新瓶颈</strong>（200K prefill 下占 81% 延迟），然后用 IndexShare 让 4 层共用一次索引计算。<br />
@@ -383,7 +381,7 @@ SWA 支路没法投影，必须每层实算（催生了 SWA Bounded Replay），
 以及报告自己承认的<strong>近似重建带来的鲁棒性边界未刻画</strong>（见 §5.4）。</p>
 <p><strong>GLM 和 MiniMax 落在同一格里</strong>（精确 softmax + 动态稀疏选择 + 2048 预算），但<strong>关心的子问题正好互补</strong>：GLM 问"indexer 太贵怎么办"，MiniMax 问"indexer 选不准怎么办"。两者不冲突，理论上可以叠加。</p>
 <p><strong>openPangu 则和 GLM 的 IndexShare 是同一类思路的两种极端形式</strong>：</p>
-<div class="codehilite"><pre><span></span><code>IndexShare（GLM）  ：所有层都是 DSA，但每 4 层只算一次索引，其余层复用位置列表
+<div class="codehilite"><pre><span></span><code>IndexShare（GLM）   ：所有层都是 DSA，但每 4 层只算一次索引，其余层复用位置列表
 DSA-SWA（openPangu）：只有 1/3 的层是 DSA，其余层根本不做全局选择，改用固定窗口
 </code></pre></div>
 
@@ -411,7 +409,7 @@ DSA-SWA（openPangu）：只有 1/3 的层是 DSA，其余层根本不做全局�
 <td>2.8T / 104B</td>
 <td><strong>744B / 40B</strong>（HF 口径 753B）</td>
 <td><strong>428B / ~23B</strong>（五家里总参最小）</td>
-<td><strong>505B / 18B</strong>（HF 口径 541B 含 MTP）<br><strong>激活量五家最低</strong></td>
+<td><strong>505B / 18B</strong>（HF 口径 541B 含 MTP）<br>⚠️ <strong>激活量五家里第二低</strong>——V4.1 的 8B(prefill)/16B(decode) 更低（§3.3 有同口径换算）</td>
 </tr>
 <tr>
 <td>另一档型号</td>
@@ -427,7 +425,7 @@ DSA-SWA（openPangu）：只有 1/3 的层是 DSA，其余层根本不做全局�
 <td><strong>93</strong>（69 KDA + 24 MLA）</td>
 <td><strong>78</strong>（3 dense + 75 MoE）+ 1 MTP</td>
 <td><strong>60</strong>（3 dense + 57 MoE）</td>
-<td><strong>50</strong>（3 dense + 47 MoE）+ 3 MTP，<strong>五家最浅</strong></td>
+<td><strong>50</strong>（3 dense + 47 MoE）+ 3 MTP<br>⚠️ <strong>五家里第二浅</strong>，最浅的是 V4.1 的 40 层</td>
 </tr>
 <tr>
 <td>Hidden dim</td>
@@ -435,7 +433,15 @@ DSA-SWA（openPangu）：只有 1/3 的层是 DSA，其余层根本不做全局�
 <td>7,168</td>
 <td><strong>6,144</strong></td>
 <td><strong>6,144</strong></td>
-<td><strong>5,120（五家最窄）</strong></td>
+<td><strong>5,120（与 V4.1 并列最窄）</strong></td>
+</tr>
+<tr>
+<td>深宽比 <code>d_model / L</code></td>
+<td><strong>128 —— 五家最"胖"</strong></td>
+<td>7168/93 = <strong>77.1（五家最"瘦"）</strong></td>
+<td>6144/78 = <strong>78.8</strong></td>
+<td>6144/60 = <strong>102.4</strong></td>
+<td>5120/50 = <strong>102.4</strong>（与 M3 完全相同）</td>
 </tr>
 <tr>
 <td>注意力头</td>
@@ -518,12 +524,20 @@ DSA-SWA（openPangu）：只有 1/3 的层是 DSA，其余层根本不做全局�
 <td><strong>384 选 8 + 1 共享，全宽 5120</strong>，专家中间维 <strong>1792（五家最小）</strong></td>
 </tr>
 <tr>
-<td>MoE 稀疏度</td>
-<td>64×</td>
-<td>56×（专家数 2.3×）</td>
-<td><strong>32×</strong></td>
-<td><strong>32×</strong>（与 GLM 相同，两家最保守）</td>
-<td><strong>48×</strong>（介于 V4 与 GLM/M3 之间）</td>
+<td>MoE 路由选择比<br><code>路由专家数 / 激活专家数</code></td>
+<td>384/6 = <strong>64×</strong></td>
+<td>896/16 = <strong>56×</strong>（专家数 2.3×）</td>
+<td>256/8 = <strong>32×</strong></td>
+<td>128/4 = <strong>32×</strong>（与 GLM 相同，两家最保守）</td>
+<td>384/8 = <strong>48×</strong></td>
+</tr>
+<tr>
+<td>⭐ <strong>真稀疏度</strong><br><code>总参数 / 激活参数</code></td>
+<td>552/16 = <strong>34.5×</strong>（decode）<br>含 Engram：748/16 = <strong>46.8×</strong></td>
+<td>2800/104 = <strong>26.9×</strong></td>
+<td>744/40 = <strong>18.6×</strong></td>
+<td>428/23 = <strong>18.6×</strong></td>
+<td>505/18 = <strong>28.1×</strong></td>
 </tr>
 <tr>
 <td>MoE 层数取向</td>
@@ -877,7 +891,7 @@ DSA-SWA（openPangu）：只有 1/3 的层是 DSA，其余层根本不做全局�
 <div class="codehilite"><pre><span></span><code>GLM 的 IndexShare ：  indexer 还是每层都要算，但算一次给 4 层共用
                      → 摊薄的是「算的次数」
 
-V4.1 的候选池      ：  第一个 Full 层扫全场（只此一次），
+V4.1 的候选池     ：  第一个 Full 层扫全场（只此一次），
                      把 100 万位置缩成 16384 个候选，
                      后面的 Reindex 层只在这个池里选
                      → 摊薄的是「每次算的搜索域大小」
@@ -923,6 +937,91 @@ GLM 的 IndexShare 虽然省得少，但每 4 层会重新算一次索引，误�
 </code></pre></div>
 
 <p><strong>两家独立踩到同一个坑，说明它不是某一份实现的 bug，而是"用辅助 loss 训索引模块"这个范式自带的结构性风险。</strong> 而两种解法的分野也很清楚：detach 是把病因去掉，小系数是把症状压住——后者更简单，但"多小才够小"仍然是个需要扫的超参。</p>
+<h4 id="kv-cache-token">⭐ 把五家的 KV cache 换算到同一个单位：字节 / token</h4>
+<p>上面那张表里 KV 那一行全是定性的（"线性"、"恒定"、"全量保留"），只有 V4.1 给了绝对值。<strong>但其中三家的配置已经够算了</strong>——KV cache 只有一条通式，不需要报告帮忙：</p>
+<div class="codehilite"><pre><span></span><code>每 token 每层的 KV 字节数 = 2 × n_kv_heads × head_dim × 每个元素的字节数
+                             ↑
+                          「2」是 K 和 V 各一份
+</code></pre></div>
+
+<p>⚠️ <strong>这条式子最常见的两种用错法</strong>（二手解读里几乎都是这两种之一）：</p>
+<div class="codehilite"><pre><span></span><code>错法一：拿 d_model 硬套 —— 2 × d_model × 字节数
+        这是 MHA（每个头都有自己的 K/V）才成立的特例，因为只有 MHA 满足
+        n_kv_heads × head_dim = d_model。
+        代入 M3：d_model 是 6144，而真实的 n_kv_heads × head_dim = 4 × 128 = 512，
+        硬套会高估 6144 / 512 = 12 倍。
+
+错法二：把 MLA 也套进这条式子 —— MLA 缓存的不是 n_kv_heads × head_dim，
+        而是压缩后的潜向量 c_KV，所以是 (d_c + d_rope) × 字节数，与头数无关。
+        ⚠️ 顺便说清一件最容易写反的事：MLA 照样要把 c_KV 存进 cache。
+        所谓「矩阵吸收」吸掉的是上投影矩阵 W_UK / W_UV（被吸进 Q 侧和输出侧），
+        省掉的是「把 c_KV 解压回 K/V 再算」这几步，不是省掉存 c_KV。
+        要是真不存 c_KV，KV cache 一点都没压缩，MLA 就白做了。
+</code></pre></div>
+
+<p><strong>这两条口径和入门篇完全一致</strong>，展开版见 <a href="大模型架构入门/06-KV-cache.html">大模型架构入门/06-KV-cache.md §6.1</a>（<code>n_kv_heads</code> 与 <code>n_heads</code> 的判断法则）与 <a href="大模型架构入门/07-MHA到MLA.html">大模型架构入门/07-MHA到MLA.md §7.4</a>（矩阵吸收到底吸了什么）。</p>
+<p><strong>按这条通式把能算的算出来</strong>（⚠️ 下面的数字除 V4.1 那一格外<strong>全部是我按 §二 的配置手算的</strong>，各家报告都没给；元素精度取各家自报的 KV 精度）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>KV 形态</th>
+<th>每层每 token</th>
+<th>全模型每 token</th>
+<th>1M 上下文总量</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4.1-Flash</strong></td>
+<td>CSA2 压缩 latent，<strong>只有 4 层</strong>（层 2/8/14/20）存全局 KV，FP4</td>
+<td>890 ÷ 4 = <strong>222.5 B</strong></td>
+<td>✅ <strong>890 B</strong>（报告直给）</td>
+<td>✅ <strong>≈890 MB</strong></td>
+<td>✅ 唯一有一手数字的一家；SWA KV 不进 cache，走宿主内存池</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>GQA，4 kv 头 × head_dim 128</strong>，60 层全量保留，BF16</td>
+<td>2 × 4 × 128 × 2 = <strong>2,048 B</strong></td>
+<td><strong>122,880 B ≈ 120 KiB</strong></td>
+<td><strong>≈122.9 GB</strong></td>
+<td>⚠️ 全文没给，纯手算；MXFP8 版本折半到 60 KiB/token</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>MLA</strong>：<code>d_c = 512</code> + <code>d_rope = 64</code>；50 层里只有 ≈17 层随长度增长（DSA 层），33 层封在 512 窗口，BF16</td>
+<td>(512 + 64) × 2 = <strong>1,152 B</strong></td>
+<td><strong>≈19,584 B ≈ 19.1 KiB</strong><br>＋ 常数项 ≈27 MB</td>
+<td>512K 上 <strong>≈10.3 GB</strong></td>
+<td>⚠️ 手算；常数项 = SWA 层 19.5 MB + PAS 7.4 MB</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>69 层 KDA（<strong>恒定状态，与长度无关</strong>）+ 24 层 Gated MLA</td>
+<td>⚠️ <strong>算不出</strong>——报告没给 MLA 的 <code>d_c</code></td>
+<td>⚠️ 只知道"24 层线性 + 69 层恒定"</td>
+<td>⚠️ 无法换算</td>
+<td>唯一一家总量<strong>有上界</strong>的（KDA 部分不随长度涨）</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>MLA-256（QK 192 / V 256），78 层全量保留</td>
+<td>⚠️ <strong>算不出</strong>——<code>d_c</code> 未披露</td>
+<td>⚠️ 无法换算</td>
+<td>⚠️ 无法换算</td>
+<td>DSA 只减算力不减 KV，所以它是<strong>全量线性</strong>里层数最多的</td>
+</tr>
+</tbody>
+</table>
+<p><strong>这张表一算出来，三件事立刻清楚了</strong>：</p>
+<ol>
+<li>⭐ <strong>V4.1 的 890 B/token 和 M3 的 ≈120 KiB/token 差了 138 倍。</strong> 前面那句"压缩派 vs 选择派"听起来像两种审美，换到同一个单位上看是<strong>两个数量级</strong>的差距。M3 的代价写在 §二 里那句"线性、全量保留"上，但没人换算过它值多少钱——<strong>1M 上下文单请求 122.9 GB，一张 80 GB 的卡装不下一条序列的 KV。</strong></li>
+<li>⭐ <strong>openPangu 报告里"三项成本都是同构纯 DSA 的 1/3"这句话，可以用这条通式独立验证</strong>：纯 DSA 版本 50 层全部随长度增长 = <code>50 × 1152 = 57,600 B/token</code>；DSA-SWA 混合只有 17 层增长 = <code>19,584 B/token</code>。<code>19,584 / 57,600 = 0.34</code> ✅ <strong>确实就是 1/3。</strong> 这是本文少数几处「报告的结论能被读者用一行除法复核」的地方。</li>
+<li>⚠️ <strong>M3 的"KV 头从 8 减到 4 拿到一半"也能验</strong>：per-token KV 与 <code>n_kv_heads</code> 成正比，8 → 4 <strong>精确地</strong>是 ½，不是"大约一半"。这条正好支撑 §四 里那句 <code>7.6× × 2 ≈ 15×</code> 的推断——<strong>访存受限的 decode 阶段，KV 读取量减半就是接近 2× 的独立收益。</strong></li>
+</ol>
+<p>⚠️ <strong>两家算不出来的原因值得记一笔</strong>：K3 和 GLM 都没披露 MLA 的 latent 维 <code>d_c</code>。<strong>MLA 的 KV cache 完全由 <code>d_c + d_rope</code> 决定</strong>，缺这一个数，头数、head_dim、层数全都用不上。<strong>"披露了注意力头数"不等于"披露了 KV 成本"</strong>——这两家的注意力那一行看起来写得挺细，其实缺的正好是唯一那个要紧的数。</p>
 <h3 id="311-minimax-m2-swa">3.1.1 ⭐ 五家里最有价值的一份负面结果：MiniMax M2 的 SWA 消融</h3>
 <p>这是整份对比里<strong>唯一一处有量化数据的失败实验</strong>。别家都只说"我们评估过并放弃了"，MiniMax M2 系列报告 §2.2.2 把表放出来了——在 M2 架构量级上<strong>续训了"数千亿到数万亿 tokens"</strong>，扫过 SWA/全注意力比例、RoPE 设置、层内与层间混合、sink token 等维度：</p>
 <table>
@@ -1109,6 +1208,77 @@ GLM 的 IndexShare 虽然省得少，但每 4 层会重新算一次索引，误�
 3. <strong>两家关心的子问题正好互补。</strong> GLM 问"indexer 太贵"，MiniMax 问"indexer 选不准"。<strong>理论上 IndexShare 可以直接叠加到 MSA 上</strong>（把 MSA 的块级索引在相邻层间复用），目前没有任何一方做过这个组合。<br />
 4. <strong>MSA 相对 NSA 是做减法。</strong> NSA（DeepSeek 早期）有压缩、选择、滑窗三条支路，MSA <strong>只保留选择</strong>，论文自称 "deliberately streamlined"，理由是"便于在广泛的 GPU 上高效部署"。少一条支路 = 少一套 kernel = 直接能挂进 vLLM / SGLang。<strong>这是明确的工程优先于精巧。</strong></p>
 </blockquote>
+<h4 id="indexer">⭐ 把两家的 indexer 成本算出来：它才是真正的大头</h4>
+<p>上面这张表里"indexer 规模"那一行是全节最重要、却最容易被扫过去的一行：<strong>MSA 是"每组 1 个 Q 头 + 全局共享 1 个 K 头"，DSA 是"32 头"</strong>。差 8 倍。<strong>这一行的后果比"块级 vs token 级"大得多</strong>，但两家都只给了结论倍数，没给算式。补上：</p>
+<div class="codehilite"><pre><span></span><code>每个 query、每一层的注意力算力（只算矩阵乘，一次乘加 = 2 FLOPs）
+
+主注意力（预算 k 个 key）  = 2 × 2 × n_q_heads × head_dim × k
+                              ↑   ↑
+                          QK 和 AV 各一次 ／ 乘加折算成 FLOPs
+
+indexer（必须扫全部 s 个 key）= 2 × n_index_heads × head_dim × s
+                                         ↑
+                                  ⚠️ 这一项随上下文线性增长，主注意力不涨
+</code></pre></div>
+
+<p><strong>代入 s = 1M（1,048,576）算一遍</strong>（⚠️ 全部是我手算的，两家报告都只给倍数不给算式）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>MSA</strong>（MiniMax M3）</th>
+<th><strong>DSA</strong>（GLM-5.2）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>主注意力预算</td>
+<td>16 × 128 = 2048 key</td>
+<td>top-2048 key</td>
+</tr>
+<tr>
+<td>主注意力 FLOPs / query / 层</td>
+<td>2×2×64×128×2048 = <strong>0.067 GFLOPs</strong></td>
+<td>2×(64×192 + 64×256)×2048 ≈ <strong>0.118 GFLOPs</strong></td>
+</tr>
+<tr>
+<td>indexer 头数</td>
+<td><strong>4</strong>（每 GQA 组 1 个）</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>indexer FLOPs / query / 层</td>
+<td>2×4×128×1M = <strong>1.07 GFLOPs</strong></td>
+<td>2×32×128×1M = <strong>8.59 GFLOPs</strong></td>
+</tr>
+<tr>
+<td><strong>indexer 占这一层的比例</strong></td>
+<td>⚠️ <strong>94%</strong></td>
+<td>⚠️ <strong>98.6%</strong></td>
+</tr>
+<tr>
+<td>同配置全注意力（做对照）</td>
+<td>2×2×64×128×1M = <strong>34.4 GFLOPs</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>相对全注意力的节省</td>
+<td>34.4 ÷ (1.07+0.067) = <strong>30.2×</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>这几个手算数字对上了两家各自公布的倍数，而且对得很准</strong>：</p>
+<ol>
+<li>⭐ <strong>MSA 论文自报的"注意力 FLOPs 28.4×"，手算是 30.2×（差 6%）。</strong> 更要紧的是它说明了 <strong>28.4× 里的分母几乎全是 indexer</strong>——<code>1.07 / 1.14 = 94%</code>。<strong>所以"稀疏注意力省了 28 倍"这句话的正确读法是：主注意力省了 512 倍，但被 indexer 吃回去到只剩 28 倍。</strong></li>
+<li>⭐ <strong>GLM 自报的"1M 下单 token FLOPs 降低 2.9×（IndexShare）"，手算能复现到小数点</strong>：<br />
+<code>不用 IndexShare：FFN 2*40B = 80 ＋ 78 层 * (8.59 + 0.118)   = 679   合计 759 GFLOPs
+   用了 IndexShare：FFN 2*40B = 80 ＋ 78 层 * (8.59/4 + 0.118) = 177   合计 257 GFLOPs
+   759 / 257 = 2.95   -&gt; 与官方自报的 2.9x 一致</code><br />
+<strong>这也从另一个方向印证了 IndexCache 论文那个"200K prefill 下 81% 时间在 indexer"的观察</strong>——算力占比 98.6%、时间占比 81%，两者的差就是 indexer 那个又瘦又长的矩阵乘算术强度太低、跑不满卡。</li>
+<li>⭐ <strong>两家"谁的 indexer 更贵"这件事，是被头数而不是被粒度决定的。</strong> MSA 的 indexer 比 DSA 便宜 <strong>8 倍</strong>，正好是 4 头对 32 头。<strong>所以 MiniMax 其实不太需要 IndexShare，而 GLM 非做不可</strong>——§3.1 里那句"两家关心的子问题正好互补"，根子在这张表的第三行。</li>
+</ol>
+<p>⚠️ <strong>三点必须标清楚的保留</strong>：这些数字只算了矩阵乘的 FLOPs，<strong>没算 top-k 排序、反向索引物化、以及离散 gather 的访存</strong>——而 MSA 论文自己说实测只兑现到 14.2× 而不是 28.4×，差的那一半正是这些。<strong>所以上表是"算力账"，不是"墙钟账"。</strong> 另外 GLM 的主注意力那一格用了 MLA-256 的 QK 192 / V 256，<strong>这是我按 §二 的配置代的，报告没说 DSA 之后这两个维度有没有变</strong>；<code>d_c</code> 未披露也意味着 decode 阶段的 MQA 形态算不了。<strong>最后，<code>2048</code> 这个预算在 prefill 的前 2048 个 token 上是达不到的</strong>（可用的 key 还没那么多），所以短序列上的实际比例会比表里低。</p>
 <h3 id="313-pas-vs-gpt-oss-sink-sink">3.1.3 ⭐ PAS vs gpt-oss sink：五家里唯一有人做过的一次 sink 对照</h3>
 <p><strong>这是 openPangu 报告最有独立价值的一处消融，因为另外四家都没做过这个比较。</strong></p>
 <p>Attention sink 现在几乎是标配了：V4 给每个头一个可学习的 sink logit 加在 softmax 分母上，gpt-oss 的做法被广泛沿用。但<strong>"sink 到底该长什么样"从来没有被公开对照过</strong>——大家都是直接抄一个实现。</p>
@@ -1230,9 +1400,9 @@ M3        60 层 / 428B   → 没撞 → 不改
 <h4 id="v41-single-pass-mhc">⭐ 而 V4.1 直接把这个代价干掉了一半：Single-Pass mHC</h4>
 <p><strong>这是 2026-09 这次换代里，对 mHC 这条技术线最重要的一次推进。</strong></p>
 <p>V4 的 mHC 之所以要 6.7% 墙钟，根子在一个<strong>数据依赖</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① X_l = B·X_{l-1} + C·Y_{l-1}          残差更新
-② (A_l, B_l, C_l) = H(X_l)             算系数  ← 要对整个 hidden 维度归约
-③ X̂_l = A_l · X_l                      输入混合 ← 必须等 ② 算完
+<div class="codehilite"><pre><span></span><code>① 残差更新    X_l = B * X_{l-1} + C * Y_{l-1}
+② 算系数      (A_l, B_l, C_l) = H(X_l)          ← 要对整个 hidden 维度归约
+③ 输入混合    X_in = A_l * X_l                  ← 必须等 ② 算完
 </code></pre></div>
 
 <p>第 ③ 步等第 ② 步，所以 <code>X_l</code> <strong>必须被读两遍</strong>，三个 kernel 无法融合。<br />
@@ -1349,22 +1519,119 @@ mHC 这条线现在有 <strong>3 份独立实践</strong>（V4 / V4.1 / openPang
 <p>（Raschka 的观察值得记：<strong>在 K3 一堆改动里，AttnRes 是唯一一个不是"效率优化替换"的改动</strong>——其他基本都在换更便宜的等价物，只有 AttnRes 是在加东西。）</p>
 <h3 id="33-moe">3.3 MoE：五种预算分配</h3>
 <ul>
-<li><strong>V4.1</strong>：专家全宽 5120（比 V4 窄）、384 选 6，<strong>稀疏度 64× —— 五家里最高</strong>，专家中间维 2304。预算花在"每个专家更强"。<br />
-  ⚠️ 注意稀疏度这个数随 hidden 缩小反而升了：V4 是 7168/6≈1195 的等效比，V4.1 是 5120/6≈853。<strong>它是本文稀疏度榜首，但榜首的位置来自把 hidden 做窄，不是来自选得更多。</strong></li>
+<li><strong>V4.1</strong>：专家全宽 5120（比 V4 窄）、384 选 6，<strong>路由选择比 64× —— 五家里最高</strong>，专家中间维 2304。预算花在"每个专家更强"。</li>
 <li><strong>K3</strong>：先把 token 降到 latent 3584 再分发，<strong>通信量和专家权重流量直接减半</strong>，省下的预算换成<strong>专家数翻倍到 896、激活数翻倍到 16</strong>。共享专家仍吃全宽。</li>
-<li><strong>GLM-5.2</strong>：<strong>256 选 8 + 1 共享，稀疏度 32×</strong>，且专家中间维只有 2048（K3 是 3072）。</li>
-<li><strong>MiniMax M3</strong>：<strong>128 选 4 + 1 共享，稀疏度 32×</strong>（与 GLM 相同），专家中间维 3072。</li>
-<li><strong>openPangu-2.0-Pro</strong>：<strong>384 选 8 + 1 共享，稀疏度 48×</strong>，但专家中间维只有 <strong>1792</strong>——五家里最小，比 GLM 的 2048 还窄。</li>
+<li><strong>GLM-5.2</strong>：<strong>256 选 8 + 1 共享，路由选择比 32×</strong>，专家中间维 2048（⚠️ K3 的专家中间维本文各处都没给，别拿它当对照）。</li>
+<li><strong>MiniMax M3</strong>：<strong>128 选 4 + 1 共享，路由选择比 32×</strong>（与 GLM 相同），专家中间维 3072。</li>
+<li><strong>openPangu-2.0-Pro</strong>：<strong>384 选 8 + 1 共享，路由选择比 48×</strong>，但专家中间维只有 <strong>1792</strong>——五家里最小，比 GLM 的 2048 还窄。</li>
 </ul>
+<h4 id="_6">⚠️ 先把「稀疏度」这个词拆成两个：它们的排名不一样</h4>
+<p>这一格是全文最容易被引错的地方。上面那五个数（64× / 56× / 32× / 32× / 48×）全都是 <code>路由专家数 ÷ 激活专家数</code>——<strong>它只描述"路由器在多少个候选里挑"，不描述"显存里放了多少、算力上花了多少"</strong>。两者差得很远，因为一个 MoE 模型里有三块参数<strong>完全不稀疏</strong>：共享专家（每个 token 都过）、注意力（MLA / GQA 的全部投影）、以及 Embedding 与输出头。</p>
+<p>要看<strong>显存账 vs 算力账</strong>，正确的口径只有一个：<code>总参数 ÷ 激活参数</code>。</p>
+<div class="codehilite"><pre><span></span><code>路由选择比 = 路由专家数 / 激活专家数     → 只反映路由器的选择面
+真稀疏度   = 总参数     / 激活参数       → 反映「要存多少」比「要算多少」大几倍
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>总参数</th>
+<th>激活参数</th>
+<th><strong>真稀疏度</strong>（总/激活）</th>
+<th>路由选择比</th>
+<th>两者之比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4.1-Flash</strong></td>
+<td>552B（+196B Engram）</td>
+<td>16B（decode）</td>
+<td><strong>34.5×</strong>（含 Engram <strong>46.8×</strong>）</td>
+<td>64×</td>
+<td>64 ÷ 34.5 = <strong>1.9 倍虚高</strong></td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>2800B</td>
+<td>104B</td>
+<td><strong>26.9×</strong></td>
+<td>56×</td>
+<td><strong>2.1 倍虚高</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>744B</td>
+<td>40B</td>
+<td><strong>18.6×</strong></td>
+<td>32×</td>
+<td><strong>1.7 倍虚高</strong></td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>428B</td>
+<td>23B</td>
+<td><strong>18.6×</strong></td>
+<td>32×</td>
+<td><strong>1.4 倍虚高</strong></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>505B</td>
+<td>18B</td>
+<td><strong>28.1×</strong></td>
+<td>48×</td>
+<td><strong>1.7 倍虚高</strong></td>
+</tr>
+<tr>
+<td>（参照）<strong>DeepSeek-V4-Pro</strong></td>
+<td>1600B</td>
+<td>49B</td>
+<td><strong>32.7×</strong></td>
+<td>—（未披露）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>（参照）<strong>DeepSeek-V4-Flash</strong></td>
+<td>284B</td>
+<td>13B</td>
+<td><strong>21.8×</strong></td>
+<td>—（未披露）</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>换到正确口径之后有三处结论真的变了</strong>：</p>
+<ol>
+<li><strong>K3 和 openPangu 的名次翻了。</strong> 按路由选择比，K3 的 56× 远高于 openPangu 的 48×；按真稀疏度，<strong>openPangu 的 28.1× 反而高于 K3 的 26.9×</strong>。原因是 K3 的 104B 激活里有相当一部分是 93 层注意力和 2 个共享专家，这些完全不稀疏。</li>
+<li><strong>V4.1「稀疏度榜首」这个位置几乎没有含金量。</strong> 它的 34.5× 只比上一代 V4-Pro 的 32.7× 高 5.5%，而路由选择比那一栏看起来像是把 V4 甩开了一个身位。</li>
+<li><strong>V4.1 与 openPangu 的差距被压缩了。</strong> 路由选择比是 64× 对 48×（差 33%），真稀疏度是 34.5× 对 28.1×（只差 23%）。</li>
+</ol>
+<p>⚠️ <strong>顺手修掉一个本文原先的算术错误</strong>：原文写过"V4.1 的稀疏度榜首来自把 hidden 从 7168 做窄到 5120"。这是不成立的——<code>384 ÷ 6 = 64</code> 里根本没有 hidden 这一项，改 hidden 不会让这个数动一分。<strong>hidden 影响的是激活参数的绝对值，所以它只进真稀疏度那一栏，不进路由选择比。</strong> 同一处错误也在 §七 的收敛表里出现过，已一并改掉。</p>
+<p><strong>openPangu 的 505B / 18B 是可以自己验算的一组</strong>（⚠️ 下面这串是我按报告给的超参手算的，报告没有列这张明细）：</p>
+<div class="codehilite"><pre><span></span><code>MoE 层 FFN：47 层 × 9 个专家（8 路由 + 1 共享）× 3 个矩阵 × 5120 × 1792  ≈ 11.6B
+注意力    ：50 层 × MLA（5120×1536 + 1536×64×192 + 5120×576
+            + 512×64×128 ×2 + 64×128×5120）                            ≈  4.0B
+Embedding + 输出头（约 15 万词表，未共享权重）                            ≈  1.5B
+3 个 dense 层 FFN                                                        ≈  0.9B
+                                                                    合计 ≈ 18B ✅ 与报告一致
+
+总参数：47 层 × 384 个路由专家 × 3 × 5120 × 1792 ≈ 497B
+        ＋ 共享专家 1.3B ＋ 注意力 4.0B ＋ Embedding 1.5B ≈ 504B ✅ 与 505B 一致
+</code></pre></div>
+
+<p><strong>这是五家里唯一一家把专家数、专家中间维、hidden、层数、MLA 各 rank 全都披露、因此参数量能从零推回去的。</strong> 另外四家至少缺一项（V4.1 缺 Engram 的组织方式、K3 缺专家中间维、GLM 缺 MLA latent 维、M3 缺 dense 层配置），所以它们的真稀疏度那一栏只能用报告给的总参/激活两个汇总数去除，<strong>没法逐项复核</strong>。</p>
 <p>K3 的 LatentMoE 收益不是白拿的：路由路径变成 <code>W↓ → 门控多分支 FFN → W↑</code> 这种近乎四连乘的病态链条，在 2.8T 规模下会激活爆炸——所以才必须配上 RMSNorm + SiTU-GLU 两个稳定器。<strong>它把稳定性的账单转移到了别处。</strong></p>
 <p>GLM 的选择又是同一个模式：<strong>不追极端稀疏，就不用给稳定性买单。</strong> 256 选 8 是 DeepSeek-V3 那一代就验证成熟的配置。</p>
 <p><strong>openPangu 是五家里唯一一个把"小"贯彻到每一个维度的</strong>：</p>
-<div class="codehilite"><pre><span></span><code>hidden 5120（最窄）× 50 层（最浅）× 专家中间维 1792（最小）
-→ 激活量 18B（五家最低），却靠 384 个专家把总参撑到 505B
+<div class="codehilite"><pre><span></span><code>hidden 5120（与 V4.1 并列最窄）× 50 层（第二浅，V4.1 的 40 层更浅）
+× 专家中间维 1792（五家最小）
+→ 激活量 18B，靠 384 个专家把总参撑到 505B，真稀疏度 28.1×
 </code></pre></div>
 
-<p><strong>它走的是"多而小"的极端</strong>：专家数和 V4.1 一样多（384），但每个专家的中间维只有 V4.1 的 78%（1792 对 2304），稀疏度落在 48×。<br />
-⚠️ 但"五家最低激活 18B"这个位置在 V4.1 出现后<strong>没变</strong>——因为 V4.1 把激活压到 <strong>8B(prefill) / 16B(decode)</strong> 是靠 <strong>CED 的层间分工</strong>，不是靠 MoE。<strong>同样是低激活，华为从 MoE 里省，DeepSeek 从层数里省。</strong>这个组合意味着<strong>单个专家的表达力被牺牲，换取更细的专家分工和更低的单 token 算力</strong>——和 V4 的"少而强"正好相反，而 K3 的 LatentMoE 是第三条路（专家多且宽，但输入被降维）。<strong>三种做法都声称有效，目前没有任何跨家的对照实验。</strong></p>
+<p><strong>它走的是"多而小"的极端</strong>：专家数和 V4.1 一样多（384），但每个专家的中间维只有 V4.1 的 78%（1792 对 2304），真稀疏度落在 28.1×。<br />
+⚠️ <strong>但"激活量五家最低"这句话在 V4.1 出现之后不再成立了</strong>：V4.1 是 <strong>8B(prefill) / 16B(decode)</strong>，两档都低于 18B。原文这里、§二 的总参/激活行、§5.2 的参数效率行三处曾经互相矛盾（§5.2 写的是"V4.1 激活量比 openPangu 的 18B 还低"，和另外两处相反），已统一成「<strong>openPangu 18B 是五家里第二低，最低是 V4.1</strong>」。<strong>不过省法完全不同</strong>：V4.1 靠 <strong>CED 的层间分工</strong>（少跑一半的层），华为靠 <strong>MoE 的细粒度</strong>（专家小、总参大）——<strong>同样是低激活，一个从层数里省，一个从专家里省。</strong>这个组合意味着<strong>单个专家的表达力被牺牲，换取更细的专家分工和更低的单 token 算力</strong>——和 V4 的"少而强"正好相反，而 K3 的 LatentMoE 是第三条路（专家多且宽，但输入被降维）。<strong>三种做法都声称有效，目前没有任何跨家的对照实验。</strong></p>
 <p><strong>M3 这一格里藏着一个反直觉的事实</strong>。M2 系列报告的标题就是《<strong>Mini Activations</strong> Unleashing Max Real-World Intelligence》，整篇论文在论证"极小激活量也能出前沿能力"，而且 §2.2.1 的消融表明确支持细粒度专家（128 选 8 优于 32 选 2）。<strong>但 M3 反过来了</strong>：</p>
 <div class="codehilite"><pre><span></span><code>M2:  229.9B 总参 /  9.8B 激活  |  256 专家选 8
 M3:  428B   总参 / ~23B 激活   |  128 专家选 4     ← 专家数减半、top-k 减半，激活量却涨 2.3×
@@ -1372,15 +1639,51 @@ M3:  428B   总参 / ~23B 激活   |  128 专家选 4     ← 专家数减半、
 
 <p><strong>M3 没有技术报告，所以这个方向调整没有任何官方解释。</strong> 合理猜测是省下来的注意力算力被换成了 FFN 容量，以及原生多模态需要更大的容量——但这<strong>纯属推测</strong>。这一格是五家里唯一一处"公开材料自相矛盾且无解释"的地方。</p>
 <p><strong>顺带一提，openPangu 的 18B 激活反而更接近 M2 的取向</strong>（"小激活也能出能力"），而 M3 自己放弃了这条线。<strong>M2 论文的论点，最终是被华为而不是被 MiniMax 自己继续验证的。</strong></p>
+<p>⚠️ <strong>M2 → M3 这个反转，换到真稀疏度口径下反而更清楚</strong>：M2 是 <code>229.9 / 9.8 = 23.5×</code>，M3 是 <code>428 / 23 = 18.6×</code>——<strong>M3 不只是激活量涨了 2.3×，它的真稀疏度是往下走的</strong>。而路由选择比那一栏看不出这件事（M2 是 256/8 = 32×，M3 是 128/4 = 32×，<strong>完全相同</strong>）。<strong>这正是两个口径必须分开看的最好例子：同一个模型换代，一个口径说"没变"，另一个口径说"稀疏度降了 21%"。</strong></p>
 <h3 id="34">3.4 激活函数：三比一，外加一个「报告里根本没写」</h3>
 <p>同一个问题（SwiGLU 两个乘数都无界 → 低精度溢出），五种态度：</p>
-<div class="codehilite"><pre><span></span><code>V4 / V4.1：clip(linear, −10, 10)            硬截断，简单粗暴，梯度在边界处为 0
-K3：       β·tanh(x/β)                      软上限，原点附近≈线性、大值处饱和，处处可导
-MiniMax：  swigluoai(α=1.702, limit=7.0)    gpt-oss 式 clamp，α 让 Swish 逼近 GELU
-GLM：      不改 SwiGLU                      通过 Muon Split 从优化器侧解决尺度问题
-openPangu：❓ 报告全文 0 次提及               连&quot;我们用的是 SwiGLU&quot;这句话都没有
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th></th>
+<th>做法</th>
+<th>数学性质</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>V4 / V4.1</strong></td>
+<td><code>clip(linear, −10, 10)</code></td>
+<td>硬截断：边界外<strong>梯度为 0</strong></td>
+<td>简单粗暴，V4 报告自己承认"缺乏理论解释"</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><code>β·tanh(x/β)</code>（β₁=4 / β₂=25）</td>
+<td>软上限：原点附近 ≈ 线性、大值处饱和，<strong>处处可导</strong></td>
+<td>最"讲究"的一个，乘积上界 100</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><code>swigluoai(α=1.702, limit=7.0)</code></td>
+<td>gpt-oss 式 clamp；α=1.702 让 Swish 逼近 GELU</td>
+<td>最省事——直接抄 gpt-oss 在用的算子</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>不改 SwiGLU</td>
+<td>不在算子侧设界</td>
+<td>靠 <strong>Muon Split</strong> 从<strong>优化器侧</strong>解决尺度问题</td>
+</tr>
+<tr>
+<td><strong>openPangu</strong></td>
+<td>❓ <strong>报告全文 0 次提及</strong></td>
+<td>—</td>
+<td>连"我们用的是 SwiGLU"这句话都没有</td>
+</tr>
+</tbody>
+</table>
 <p><strong>四家有明确表态的里，三家在给 SwiGLU 加界，而且是三种不同的实现。</strong> 这几乎可以算作这一代的一个共识：<strong>在 4-bit/8-bit 训练成为标配之后，无界激活是一个必须处理的问题。</strong></p>
 <p>K3 的 SiTU-GLU 最"讲究"：<code>β₁=4</code> 封门分支、<code>β₂=25</code> 封 up 分支，乘积上界 100，<strong>在原点附近几乎和 SwiGLU 完全重合</strong>。V4 报告自己也承认 SwiGLU 截断"缺乏理论解释"。</p>
 <p>⭐ <strong>V4.1 在这一格上原封不动</strong>：<code>SwiGLU + 带 clamping，阈值 10</code> ✅，和 V4 逐字一致。<strong>值得注意的是这发生在它刚刚把主 KV cache 降到 FP4 之后</strong>——激活侧的数值压力方向其实是<strong>变大</strong>的，但 DeepSeek 没有跟着调这个界。<br />
@@ -1401,11 +1704,16 @@ openPangu：❓ 报告全文 0 次提及               连&quot;我们用的是 
 <p><strong>openPangu 的 Adaptive aux-loss-free</strong>：保留 bias 更新框架，但<strong>把 <code>sign(·)</code> 换成 RMS 归一化的误差</strong>：</p>
 </li>
 </ul>
-<p><code>旧： b_i ← b_i + γ · sign(F_i − Q_i)          只用误差的方向
-  新： b_i ← b_i − γ · (F_i − Q_i) / RMS(F − Q)  保留误差的相对幅度</code></p>
+<p>```<br />
+  旧： b_i ← b_i − γ · sign(F_i − Q_i)          只用误差的方向<br />
+  新： b_i ← b_i − γ · (F_i − Q_i) / RMS(F − Q)  保留误差的相对幅度</p>
+<p>F_i = 专家 i 的实际负载， Q_i = 目标负载<br />
+  两行前面都是「减」：超载（F &gt; Q）就把偏置调低、少被选中；<br />
+  欠载（F &lt; Q）就把偏置调高、多被选中。⚠️ 符号写反会让不均衡越跑越大。<br />
+  ```</p>
 <p><strong><code>sign</code> 把"超载 1%"和"超载 100%"同等对待</strong>，这正是需要小心调 <code>γ</code> 的根源。除以全体专家误差的 RMS 之后，更新幅度自适应于当前不均衡的整体尺度，同时保持无量纲。消融结果：<strong>LM loss 与基线持平，MaxVio 一致更低，而且优势随训练进行不断扩大。</strong></p>
 <p><strong>这一格现在有三种技术路线，而且是一条清晰的谱系</strong>：</p>
-<div class="codehilite"><pre><span></span><code>sign（V4/GLM/M3）      → 只看方向，γ 敏感
+<div class="codehilite"><pre><span></span><code>sign（V4/GLM/M3）       → 只看方向，γ 敏感
 RMS 归一化（openPangu） → 看方向 + 相对幅度，γ 变钝，仍需 γ
 解析求解（K3 的 QB）    → 直接算出目标 b_j，γ 消失
 </code></pre></div>
@@ -1586,13 +1894,26 @@ RMS 归一化（openPangu） → 看方向 + 相对幅度，γ 变钝，仍需 �
 </table>
 <p><strong>K3 的 QAT 覆盖最激进</strong>（SFT→RL 全程），<strong>GLM 的动机最具体</strong>（不是为了省钱，是为了让国产芯片单机装得下），<strong>M3 这一格基本是空的</strong>——只能从 <code>swigluoai</code> 的 clamp 反推出它在意低精度数值范围。</p>
 <p><strong>openPangu 是五家里最保守的一个，而且保守得很一致</strong>：不上 4-bit、不做 QAT、只有 W8A8。它的技术含量集中在<strong>PTQ 算法本身</strong>——把 SmoothQuant 的迁移强度约束 <code>a + b = 1</code> 放开成二维独立搜索，等于承认"权重和激活的最优迁移量不必互补"。</p>
+<p><strong>⭐ 它那个 <code>1009 GB → 517 GB</code> 是全表唯一能被读者两行除法验掉的量化数字</strong>：</p>
+<div class="codehilite"><pre><span></span><code>量化前：505B 参数 × 2 字节/参数（FP16，它是五家里唯一不用 BF16 训练的）
+        = 1010 GB   -&gt;  报告写 1009 GB ✅ 对上
+
+量化后：505B 参数 × 1 字节/参数（W8A8 的 W8）
+        = 505 GB    -&gt;  报告写 517 GB，多出 12 GB
+        ⚠️ 这 12 GB 就是「没被量化的部分」：norm、Embedding、输出头仍留 FP16，
+           按这些约占 12B 参数（1.5B Embedding + 输出头 + 各层 norm）× 额外 1 字节 ≈ 12 GB，量级对得上
+
+压缩比：1009 / 517 = 1.95×   -&gt;  报告写 1.95× ✅
+</code></pre></div>
+
+<p>⚠️ <strong>两个口径提醒</strong>：① 上面全部是<strong>十进制 GB</strong>（10⁹ 字节）。换成 GiB（2³⁰ 字节）是 <strong>940 GiB → 481 GiB</strong>，和显卡规格书上的"80 GB HBM3"是同一套十进制口径，<strong>别把两套混用</strong>。② <strong>1.95× 是"体积减少 48.8%"，不是"快 1.95 倍"</strong>——权重小一半意味着访存减半，decode 阶段大致能对上接近 2× 的收益，但 prefill 是算力受限的，W8A8 在那里不会有 1.95× 的墙钟提升。<strong>报告给的是显存数字，没给对应的墙钟倍数。</strong></p>
 <p><strong>这个保守选择和它前面几格是自洽的</strong>：不上 4-bit → 数值范围压力小 → 不需要给激活函数加界（§3.4 的空白）→ 也不需要 QAT。<strong>五家里唯一一条"全程不碰 4-bit"的技术路线。</strong> 代价是压缩比只有 1.95×，而 GLM 的 W4A8 混合精度能把 750B 压进单台机器。</p>
 <p>⚠️ 注意 <strong>openPangu 和 GLM 在这一格的目标其实相同</strong>（都是昇腾单机/少机部署），但<strong>手段差了一档精度</strong>。GLM 敢上 W4A8 的底气来自 INT4 QAT，华为没做 QAT 所以只能停在 W8A8——<strong>这反过来说明 QAT 的价值不在精度本身，而在于它解锁了更激进的量化位宽。</strong></p>
 <h3 id="38-muon-attention-logits">3.8 ⭐ "Muon 下 attention logits 为什么不爆炸"：三家给了三种互斥的归因</h3>
 <p><strong>这是整份对比里最值得单独成节的一条线索——因为三家报告描述了同一个现象，各自把功劳记在了完全不同的组件上，而且三者互不引用。</strong></p>
-<h4 id="_6">现象是同一个</h4>
+<h4 id="_7">现象是同一个</h4>
 <p>用 Muon 训练大 MoE 时，attention logits 有爆炸的历史前科（Kimi K2 时代就是靠 <strong>QK-Clip</strong> 硬压住的，那是一个公认的"土办法"）。而这一代的三份报告都声称：<strong>在自家配置下，attention logits 全程稳定，不需要任何 clipping。</strong></p>
-<h4 id="_7">但归因完全不同</h4>
+<h4 id="_8">但归因完全不同</h4>
 <table>
 <thead>
 <tr>
@@ -1634,7 +1955,7 @@ V4       ：算子侧·局部 —— 直接归一化 Q 和 K
 openPangu：算子侧·全局 —— 归一化残差流本身
 </code></pre></div>
 
-<h4 id="_8">为什么这条线值得记</h4>
+<h4 id="_9">为什么这条线值得记</h4>
 <p><strong>三个归因在机制上是互斥的</strong>——它们作用在完全不同的位置，不可能同时是"那个原因"：</p>
 <ul>
 <li>如果 GLM 是对的（Muon Split 是充分条件），那么 V4 的 QK-RMSNorm 和华为的两级归一化都是<strong>多余的保险</strong>。</li>
@@ -1642,13 +1963,13 @@ openPangu：算子侧·全局 —— 归一化残差流本身
 <li>如果华为是对的（残差流归一化才是关键），那前两家的解释都<strong>把因果搞反了</strong>——真正起作用的是它们各自架构里别的归一化。</li>
 </ul>
 <p><strong>更值得注意的是三家的"副产品"叙事结构完全一样</strong>：每一家都把稳定性说成是某个<strong>为别的目的引入的组件</strong>顺带带来的好处。</p>
-<div class="codehilite"><pre><span></span><code>GLM      ：为了性能引入 Muon Split      → 顺带稳定了 logits
-V4       ：为了稳定引入 QK-RMSNorm      → 顺带免掉了 QK-Clip
+<div class="codehilite"><pre><span></span><code>GLM      ：为了性能引入 Muon Split            → 顺带稳定了 logits
+V4       ：为了稳定引入 QK-RMSNorm            → 顺带免掉了 QK-Clip
 openPangu：为了修 gate collapse 引入两级 norm → 顺带稳定了 logits
 </code></pre></div>
 
 <p><strong>只有 V4 那一条是"本职 + 副产品"的正常关系</strong>（QK-RMSNorm 本来就是干这个的）。GLM 和华为都是<strong>先观察到现象，再回头找了个在场的组件当解释</strong>——这两条的因果强度明显更弱。</p>
-<h4 id="_9">三份证据的可靠性并不对等</h4>
+<h4 id="_10">三份证据的可靠性并不对等</h4>
 <table>
 <thead>
 <tr>
@@ -1676,7 +1997,7 @@ openPangu：为了修 gate collapse 引入两级 norm → 顺带稳定了 logits
 </tbody>
 </table>
 <p><strong>华为是三家里唯一一个既给了数字、又主动承认"没做系统性消融"的。</strong> 报告原文那句 "We leave a more systematic ablation of this phenomenon to future work" 在这个语境下反而是最诚实的一句——<strong>另外两家做出了同样强度的断言，但连这句免责声明都没有。</strong></p>
-<h4 id="_10">这条线目前的实际结论</h4>
+<h4 id="_11">这条线目前的实际结论</h4>
 <p><strong>没有人证明过任何一种归因。</strong> 三家都是在自己的完整配方里观察到了稳定性，然后指向了配方里的某一味。对想复现的团队来说，实际可操作的结论只有两条：</p>
 <ol>
 <li><strong>这一代的大 MoE + Muon 组合，确实不再需要 QK-Clip 了</strong>——三家独立确认了这个事实层面的现象。<br />
@@ -1691,7 +2012,7 @@ openPangu：为了修 gate collapse 引入两级 norm → 顺带稳定了 logits
 <strong>规模显著变小之后仍然稳定</strong>——这至少说明"深度是爆炸主因"这个直觉方向不对。</p>
 <p>⚠️ 补充一个可能的混淆因素：<strong>openPangu 用的是 FP16 + 动态 loss scaling，是五家里唯一不用 BF16 训练的</strong>。FP16 的尾数位更多、指数范围更窄，它对 attention logits 的数值行为影响与 BF16 不同——<strong>华为观察到的"有界在 20"有多少是精度格式带来的，报告里没有讨论。</strong></p>
 <hr />
-<h2 id="_11">四、效率与成本对比</h2>
+<h2 id="_12">四、效率与成本对比</h2>
 <table>
 <thead>
 <tr>
@@ -1801,6 +2122,87 @@ openPangu：为了修 gate collapse 引入两级 norm → 顺带稳定了 logits
 <strong>TPS</strong> = Tokens Per Second，<strong>吞吐量</strong>（一块卡每秒总产出）｜<br />
 <strong>ISL / OSL</strong> = 输入 / 输出序列长度（"8K+1K" = 输入 8192、输出 1024）<br />
 ★ <strong>TPOT 与 TPS 是一对取舍</strong>：<code>TPS ≈ batch ÷ TPOT</code>，batch 开大则吞吐涨、单用户延迟变差。</p>
+</blockquote>
+<p><strong>✅ 这条取舍式子可以拿 openPangu 自己的数字验一遍</strong>，而且对得上：<code>batch 40 ÷ 23.2 ms = 1724 TPS</code>（报告写 <strong>1727</strong>）、<code>batch 24 ÷ 18.1 ms = 1326 TPS</code>（报告写 <strong>1326</strong>）。<strong>五家里只有这一家给了足够的中间量让读者做这个核对</strong>——另外四家给的是倍数，倍数是没法自洽检查的。</p>
+<h4 id="token-flops">⭐ 把"自报效率提升"也换算到同一口径：每 token 多少 FLOPs</h4>
+<p>上面那一行「自报效率提升」是全表可比性最差的一行：<strong>一家给绝对字节、一家给扩展效率倍数、一家给 FLOPs 估算、一家给渐进系数</strong>。换成同一个单位就能并排读了。前向一遍的算力可以用一条很粗但对所有 MoE 都成立的式子起底：</p>
+<div class="codehilite"><pre><span></span><code>每 token 前向 FLOPs ≈ 2 × 激活参数        （FFN + 各投影，一次乘加 = 2 FLOPs）
+                     ＋ 注意力那部分     （随上下文长度变，见下）
+
+⚠️ 这里是「前向」。训练时常用的 6N 是 2N 前向 + 4N 反向，
+   ⚠️ 而且 6N 只算参数矩阵乘，不含注意力的 s 相关项、也不含优化器。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>激活参数</th>
+<th>FFN + 投影<br><code>2 × 激活参数</code></th>
+<th>注意力（1M，每 token）</th>
+<th><strong>合计 @1M</strong></th>
+<th>注意力占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>V4.1-Flash</strong>（decode）</td>
+<td>16B</td>
+<td><strong>32 GFLOPs</strong></td>
+<td>⚠️ 算不出（CSA2 压缩比未披露；候选池 16384 选 512）</td>
+<td>⚠️ —</td>
+<td>⚠️ —</td>
+</tr>
+<tr>
+<td><strong>V4.1-Flash</strong>（prefill）</td>
+<td>8B</td>
+<td><strong>16 GFLOPs</strong></td>
+<td>⚠️ 同上</td>
+<td>⚠️ —</td>
+<td>⚠️ —</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>104B</td>
+<td><strong>208 GFLOPs</strong></td>
+<td>⚠️ 算不出（KDA 状态维未披露）</td>
+<td>⚠️ —</td>
+<td>⚠️ —</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>40B</td>
+<td><strong>80 GFLOPs</strong></td>
+<td>78 层 × 8.71 = <strong>679 GFLOPs</strong><br>（IndexShare 后 <strong>177</strong>）</td>
+<td><strong>759</strong>（IndexShare 后 <strong>257</strong>）</td>
+<td><strong>89%</strong> → 69%</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>23B</td>
+<td><strong>46 GFLOPs</strong></td>
+<td>57 层 MSA × 1.14 = 65<br><strong>＋ 前 3 层全注意力 × 34.4 = 103</strong></td>
+<td><strong>214 GFLOPs</strong></td>
+<td><strong>79%</strong></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>18B</td>
+<td><strong>36 GFLOPs</strong></td>
+<td>512K 上：17 层 DSA + 33 层 SWA-512</td>
+<td>⚠️ 只到 512K，不可与 1M 并列</td>
+<td>⚠️ —</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>除 GLM 的 2.9× 是官方数字外，这张表的每一格都是我按 §二 的配置手算的</strong>，报告都没给这种拆分。</p>
+<p><strong>两条以前没被写出来的结论</strong>：</p>
+<ol>
+<li>⭐ <strong>M3 那"只剩 3 层"的全注意力，在 1M 上占掉了它单 token 总算力的 48%。</strong> <code>103 ÷ 214 = 48%</code>——比 57 层 MSA 加起来（65 GFLOPs）还多，也比整个 FFN（46 GFLOPs）多一倍。<strong>§二 里"前 3 层仍是全注意力"这句轻描淡写的备注，其实是 M3 在 1M 上最大的单项开销。</strong> 这也给"为什么官方只敢说 1/20 而不是 1/500"提供了一个不需要内部信息的解释。</li>
+<li>⭐ <strong>换到这个口径上，GLM 和 M3 的差距比"744B vs 428B"看起来的要大得多</strong>：GLM 是 759 GFLOPs/token（IndexShare 后 257），M3 是 214。<strong>而这两家的路线在 §一 里是被放在"同一格"的。</strong> 差距不在稀疏预算（两家都是 2048），全在 <strong>indexer 头数 32 对 4</strong> 和 <strong>层数 78 对 60</strong>。</li>
+</ol>
+<p>⚠️ <strong>这张表最大的用处是划出"算不出来"的边界</strong>：五家里有三家的注意力那一格是空的，原因各不相同——V4.1 没给 CSA2 的压缩比 m、K3 没给 KDA 的状态维、openPangu 根本不到 1M。<strong>所以"谁家 1M 更便宜"这个问题，目前只有 GLM 和 M3 之间能被外部独立回答。</strong></p>
+<blockquote>
 <h3 id="minimax">⚠️ MiniMax 的三组加速数字必须分开看</h3>
 <p>这是目前二手解读里错得最多的一处：</p>
 <table>
@@ -1835,6 +2237,7 @@ openPangu：为了修 gate collapse 引入两级 norm → 顺带稳定了 logits
 </table>
 <p><strong>注意 prefill / decode 的大小关系在两组数字之间是反的。</strong> 我的分析（<strong>非官方说法</strong>）：论文的 7.6× 是"MSA vs GQA、其余全同"的干净对照；官方的 15× 是"M3 vs M2"，而 M3 相对 M2 还额外拿到 <strong>KV 头从 8 减到 4</strong>——解码是访存受限的，KV cache 读取量减半本身就接近 2× 的独立收益，<code>7.6 × 2 ≈ 15</code>。两个数字不矛盾，一个是控制变量的，一个是端到端的。</p>
 <p><strong>MSA 论文自己非常坦率地解释了为什么实测跟不上 FLOPs 比</strong>：稀疏引入了索引构建、top-k、反向索引物化、query gather 和负载均衡的开销，访存也不如稠密规则；但这个差距<strong>会随上下文增长而缩小</strong>——因为稠密基线继续随全序列扩展，而 MSA 的主注意力预算是固定的。<strong>28.4× 是理论上限，14.2× 是能兑现的部分，差的那一半就是稀疏本身的管理费。</strong></p>
+<p>⚠️ <strong>但"管理费"要分成两层，原先这句话把它们混成一层了</strong>（拆解见 §3.1.2 的手算表）：<strong>第一层管理费已经进了 28.4× 这个分母</strong>——indexer 必须扫全部 s 个 key，它的 FLOPs 占 MSA 注意力总算力的 <strong>94%</strong>，主注意力本身其实省了 512 倍，是 indexer 把倍数拉回到 28×。<strong>第二层管理费才是 28.4 → 14.2 那一段</strong>，来自 top-k 排序、反向索引物化、离散 gather 这些<strong>不计入 FLOPs 的访存与调度开销</strong>。所以正确的说法是：<strong>主注意力省 512×，indexer 吃掉到 28×，访存与调度再吃掉到 14×。</strong></p>
 </blockquote>
 <p><strong>五家 Infra 的取向各不相同</strong>：</p>
 <ul>
@@ -1893,7 +2296,7 @@ openPangu ：全程在昇腾上训练  →  报告里根本没有"适配"这个�
 <p>⭐ <strong>加上 V4.1 之后，这张表变成三档而不是两档</strong>：</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>部署实测绝对值（TPOT/TPS/TTFT）  → 只有 openPangu
-架构侧绝对值（字节/token）        → 只有 V4.1
+架构侧绝对值（字节/token）       → 只有 V4.1
 纯相对倍数                       → K3 / GLM / MiniMax（以及 V4.1 的另一半）
 </code></pre></div>
 
@@ -1902,7 +2305,7 @@ openPangu ：全程在昇腾上训练  →  报告里根本没有"适配"这个�
 <strong>这是本文里可验证性最强的一个数字</strong>：任何人拿到权重都能自己数出来。</p>
 <p><strong>绝对值比倍数更难造假，但也更难横向比</strong>——它绑死在 Atlas A3 + 2P1D 这一套配置上，换硬件就不成立。而另外四家的倍数虽然可比性差，却至少能跨硬件读。<strong>这两种披露方式没有优劣，但混在一张表里读会得出错误结论。</strong></p>
 <hr />
-<h2 id="_12">五、性能对比</h2>
+<h2 id="_13">五、性能对比</h2>
 <h3 id="51-glm-52-openpangu">5.1 ✅ 好消息：GLM-5.2 是四方的桥接节点 ／ ⚠️ 坏消息：openPangu 接不上这张网</h3>
 <blockquote>
 <p>⚠️ <strong>本节全程用 DeepSeek-V4-Pro 而不是 V4.1-Flash，这是有意的。</strong><br />
@@ -2210,6 +2613,7 @@ Agent（MCP/Browse/SWE）−12 ~ −26    ← 差距最大
 <thead>
 <tr>
 <th>Base 模型对比</th>
+<th>这项测的是什么</th>
 <th>V4-Pro（1.6T/49B）</th>
 <th><strong>V4.1-Flash（552B/8B·16B）</strong></th>
 <th>变化</th>
@@ -2217,47 +2621,58 @@ Agent（MCP/Browse/SWE）−12 ~ −26    ← 差距最大
 </thead>
 <tbody>
 <tr>
-<td><strong>推理类</strong> GSM8K</td>
+<td>GSM8K</td>
+<td><strong>推理</strong>（小学应用题，多步算术）</td>
 <td>92.6</td>
 <td><strong>93.0</strong></td>
 <td>⬆ +0.4</td>
 </tr>
 <tr>
-<td><strong>推理类</strong> MMLU-Pro</td>
-<td>73.5</td>
-<td><strong>74.1</strong></td>
-<td>⬆ +0.6</td>
-</tr>
-<tr>
-<td><strong>编程类</strong> HumanEval</td>
+<td>HumanEval</td>
+<td><strong>编程</strong>（写函数，跑单测）</td>
 <td>76.8</td>
 <td><strong>79.4</strong></td>
 <td>⬆ +2.6</td>
 </tr>
 <tr>
-<td><strong>知识类</strong> SimpleQA-Verified</td>
-<td><strong>55.2</strong></td>
-<td>42.3</td>
-<td>⬇ <strong>−12.9</strong></td>
-</tr>
-<tr>
-<td><strong>知识类</strong> MATH</td>
+<td>MATH</td>
+<td><strong>推理</strong>（竞赛数学，长推导）</td>
 <td><strong>64.5</strong></td>
 <td>61.1</td>
 <td>⬇ −3.4</td>
 </tr>
 <tr>
-<td><strong>长上下文</strong> LongBench-V2</td>
+<td>MMLU-Pro</td>
+<td><strong>知识</strong>（57 学科选择题，靠记事实）</td>
+<td>73.5</td>
+<td><strong>74.1</strong></td>
+<td>⬆ +0.6</td>
+</tr>
+<tr>
+<td>SimpleQA-Verified</td>
+<td><strong>知识</strong>（开放式事实问答，最纯的记忆题）</td>
+<td><strong>55.2</strong></td>
+<td>42.3</td>
+<td>⬇ <strong>−12.9</strong></td>
+</tr>
+<tr>
+<td>LongBench-V2</td>
+<td><strong>长上下文理解</strong></td>
 <td><strong>51.5</strong></td>
 <td>45.2</td>
 <td>⬇ −6.3</td>
 </tr>
 </tbody>
 </table>
-<p><strong>总参砍到 1/3、激活砍到 1/4 之后，推理和编程不降反升，知识掉了近 13 分。</strong> ✅</p>
-<p><strong>这几乎是教科书级的证据</strong>：前面五家各自观察到的"推理靠架构、知识靠数据"，<br />
-在这里变成了更精确的一句——<strong>知识能力是参数量的函数，推理能力不是。</strong><br />
-⚠️ 但注意 V4.1 的训练数据是 45T（V4 是 33T），数据量其实<strong>涨了</strong>，知识仍然掉——<br />
+<p>⚠️ <strong>这张表的分类标签本文原先标错了两格，纠正后结论要弱化一档。</strong> 原先把 <strong>MMLU-Pro 标成"推理类"、把 MATH 标成"知识类"</strong>，两个都反了：<strong>MMLU-Pro 是 57 个学科的知识选择题</strong>（§5.3 上面那段讲 V4 时，本文自己也是把它当知识指标用的——"MMLU-Pro 差 3.5 分"那句），<strong>MATH 是竞赛数学，是最典型的推理指标</strong>。标签一改回来，这张表就不再是"推理全涨、知识全跌"的干净图形了：</p>
+<div class="codehilite"><pre><span></span><code>推理：GSM8K +0.4   / MATH -3.4          ← 一升一降
+编程：HumanEval +2.6                    ← 升
+知识：MMLU-Pro +0.6 / SimpleQA -12.9    ← 一升一降（但降的那个降得极狠）
+</code></pre></div>
+
+<p><strong>所以"总参砍到 1/3、激活砍到 1/4 之后推理不降反升、知识掉 13 分"这句话，只有用 GSM8K 和 SimpleQA 两格才成立。</strong> 更稳的读法是看<strong>幅度的量级差</strong>而不是看方向：四格在 ±3.4 分以内来回晃，只有 <strong>SimpleQA-Verified 一格掉了 12.9 分</strong>——比其余所有格的绝对变化之和还大。<strong>真正被参数量卡住的是"开放式事实召回"这一种能力，不是"知识"这一整类。</strong> ⚠️ 而 MMLU-Pro 反而微涨，说明<strong>选择题形式的知识（有选项可排除）对参数量远没那么敏感</strong>。</p>
+<p><strong>这仍然是本文最干净的一次对照，只是结论要收窄</strong>：前面五家观察到的"推理靠架构、知识靠数据"，在同门控制变量下能坐实的部分是——<strong>无提示的事实召回是参数量的函数，推理能力不是。</strong><br />
+⚠️ 但注意 V4.1 的训练数据是 45T（V4 是 33T），数据量其实<strong>涨了</strong>，SimpleQA 仍然掉——<br />
 <strong>这说明瓶颈不在语料规模，而在"存得下多少"。</strong></p>
 <p>⚠️ <strong>LongBench-V2 掉 6.3 分这一格值得单独看</strong>：V4.1 整篇报告都在讲长上下文优化，<br />
 但长上下文<strong>理解</strong>能力反而退了。<strong>"能装下 1M" 和 "能用好 1M" 是两件事</strong>，<br />
@@ -2483,11 +2898,11 @@ Terminal-Bench 4.0： V4.1 31.2  &lt;  Opus-5 51.8     ← 差 20.6 分
 </tr>
 </tbody>
 </table>
-<p><strong>它是 §5.3 那条结论的最强化版本</strong>：把参数砍到 1/3，推理不掉，知识掉到全场最低。<br />
+<p><strong>它是 §5.3 那条结论的最强化版本</strong>：把参数砍到 1/3，推理和编程不掉，<strong>事实召回类掉到全场最低</strong>（HLE 36.8、Base 上 SimpleQA-Verified −12.9）。⚠️ 注意 §5.3 已经把"知识"收窄成"无提示的事实召回"——选择题形式的知识（MMLU-Pro）在同门对照里是微涨的。<br />
 <strong>openPangu 是"架构做满但知识垫底"，V4.1 是"参数砍半而知识垫底"——<br />
 两条完全不同的路径，撞到了同一堵墙。</strong></p>
 <hr />
-<h2 id="_13">六、时间线：谁先做了什么</h2>
+<h2 id="_14">六、时间线：谁先做了什么</h2>
 <p>五方对比暴露出一个之前看两家时看不到的问题：<strong>GLM 在两个关键技术上都是最早发表的，但因为它把这些技术埋在一篇"以 agentic 工程为主题"的报告里，社区讨论度远低于 Kimi。</strong></p>
 <table>
 <thead>
@@ -2517,12 +2932,12 @@ Terminal-Bench 4.0： V4.1 31.2  &lt;  Opus-5 51.8     ← 差 20.6 分
 <p><strong>这不是指控抄袭</strong>——这类想法在两个团队独立冒出来完全正常，而且 K3 的 Per-Head Muon 报告了额外的收益（在瘦高的 per-head 块上跑 Newton–Schulz 更便宜）。但它确实说明一件事：<strong>评估"某个技术是谁的贡献"时不能只看讨论度。</strong></p>
 <p>反过来，<strong>GLM 也有明确借用 DeepSeek 的地方</strong>：DSA、lightning indexer、MLA 都直接来自 DeepSeek，报告也如实标注了。IndexShare 是在 DSA 之上的原创增量。</p>
 <p><strong>加入 openPangu 之后，这一节多了一个新的观察角度</strong>——它是五家里<strong>引用密度最高、原创密度最低</strong>的一份报告：</p>
-<div class="codehilite"><pre><span></span><code>mHC        → 直接标注引用 DeepSeek arXiv:2512.24880（连 Sinkhorn 20 次都一样）
-DSA        → 直接标注引用 DeepSeek-V3.2
-MLA        → 直接标注引用 DeepSeek-V2
-Muon       → 直接标注引用，Newton-Schulz 系数明说取自 modded-nanogpt
-aux-loss-free → 直接标注引用 DeepSeek
-TITO       → 与 GLM-5 同名同法
+<div class="codehilite"><pre><span></span><code>mHC                   → 直接标注引用 DeepSeek arXiv:2512.24880（连 Sinkhorn 20 次都一样）
+DSA                   → 直接标注引用 DeepSeek-V3.2
+MLA                   → 直接标注引用 DeepSeek-V2
+Muon                  → 直接标注引用，Newton-Schulz 系数明说取自 modded-nanogpt
+aux-loss-free         → 直接标注引用 DeepSeek
+TITO                  → 与 GLM-5 同名同法
 OPD 的 log-ratio 形式 → 与 GLM-5 / K3 同形（且报告主动说明了自己与 GLM-5 的差异）
 </code></pre></div>
 
@@ -2540,21 +2955,21 @@ OPD 的 log-ratio 形式 → 与 GLM-5 / K3 同形（且报告主动说明了自
 </thead>
 <tbody>
 <tr>
-<td>2024-02</td>
+<td><strong>2025-02</strong></td>
 <td><strong>MoBA</strong></td>
 <td>MoonshotAI</td>
-<td>块级选择，块表示用 <strong>block-mean</strong>（块内 key 求平均）</td>
+<td>块级选择，块表示用 <strong>block-mean</strong>（块内 key 求平均）<br>⚠️ <strong>本文原先把它标成 2024-02，是错的</strong>：arXiv:2502.13189 是 <strong>2025 年 2 月</strong></td>
 </tr>
 <tr>
 <td>2025-02</td>
 <td><strong>NSA</strong></td>
 <td>DeepSeek</td>
-<td>三分支（压缩 / 选择 / 滑窗）+ 门控融合，原生可训练</td>
+<td>三分支（压缩 / 选择 / 滑窗）+ 门控融合，原生可训练<br>⚠️ arXiv:2502.11089，<strong>与 MoBA 同月，且比 MoBA 早两天</strong> —— 这两行的先后顺序不该被当成因果</td>
 </tr>
 <tr>
-<td>2025</td>
+<td>2025-06</td>
 <td><strong>InfLLM-V2</strong></td>
-<td>—</td>
+<td>⚠️ OpenBMB（MiniCPM4），<strong>待核</strong></td>
 <td>简化为单一选择分支</td>
 </tr>
 <tr>
@@ -2660,7 +3075,7 @@ MiniMax-M3  （2026-06）  → 动态块稀疏（MSA）——和 GLM 同一条�
 <p><strong>这是本文所有 SWA 证据里控制得最干净的一组</strong>（GLM 的 SWA 表跨了两种模式、MiniMax 的是跨代际观察）。它给出的结论也最具体：<strong>问题不在"要不要用 SWA"，而在"全局层的比例能压到多低"——1:2 是可行的，1:4 以上不行。</strong></p>
 <p>⚠️ 但它同样有自己的边界：<strong>只测了训练 loss，没有测长上下文召回</strong>。所以它能证明"5:1 会伤害语言建模本身"，不能直接对上 GLM 那张"128K 上 RULER 掉到 6.51"的表——<strong>后者测的是能力，前者测的是拟合。</strong></p>
 <hr />
-<h2 id="_14">七、结论：分歧之外的高度收敛</h2>
+<h2 id="_15">七、结论：分歧之外的高度收敛</h2>
 <p>对比做到最后，<strong>比差异更值得注意的是收敛</strong>。五家在长上下文路线上分道扬镳，但在其他几乎所有位置得出了相同结论：</p>
 <table>
 <thead>
@@ -2748,7 +3163,7 @@ MiniMax-M3  （2026-06）  → 动态块稀疏（MSA）——和 GLM 同一条�
 </tr>
 <tr>
 <td><strong>弱项都在事实性知识，不在推理</strong></td>
-<td>⚠️ <strong>同门对照下这条被加强了</strong>：相对 V4-Pro，知识类（SimpleQA-Verified <strong>42.3 vs 55.2</strong>）和长上下文（LongBench-V2 <strong>45.2 vs 51.5</strong>）明确退步，而推理类（HumanEval 76.8→79.4）反而进步</td>
+<td>⚠️ <strong>同门对照给了部分支持，但比原先写的要弱</strong>：相对 V4-Pro，<strong>开放式事实召回</strong>（SimpleQA-Verified <strong>42.3 vs 55.2</strong>，−12.9）和长上下文（LongBench-V2 <strong>45.2 vs 51.5</strong>）明确退步，编程（HumanEval 76.8→79.4）进步；但<strong>选择题形式的知识反而微涨</strong>（MMLU-Pro 73.5→74.1）、<strong>竞赛数学反而微跌</strong>（MATH 64.5→61.1）。⚠️ 能坐实的只有"无提示事实召回吃参数量"这一条，见 §5.3</td>
 <td>HLE / CritPt 落后一档</td>
 <td>HLE 40.5 / CritPt 20.9</td>
 <td>HLE 37.0</td>
@@ -2779,12 +3194,12 @@ MiniMax-M3  （2026-06）  → 动态块稀疏（MSA）——和 GLM 同一条�
 <td>❓ <strong>报告 0 次提及激活函数</strong></td>
 </tr>
 <tr>
-<td>MoE 稀疏度要往上推</td>
-<td>384 选 6（64×，五家最高），⚠️ 但<strong>稀疏度是靠把 hidden 从 7168 压到 5120 换来的</strong>，不是靠加专家</td>
-<td>896 选 16（56×）</td>
-<td>256 选 8（32×）</td>
-<td>128 选 4（32×）</td>
-<td><strong>384 选 8（48×）</strong>，但专家中间维只有 <strong>1792（五家最小）</strong></td>
+<td>MoE 稀疏度要往上推<br>（两个口径，见 §3.3）</td>
+<td>384 选 6（路由选择比 <strong>64×</strong>，五家最高）<br>⚠️ <strong>真稀疏度只有 34.5×</strong>，比上一代 V4-Pro 的 32.7× 只高 5.5% —— 这一格的"最高"主要是选择比造成的观感</td>
+<td>896 选 16（56×）<br>真稀疏度 <strong>26.9×</strong></td>
+<td>256 选 8（32×）<br>真稀疏度 <strong>18.6×</strong></td>
+<td>128 选 4（32×）<br>真稀疏度 <strong>18.6×</strong></td>
+<td><strong>384 选 8（48×）</strong>，专家中间维只有 <strong>1792（五家最小）</strong><br>真稀疏度 <strong>28.1× —— 换到这个口径它反超 K3</strong></td>
 </tr>
 <tr>
 <td><strong>注意力必须做成非均质的（分层/分工）</strong></td>
@@ -2836,17 +3251,72 @@ MiniMax-M3  （2026-06）  → 动态块稀疏（MSA）——和 GLM 同一条�
 <p><strong>openPangu 是这条判断最强的一个佐证</strong>：它的架构工作量在五家里排第一或第二，能力却排第五。见 §5.3。<br />
 3. ⭐ <strong>上下文长度到底该冲到哪一档？</strong> 前四家全部押 1M，<strong>华为停在 512K 且不给任何长上下文评测</strong>。⚠️ <strong>V4.1 给这一格添了一个反向注脚</strong>：它是唯一一家同时公布了"1M 有多便宜"和"1M 用得有多差"的——LongBench-V2 <strong>45.2</strong>，比自家 V4-Pro 的 51.5 低 6.3 分（见 §5.3）。<strong>"能装下 1M"和"能用好 1M"被同一份报告拆成了两件事。</strong>这是本文唯一一处"四对一"的路线分歧，而且<strong>没有任何一方给出过论证</strong>——四家没说 1M 为什么必要，华为也没说 512K 为什么够。<strong>这一格是整份对比里证据最薄的一格。</strong></p>
 <p><strong>最后一条观察</strong>：五家的公开材料篇幅分配很能说明它们各自认为什么最重要——</p>
-<div class="codehilite"><pre><span></span><code>DeepSeek-V4  （58 页报告）：架构 + Infra + 效率           → &quot;让 1M 便宜到能当默认值&quot;
-DeepSeek-V4.1（51 页报告）：架构 + Infra（RL 一章留白）    → &quot;把同一件事再便宜 4 倍&quot;
-Kimi K3    （47 页报告）  ：架构 + 能力 + 产品            → &quot;开源的前沿智能&quot;
-openPangu  （45 页报告）  ：架构 + 训推一致性 + 昇腾工程   → &quot;在自家硬件上把整条链路跑通&quot;
-GLM-5      （40 页报告）  ：后训练 + RL 基建 + 国产芯片   → &quot;从 vibe coding 到 agentic engineering&quot;
-MiniMax M2 （35 页报告）  ：后训练 + RL 系统（架构仅 3 页）→ &quot;怎么把 RL 跑对&quot;
-MiniMax MSA（30 页论文）  ：一个组件的机制 + kernel       → &quot;怎么把稀疏注意力做快&quot;
-GLM-5.2                  ：（无）
-MiniMax M3               ：（无）
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>材料</th>
+<th>篇幅</th>
+<th>篇幅花在哪</th>
+<th>等于在说</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>58 页报告</td>
+<td>架构 + Infra + 效率</td>
+<td>"让 1M 便宜到能当默认值"</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4.1</strong></td>
+<td>51 页报告</td>
+<td>架构 + Infra（<strong>RL 一章留白</strong>）</td>
+<td>"把同一件事再便宜 4 倍"</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>47 页报告</td>
+<td>架构 + 能力 + 产品</td>
+<td>"开源的前沿智能"</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0</strong></td>
+<td>45 页报告</td>
+<td>架构 + 训推一致性 + 昇腾工程</td>
+<td>"在自家硬件上把整条链路跑通"</td>
+</tr>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td>40 页报告</td>
+<td>后训练 + RL 基建 + 国产芯片</td>
+<td>"从 vibe coding 到 agentic engineering"</td>
+</tr>
+<tr>
+<td><strong>MiniMax M2</strong></td>
+<td>35 页报告</td>
+<td>后训练 + RL 系统（<strong>架构仅 3 页</strong>）</td>
+<td>"怎么把 RL 跑对"</td>
+</tr>
+<tr>
+<td><strong>MiniMax MSA</strong></td>
+<td>30 页论文</td>
+<td>一个组件的机制 + kernel</td>
+<td>"怎么把稀疏注意力做快"</td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>❌ 无</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td>❌ 无</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
 <p><strong>两家最新的旗舰都没有技术报告。</strong> 这本身是一个信号：<strong>当竞争焦点从"架构创新"转移到"后训练配方与 RL 基建"时，厂商公开的意愿会明显下降</strong>——因为架构可以写成论文，RL 配方是护城河。</p>
 <p>MiniMax 提供了这个趋势下的一种<strong>折中形态</strong>：<strong>不发模型报告，但把单个可发表的组件（MSA）单独写成论文，并把 kernel 开源、把完整配置写进 <code>config.json</code>。</strong> 结果是——M3 的注意力部分反而是五家里<strong>唯一能拿论文逐条核对出货配置</strong>的（见 §零）。这或许是一条比"要么全写要么不写"更现实的路。</p>
 <p><strong>openPangu 则给出了第三种形态，而且是与前两种正交的一种</strong>：</p>
@@ -2858,7 +3328,7 @@ MiniMax           →  不写报告，但开 kernel + 完整 config
 <p><strong>"开源训练代码"这件事，五家里只有华为做了。</strong> 一份报告的可复核性最终取决于别人能不能重跑它——<strong>权重只能验证结论，代码才能验证过程。</strong> 这是 openPangu 在这份对比里最容易被忽略、但可能最有长期价值的一格。</p>
 <p>⚠️ 同时要注意它换来的代价：<strong>许可从 MIT 退成了 <code>OPENPANGU MODEL LICENSE 2.0</code></strong>。所以五家在"开放"这个维度上其实是两条不同的轴——<strong>GLM 开得最"自由"（MIT），华为开得最"完整"（代码 + 算子），两者并不是同一件事。</strong></p>
 <hr />
-<h2 id="_15">附：本目录文件索引</h2>
+<h2 id="_16">附：本目录文件索引</h2>
 <table>
 <thead>
 <tr>

@@ -248,7 +248,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="minimax-m3-m2">MiniMax M3（含 M2 复盘）架构与技术报告解析</h1>
 <blockquote>
-<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>17 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
+<p>📘 <strong>不懂模型架构？先读这份</strong>：<a href="大模型架构入门/README.html">大模型架构入门/</a> —— <strong>19 章 + 速查表</strong>，从零讲清 注意力 / KV cache / MLA / MoE / RoPE / MTP / Muon / 量化，<strong>不预设任何架构基础</strong>。本文用到的术语都能在那里找到解释。</p>
 <p><strong>本文的特殊之处</strong>：这是五家里<strong>唯一一个把三条路线都跑过、并且把失败原因写进正式论文的团队</strong>。<br />
 线性注意力（MiniMax-01 / M1）→ 退回全注意力（M2）→ 块稀疏注意力（M3）。中间那一步"退回"，别家都没有公开记录。</p>
 <table>
@@ -575,7 +575,7 @@ M3       （2026-06）      MSA：保留精确 softmax，但只在选中的块�
 </tr>
 <tr>
 <td>Head dim</td>
-<td>—</td>
+<td><strong>128</strong>（⚠️ 报告没写，查 HF <code>config.json</code> 得到）</td>
 <td>128</td>
 </tr>
 <tr>
@@ -625,9 +625,190 @@ M3       （2026-06）      MSA：保留精确 softmax，但只在选中的块�
 </tr>
 </tbody>
 </table>
-<p><strong>参数量自洽性验算</strong>（我自己按 config 算的，非官方口径）：<br />
-<code>57 × 128 × 3 × 6144 × 3072 ≈ 412.9B</code>（路由专家）<code>+ 3.2B</code>（共享专家）<code>+ 6.7B</code>（60 层注意力，含 index 分支）<code>+ 0.7B</code>（3 层 dense FFN）<code>+ 2.5B</code>（embedding + 输出头）<strong>≈ 426B</strong>，加上 MTP 和 ViT 与官方 428B 吻合。<br />
-激活：<code>57 × (4+1) × 3 × 6144 × 3072 ≈ 16.1B + 6.7B + 0.7B ≈ 23.5B</code>，与 ~23B 吻合。</p>
+<h3 id="428b">★ 推演一：把 428B 一项一项加出来</h3>
+<p>⚠️ <strong>M3 没有技术报告，官方只给了"428B / ~23B"两个数。下面整笔账都是本文按 <code>config.json</code> 推的</strong>，目的是让你能自己验一遍。通用方法见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.4</a>，本节不重复讲原理。</p>
+<p><strong>第一步：单个组件多大。</strong></p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个专家（SwiGLU 三个矩阵）</td>
+<td>$3 \times 6144 \times 3072$</td>
+<td><strong>56.62 M</strong></td>
+</tr>
+<tr>
+<td>一个 MoE 层的全部专家（128 路由 + 1 共享）</td>
+<td>$129 \times 56.62\,\text{M}$</td>
+<td><strong>7.30 B</strong></td>
+</tr>
+<tr>
+<td>一层注意力（含 index 分支，⚠️ 逐矩阵见下）</td>
+<td>—</td>
+<td><strong>110.9 M</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>注意力那一层的拆解</strong>（关键点：<code>64 × 128 = 8192</code>，<strong>比 hidden 的 6144 还大 1/3</strong>）：</p>
+<div class="codehilite"><pre><span></span><code>W_Q       6144 x (64 x 128 = 8192)  = 50.33 M
+W_K       6144 x ( 4 x 128 =  512)  =  3.15 M
+W_V       6144 x ( 4 x 128 =  512)  =  3.15 M
+W_O       8192 x 6144                = 50.33 M
+W_q^idx   6144 x (4 x 128)           =  3.15 M   &lt;- index 分支，每组 1 个 query 头
+W_k^idx   6144 x 128                 =  0.79 M   &lt;- ★ 全局只有 1 个 key 头
+------------------------------------------------
+每层合计                              = 110.9 M
+</code></pre></div>
+
+<p><strong>第二步：加总。</strong></p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>57 个 MoE 层的专家</td>
+<td>$57 \times 7.30\,\text{B}$</td>
+<td><strong>416.3 B</strong></td>
+<td><strong>97.7 %</strong></td>
+</tr>
+<tr>
+<td>60 层注意力 + index 分支</td>
+<td>$60 \times 110.9\,\text{M}$</td>
+<td>6.65 B</td>
+<td>1.56 %</td>
+</tr>
+<tr>
+<td>3 个稠密层 FFN</td>
+<td>$3 \times (3 \times 6144 \times 12288)$</td>
+<td>0.68 B</td>
+<td>0.16 %</td>
+</tr>
+<tr>
+<td>词嵌入 + 输出头</td>
+<td>$2 \times 200064 \times 6144$</td>
+<td>2.46 B</td>
+<td>0.58 %</td>
+</tr>
+<tr>
+<td><strong>文本主干合计</strong></td>
+<td></td>
+<td><strong>426.1 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>官方口径</strong></td>
+<td></td>
+<td><strong>428 B</strong></td>
+<td>差 <strong>0.44 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这里有一处对不上，之前的版本写"加上 MTP 和 ViT 与官方 428B 吻合"，其实兜不住</strong>：主干已经到 426.1 B，<strong>428B 只剩约 1.9 B 的空间</strong>给 <strong>7 个 MTP module + 32 层 ViT</strong>。而如果 7 个 MTP module 各自是一个完整的 MoE 层（每个 7.30 B + 0.11 B 注意力 + 0.08 B 拼接投影），光 MTP 就要 <strong>+52 B</strong>，总数直接冲到 478 B。</p>
+<p><strong>所以三种可能必居其一</strong>：① 7 个 MTP module <strong>共享参数</strong>（像 GLM-5 那样，见 <a href="GLM-5.2.html">GLM-5.2.md</a> §四）；② 它们是<strong>轻量的 EAGLE 式草稿头</strong>，不带 MoE；③ 官方的 428B <strong>根本没算 MTP</strong>。⚠️ <strong><code>config.json</code> 只给了 <code>num_mtp_modules: 7</code>，没有给内部结构，这一格推不下去。</strong></p>
+</blockquote>
+<h3 id="23b">★ 推演二：23B 激活是怎么来的，以及"稀疏度"到底是多少</h3>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 23B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>60 层注意力 + index 分支（<strong>每层都全量参与</strong>）</td>
+<td>$60 \times 110.9\,\text{M}$</td>
+<td><strong>6.65 B</strong></td>
+<td>28.3 %</td>
+</tr>
+<tr>
+<td>57 个 MoE 层，每层只激活 4 + 1 个专家</td>
+<td>$57 \times 5 \times 56.62\,\text{M}$</td>
+<td>16.14 B</td>
+<td>68.6 %</td>
+</tr>
+<tr>
+<td>3 个稠密层 FFN</td>
+<td>同上表</td>
+<td>0.68 B</td>
+<td>2.9 %</td>
+</tr>
+<tr>
+<td>输出头</td>
+<td>$200064 \times 6144$</td>
+<td>1.23 B</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>合计（不含输出头，与官方口径一致）</strong></td>
+<td></td>
+<td><strong>23.47 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>官方口径</strong></td>
+<td></td>
+<td><strong>~23 B</strong></td>
+<td>差 <strong>+2 %</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>稀疏度这个词有三个互不相同的含义，本目录已经踩过一次坑</strong>：</p>
+<div class="codehilite"><pre><span></span><code>❌ 常见错法：&quot;128 选 4，所以这个模型稀疏 32 倍&quot;
+
+✅ 三个数字，三个不同的问题：
+   128 / 4    = 32.0 倍   &lt;- 只是【路由专家】的选择比
+   129 / 5    = 25.8 倍   &lt;- 算上 1 个共享专家后的 FFN 稀疏比
+   428 / 23   = 18.6 倍   &lt;- ★ 全模型 总参数 / 激活参数
+                             这才是&quot;显存账 vs 算力账差多少&quot;的正确口径
+</code></pre></div>
+
+<p><strong>为什么从 32 掉到 18.6</strong>：注意力和 index 分支那 6.65 B <strong>一点都不稀疏</strong>，每个 token 都要全量走一遍。它们在总参数里只占 1.6%，在激活参数里却占了 <strong>28%</strong>。⚠️ 同样的错误在 <a href="openPangu-2.0-Pro.html">openPangu-2.0-Pro.md</a> 和 <a href="GLM-5.2.html">GLM-5.2.md</a> 里都出现过，已一并更正。通用解释见 <a href="大模型架构入门/01-鸟瞰全景.html">大模型架构入门/01-鸟瞰全景.md §1.4.4</a>。</p>
+<p><strong>两个派生量，顺手算出来做横向定位</strong>（⚠️ 都是本文推的，不是官方披露值）：</p>
+<table>
+<thead>
+<tr>
+<th>派生指标</th>
+<th>怎么算</th>
+<th><strong>M3</strong></th>
+<th>M2</th>
+<th>对照</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>前向 FLOPs / token</strong>（不含注意力矩阵项）</td>
+<td>$\approx 2 \times$ 激活参数</td>
+<td>≈ <strong>46 GFLOP</strong></td>
+<td>≈ 20</td>
+<td>GLM-5.2 ≈ 80 · V4 ≈ 98 · K3 ≈ 208 · openPangu ≈ 36</td>
+</tr>
+<tr>
+<td><strong>深宽比</strong> $N/d$</td>
+<td>层数 ÷ hidden dim</td>
+<td>60 / 6144 = <strong>0.0098</strong></td>
+<td>62 / 3072 = <strong>0.0202</strong></td>
+<td>K3 0.0130 · GLM-5.2 0.0127 · V4 0.0085</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>深宽比那一格把 M2 → M3 的取向说得很清楚</strong>：M2 是<strong>又瘦又深</strong>（0.0202，五家里没有第二个这么极端的），M3 直接把 hidden 翻倍、层数微减，<strong>一步跳到 0.0098，成了这一代里最矮最胖的之一</strong>。⚠️ 官方没有解释这个反转，<strong>无一手依据</strong>；但它和"激活参数从 9.8B 涨到 23B"是同一个方向——M2 那套"极小激活"的原则，在 M3 上被明显放宽了。</p>
+</blockquote>
 <h3 id="_2">三个值得单独指出的设计</h3>
 <p><strong>① <code>swigluoai</code> + <code>swiglu_limit: 7.0</code> —— 又一家给 SwiGLU 加上限的</strong></p>
 <p><code>swigluoai</code> 是 gpt-oss 的截断版 SwiGLU：<code>α=1.702</code> 让 <code>Swish</code> 逼近 GELU，<code>limit=7.0</code> 把两个分支都夹住。</p>
@@ -635,18 +816,96 @@ M3       （2026-06）      MSA：保留精确 softmax，但只在选中的块�
 <p><strong>② 激活参数从 9.8B 涨到 ~23B —— "mini activations"这条原则被放宽了</strong></p>
 <p>M2 系列报告的标题是《<strong>Mini Activations</strong> Unleashing Max Real-World Intelligence》，整篇论文的中心论点就是"极小激活量也能出前沿能力"。M3 把激活量提到 2.3 倍，专家数反而从 256 减到 128、top-k 从 8 减到 4——<strong>这是一个方向上的调整，但官方没有给出任何解释</strong>（没有 M3 技术报告）。合理猜测是省下来的注意力算力被换成了 FFN 容量，以及原生多模态需要更大的容量，但这<strong>纯属推测，无一手依据</strong>。</p>
 <p><strong>③ KV head 从 8 减到 4</strong></p>
-<p>这一条对解码速度是<strong>独立于 MSA 的额外收益</strong>：M3 每层每 token 的 KV cache 只有 M2 的一半。后面讲加速比口径时会用到这一点。</p>
+<p>这一条对解码速度是<strong>独立于 MSA 的额外收益</strong>。⚠️ <strong>但"少一半 KV 头就少一半 cache"这句话只有在 head_dim 不变时才成立，所以必须把 head_dim 一起核对</strong>——M2 报告正文<strong>没有写 head_dim</strong>，本文是从 <code>MiniMaxAI/MiniMax-M2</code> 的 <code>config.json</code> 查到的：<strong><code>head_dim = 128</code>，和 M3 一样</strong>（✅ 一手，可复核）。确认之后这笔账才立得住：</p>
+<div class="codehilite"><pre><span></span><code>    通式：每 token 每层 KV 字节 = 2 x n_kv_heads x head_dim x 字节数
+                                  ^ K 和 V 各一份
+
+    M2：2 x 8 x 128 x 2 = 4096 B = 4 KiB / 层
+    M3：2 x 4 x 128 x 2 = 2048 B = 2 KiB / 层        &lt;- ★ 确实是一半
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>每层每 token</th>
+<th>层数</th>
+<th><strong>每 token 全模型</strong></th>
+<th>1M 上下文（batch = 1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>M2</strong>（GQA-6，8 个 KV 头）</td>
+<td>4 KiB</td>
+<td>62</td>
+<td><strong>248 KiB</strong></td>
+<td>⚠️ M2 上限只有 192K，此处只作架构对照</td>
+</tr>
+<tr>
+<td><strong>M3</strong> 的主分支 KV</td>
+<td>2 KiB</td>
+<td>60</td>
+<td><strong>120 KiB</strong></td>
+<td>120 GiB</td>
+</tr>
+<tr>
+<td><strong>M3</strong> 还要额外缓存 index key（1 头 × 128 维）</td>
+<td>+0.25 KiB</td>
+<td>60</td>
+<td><strong>+15 KiB</strong></td>
+<td>+15 GiB</td>
+</tr>
+<tr>
+<td><strong>M3 合计</strong></td>
+<td>2.25 KiB</td>
+<td>60</td>
+<td><strong>135 KiB</strong></td>
+<td><strong>135 GiB</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>两个容易被忽略的结论</strong>：</p>
+<p><strong>① M3 省下来的没有账面上那么多。</strong> 主分支确实砍半（248 → 120 KiB），但 MSA 自己要为<strong>每个历史 token</strong>多存一份 128 维的 index key，加回来之后是 <strong>135 KiB</strong>——相对 M2 只省 <strong>1.84×</strong>，不是 2×。⚠️ <strong>凡是"动态稀疏"方案都逃不掉这一项</strong>：GLM-5.2 的 DSA 也一样（见 <a href="GLM-5.2.html">GLM-5.2.md</a> §六推演五）。</p>
+<p><strong>② 135 GiB 是一条 1M 序列的 KV cache。</strong> 一张 H100 是 80 GB（≈74.5 GiB），<strong>装不下</strong>。所以 M3 的 1M 上下文在服务侧一定是多卡拆 cache 的。KV cache 的通用账见 <a href="大模型架构入门/06-KV-cache.html">大模型架构入门/06-KV-cache.md §6.3</a>。</p>
+<p><strong>这两条在 §七 讲加速比口径时会直接用上。</strong></p>
+</blockquote>
 <hr />
 <h2 id="msa">四、MSA 是什么：一张图讲完</h2>
 <blockquote>
 <p>本节全部来自 MSA 论文 §3，公式编号沿用原文。</p>
 </blockquote>
 <h3 id="_3">两个分支</h3>
-<div class="codehilite"><pre><span></span><code>                 ┌─────────────── Index Branch（轻量，负责&quot;选&quot;）
-输入 X ──┤
-                 └─────────────── Main Branch（精确 softmax，负责&quot;算&quot;）
-</code></pre></div>
-
+<p>同一个输入 <code>X</code> 同时喂给两条并行的支路，<strong>一条负责"选"，一条负责"算"</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>支路</th>
+<th>它的职责</th>
+<th>规模（M3 出货配置）</th>
+<th>输出</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Index Branch</strong>（索引分支）</td>
+<td>负责"<strong>选</strong>"：给每个历史<strong>块</strong>打分，挑出 Top-k</td>
+<td>每个 GQA 组 1 个 query 头（共 4 个），<strong>全局只有 1 个 key 头</strong>，维度 128</td>
+<td>一份<strong>块编号列表</strong></td>
+</tr>
+<tr>
+<td><strong>Main Branch</strong>（主分支）</td>
+<td>负责"<strong>算</strong>"：只在被选中的块上做注意力</td>
+<td>64 个 query 头 / 4 个 KV 头 / head dim 128</td>
+<td>注意力输出</td>
+</tr>
+</tbody>
+</table>
+<p>一条线读下来就是：<code>X</code> → 两条支路并行 → Index 给出块列表 → Main <strong>只在这些块上</strong>做<strong>标准的、精确的</strong> softmax 注意力。</p>
+<blockquote>
+<p>🔑 <strong>最该记住的一点</strong>：Main Branch 里<strong>没有任何近似</strong>。MSA 不像线性注意力那样改写 softmax，它只是把"看哪些 token"这件事从"全看"换成"动态选 2048 个"。<strong>精度损失只可能来自选错，不来自算错。</strong></p>
+</blockquote>
 <p><strong>Index Branch</strong>：每个 GQA 组一个 index query head，<strong>所有组共享同一个 index key head</strong>：</p>
 <div class="codehilite"><pre><span></span><code>Q_idx = stopgrad(X) · W_q^idx  ∈ R^(N × H_kv × d_idx)     ← M3: H_kv=4, d_idx=128
 K_idx = stopgrad(X) · W_k^idx  ∈ R^(N × 1   × d_idx)     ← 只有 1 个头！
@@ -766,7 +1025,57 @@ KV 外层： FLOPs 相同
 </tr>
 </tbody>
 </table>
-<p><strong>为什么 decode 一个是 7.6× 一个是 15×？</strong> 我的分析（<strong>非官方说法</strong>）：论文的 7.6× 是"MSA vs GQA、其他全部相同"的干净对照；官方的 15× 是"M3 vs M2"，而 M3 相对 M2 还额外拿到了 <strong>KV head 从 8 减到 4</strong> 这一项——解码是访存受限的，KV cache 读取量减半本身就能贡献接近 2× 的独立收益。7.6 × 2 ≈ 15。两个数字不矛盾，只是<strong>一个是控制变量的，一个是端到端的</strong>。</p>
+<h3 id="284-76">★ 推演三：把 28.4× 和 7.6× 自己算一遍</h3>
+<p><strong>这两个数字都可以从 <code>config.json</code> 复算出来，不用信论文。</strong> ⚠️ 以下全部是本文推算，论文只给了结果。</p>
+<p><strong>① 28.4× 是"注意力 FLOPs"的比。</strong> 因果注意力下，平均每个 query 看 $N/2$ 个历史 token：</p>
+<div class="codehilite"><pre><span></span><code>    稠密 GQA（每 token）
+      QK：2 x H_q x (N/2) x d_h = 2 x 64 x 524288 x 128 = 8.59 GFLOP
+      AV：同上                                          = 8.59 GFLOP
+      小计                                              = 17.18 GFLOP
+
+    MSA（每 token）
+      主分支（只看 k·B_k = 2048 个 token，与 N 无关）
+        2 x 2 x 64 x 2048 x 128                         =  0.067 GFLOP
+      index 分支（★ 这一项仍然线性于 N，逃不掉）
+        2 x H_kv x (N/2) x d_idx = 2 x 4 x 524288 x 128 =  0.537 GFLOP
+      小计                                              =  0.604 GFLOP
+
+    比值 = 17.18 / 0.604 = 28.4 倍      &lt;-- ★ 和论文的 28.4x 完全对上
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>注意 MSA 那 0.604 里有 89% 是 index 分支。</strong> 主注意力已经被压到 0.067 GFLOP（可以忽略），<strong>新的瓶颈是索引本身</strong>——这正是 GLM-5.2 用 IndexShare、GLM-5.3-Flash 用 IndexPool 去攻的那一项（见 <a href="GLM-5.3.html">GLM-5.3.md</a> §5.6）。<strong>MiniMax 目前没有对这一项做任何压缩。</strong></p>
+</blockquote>
+<p><strong>② 7.6× 是"解码访存量"的比。</strong> decode 是<strong>访存受限</strong>的（见 <a href="大模型架构入门/06-KV-cache.html">大模型架构入门/06-KV-cache.md §6.4</a>），所以加速比 ≈ 每步要读的字节数之比：</p>
+<div class="codehilite"><pre><span></span><code>    每一层、每个 decode step 要从 HBM 读多少字节（N = 1M）
+
+    稠密 GQA（64q / 4kv / d_h=128）
+      读全部历史的 KV：N x 2048 B                     = 2147 MB
+
+    MSA
+      扫全部历史的 index key：N x 256 B               =  268 MB   &lt;- ★ 占 98%
+      读选中的 2048 个 token 的 KV：2048 x 2048 B     =    4 MB
+      小计                                            =  273 MB
+
+    比值 = 2147 / 273 = 7.88 倍      &lt;-- ★ 论文实测 7.6x，差 4%
+</code></pre></div>
+
+<p><strong>为什么 decode 一个是 7.6× 一个是 15×？</strong> ⚠️ <strong>以下是本文的推算与分析，不是官方说法</strong>：论文的 7.6× 是"MSA vs GQA、其他全部相同"的干净对照；官方的 15× 是"M3 vs M2"，而 M3 相对 M2 还额外拿到了 <strong>KV head 从 8 减到 4</strong> 这一项（§三 已核对过两者 head_dim 都是 128）。把 M2 的口径代进同一个式子：</p>
+<div class="codehilite"><pre><span></span><code>    M2  ：62 层 x (N x 4096 B)                        = 266.3 GB / step
+    M3  ：60 层 x (N x 256 B + 2048 x 2048 B)         =  16.4 GB / step
+    比值 = 16.3 倍          &lt;-- ★ 和官方自述的 &quot;&gt;15x&quot; 对得上
+
+    拆开看这 16.3 倍是怎么来的：
+      7.88 倍  &lt;- MSA 本身（稀疏选择，论文的控制变量对照）
+      x 2.00   &lt;- KV 头 8 -&gt; 4（与 MSA 完全无关的独立收益）
+      x 1.03   &lt;- 层数 62 -&gt; 60（M2 层更多，每步要多读一点）
+      = 16.3 倍   ✓ 三项相乘正好还原上面那个比值
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>所以"7.6 × 2 ≈ 15"这个此前只是直觉的说法，现在有字节级的账撑着了。</strong> 两个数字不矛盾，只是<strong>一个是控制变量的，一个是端到端的</strong>。</p>
+<p>⚠️ <strong>但 M3 vs M2 这个对照本身有一处不干净</strong>：<strong>M2 的上下文上限只有 192K，它根本跑不到 1M。</strong> 官方那句 "@1M" 里的 M2 是一个<strong>外推的架构基线</strong>，不是真实可跑的系统。引用 15× 时必须带上这一句。</p>
+</blockquote>
 <p><strong>论文自己非常坦率地解释了为什么实测跟不上 FLOPs 比</strong>：</p>
 <blockquote>
 <p>稀疏注意力引入了索引构建、top-k 选择、<strong>反向索引物化</strong>、query gather 和负载均衡的开销，而且访存模式不如稠密注意力规则。因此运行时加速小于理论 FLOPs 缩减，<strong>但会随上下文长度增长</strong>——因为稠密基线继续随全序列扩展，而 MSA 的主注意力预算是固定的。</p>
@@ -1181,18 +1490,40 @@ KV 外层： FLOPs 相同
 <td><strong>厂商自述，无论文</strong></td>
 </tr>
 <tr>
-<td>参数量验算、"decode 15× ≈ 7.6× × KV head 减半"的解释、"激活量从 9.8B 到 23B 是原则放宽"</td>
-<td><strong>我自己的推算/分析</strong></td>
+<td><strong>M2 的 <code>head_dim = 128</code></strong></td>
+<td><strong>HF <code>MiniMaxAI/MiniMax-M2</code> 的 <code>config.json</code></strong></td>
+<td>一手（⚠️ <strong>M2 报告正文没有写 head_dim</strong>，只能查 config）</td>
+</tr>
+<tr>
+<td><strong>§三 推演一/二</strong>（426.1B 参数拆解、23.47B 激活拆解、稀疏度 18.6×、深宽比、FLOPs/token、KV cache 135 KiB/token）</td>
+<td><strong>本文按 <code>config.json</code> 推算</strong></td>
+<td>⚠️ <strong>推算</strong>；与官方 428B / ~23B 分别差 0.44% / 2%</td>
+</tr>
+<tr>
+<td><strong>§三 那处"7 个 MTP module 装不下"的矛盾</strong></td>
+<td><strong>本文推算</strong></td>
+<td>⚠️ <strong>推算</strong>；<code>config.json</code> 未给 MTP 内部结构，结论只到"三种可能必居其一"</td>
+</tr>
+<tr>
+<td><strong>§七 推演三</strong>（28.4× 与 7.88× 的复算、16.3× 的三项分解）</td>
+<td><strong>本文按 <code>config.json</code> 推算</strong></td>
+<td>⚠️ <strong>推算</strong>；与论文的 28.4× / 7.6× 和官方的 &gt;15× 三处分别吻合</td>
+</tr>
+<tr>
+<td>"激活量从 9.8B 到 23B 是原则放宽"、深宽比反转的解读</td>
+<td><strong>我自己的分析</strong></td>
 <td><strong>推测，无一手依据</strong></td>
 </tr>
 </tbody>
 </table>
-<p><strong>最需要保留怀疑的四处</strong>：</p>
+<p><strong>最需要保留怀疑的六处</strong>：</p>
 <ol>
 <li><strong>MSA 论文的实验模型是 109B/6B，不是 428B/23B 的 M3。</strong> 论文全文没有一句话描述 M3 自己的训练流程、数据配比或语料规模。<strong>它证明的是"MSA 这个机制在 109B 上不掉点"，不是"M3 很强"。</strong> 出货 config 里的超参与论文完全一致这一点，把这个 gap 缩小了很多，但没有消除。</li>
 <li><strong>三组加速数字口径不同</strong>，混用会得出错误结论。引用时必须带上比较对象。</li>
 <li><strong>M3 没有技术报告。</strong> 激活参数为什么从 9.8B 涨到 23B、专家数为什么从 256 减到 128、原生多模态怎么从第 0 步就联合训练、后训练怎么做的——<strong>全部无公开材料</strong>。</li>
 <li><strong>M2 的 SWA 消融不能推广成"SWA 不行"。</strong> 那张表里 SWA 在 IFBench / XBench-ds / τ²-retail 上是赢的。它证明的是"<strong>在 MiniMax 关心的长程 agent 任务上，SWA 的覆盖限制是致命的</strong>"，这是一个和产品定位绑定的结论。</li>
+<li><strong>"M3 vs M2 @1M" 这个对照本身不干净</strong>：M2 的上下文上限只有 192K，它跑不到 1M。官方的 15× 里那个 M2 是<strong>外推出来的架构基线</strong>，不是可运行的系统（见 §七 推演三）。</li>
+<li><strong>7 个 MTP module 的参数账对不上</strong>（见 §三 推演一）。主干已占 426.1 B，若每个 MTP module 是完整 MoE 层则总数要到 478 B。⚠️ 这一格只能列可能性，无法确认。</li>
 </ol>
 <hr />
 <h2 id="_11">参考来源</h2>

@@ -252,8 +252,24 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="03">03 · 残差流：全教程最重要的一个直觉</h1>
 <blockquote>
 <p><strong>这一章的目标</strong>：如果你只读一章，读这章。<br />
-读完你应该能回答：<code>x = x + f(x)</code> 这个"加号"为什么是深度学习最重要的发明？残差流为什么可以当成一条"总线"？DeepSeek-V4 和 openPangu 的 <strong>mHC</strong>、Kimi K3 的 <strong>AttnRes</strong> 到底在改什么？为什么 GLM 和 MiniMax 选择不改？</p>
+读完你应该能回答：<code>x = x + f(x)</code> 这个"加号"为什么是深度学习最重要的发明？残差流为什么可以当成一条"总线"？DeepSeek-V4 和 openPangu 的 <strong>mHC</strong>、Kimi K3 的 <strong>AttnRes</strong> 到底在改什么？为什么 GLM 和 MiniMax 选择不改？<br />
+<strong>读法</strong>：本章有四组"拿计算器就能按完"的小例子——§3.1.2（$d=4$，一个加号）、§3.3.4–§3.3.5（$d=8$，叠加与干涉）、§3.5.4（$3\times3$ 的 Sinkhorn 迭代）、§3.6.4（$d=4$ 的深度注意力）。<strong>这四组按过一遍，本章就没有黑箱了。</strong></p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong>（每个缩写第一次出现都给中英文全称，后面直接用缩写）</p>
+<p><strong>残差连接</strong>（Residual Connection / Skip Connection，残差连接 / 跳跃连接）—— 就是那个 <code>x = x + f(x)</code> 的加号，2015 年 ResNet（Residual Network，残差网络）提出。</p>
+<p><strong>残差流</strong>（Residual Stream）—— 贯穿全模型的那条 $d$ 维"总线"。本章 §3.3 起的核心比喻。</p>
+<p><strong>增量</strong>（Increment / Update）—— 一层写到残差流上的那一份 $F_l(x_l)$。<strong>★ 全章最需要分清的一对概念：增量 $F_l(x_l)$ vs 累加值 $x_l$。</strong></p>
+<p><strong>雅可比矩阵</strong>（Jacobian Matrix）—— 向量函数输出对输入的偏导表，形状 $[d, d]$。反向传播就是一串雅可比连乘。</p>
+<p><strong>Pre-Norm</strong>（Pre-Normalization，前置归一化）—— 归一化放在子层之前，详见 <a href="04-归一化.html">04 章 §4.3</a>。本章的 $\sqrt{N}$ 增长是它的直接后果。</p>
+<p><strong>mHC</strong>（manifold-constrained Hyper-Connections，流形约束超连接）—— DeepSeek-V4 与 openPangu 的残差改造：把 1 条流变成 $n$ 条（§3.5）。</p>
+<p><strong>HC</strong>（Hyper-Connections，超连接）—— mHC 的前身，"把残差加宽成多条"这条技术线的源头。</p>
+<p><strong>双随机矩阵</strong>（Doubly Stochastic Matrix）—— 非负、每行和为 1、每列和为 1 的方阵。mHC 的核心约束（§3.5.3）。</p>
+<p><strong>Sinkhorn–Knopp</strong>（辛克霍恩–克诺普算法）—— 把任意正矩阵投影到双随机流形的交替归一化算法（§3.5.4）。</p>
+<p><strong>AttnRes</strong>（Attention Residuals，注意力残差）—— Kimi K3 的残差改造：在<strong>深度方向</strong>做一次 softmax 注意力（§3.6）。</p>
+<p><strong>JL 引理</strong>（Johnson–Lindenstrauss Lemma，约翰逊–林登施特劳斯引理）—— 高维空间里"近似正交的方向"数量随维度<strong>指数增长</strong>的理论依据（§3.3.5）。</p>
+<p><strong>MoE</strong>（Mixture of Experts，混合专家）／<strong>MTP</strong>（Multi-Token Prediction，多 token 预测）—— 本章只在提到五家配置时用到，详见 <a href="10-MoE.html">10 章</a> / <a href="12-MTP与投机解码.html">12 章</a>。</p>
+<p><strong>本章会用到的五家层数</strong>（来自 <a href="01-鸟瞰全景.html">01 章 §1.6</a>）：DeepSeek-V4-Pro <strong>61</strong>、Kimi K3 <strong>93</strong>、GLM-5.2 <strong>78</strong>、MiniMax M3 <strong>60</strong>、openPangu-2.0-Pro <strong>50</strong>。</p>
 <hr />
 <h2 id="31">3.1 先看那个式子</h2>
 <p>回忆 <a href="01-鸟瞰全景.html">01 章</a>的主循环：</p>
@@ -261,82 +277,444 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 x = x + FFN( Norm(x) )
 </code></pre></div>
 
-<p><strong>注意这不是 <code>x = Attention(Norm(x))</code>。</strong> 这个 <code>x +</code> 叫<strong>残差连接</strong>（residual connection / skip connection），2015 年 ResNet 提出。</p>
+<p><strong>注意这不是 <code>x = Attention(Norm(x))</code>。</strong> 这个 <code>x +</code> 叫<strong>残差连接</strong>，2015 年 ResNet 提出。</p>
 <p>它看起来只是一个加号。<strong>但没有它，超过 20 层的网络根本训不起来。</strong></p>
+<h3 id="311">3.1.1 逐符号读一遍：每个记号是什么</h3>
+<p>本章公式不多但记号密，先把它们摊在一张表上。<strong>后面每一节都会回来查这张表。</strong></p>
+<table>
+<thead>
+<tr>
+<th>记号</th>
+<th>怎么读</th>
+<th>是什么</th>
+<th>形状</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$d$</td>
+<td>"残差流宽度"</td>
+<td>每个 token 的向量维度。openPangu 5120、K3 7168</td>
+<td>标量</td>
+</tr>
+<tr>
+<td>$N$</td>
+<td>"层数"</td>
+<td>openPangu 50、K3 93</td>
+<td>标量</td>
+</tr>
+<tr>
+<td>$l$</td>
+<td>"第 $l$ 层"</td>
+<td>从 1 数到 $N$</td>
+<td>标量</td>
+</tr>
+<tr>
+<td>$x_l$</td>
+<td>"第 $l$ 层的输入"</td>
+<td>残差流在第 $l$ 层的<strong>累加值</strong></td>
+<td>$[d]$（单 token）／$[L, d]$（整条序列）</td>
+</tr>
+<tr>
+<td>$F_l$</td>
+<td>"第 $l$ 层的子层"</td>
+<td>Attention 或 FFN，<strong>连它前面那个 Norm 一起算进去</strong></td>
+<td>函数 $[d] \to [d]$</td>
+</tr>
+<tr>
+<td>$F_l(x_l)$</td>
+<td>"第 $l$ 层写出的<strong>增量</strong>"</td>
+<td>★ <strong>全章最重要的一个量。</strong>§3.6 会反复强调它和 $x_l$ 的区别</td>
+<td>$[d]$</td>
+</tr>
+<tr>
+<td>$\mathcal{L}$</td>
+<td>"损失"</td>
+<td>一个标量</td>
+<td>标量</td>
+</tr>
+<tr>
+<td>$\dfrac{\partial F_l}{\partial x_l}$</td>
+<td>"$F_l$ 的雅可比"</td>
+<td>子层输出的每一维对输入的每一维的偏导</td>
+<td>$[d, d]$</td>
+</tr>
+<tr>
+<td>$I$</td>
+<td>"单位矩阵"</td>
+<td>对角线全 1、其余全 0</td>
+<td>$[d, d]$</td>
+</tr>
+<tr>
+<td>$|x|$</td>
+<td>"$x$ 的范数"</td>
+<td>向量长度 $\sqrt{\sum x_i^2}$</td>
+<td>标量</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>两个最容易混的记号，现在就分清</strong>：<br />
+```<br />
+x_l          = 【累加值】。它是"到第 l 层为止，所有层写进去的东西的总和"。<br />
+F_l(x_l)     = 【增量】。  它只是"第 l 层这一次写进去的那一份"。</p>
+<p>标准残差：   x_{l+1} = x_l + F_l(x_l)<br />
+             =&gt; x_N = x_0 + F_1(x_1) + F_2(x_2) + ... + F_{N-1}(x_{N-1})<br />
+             =&gt; 累加值 = 初始值 + 所有增量之和<br />
+```<br />
+<strong>§3.6 的 AttnRes 之所以容易被讲反，就是因为很多人把这两个搞混了。</strong></p>
+</blockquote>
+<h3 id="312-d4">3.1.2 ★ 一个 $d=4$ 的最小例子：这个加号到底做了什么</h3>
+<p>取 $d = 4$，设第 $l$ 层的输入和它的子层输出分别是</p>
+<div class="codehilite"><pre><span></span><code>x_l        = [ 2.0,  0.0, -1.0,  1.0 ]        ||x_l|| = sqrt(6)    = 2.44949
+F_l(x_l)   = [ 0.3, -0.2,  0.5,  0.1 ]        ||F_l|| = sqrt(0.39) = 0.62450
+</code></pre></div>
+
+<p><strong>两种接法，逐元素算出来：</strong></p>
+<table>
+<thead>
+<tr>
+<th>接法</th>
+<th>式子</th>
+<th>$x_{l+1}$</th>
+<th>$|x_{l+1}|$</th>
+<th>和 $x_l$ 的夹角</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>无残差</strong></td>
+<td>$x_{l+1} = F_l(x_l)$</td>
+<td><code>[ 0.3, -0.2,  0.5,  0.1]</code></td>
+<td>0.62450</td>
+<td><strong>82.5°</strong></td>
+</tr>
+<tr>
+<td><strong>有残差</strong></td>
+<td>$x_{l+1} = x_l + F_l(x_l)$</td>
+<td><code>[ 2.3, -0.2, -0.5,  1.1]</code></td>
+<td>2.60576</td>
+<td><strong>13.7°</strong></td>
+</tr>
+</tbody>
+</table>
+<p>那两个角度怎么来的（余弦定义 $\cos\theta = \dfrac{a\cdot b}{|a|\,|b|}$）：</p>
+<div class="codehilite"><pre><span></span><code>有残差： x_l . x_{l+1} = 2.0x2.3 + 0.0x(-0.2) + (-1.0)x(-0.5) + 1.0x1.1
+                       = 4.6 + 0 + 0.5 + 1.1 = 6.2
+         cos = 6.2 / (2.44949 x 2.60576) = 6.2 / 6.38278 = 0.97136  -&gt;  13.7 度
+
+无残差： x_l . F_l    = 2.0x0.3 + 0 + (-1.0)x0.5 + 1.0x0.1 = 0.6 - 0.5 + 0.1 = 0.2
+         cos = 0.2 / (2.44949 x 0.62450) = 0.2 / 1.52971 = 0.13074  -&gt;  82.5 度
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这两个角度就是残差连接的全部直觉</strong>：<br />
+```<br />
+无残差：新状态和旧状态几乎【正交】（82.5 度）。<br />
+        每一层都在"换话题"——上一层辛苦算出来的方向，这一层基本不管。</p>
+<p>有残差：新状态只比旧状态偏了【13.7 度】。<br />
+        每一层都在"微调"——原来的内容基本保留，只加了一个小修正。<br />
+```<br />
+<strong>$|F_l| / |x_l| = 0.62450 / 2.44949 = 0.255$，也就是"这一层只改动了大约四分之一的幅度"。</strong> 这个比值会在 <a href="04-归一化.html">04 章 §4.3.5</a>以 $1/\sqrt{l}$ 的形式再出现。</p>
+</blockquote>
+<h3 id="313">3.1.3 ★ 把子层"学废"：有加号和没加号的差别有多大</h3>
+<p>现在做一个思想实验：<strong>假设第 $l$ 层彻底没学会，它的子层输出恒为 0。</strong></p>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>无残差 $x_{l+1} = F_l(x_l)$</th>
+<th>有残差 $x_{l+1} = x_l + F_l(x_l)$</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$F_l$ 输出恒为 <strong>0</strong>（这一层学废了）</td>
+<td><code>[0, 0, 0, 0]</code> ❌ <strong>信息全丢</strong>，它后面所有层都在处理零向量</td>
+<td><code>[2, 0, -1, 1]</code> $= x_l$ ✅ <strong>恒等直通</strong>，等于这一层不存在</td>
+</tr>
+<tr>
+<td>此时 $\dfrac{\partial x_{l+1}}{\partial x_l}$</td>
+<td>$\mathbf{0}$ ❌ <strong>梯度链在这里断掉</strong></td>
+<td>$I$ ✅ <strong>梯度原封不动通过</strong></td>
+</tr>
+<tr>
+<td>$F_l$ 输出<strong>异常大</strong>（这一层炸了）</td>
+<td>后面全被它主导，原始信息无从恢复</td>
+<td>$x_l$ 还在里面，至少保住了一份原始信号</td>
+</tr>
+<tr>
+<td>这一层的<strong>默认行为</strong></td>
+<td>"输出一个新东西"（默认值是<strong>零</strong>）</td>
+<td>"什么都不做"（默认值是<strong>恒等</strong>）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>看最后一行。残差连接真正干的事，不是"加了一条捷径"，而是——</strong></p>
+<p><strong>把每一层的默认行为从【替换】改成了【什么都不做】。</strong></p>
+<p>```<br />
+无残差：网络要学的是"这一层应该输出什么"。<br />
+        想让这一层不起作用，必须精确地学出一个【恒等映射】—— 这非常难。</p>
+<p>有残差：网络要学的是"这一层要在原来的基础上改一点什么"。<br />
+        想让这一层不起作用，只要把输出学成 0 —— 这非常容易（权重归零即可）。<br />
+```</p>
+<p><strong>ResNet 论文里的原话就是这个意思：学"残差" $F(x) = H(x) - x$ 比直接学 $H(x)$ 容易。</strong> 因为在深层网络里，$H(x)$ 的最优解往往<strong>接近恒等</strong>，而"接近恒等"对应的残差 $F(x)$ 就<strong>接近 0</strong>，是个好起点。</p>
+</blockquote>
 <hr />
 <h2 id="32-vs">3.2 为什么没有它就训不动：连乘 vs 连加</h2>
 <p>这一节是纯数学，但很短，而且是理解一切的基础。</p>
-<h3 id="_1">没有残差的情况</h3>
+<h3 id="321">3.2.1 没有残差：连乘</h3>
 <p>设第 $l$ 层是 $x_{l+1} = F_l(x_l)$，一共 $N$ 层。反向传播时，损失 $\mathcal{L}$ 对第 1 层输入的梯度是<strong>链式法则的连乘</strong>：</p>
 <p>$$\frac{\partial \mathcal{L}}{\partial x_1} = \frac{\partial \mathcal{L}}{\partial x_N}\cdot\frac{\partial F_{N-1}}{\partial x_{N-1}}\cdot\frac{\partial F_{N-2}}{\partial x_{N-2}}\cdots\frac{\partial F_1}{\partial x_1}$$</p>
-<p><strong>$N-1$ 个雅可比矩阵连乘。</strong> 设每个雅可比的"典型放大倍数"是 $\rho$：</p>
-<div class="codehilite"><pre><span></span><code>ρ = 0.9,  N = 50   →   0.9^49 ≈ 0.006      梯度消失，浅层几乎收不到信号
-ρ = 1.1,  N = 50   →   1.1^49 ≈ 106        梯度爆炸，训练发散
-ρ = 1.0            →   刚好，但这是【测度为零】的巧合，不可能自然维持
+<p><strong>$N-1$ 个雅可比矩阵连乘。</strong> 设每个雅可比的"典型放大倍数"（谱范数量级）是 $\rho$，那么整体就是 $\rho^{N-1}$。<strong>把这个数算出来</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>层数 $N$</th>
+<th>$\rho = 0.9$</th>
+<th>$\rho = 0.95$</th>
+<th>$\rho = 1.0$</th>
+<th>$\rho = 1.05$</th>
+<th>$\rho = 1.1$</th>
+<th><strong>有残差的恒等项</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10</td>
+<td>0.387</td>
+<td>0.630</td>
+<td>1</td>
+<td>1.55</td>
+<td>2.36</td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td>25</td>
+<td>0.0798</td>
+<td>0.292</td>
+<td>1</td>
+<td>3.23</td>
+<td>9.85</td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td><strong>50</strong>（openPangu）</td>
+<td><strong>0.00573</strong></td>
+<td>0.0810</td>
+<td>1</td>
+<td>10.9</td>
+<td><strong>107</strong></td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td><strong>93</strong>（Kimi K3）</td>
+<td>$6.2\times10^{-5}$</td>
+<td>0.00892</td>
+<td>1</td>
+<td>89.0</td>
+<td><strong>6429</strong></td>
+<td><strong>1</strong></td>
+</tr>
+</tbody>
+</table>
+<p>自己验算一行：$0.9^{49} = e^{49\ln 0.9} = e^{49\times(-0.105361)} = e^{-5.1627} = 0.00573$ ✓</p>
+<div class="codehilite"><pre><span></span><code>rho = 0.9 ,  N = 93  -&gt;  6.2e-5      梯度消失，浅层收到的信号只有万分之 0.6
+rho = 1.1 ,  N = 93  -&gt;  6429        梯度爆炸，训练直接发散
+rho = 1.0            -&gt;  刚好，但这是【测度为零】的巧合，不可能自然维持
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>这就是 2015 年之前深度网络的死穴</strong>：不是"深了学不到东西"，是<strong>梯度在传回去的路上就已经数值上死掉或炸掉了</strong>。而 $\rho$ 恰好等于 1 是不可能靠运气维持的——每一层的权重都在变。</p>
+<p><strong>注意 $\rho$ 只要偏离 1 一点点就够致命</strong>：$\rho = 0.95$（只小 5%）在 93 层上就衰减到 0.9%；$\rho = 1.05$（只大 5%）在 93 层上放大 89 倍。<strong>深度把任何微小偏差指数放大，这是连乘的本质。</strong></p>
 </blockquote>
-<h3 id="_2">有残差的情况</h3>
+<h3 id="322">3.2.2 有残差：连加</h3>
 <p>$x_{l+1} = x_l + F_l(x_l)$，雅可比变成：</p>
 <p>$$\frac{\partial x_{l+1}}{\partial x_l} = \underbrace{I}_{\text{恒等}} + \frac{\partial F_l}{\partial x_l}$$</p>
 <p>连乘展开：</p>
 <p>$$\frac{\partial x_N}{\partial x_1} = \prod_{l=1}^{N-1}\left(I + \frac{\partial F_l}{\partial x_l}\right) = I + \sum_l \frac{\partial F_l}{\partial x_l} + \sum_{l&lt;m}\frac{\partial F_m}{\partial x_m}\frac{\partial F_l}{\partial x_l} + \cdots$$</p>
-<p><strong>关键就在展开式的第一项 $I$</strong>：</p>
-<div class="codehilite"><pre><span></span><code>❌ 无残差：只有【一条】路径，长度 N，梯度必须走完全程
-✅ 有残差：展开后有 2^(N-1) 条路径，长度从 0 到 N-1 都有
-           其中【长度为 0 的那条恒等路径，梯度原封不动地传到底】
+<p><strong>关键就在展开式的第一项 $I$。</strong> 把它画出来（以 $N=4$、三个子层为例）：</p>
+<div class="codehilite"><pre><span></span><code>无残差：只有【一条】路径，长度 N-1 = 3，梯度必须走完全程
+
+          x1 --[F1]--&gt; x2 --[F2]--&gt; x3 --[F3]--&gt; x4
+
+
+有残差：每个 F 都可以【走】或【不走】，于是 2^(N-1) = 8 条路径并存
+
+  长度 0 :  x1 ------------------------ x4     &lt;- 恒等路径，梯度原封不动直达
+  长度 1 :  x1 --[F1]------------------ x4
+  长度 1 :  x1 --------[F2]------------ x4
+  长度 1 :  x1 ---------------[F3]----- x4
+  长度 2 :  x1 --[F1]--[F2]------------ x4
+  长度 2 :  x1 --[F1]--------[F3]------ x4
+  长度 2 :  x1 --------[F2]--[F3]------ x4
+  长度 3 :  x1 --[F1]--[F2]--[F3]------ x4     &lt;- 唯一那条&quot;和无残差一样&quot;的路
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>     无残差                        有残差
-                                 ┌──────────────────────┐ 长度0：梯度直达
-   x1 →F1→ x2 →F2→ x3           x1 ─┬──────┬──────┬──→ x4
-        ↑一条路，49次连乘             ├→F1→─┤      │      短路径
-                                    │      ├→F2→─┤
-                                    └→F1→──┴→F2→─┘      长路径
-</code></pre></div>
-
+<p>$N = 93$ 时这个数是 $2^{92} \approx 5\times10^{27}$ 条路径，<strong>长度从 0 到 92 都有</strong>。梯度是这 $5\times10^{27}$ 条路径贡献之和，其中<strong>长度为 0 的那一条完全不衰减</strong>。</p>
 <blockquote>
 <p>🔑 <strong>一句话</strong>：残差把<strong>连乘</strong>变成了<strong>连加</strong>。$\prod(1+a_i) \approx 1 + \sum a_i$（当 $a_i$ 小时）。<strong>加法不会指数衰减。</strong></p>
-<p>📌 <strong>一个很有用的经验观察</strong>：残差网络在行为上更像"<strong>很多个浅网络的集成</strong>"，而不是"一个很深的网络"。实验上随机删掉训练好的 ResNet 的某一层，性能只掉一点点；而无残差的网络删一层就废了。这也解释了为什么这一代模型敢堆到 93 层（Kimi K3）。</p>
+<p><strong>对照 §3.2.1 那张表最右边一列</strong>：无论 $N$ 是 10 还是 93，恒等项都是 <strong>1</strong>。这一列就是残差连接的全部价值。</p>
+<p>📌 <strong>一个很有用的经验观察</strong>：残差网络在行为上更像"<strong>很多个浅网络的集成</strong>"，而不是"一个很深的网络"。实验上随机删掉训练好的 ResNet 的某一层，性能只掉一点点；而无残差的网络删一层就废了。<strong>从上面那张路径表就能看出为什么</strong>：删掉 $F_2$ 只是让 8 条路径里的 4 条失效，另外 4 条（包括恒等路径）照旧工作。这也解释了为什么这一代模型敢堆到 93 层（Kimi K3）。</p>
 </blockquote>
 <hr />
 <h2 id="33">3.3 核心比喻：残差流是一条总线</h2>
 <p>现在换一个视角，这个视角比上面的数学更重要。</p>
 <p><strong>不要把模型想成"数据从一层流到下一层"。要把它想成：有一条贯穿全模型的"传送带"，每一层从上面读一点、往上面写一点。</strong></p>
-<div class="codehilite"><pre><span></span><code>        Embedding 把初始内容放上传送带
-              │
-   ═══════════╪══════════════════════════════════════════════ 残差流（宽度 d=5120）
-              │  ↑读            ↓写
-        第1层  ├──[Attn]────────┤       读整条流，写回一个增量
-              │  ↑读            ↓写
-              ├──[FFN]─────────┤
-              │
-   ═══════════╪═══════════════════════════════════════════════
-              │  ↑读            ↓写
-        第2层  ├──[Attn]────────┤
-              │  ↑读            ↓写
-              ├──[FFN]─────────┤
-              ⋮
-   ═══════════╪═══════════════════════════════════════════════
-              ▼
-        LM Head 从传送带上读走最终内容
+<h3 id="331">3.3.1 传送带图</h3>
+<p>下面这张图只有<strong>一根竖线</strong>是主干（那就是残差流），每一层从它上面分出一条支路、算完再汇回来。所有文字说明都在行尾。</p>
+<div class="codehilite"><pre><span></span><code>     Embedding 把初始内容放上传送带
+        |
+   =====#========================================   残差流（一条 d = 5120 维的总线）
+        |
+        |                        &lt;- 第 1 层开始
+        |--&gt;[ Norm ]--&gt;[ Attn ]--+                   读整条流
+        |                        |
+        +&lt;-----------------------+                   写回一个增量（只加，不覆盖）
+        |
+        |--&gt;[ Norm ]--&gt;[ FFN  ]--+                   再读一次整条流
+        |                        |
+        +&lt;-----------------------+                   再写一个增量
+        |
+   =====#========================================
+        |
+        |                        &lt;- 第 2 层开始
+        |--&gt;[ Norm ]--&gt;[ Attn ]--+
+        |                        |
+        +&lt;-----------------------+
+        |
+        |--&gt;[ Norm ]--&gt;[ FFN  ]--+
+        |                        |
+        +&lt;-----------------------+
+        |
+   =====#========================================   ... 一直重复 N 层 ...
+        |
+        v
+     LM Head 从传送带上读走最终内容
 </code></pre></div>
 
-<h3 id="_3">"读"和"写"具体是什么</h3>
-<p>这个视角能被落到具体的矩阵上，非常实在：</p>
-<div class="codehilite"><pre><span></span><code>一个 FFN 是   W_down( act( W_gate·x , W_up·x ) )
-
-    W_gate, W_up : [d, d_ff]   ← 从残差流【读】。它的每一行对应流上的一个方向
-    W_down       : [d_ff, d]   ← 往残差流【写】。它的每一列对应流上的一个方向
-
-一个 Attention 是
-
-    W_Q, W_K, W_V : [d, ...]   ← 【读】
-    W_O           : [..., d]   ← 【写】
-</code></pre></div>
-
+<blockquote>
+<p>🔑 <strong>三个必须同时成立的性质，才让"总线"这个比喻站得住</strong>：<br />
+<code>(1) 【共享】：所有层看的是同一条流，不是各层之间点对点传话。
+(2) 【可寻址】：流的 d 个维度可以当 d 条"频道"用，谁想读哪条自己去读。
+(3) 【只做加法】：写入是 x += delta，不是 x = delta。
+    ★ 这一条最关键：前面写的东西【不会被后面覆盖】。
+    所以第 3 层写的信息，第 90 层还能原样读到。</code></p>
+</blockquote>
+<h3 id="332">3.3.2 "读"和"写"具体是什么：逐层的操作表</h3>
+<p>这个视角能被落到具体的矩阵上，非常实在。<strong>一个 FFN 是 $W_{\text{down}}\big(\text{act}(W_{\text{gate}}x,\ W_{\text{up}}x)\big)$，一个 Attention 是四个投影</strong>，把它们按"读 / 写"分类：</p>
+<table>
+<thead>
+<tr>
+<th>子层</th>
+<th>矩阵</th>
+<th>形状</th>
+<th>对残差流的动作</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Attention</td>
+<td>$W_Q$</td>
+<td>$[d,\ \cdot]$</td>
+<td><strong>读</strong></td>
+<td>每一<strong>行</strong>对应流上的一个方向，决定"从哪些频道取 query"</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>$W_K$</td>
+<td>$[d,\ \cdot]$</td>
+<td><strong>读</strong></td>
+<td>同上</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>$W_V$</td>
+<td>$[d,\ \cdot]$</td>
+<td><strong>读</strong></td>
+<td>同上</td>
+</tr>
+<tr>
+<td>Attention</td>
+<td>$W_O$</td>
+<td>$[\cdot,\ d]$</td>
+<td><strong>写</strong></td>
+<td>每一<strong>列</strong>对应流上的一个方向，决定"往哪些频道写"</td>
+</tr>
+<tr>
+<td>FFN</td>
+<td>$W_{\text{gate}}$</td>
+<td>$[d,\ d_{ff}]$</td>
+<td><strong>读</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>FFN</td>
+<td>$W_{\text{up}}$</td>
+<td>$[d,\ d_{ff}]$</td>
+<td><strong>读</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>FFN</td>
+<td>$W_{\text{down}}$</td>
+<td>$[d_{ff},\ d]$</td>
+<td><strong>写</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>所以一层有 5 个"读取器"、2 个"写入器"</strong>；而对残差流本身，一层发生的是 <strong>2 次读 + 2 次写</strong>（Attention 前读一次、后写一次；FFN 前读一次、后写一次）。累积起来：</p>
+<table>
+<thead>
+<tr>
+<th>到第 $l$ 层为止</th>
+<th>读取残差流的次数</th>
+<th>写入残差流的次数</th>
+<th><strong>流上叠加的增量个数</strong></th>
+<th>对应模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>2</td>
+<td>2</td>
+<td>2</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10</td>
+<td>20</td>
+<td>20</td>
+<td>20</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>50</strong></td>
+<td>100</td>
+<td>100</td>
+<td><strong>100</strong></td>
+<td>openPangu-2.0-Pro 全深度</td>
+</tr>
+<tr>
+<td>61</td>
+<td>122</td>
+<td>122</td>
+<td>122</td>
+<td>DeepSeek-V4-Pro 全深度</td>
+</tr>
+<tr>
+<td><strong>93</strong></td>
+<td>186</td>
+<td>186</td>
+<td><strong>186</strong></td>
+<td>Kimi K3 全深度</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>🔑 <strong>所以残差流的 $d=5120$ 个维度，可以理解成 5120 条"通信频道"</strong>。<br />
 - 某一层把"这个词是主语"写到第 37 号频道上<br />
@@ -344,16 +722,211 @@ x = x + FFN( Norm(x) )
 - <strong>两层之间不需要相邻，也不需要经过中间层的许可</strong> —— 中间层只是往流上加东西，不会覆盖它</p>
 </blockquote>
 <p><strong>这就是残差流被称为"总线"的原因</strong>：它是一个<strong>共享的、可寻址的、只做加法的通信媒介</strong>。</p>
-<h3 id="_4">一个重要推论：残差流的"带宽"是有限的</h3>
-<p>$d = 5120$ 意味着最多只有 5120 个正交方向。但模型要表示的概念远不止 5120 个。</p>
-<div class="codehilite"><pre><span></span><code>→ 所以模型必须【叠加】：不同的概念占用不完全正交的方向，靠近似正交勉强共存
-→ 高维空间里&quot;近似正交的方向&quot;数量是【指数级】的（Johnson–Lindenstrauss）
-   所以 5120 维能塞下的概念数量远大于 5120
-→ 代价：概念之间有微弱的串扰
+<h3 id="333">3.3.3 ⚠️ 顺手算一笔账：残差相加本身是全模型算术强度最低的操作</h3>
+<p>"读一点、写一点"听起来很轻，但它在硬件上并不便宜。<strong>把那个 <code>x += delta</code> 的账算出来</strong>（BF16，每元素 2 字节）：</p>
+<div class="codehilite"><pre><span></span><code>每个元素要搬的字节： 读 x (2) + 读 delta (2) + 写 x (2)  =  6 Byte
+每个元素的计算量：   一次加法                            =  1 FLOP
+
+算术强度 I = 1 / 6 = 0.167 FLOP/Byte
+             ^^^^^  对比 H100 SXM5 的 BF16 屋脊点 295 —— 低了 1770 倍
+屋顶线上界 P = 3350 GB/s x 0.167 = 0.56 TFLOPS  ← 只占 989 TFLOPS 峰值的 0.056%
+</code></pre></div>
+
+<p>代入 openPangu（$d = 5120$、50 层）、一条 4096 token 的序列：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>每次残差相加的字节数</th>
+<th>一层（2 次）</th>
+<th>全模型（50 层 / 100 次）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>字节</td>
+<td>$3 \times 4096 \times 5120 \times 2 = $ <strong>125.8 MB</strong></td>
+<td>251.7 MB</td>
+<td><strong>12.58 GB</strong></td>
+</tr>
+<tr>
+<td>按 3.35 TB/s 的最短时间</td>
+<td><strong>37.6 µs</strong></td>
+<td>75.1 µs</td>
+<td><strong>3.76 ms</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>口径与现实的差距，必须说清</strong>：<br />
+<code>✅ 上表是【完全不融合】时的账：残差相加被写成一个独立 kernel，
+   从 HBM 读两份、写一份。3.76 ms 纯粹花在搬运上，一个浮点数都没多算。
+✅ 真实实现会把残差相加【融进上一个矩阵乘的 epilogue】（尾声阶段）：
+   delta 本来就在寄存器里，只需要多读一次 x，字节数从 6d 降到 4d，
+   而且省掉一整次 kernel 启动。
+   -&gt; 见 [../../大模型算子开发/05-算子融合.md] 与 [../../大模型算子开发/02-屋顶线与性能剖析.md] §2.5 盲区三
+⚠️ 上表【没算】L2 缓存命中。d=5120 的一行只有 10 KB，
+   连续两层之间 x 很可能还在 50 MB 的 L2 里，实际 HBM 流量小于这个数。</code></p>
+<p>🔑 <strong>记住这个结论就够了：残差相加是典型的 Memory Bound 操作，它的成本【全在搬运，不在计算】。</strong><br />
+<strong>这一条会在 §3.5.5 变成 mHC 代价的核心解释</strong>——mHC 把流从 1 条变成 4 条，<strong>加法量和搬运量都涨 4 倍，而搬运才是瓶颈。</strong></p>
+</blockquote>
+<h3 id="334-d8">3.3.4 ★ 一个重要推论：残差流的"带宽"是有限的（$d=8$ 走一遍）</h3>
+<p>$d = 5120$ 意味着<strong>最多只有 5120 个严格正交的方向</strong>。但模型要表示的概念远不止 5120 个（§3.3.2 那张表里，93 层就往流上写了 186 个增量，而每个增量里可能携带几十个概念）。</p>
+<p><strong>先看"够用"的情形。</strong> 取 $d = 8$，用 8×8 哈达玛（Hadamard）矩阵的三行做三个<strong>严格正交</strong>的单位方向（$1/\sqrt{8} = 0.353553$）：</p>
+<div class="codehilite"><pre><span></span><code>e1 = 0.353553 x [ +1, +1, +1, +1, +1, +1, +1, +1 ]      概念 A
+e2 = 0.353553 x [ +1, -1, +1, -1, +1, -1, +1, -1 ]      概念 B
+e3 = 0.353553 x [ +1, +1, -1, -1, +1, +1, -1, -1 ]      概念 C
+
+验一下正交： e1 . e2 = (1/8)(1-1+1-1+1-1+1-1) = 0   ✓
+             e1 . e3 = (1/8)(1+1-1-1+1+1-1-1) = 0   ✓
+             e2 . e3 = (1/8)(1-1-1+1+1-1-1+1) = 0   ✓
+</code></pre></div>
+
+<p>现在让三层分别往流上写 3 份、1 份、2 份：</p>
+<div class="codehilite"><pre><span></span><code>x = 3 x e1 + 1 x e2 + 2 x e3
+
+逐维展开（先算括号里的系数，再乘 0.353553）：
+  维度 1 : 3(+1) + 1(+1) + 2(+1) = +6
+  维度 2 : 3(+1) + 1(-1) + 2(+1) = +4
+  维度 3 : 3(+1) + 1(+1) + 2(-1) = +2
+  维度 4 : 3(+1) + 1(-1) + 2(-1) =  0
+  维度 5..8 : 和 1..4 一样（哈达玛行的周期性）
+
+x = 0.353553 x [6, 4, 2, 0, 6, 4, 2, 0]
+  = [2.12132, 1.41421, 0.70711, 0.00000, 2.12132, 1.41421, 0.70711, 0.00000]
+</code></pre></div>
+
+<p><strong>后面某一层拿一个"读取器"去读</strong>（读取器就是 $W_Q$ 的某一行，这里取成 $e_2^\top$）：</p>
+<table>
+<thead>
+<tr>
+<th>读取器</th>
+<th>内积算出来</th>
+<th>本该读到</th>
+<th>误差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$e_1^\top x$</td>
+<td>$0.353553 \times 8.48528 = $ <strong>3.00000</strong></td>
+<td>3</td>
+<td><strong>0</strong> ✅</td>
+</tr>
+<tr>
+<td>$e_2^\top x$</td>
+<td>$0.353553 \times 2.82843 = $ <strong>1.00000</strong></td>
+<td>1</td>
+<td><strong>0</strong> ✅</td>
+</tr>
+<tr>
+<td>$e_3^\top x$</td>
+<td>$0.353553 \times 5.65685 = $ <strong>2.00000</strong></td>
+<td>2</td>
+<td><strong>0</strong> ✅</td>
+</tr>
+</tbody>
+</table>
+<p><strong>三个概念叠在同一个 8 维向量上，却能被【一个内积】精确地单独取出来。这就是"总线 + 可寻址"的数学含义。</strong></p>
+<h3 id="335-d8">3.3.5 ★ 塞不下的时候：干涉（同一个 $d=8$ 例子接着走）</h3>
+<p>$d=8$ 最多容纳 8 个严格正交方向。<strong>如果需要第 9 个概念呢？</strong> 它只能挤在已有方向附近。设</p>
+<div class="codehilite"><pre><span></span><code>e9 = (e2 + 0.1 x e3) / sqrt(1.01)        sqrt(1.01) = 1.0049876
+
+  ||e9|| = 1                             （还是单位向量）
+  e9 . e2 = 1   / 1.0049876 = 0.995037   ← 和 e2 高度重叠！
+  e9 . e3 = 0.1 / 1.0049876 = 0.099504   ← 和 e3 有一点重叠
+  e9 . e1 = 0                            （e1 和 e2、e3 都正交，所以也和 e9 正交）
+</code></pre></div>
+
+<p>现在流上写了 <strong>1 份概念 B（$e_2$）+ 5 份概念 I（$e_9$）</strong>，即 $x' = 1\cdot e_2 + 5\cdot e_9$。<strong>再用同样的读取器去读</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>读取器</th>
+<th>读出的值</th>
+<th>本该是</th>
+<th>串扰</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$e_1^\top x'$</td>
+<td><strong>0.00000</strong></td>
+<td>0</td>
+<td>0</td>
+<td>✅ 严格正交的方向<strong>完全不受影响</strong></td>
+</tr>
+<tr>
+<td>$e_2^\top x'$</td>
+<td>$1 + 5(0.995037) = $ <strong>5.97519</strong></td>
+<td><strong>1</strong></td>
+<td><strong>+4.975</strong></td>
+<td>❌ 被 $e_9$ 冒名顶替，读出来的几乎全是别人的</td>
+</tr>
+<tr>
+<td>$e_3^\top x'$</td>
+<td>$0 + 5(0.099504) = $ <strong>0.49752</strong></td>
+<td><strong>0</strong></td>
+<td><strong>+0.498</strong></td>
+<td>⚠️ 本该为 0，漏进来半份</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这就是"叠加（superposition）"的代价，而且量化出来了</strong>：<br />
+<code>-&gt; 概念数 &gt; d 时，模型【必须】让一些概念占用不完全正交的方向
+-&gt; 代价是读取时的【串扰】：读 e2 读到 5.975（本该 1），读 e3 读到 0.498（本该 0）
+-&gt; 模型靠什么活下来？靠【稀疏性】：
+   如果概念 B 和概念 I 从来不在同一个 token 上同时激活，
+   那么上面那个 x' 根本不会出现，串扰就不会实际发生。
+   ★ 这是叠加能工作的真正前提，不是"高维空间很神奇"。</code></p>
+</blockquote>
+<p><strong>那"近似正交的方向"到底能塞多少个？</strong> 有一个可以自己验的事实：<strong>在 $d$ 维空间里随手取两个随机单位向量，它们夹角余弦的典型量级是 $1/\sqrt{d}$</strong>（因为 $\mathbb{E}[(u\cdot v)^2] = 1/d$）。</p>
+<table>
+<thead>
+<tr>
+<th>$d$</th>
+<th>随机两向量的典型 $\vert\cos\vert = 1/\sqrt{d}$</th>
+<th>对应夹角</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8</td>
+<td>0.354</td>
+<td>69.3°</td>
+<td>8 维里随手扔两个方向，重叠还挺大</td>
+</tr>
+<tr>
+<td>512</td>
+<td>0.0442</td>
+<td>87.5°</td>
+<td>已经很接近正交</td>
+</tr>
+<tr>
+<td><strong>5120</strong>（openPangu）</td>
+<td><strong>0.01398</strong></td>
+<td><strong>89.2°</strong></td>
+<td><strong>随手扔的两个方向天然近似正交</strong></td>
+</tr>
+<tr>
+<td><strong>7168</strong>（K3 / V4）</td>
+<td><strong>0.01181</strong></td>
+<td><strong>89.3°</strong></td>
+<td>更接近</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>-&gt; 高维空间里&quot;近似正交的方向&quot;数量是【指数级】的（JL 引理）
+   所以 5120 维能塞下的概念数量【远大于】5120
+-&gt; 而且不需要精心设计：随手扔的方向，典型夹角就是 89.2 度
+-&gt; 代价就是 §3.3.5 那张表里的微弱串扰
 </code></pre></div>
 
 <blockquote>
-<p>📌 这也是为什么 $d$ 不能太小。openPangu 选 5120（<a href="02-Embedding与词表.html">02 章</a>）是在"省参数"和"总线带宽"之间做的权衡。</p>
+<p>📌 这也是为什么 $d$ 不能太小。openPangu 选 5120（<a href="02-Embedding与词表.html">02 章</a>）是在"省参数"和"总线带宽"之间做的权衡——注意 <a href="01-鸟瞰全景.html">01 章 §1.4</a> 的参数量里 $d$ 是<strong>平方</strong>出现的（$4d^2$），所以 $d$ 从 5120 涨到 7168 意味着注意力参数涨 $(7168/5120)^2 = 1.96$ 倍。<strong>加宽总线不便宜。</strong></p>
 </blockquote>
 <hr />
 <h2 id="34">3.4 一个真实的副作用：残差范数会持续增长</h2>
@@ -361,127 +934,458 @@ x = x + FFN( Norm(x) )
 <p>因为每层都在<strong>往流上加东西</strong>，而不是替换，所以 $|x_l|$ 会随层数单调增长。</p>
 <p>假设每层写入的增量 $F_l(x_l)$ 与当前的 $x_l$ <strong>大致独立</strong>（实践中近似成立），那么方差相加：</p>
 <p>$$|x_{l+1}|^2 \approx |x_l|^2 + |F_l|^2$$</p>
-<p>如果每层写入的幅度相当（这正是 Pre-Norm 造成的，见 <a href="04-归一化.html">04 章</a>），则</p>
+<p>如果每层写入的幅度相当（这正是 Pre-Norm 造成的，见 <a href="04-归一化.html">04 章 §4.3</a>），则</p>
 <p>$$|x_N| \approx \sqrt{N}\cdot|F|$$</p>
-<div class="codehilite"><pre><span></span><code>第 1 层：  ‖x‖ ≈ 1        新写入的增量占比 100%
-第 25 层： ‖x‖ ≈ 5        新写入的增量占比 1/5
-第 50 层： ‖x‖ ≈ 7.1      新写入的增量占比 1/7
-</code></pre></div>
-
+<p><strong>逐层代出来</strong>（取 $|F| = 1$）：</p>
+<table>
+<thead>
+<tr>
+<th>层 $l$</th>
+<th>$|x_l| \approx \sqrt{l}$</th>
+<th>本层增量占残差流 $= 1/\sqrt{l}$</th>
+<th>这一层让范数涨了多少 $=\sqrt{\tfrac{l+1}{l}}$</th>
+<th>对应模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>1.000</td>
+<td><strong>100%</strong></td>
+<td>×1.4142</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>2.000</td>
+<td>50.0%</td>
+<td>×1.1180</td>
+<td>—</td>
+</tr>
+<tr>
+<td>9</td>
+<td>3.000</td>
+<td>33.3%</td>
+<td>×1.0541</td>
+<td>—</td>
+</tr>
+<tr>
+<td>16</td>
+<td>4.000</td>
+<td>25.0%</td>
+<td>×1.0308</td>
+<td>—</td>
+</tr>
+<tr>
+<td>25</td>
+<td>5.000</td>
+<td>20.0%</td>
+<td>×1.0198</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>50</strong></td>
+<td><strong>7.071</strong></td>
+<td><strong>14.1%</strong></td>
+<td>×1.0100</td>
+<td>openPangu-2.0-Pro</td>
+</tr>
+<tr>
+<td>61</td>
+<td>7.810</td>
+<td>12.8%</td>
+<td>×1.0081</td>
+<td>DeepSeek-V4-Pro</td>
+</tr>
+<tr>
+<td>78</td>
+<td>8.832</td>
+<td>11.3%</td>
+<td>×1.0064</td>
+<td>GLM-5.2</td>
+</tr>
+<tr>
+<td><strong>93</strong></td>
+<td><strong>9.644</strong></td>
+<td><strong>10.4%</strong></td>
+<td>×1.0054</td>
+<td>Kimi K3</td>
+</tr>
+</tbody>
+</table>
+<p>自己验算一行：第 50 层，$\sqrt{50} = 7.0711$，$1/7.0711 = 0.1414$，$\sqrt{51/50} = 1.00995$ ✓</p>
 <blockquote>
+<p>⚠️ <strong>上表是理论近似，不是实测。</strong> 它依赖"每层增量互相大致独立"这个假设。真实模型里增量之间有相关性，实测曲线会偏离 $\sqrt{l}$。<strong>五家报告都没有公开逐层残差范数曲线</strong>，所以这张表只能当量级参考。</p>
 <p>⚠️ <strong>这带来两个真实的问题</strong>：</p>
-<p><strong>① 深层的"话语权"越来越小。</strong> 第 50 层再怎么努力，它写的东西相对于已经积累的 $\sqrt{50}$ 倍背景来说，只是一个小扰动。<strong>深层实际上被"稀释"了。</strong></p>
-<p><strong>② 每层的有效学习率被隐式改变。</strong> 因为 Pre-Norm 会先把 $x$ 归一化再送进子层，所以子层看到的输入始终是单位尺度，但它的输出被加到一个越来越大的 $x$ 上 —— 相当于<strong>深层的等效学习率被自动调小了</strong>。这有稳定的好处，也有"深层学不动"的坏处。</p>
+<p><strong>① 深层的"话语权"越来越小。</strong> 看表的第三列：第 50 层写的东西只占残差流的 <strong>14.1%</strong>，第 93 层只占 <strong>10.4%</strong>。第 93 层再怎么努力，相对于已经积累的 9.64 倍背景来说只是一个小扰动。<strong>深层实际上被"稀释"了。</strong></p>
+<p><strong>② 每层的有效学习率被隐式改变。</strong> 因为 Pre-Norm 会先把 $x$ 归一化再送进子层，所以子层看到的输入始终是单位尺度，但它的输出被加到一个越来越大的 $x$ 上 —— 相当于<strong>深层的等效学习率被自动调小了</strong>（按第三列，第 93 层大约只有第 1 层的 0.104 倍）。这有稳定的好处，也有"深层学不动"的坏处。</p>
+<p>🔑 <strong>看第四列还能读出一条容易被忽略的事</strong>：$\sqrt{l}$ 的增长<strong>越往后越慢</strong>（第 1 层让范数涨 41%，第 93 层只涨 0.54%）。<strong>所以这个问题的严重性不在"范数无界增长"</strong>（$\sqrt{93} = 9.6$ 一点也不大，BF16 轻松容纳），<strong>而在第三列那个"稀释比例"</strong>。搞清这一点很重要：<strong>mHC 和 AttnRes 治的是"稀释"，不是"溢出"。</strong></p>
 </blockquote>
 <p><strong>mHC 和 AttnRes 都是在动这个地方。</strong> 现在可以看它们了。</p>
 <hr />
 <h2 id="35-mhcdeepseek-v4-openpangu">3.5 改法一：mHC（DeepSeek-V4 / openPangu）</h2>
 <blockquote>
-<p>mHC = <strong>m</strong>anifold-constrained <strong>H</strong>yper-<strong>C</strong>onnections，源自超连接（Hyper-Connections）这条线。</p>
+<p>mHC = <strong>m</strong>anifold-constrained <strong>H</strong>yper-<strong>C</strong>onnections（流形约束超连接），源自超连接（Hyper-Connections, HC）这条线。</p>
 </blockquote>
-<h3 id="_5">它在改什么</h3>
+<h3 id="351">3.5.1 它在改什么</h3>
 <p>标准残差是<strong>一条</strong>流。mHC 把它变成 <strong>n 条并行的流</strong>（V4 和 openPangu 都用 <strong>n=4</strong>）：</p>
-<div class="codehilite"><pre><span></span><code>标准残差：                        mHC（n=4）：
+<div class="codehilite"><pre><span></span><code>【标准残差】n = 1
 
-    ═══════ 一条流 ═══════          ═══════ 流 1 ═══════
-        │  ↑   ↓                    ═══════ 流 2 ═══════
-        └─[F]──┘                    ═══════ 流 3 ═══════
-                                    ═══════ 流 4 ═══════
-                                       ╲  ╲ ↑   ↓ ╱  ╱
-                                        └──[F]────┘
-                                     A: 从4条流【混合出】F的输入
-                                     C: 把F的输出【分发到】4条流
-                                     B: 4条流之间【互相混合】
+   ----------------------------------------    唯一的那条流（宽度 d）
+        |         ^
+        |         |
+        v         |
+      [ F ] ------&#39;                            读一次、写一次，都不带可学习权重
+
+
+【mHC】n = 4
+
+   ----------------------------------------    流 1
+   ----------------------------------------    流 2
+   ----------------------------------------    流 3
+   ----------------------------------------    流 4
+        |         ^         |
+        A         C         B
+        |         |         |
+        v         |         v
+      [ F ] ------&#39;        (B 这一路不经过子层，流之间直接混合)
 </code></pre></div>
 
-<h3 id="_6">公式</h3>
-<p>$$x_{l+1} = B_l\,x_l + C_l\,F_l(A_l\,x_l)$$</p>
-<p>其中 $x_l \in \mathbb{R}^{n\times d}$（n 条流，每条 d 维），而</p>
+<p>三个新矩阵各管一件事：</p>
 <table>
 <thead>
 <tr>
 <th>矩阵</th>
 <th>形状</th>
-<th>作用</th>
+<th>一句话作用</th>
+<th>对应上图</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>$A_l$</td>
 <td>$1\times n$</td>
-<td><strong>读</strong>：把 n 条流加权合成一条，喂给子层</td>
+<td><strong>读</strong>：把 $n$ 条流加权合成一条，喂给子层</td>
+<td>左边那条下行的箭头</td>
 </tr>
 <tr>
 <td>$C_l$</td>
 <td>$n\times 1$</td>
-<td><strong>写</strong>：把子层的单条输出分发回 n 条流</td>
+<td><strong>写</strong>：把子层的单条输出分发回 $n$ 条流</td>
+<td>中间那条上行的箭头</td>
 </tr>
 <tr>
 <td>$B_l$</td>
 <td>$n\times n$</td>
-<td><strong>流间混合</strong>：n 条流之间怎么交换</td>
+<td><strong>流间混合</strong>：$n$ 条流之间怎么交换，不经过子层</td>
+<td>右边那条旁路</td>
 </tr>
 </tbody>
 </table>
-<p><strong>注意 $A, B, C$ 都是可学习的、且是逐层不同的。</strong> 标准残差是它的特例：$n=1, A=B=C=1$。</p>
-<h3 id="manifold-constrained">关键在于"manifold-constrained"这个前缀</h3>
-<p><strong>如果 $B_l$ 自由学习，会立刻退化成一个 $n$ 层深的线性网络，重新引入 §3.2 的连乘爆炸问题</strong>（$B_N B_{N-1}\cdots B_1$ 的谱半径不受控）。</p>
+<h3 id="352">3.5.2 公式</h3>
+<p>$$x_{l+1} = B_l\,x_l + C_l\,F_l(A_l\,x_l)$$</p>
+<p>其中 $x_l \in \mathbb{R}^{n\times d}$（n 条流，每条 d 维）。</p>
+<p><strong>注意 $A, B, C$ 都是可学习的、且是逐层不同的。标准残差是它的特例：$n=1,\ A=B=C=1$。</strong></p>
+<h3 id="353-manifold-constrained">3.5.3 关键在于"manifold-constrained"这个前缀</h3>
+<p><strong>如果 $B_l$ 自由学习，会立刻退化成一个 $n$ 层深的线性网络，重新引入 §3.2.1 的连乘爆炸问题</strong>（$B_N B_{N-1}\cdots B_1$ 的谱半径不受控）。<strong>§3.2.1 那张表就是它的下场</strong>：$\rho$ 只要偏离 1 百分之五，93 层就衰减到 0.9% 或放大 89 倍。</p>
 <p><strong>mHC 的做法：把 $B_l$ 约束在【双随机矩阵】流形上。</strong></p>
-<div class="codehilite"><pre><span></span><code>双随机矩阵（doubly stochastic）：
-    ① 所有元素 ≥ 0
-    ② 每一行和 = 1
-    ③ 每一列和 = 1
-
-例（n=3）：  ┌ 0.5  0.3  0.2 ┐   行和 = 1 ✓
-            │ 0.2  0.5  0.3 │   列和 = 1 ✓
-            └ 0.3  0.2  0.5 ┘
+<div class="codehilite"><pre><span></span><code>双随机矩阵（doubly stochastic）的三条定义：
+    (1) 所有元素 &gt;= 0
+    (2) 每一行的和 = 1
+    (3) 每一列的和 = 1
 </code></pre></div>
 
-<p><strong>为什么这个约束是对的</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① 双随机矩阵的谱半径【恰好等于 1】（Perron–Frobenius）
-   → 连乘 B_N···B_1 永远不会爆炸也不会消失，§3.2 的性质被完整保留
+<p><strong>一个 $n=3$ 的例子</strong>（这就是原来那张容易渲染错位的方框图，改成表格）：</p>
+<table>
+<thead>
+<tr>
+<th>$B$</th>
+<th>列 1</th>
+<th>列 2</th>
+<th>列 3</th>
+<th><strong>行和</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>行 1</strong></td>
+<td>0.5</td>
+<td>0.3</td>
+<td>0.2</td>
+<td><strong>1.0</strong> ✓</td>
+</tr>
+<tr>
+<td><strong>行 2</strong></td>
+<td>0.2</td>
+<td>0.5</td>
+<td>0.3</td>
+<td><strong>1.0</strong> ✓</td>
+</tr>
+<tr>
+<td><strong>行 3</strong></td>
+<td>0.3</td>
+<td>0.2</td>
+<td>0.5</td>
+<td><strong>1.0</strong> ✓</td>
+</tr>
+<tr>
+<td><strong>列和</strong></td>
+<td><strong>1.0</strong> ✓</td>
+<td><strong>1.0</strong> ✓</td>
+<td><strong>1.0</strong> ✓</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么这个约束正好是对的</strong>——三条理由，第一条是关键：</p>
+<div class="codehilite"><pre><span></span><code>(1) 双随机矩阵的谱半径【恰好等于 1】
+    证明只要两行：
+      · 全 1 向量是它的特征向量，特征值 1（因为每行和 = 1）  =&gt; 谱半径 &gt;= 1
+      · 非负矩阵的谱半径 &lt;= 最大行和 = 1                      =&gt; 谱半径 &lt;= 1
+      =&gt; 谱半径 = 1，严格地
+    -&gt; 连乘 B_N...B_1 永远不会爆炸也不会消失，§3.2 的好性质被完整保留
 
-② 它是【广义的置换/混合】：信息在 n 条流之间【重新分配】，总量守恒
-   → 不会凭空放大或丢失
+(2) 它是【广义的置换 / 混合】：信息在 n 条流之间【重新分配】，总量守恒
+    -&gt; 不会凭空放大或丢失
 
-③ 所有 n×n 双随机矩阵构成【Birkhoff 多胞体】，它的顶点恰好是 n! 个置换矩阵
-   → 所以 B 学到的是&quot;n 条流之间的一种软置换&quot;，语义非常清楚
+(3) 所有 n x n 双随机矩阵构成【Birkhoff 多胞体】，它的顶点恰好是 n! 个置换矩阵
+    （Birkhoff-von Neumann 定理）
+    -&gt; 所以 B 学到的是&quot;n 条流之间的一种软置换&quot;，语义非常清楚
 </code></pre></div>
 
-<h3 id="sinkhornknopp">Sinkhorn–Knopp：怎么把任意矩阵投影到双随机</h3>
+<h3 id="354-sinkhornknopp3times3">3.5.4 ★ Sinkhorn–Knopp：$3\times3$ 手算走一遍</h3>
 <p>这是个漂亮的算法，而且你懂算法的话一眼就能看懂：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sinkhorn</span><span class="p">(</span><span class="n">M</span><span class="p">,</span> <span class="n">iters</span><span class="o">=</span><span class="mi">20</span><span class="p">):</span>
-    <span class="n">P</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">M</span><span class="p">)</span>                    <span class="c1"># 先取指数，保证非负</span>
+    <span class="n">P</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">M</span><span class="p">)</span>                              <span class="c1"># 先取指数，保证严格正</span>
     <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iters</span><span class="p">):</span>
-        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># 归一化每一行 → 行和=1</span>
-        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># 归一化每一列 → 列和=1（行和被破坏一点）</span>
-    <span class="k">return</span> <span class="n">P</span>                          <span class="c1"># 交替投影，指数收敛到双随机</span>
+        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># 归一化每一行 -&gt; 行和 = 1</span>
+        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># 归一化每一列 -&gt; 列和 = 1（行和被破坏一点）</span>
+    <span class="k">return</span> <span class="n">P</span>                                   <span class="c1"># 交替投影，几何速率收敛到双随机</span>
 </code></pre></div>
 
-<p><strong>交替把行和列各归一化一次，反复迭代。</strong> 这是"交替投影法"，可以证明对严格正矩阵<strong>线性收敛</strong>（收敛速率由矩阵的 Hilbert 投影度量决定）。</p>
-<blockquote>
-<p>✅ <strong>DeepSeek-V4 和 openPangu 都是 n=4 条流、Sinkhorn 迭代 20 次。</strong>（两家报告均明确给出）</p>
-<p>⚠️ 两家用同一个技术且参数一致，我倾向认为是同一条公开工作的直接采用，但<strong>两份报告都没有互相引用，这只是我的推测</strong>。</p>
-</blockquote>
-<h3 id="_7">代价</h3>
+<p><strong>交替把行和列各归一化一次，反复迭代。</strong> 现在拿一个 $3\times3$ 的起点走两轮，<strong>每一步都能手算</strong>。设 <code>np.exp(M)</code> 之后是</p>
+<div class="codehilite"><pre><span></span><code>P0 = [ 4  1  1 ]     行和 = 6      列和 = 6
+     [ 1  2  1 ]     行和 = 4      列和 = 4
+     [ 1  1  6 ]     行和 = 8      列和 = 8
+</code></pre></div>
+
+<p><strong>第 1 轮，先归一化每一行</strong>（每个元素除以本行行和）：</p>
 <table>
 <thead>
 <tr>
 <th></th>
+<th>列 1</th>
+<th>列 2</th>
+<th>列 3</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行 1（÷6）</td>
+<td>0.66667</td>
+<td>0.16667</td>
+<td>0.16667</td>
+<td><strong>1</strong> ✓</td>
+</tr>
+<tr>
+<td>行 2（÷4）</td>
+<td>0.25000</td>
+<td>0.50000</td>
+<td>0.25000</td>
+<td><strong>1</strong> ✓</td>
+</tr>
+<tr>
+<td>行 3（÷8）</td>
+<td>0.12500</td>
+<td>0.12500</td>
+<td>0.75000</td>
+<td><strong>1</strong> ✓</td>
+</tr>
+<tr>
+<td><strong>列和</strong></td>
+<td>1.04167</td>
+<td>0.79167</td>
+<td>1.16667</td>
+<td>← ❌ 列和还不是 1，最大偏离 <strong>0.2083</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>再归一化每一列</strong>（每个元素除以本列列和）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>列 1（÷1.04167）</th>
+<th>列 2（÷0.79167）</th>
+<th>列 3（÷1.16667）</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行 1</td>
+<td>0.64000</td>
+<td>0.21053</td>
+<td>0.14286</td>
+<td>0.99339</td>
+</tr>
+<tr>
+<td>行 2</td>
+<td>0.24000</td>
+<td>0.63158</td>
+<td>0.21429</td>
+<td>1.08586</td>
+</tr>
+<tr>
+<td>行 3</td>
+<td>0.12000</td>
+<td>0.15789</td>
+<td>0.64286</td>
+<td>0.92075</td>
+</tr>
+<tr>
+<td><strong>列和</strong></td>
+<td><strong>1</strong> ✓</td>
+<td><strong>1</strong> ✓</td>
+<td><strong>1</strong> ✓</td>
+<td>← 行和被破坏了，最大偏离 <strong>0.0859</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>看这两个偏离量：0.2083 → 0.0859。</strong> 再做第 2 轮会是 0.0393 → 0.0196。把四轮列出来：</p>
+<table>
+<thead>
+<tr>
+<th>轮次</th>
+<th>行归一化后：列和最大偏离</th>
+<th>列归一化后：行和最大偏离</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.208333</td>
+<td>0.085865</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.039337</td>
+<td>0.019640</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.010033</td>
+<td>0.005162</td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.002687</td>
+<td>0.001407</td>
+</tr>
+<tr>
+<td>…</td>
+<td>每轮约乘 <strong>0.27</strong></td>
+<td>每轮约乘 <strong>0.27</strong></td>
+</tr>
+<tr>
+<td><strong>20</strong></td>
+<td>—</td>
+<td>$\approx 1\times10^{-12}$</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这就是"迭代 20 次"这个超参的来历</strong>：每轮把偏差乘约 0.27，$0.27^{19} \approx 1.6\times10^{-11}$，<strong>20 轮之后偏差已经小于 BF16 的精度</strong>（BF16 只有 8 位有效尾数，相对精度约 $4\times10^{-3}$），再迭代纯属浪费。</p>
+<p><strong>这叫"交替投影法"</strong>，可以证明对严格正矩阵<strong>线性（几何速率）收敛</strong>，收敛速率由矩阵的 Hilbert 投影度量决定。</p>
+</blockquote>
+<p><strong>收敛之后长这样，顺手验一下 §3.5.3 那条谱半径定理：</strong></p>
+<div class="codehilite"><pre><span></span><code>B = [ 0.6453  0.2194  0.1353 ]     行和 = 1.0000   列和 = 1.0000
+    [ 0.2194  0.5966  0.1840 ]     行和 = 1.0000   列和 = 1.0000
+    [ 0.1353  0.1840  0.6807 ]     行和 = 1.0000   列和 = 1.0000
+
+三个特征值的绝对值： 1.0000 ,  0.5345 ,  0.3882
+                     ^^^^^^ 最大的恰好是 1，另外两个严格小于 1
+=&gt; 谱半径 = 1，连乘不爆不消。 ✅ 定理验证通过
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>注意另外两个特征值 0.5345 和 0.3882 是严格小于 1 的</strong>，所以 $B^k$ 会把"流之间的差异"逐渐抹平、趋向各流相同。<strong>这也是一个代价：$B$ 连乘太多次会让 4 条流趋同，n=4 的好处被抹掉。</strong> ⚠️ 这一条是我从特征值读出来的推断，两家报告都没有讨论。</p>
+</blockquote>
+<h3 id="355-flop">3.5.5 代价：贵在访存和串行，不在 FLOP</h3>
+<blockquote>
+<p>✅ <strong>DeepSeek-V4 和 openPangu 都是 n=4 条流、Sinkhorn 迭代 20 次。</strong>（两家报告均明确给出）</p>
+<p>⚠️ 两家用同一个技术且参数一致，我倾向认为是同一条公开工作的直接采用，但<strong>两份报告都没有互相引用，这只是我的推测</strong>。</p>
+</blockquote>
+<p><strong>先把 FLOP 的账算出来——你会发现它可以忽略。</strong> 每 token 每层，三个小矩阵的计算量：</p>
+<table>
+<thead>
+<tr>
+<th>矩阵</th>
+<th>形状</th>
+<th>FLOP（按 $2mnk$ 口径）</th>
+<th>$n=4$ 代入</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$A_l$</td>
+<td>$1\times n$</td>
+<td>$2n$</td>
+<td>8</td>
+</tr>
+<tr>
+<td>$C_l$</td>
+<td>$n\times 1$</td>
+<td>$2n$</td>
+<td>8</td>
+</tr>
+<tr>
+<td>$B_l$</td>
+<td>$n\times n$</td>
+<td>$2n^2$</td>
+<td>32</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td>$4n + 2n^2$</td>
+<td><strong>48 FLOP</strong></td>
+</tr>
+</tbody>
+</table>
+<p>对比<strong>一层本身</strong>的计算量（按 $d=7168$、$d_{ff}=18432$、SwiGLU 三矩阵的稠密估算，每 token）：</p>
+<div class="codehilite"><pre><span></span><code>注意力四个投影： 2 x 4d^2       = 8 x 7168^2          = 4.110e8 FLOP
+FFN 三个矩阵：   2 x 3 x d x dff = 6 x 7168 x 18432    = 7.927e8 FLOP
+一层合计                                              ≈ 1.204e9 FLOP
+
+mHC 的占比 = 48 / 1.204e9 = 4.0e-8          &lt;- 四千万分之一，彻底可以忽略
+</code></pre></div>
+
+<p><strong>所以 +6.7% 的墙钟开销一定不是 FLOP 来的。它来自这两处：</strong></p>
+<table>
+<thead>
+<tr>
 <th>代价</th>
+<th>具体是什么</th>
 <th>来源</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>显存</strong></td>
-<td>残差流从 $[B,L,d]$ 变成 $[B,L,n,d]$，<strong>×4</strong></td>
+<td><strong>显存（残差流激活）</strong></td>
+<td>$[B,L,d] \to [B,L,n,d]$，<strong>×4</strong></td>
 <td>结构直接决定</td>
 </tr>
 <tr>
-<td><strong>计算</strong></td>
-<td>每层多 3 个小矩阵 + 20 次 Sinkhorn 迭代</td>
-<td>矩阵本身很小（4×4），但 Sinkhorn 是<strong>串行</strong>的</td>
+<td><strong>访存</strong></td>
+<td>✅ V4.1-Flash 报告给出 mHC 的访存口径是 $(4n+4)d$，$n{=}4$ 即 <strong>$20d$</strong>；它的 Single-Pass 融合 kernel 把这砍到 $(2n+2)d = 10d$</td>
+<td>⚠️ 这组数字来自 <strong>V4.1-Flash</strong> 报告，<strong>V4 报告本身没给</strong></td>
+</tr>
+<tr>
+<td><strong>串行延迟</strong></td>
+<td>20 次 Sinkhorn 迭代是<strong>严格串行</strong>的（第 $k$ 轮要等第 $k-1$ 轮），而且矩阵只有 $4\times4$，<strong>根本打不满 GPU</strong>——纯粹是延迟和 kernel 启动开销</td>
+<td>结构直接决定</td>
 </tr>
 <tr>
 <td><strong>DeepSeek-V4 报告的实测</strong></td>
@@ -490,135 +1394,485 @@ x = x + FFN( Norm(x) )
 </tr>
 </tbody>
 </table>
+<p><strong>显存那一项代入真实数字</strong>（$d=7168$、61 层、BF16、$B=1$、$L=4096$）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>每层残差流激活</th>
+<th>61 层合计</th>
+<th>占一块 80 GB H100</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>标准残差</td>
+<td>$4096\times7168\times2 = $ <strong>58.72 MB</strong></td>
+<td><strong>3.58 GB</strong></td>
+<td>4.5%</td>
+</tr>
+<tr>
+<td>mHC（$n=4$）</td>
+<td><strong>234.9 MB</strong></td>
+<td><strong>14.33 GB</strong></td>
+<td><strong>17.9%</strong></td>
+</tr>
+<tr>
+<td>净增加</td>
+<td>+176.2 MB</td>
+<td><strong>+10.75 GB</strong></td>
+<td>+13.4%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"×4"这个说法必须限定范围，不然会错得很离谱</strong>：<br />
+<code>✅ 翻 4 倍的只有【残差流那一份激活】：从 3.58 GB 涨到 14.33 GB。
+❌ 【不是】整机显存 ×4。模型权重、优化器状态（AdamW 的两份动量、Muon 的动量缓冲）、
+   注意力和 FFN 内部的中间激活，一个字节都没变。
+   一个 61 层 / 1.6T 参数的模型，权重本身就是 TB 量级，10.75 GB 的增量占比很小。
+⚠️ 上表按"每层都完整保存残差流"算，是【不做 activation checkpointing】的上界。
+   做了重计算之后实际驻留量更小。</code></p>
+<p>🔑 <strong>把 §3.3.3 那笔账接上，这一节的结论就完整了</strong>：残差相加的算术强度只有 <strong>0.167</strong>，深陷 Memory Bound；mHC 把访存从 $2d$ 量级推到 $20d$ 量级，<strong>在一个本来就卡带宽的地方再乘 10 倍</strong>。⚠️ <strong>这是我对"+6.7% 来自哪里"的归因，V4 报告只给了总数，没有分解。</strong></p>
+</blockquote>
 <hr />
 <h2 id="36-attnreskimi-k3">3.6 改法二：AttnRes（Kimi K3）</h2>
 <blockquote>
-<p><strong>AttnRes = Attention Residuals。</strong> 它和 mHC 不是"改残差的两种做法"，而是在<strong>改两件完全不同的事</strong>：<br />
+<p><strong>AttnRes = Attention Residuals（注意力残差）。</strong> 它和 mHC 不是"改残差的两种做法"，而是在<strong>改两件完全不同的事</strong>：<br />
 <strong>mHC 改的是"残差流有几条"；AttnRes 改的是"这一层到底该读谁写进去的东西"。</strong></p>
 <p>📄 <strong>一手来源</strong>：Kimi K3 技术报告 §2.2（式 8 / 9 / 10）、§5.2 训练 infra、§5.4 推理 infra，均已核对正文。<br />
 独立论文《Attention Residuals》<a href="https://arxiv.org/abs/2603.15031">arXiv:2603.15031</a>（Kimi Team，2026-03-16），比 K3 报告早四个多月。<br />
 ⚠️ K3 报告的参考文献 [58] 只写了 "Kimi Team. <em>Attention Residuals</em>. Preprint. 2026."，<strong>并没有给 arXiv 编号</strong>——上面这个编号来自 arXiv 检索。</p>
 </blockquote>
-<h3 id="rnn">一句话框架：标准残差犯的是 RNN 犯过的错</h3>
+<h3 id="361-rnn">3.6.1 一句话框架：标准残差犯的是 RNN 犯过的错</h3>
 <p><strong>报告原文的这句话，是整节最好的解释</strong>：</p>
 <blockquote>
 <p>标准残差把所有历史信息压进深度方向上的<strong>单个状态</strong> $h_l$ —— 这是一个瓶颈，<strong>让人想起 RNN 在时间方向上的问题</strong>。<br />
 （原文：<em>a bottleneck reminiscent of RNNs over time</em>）</p>
 </blockquote>
-<p>RNN 把所有历史 token 压进一个固定状态；标准残差把所有历史层的输出压进一个 $x_l$。<strong>同一个病，只是换了一根轴。</strong></p>
-<p>而 Transformer 当年治 RNN 的药方就是<strong>注意力</strong>——让每个位置用<strong>随数据变化的权重</strong>去选读任意历史位置。</p>
-<div class="codehilite"><pre><span></span><code>      RNN     ──换成注意力──▶  Transformer     在【序列】方向上，2017 年做过一次
-   标准残差    ──换成注意力──▶    AttnRes       在【深度】方向上，2026 年再做一次
-</code></pre></div>
-
+<p>RNN（Recurrent Neural Network，循环神经网络）把所有历史 token 压进一个固定状态；标准残差把所有历史层的输出压进一个 $x_l$。<strong>同一个病，只是换了一根轴。</strong> 而 Transformer 当年治 RNN 的药方就是<strong>注意力</strong>——让每个位置用<strong>随数据变化的权重</strong>去选读任意历史位置。</p>
+<p><strong>把这个类比摊成一张表，两行读完整节的思想</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>病：把所有历史压进<strong>一个</strong>固定状态</th>
+<th>药：换成注意力</th>
+<th>在哪根轴上</th>
+<th>什么时候</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RNN → Transformer</strong></td>
+<td>所有历史 <strong>token</strong> 压进一个隐状态</td>
+<td>每个<strong>位置</strong>用随数据变化的权重选读任意历史<strong>位置</strong></td>
+<td><strong>序列</strong>方向</td>
+<td>2017 年</td>
+</tr>
+<tr>
+<td><strong>标准残差 → AttnRes</strong></td>
+<td>所有历史 <strong>层</strong> 的输出压进一个 $x_l$</td>
+<td>每一<strong>层</strong>用随数据变化的权重选读任意历史<strong>层</strong></td>
+<td><strong>深度</strong>方向</td>
+<td>2026 年</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>🔑 <strong>记住这个类比。下面所有公式都只是它的技术实现。</strong></p>
 </blockquote>
-<h3 id="_8">第一步：可以读的"源"是什么（★ 最容易看错的地方）</h3>
+<h3 id="362">3.6.2 第一步：可以读的"源"是什么（★ 最容易看错的地方）</h3>
 <blockquote>
-<p>📌 报告用 $h$ 表示残差流，就是本章的 $x$；$f_i(\cdot)$ 是第 $i$ 层的<strong>子层函数</strong>。</p>
+<p>📌 报告用 $h$ 表示残差流，就是本章 §3.1.1 那张表里的 $x$；$f_i(\cdot)$ 是第 $i$ 层的<strong>子层函数</strong>。</p>
 </blockquote>
 <p><strong>第 $l$ 层面前摆着 $l$ 个可选的源</strong>（报告式 8）：</p>
 <p>$$k_i = v_i = \begin{cases} h_{-1}, &amp; i=0 \quad(\text{token embedding})\[3pt] f_i(h_i), &amp; 1\le i\le l-1 \quad(\text{第 }i\text{ 层【自己写出的那一份】}) \end{cases}$$</p>
 <p><strong>三个细节，每一个都必须点出来：</strong></p>
 <div class="codehilite"><pre><span></span><code>(a) k_i = v_i —— 没有 W_K，也没有 W_V
     层的输出【直接】既当 key 又当 value
-    → &quot;我怎么介绍自己&quot; 和 &quot;我能给你什么&quot; 是同一个东西
-    → 这是它比标准注意力便宜得多的原因之一
+    -&gt; &quot;我怎么介绍自己&quot; 和 &quot;我能给你什么&quot; 是同一个东西
+    -&gt; 这是它比标准注意力便宜得多的原因之一
 
 (b) ★★ 是 f_i(h_i)【增量】，不是 h_i【累加值】—— 全节最关键的一点
-    拿累加值当源：每个源里都已经包含了它前面所有的源 → 高度冗余，根本挑不出东西
+    回去看 §3.1.1 那张表最后两行的区分。
+    拿累加值当源：每个源里都已经包含了它前面所有的源 -&gt; 高度冗余，根本挑不出东西
     拿增量当源  ：l 个源才是 l 份【互相独立的贡献】，才构成一组值得挑的基
 
-    ✅ 这一点在报告里是自洽的：Block 版把块内的源【求和】成 b_n = Σ f_j(h_j)
+    ✅ 这一点在报告里是自洽的：Block 版把块内的源【求和】成 b_n = Sum_j f_j(h_j)
        —— 只有当 f_j(h_j) 是增量时，&quot;把它们加起来&quot;才讲得通
 
 (c) i = 0 是 token embedding
-    → &quot;直接回头看原始输入&quot; 永远是一个可选项，不必让信息逐层传话
+    -&gt; &quot;直接回头看原始输入&quot; 永远是一个可选项，不必让信息逐层传话
 </code></pre></div>
 
-<h3 id="query">第二步：query —— 可学习，但<strong>不依赖输入</strong></h3>
+<h3 id="363-query">3.6.3 第二步：query —— 可学习，但<strong>不依赖输入</strong></h3>
 <p>$$q_l = w_l \in \mathbb{R}^{d}$$</p>
 <p>每一层拥有<strong>一个固定向量</strong>，含义是"我这一层想找什么样的东西"。训练时学出来，<strong>推理时冻结，不随 token 变化</strong>。</p>
 <blockquote>
 <p>🔑 <strong>但注意力权重本身仍然随输入变</strong>——因为 <strong>key 是激活值</strong> $f_i(h_i)$，逐 token 不同。<br />
-<strong>这正是它比 DenseFormer 强的地方</strong>：DenseFormer 的深度权重是可学习<strong>标量</strong>，对所有输入都一样（见本节末的谱系）。</p>
+<strong>这正是它比 DenseFormer 强的地方</strong>：DenseFormer 的深度权重是可学习<strong>标量</strong>，对所有输入都一样（见 §3.6.9 的谱系）。</p>
 </blockquote>
-<h3 id="rmsnorm">第三步：打分 —— RMSNorm 在这里不是装饰</h3>
+<h3 id="364-rmsnorm-d4">3.6.4 第三步：打分 —— ★ RMSNorm 在这里不是装饰（$d=4$ 手算）</h3>
 <p>$$\phi(q,k)=\exp!\big(q^{\top}\,\mathrm{RMSNorm}(k)\big),\qquad \alpha_{i\to l}=\frac{\phi(q_l,k_i)}{\sum_{j=0}^{l-1}\phi(q_l,k_j)}$$</p>
 <p><strong>✅ 报告明确写了 RMSNorm 的作用</strong>：防止某一层因为输出<strong>幅度</strong>大就霸占全部权重。</p>
-<div class="codehilite"><pre><span></span><code>没有 RMSNorm： score = w·k ∝ ‖k‖  →  &quot;嗓门大&quot;的层无条件胜出，和内容无关
-加上 RMSNorm： 幅度被剥掉，只剩【方向】 →  变成一次纯粹的【内容匹配】
-</code></pre></div>
-
+<p><strong>现在用 $d = 4$、$l = 4$ 个源把这件事算出来。</strong> 假设前面四层写出的增量是（故意让幅度差很大）：</p>
+<table>
+<thead>
+<tr>
+<th>源</th>
+<th>是什么</th>
+<th>$f_i$</th>
+<th>$|f_i|$</th>
+<th>$\mathrm{RMSNorm}(f_i)$</th>
+<th>范数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$f_0$</td>
+<td>token embedding</td>
+<td><code>[1, 0, 0, 0]</code></td>
+<td>1</td>
+<td><code>[2, 0, 0, 0]</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td>$f_1$</td>
+<td>第 1 层的增量</td>
+<td><code>[0, 2, 0, 0]</code></td>
+<td><strong>2</strong></td>
+<td><code>[0, 2, 0, 0]</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td>$f_2$</td>
+<td>第 2 层的增量</td>
+<td><code>[0, 0, 1, 0]</code></td>
+<td>1</td>
+<td><code>[0, 0, 2, 0]</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td>$f_3$</td>
+<td>第 3 层的增量</td>
+<td><code>[0, 0, 0, 4]</code></td>
+<td><strong>4</strong></td>
+<td><code>[0, 0, 0, 2]</code></td>
+<td>2</td>
+</tr>
+</tbody>
+</table>
+<p><strong>RMSNorm 把四个源的范数统统拉到 $\sqrt{d} = 2$</strong>（<a href="04-归一化.html">04 章 §4.1.1</a>），幅度信息被彻底剥掉，只剩方向。</p>
+<p><strong>实验 A：$w_l = [1, 1, 1, 1]$（"我对四个频道一视同仁"）</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>$f_0$</th>
+<th>$f_1$</th>
+<th>$f_2$</th>
+<th>$f_3$</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>不加 RMSNorm</strong> 的分数 $w!\cdot!f_i$</td>
+<td>1</td>
+<td>2</td>
+<td>1</td>
+<td><strong>4</strong></td>
+<td></td>
+</tr>
+<tr>
+<td>$\exp(\cdot)$</td>
+<td>2.71828</td>
+<td>7.38906</td>
+<td>2.71828</td>
+<td><strong>54.59815</strong></td>
+<td>分母 67.42377</td>
+</tr>
+<tr>
+<td>$\alpha$</td>
+<td>0.04032</td>
+<td>0.10959</td>
+<td>0.04032</td>
+<td><strong>0.80978</strong></td>
+<td>❌ $f_3$ 拿走 81%，<strong>只因为它嗓门大</strong></td>
+</tr>
+<tr>
+<td><strong>加 RMSNorm</strong> 的分数</td>
+<td>2</td>
+<td>2</td>
+<td>2</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td>$\exp(\cdot)$</td>
+<td>7.38906</td>
+<td>7.38906</td>
+<td>7.38906</td>
+<td>7.38906</td>
+<td>分母 29.55622</td>
+</tr>
+<tr>
+<td>$\alpha$</td>
+<td><strong>0.25</strong></td>
+<td><strong>0.25</strong></td>
+<td><strong>0.25</strong></td>
+<td><strong>0.25</strong></td>
+<td>✅ 四个源<strong>完全打平</strong>——幅度不再说话</td>
+</tr>
+</tbody>
+</table>
+<p><strong>实验 B：$w_l = [0, 1, 2, 0]$（"我想要一点 2 号频道，更想要 3 号频道"）</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>$f_0$</th>
+<th>$f_1$</th>
+<th>$f_2$</th>
+<th>$f_3$</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>不加 RMSNorm</strong> 的分数</td>
+<td>0</td>
+<td><strong>2</strong></td>
+<td><strong>2</strong></td>
+<td>0</td>
+<td>❌ $f_1$ 和 $f_2$ <strong>打成平手</strong></td>
+</tr>
+<tr>
+<td>$\alpha$</td>
+<td>0.05960</td>
+<td><strong>0.44040</strong></td>
+<td><strong>0.44040</strong></td>
+<td>0.05960</td>
+<td>$f_1$ 的两倍幅度，正好抵消了 $w$ 对 3 号频道的两倍偏好</td>
+</tr>
+<tr>
+<td><strong>加 RMSNorm</strong> 的分数</td>
+<td>0</td>
+<td>2</td>
+<td><strong>4</strong></td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td>$\exp(\cdot)$</td>
+<td>1</td>
+<td>7.38906</td>
+<td><strong>54.59815</strong></td>
+<td>1</td>
+<td>分母 63.98721</td>
+</tr>
+<tr>
+<td>$\alpha$</td>
+<td>0.01563</td>
+<td>0.11548</td>
+<td><strong>0.85327</strong></td>
+<td>0.01563</td>
+<td>✅ $f_2$ 拿到 85.3%，<strong>偏好被如实执行了</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>📌 <strong>顺带解释一个小疑问</strong>：这里<strong>没有 $1/\sqrt{d}$ 缩放</strong>（对比 <a href="05-注意力机制.html">05 章</a> 的 $QK^\top/\sqrt{d_h}$）。<br />
-因为 RMSNorm 已经把 $k$ 的尺度钉死了，而 $w_l$ 本身可学，<strong>任何常数缩放都能被它自己吸收掉</strong>。</p>
+<p>🔑 <strong>实验 B 是整节最该按一遍的表。</strong> 注意这里的荒谬之处：<br />
+```<br />
+没有 RMSNorm 时，w = [0, 1, 2, 0] 明明说了"3 号频道我要两倍",<br />
+但因为 f_1 的幅度恰好是 f_2 的两倍，两个源的分数一模一样（都是 2），<br />
+结果打成 44% : 44% 的平手 —— 这一层的【意图被幅度抹掉了】。</p>
+<p>加上 RMSNorm，幅度被剥掉只剩方向，f_2 拿到 85.3%。<br />
+★ 注意 f_2 是四个源里【最小】的那一个（||f_2|| = 1，而 ||f_3|| = 4）。<br />
+  "最小的源赢了最大的源" —— 这才是"内容匹配"该有的样子。<br />
+```</p>
+<p><strong>一句话</strong>：RMSNorm 把打分从"谁嗓门大"变成了一次纯粹的<strong>内容匹配</strong>。</p>
+<p>📌 <strong>顺带解释一个小疑问</strong>：这里<strong>没有 $1/\sqrt{d}$ 缩放</strong>（对比 <a href="05-注意力机制.html">05 章 §5.3</a> 的 $QK^\top/\sqrt{d_h}$）。<br />
+因为 RMSNorm 已经把 $k$ 的尺度钉死了（范数恒为 $\sqrt{d}$），而 $w_l$ 本身可学，<strong>任何常数缩放都能被它自己吸收掉</strong>。</p>
 </blockquote>
-<h3 id="_9">第四步：输出 —— ★ 它<strong>替换</strong>掉累加，不是加在累加之上</h3>
+<h3 id="365">3.6.5 第四步：输出 —— ★ 它<strong>替换</strong>掉累加，不是加在累加之上</h3>
 <p>$$h_l=\sum_{i=0}^{l-1}\alpha_{i\to l}\,v_i$$</p>
 <p><strong>和标准残差并排放，差别只有一处：</strong></p>
-<div class="codehilite"><pre><span></span><code>标准残差:   x_l = Σ_i    1     · f_i(x_i)      权重恒为 1，不可选、不归一
-AttnRes :   x_l = Σ_i α_{i→l}  · f_i(x_i)      权重由 softmax 给出，和为 1
-                       └───────┘
-                        唯一的差别
+<div class="codehilite"><pre><span></span><code>标准残差:   x_l = Sum_i    1      x f_i(x_i)      权重恒为 1，不可选、不归一
+AttnRes :   x_l = Sum_i  alpha_i  x f_i(x_i)      权重由 softmax 给出，和为 1
+                         ^^^^^^^
+                         唯一的差别
 </code></pre></div>
 
+<p><strong>把 §3.6.4 实验 B 的 $\alpha$ 代进去，和标准残差对账：</strong></p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>权重</th>
+<th>输出 $h_l$</th>
+<th>$|h_l|$</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>标准残差</strong>（$\alpha \equiv 1$，直接累加）</td>
+<td><code>[1, 1, 1, 1]</code></td>
+<td><code>[1.000000, 2.000000, 1.000000, 4.000000]</code></td>
+<td><strong>4.690416</strong></td>
+</tr>
+<tr>
+<td><strong>均匀平均</strong>（$\alpha \equiv 1/l$）</td>
+<td><code>[0.25, 0.25, 0.25, 0.25]</code></td>
+<td><code>[0.250000, 0.500000, 0.250000, 1.000000]</code></td>
+<td><strong>1.172604</strong></td>
+</tr>
+<tr>
+<td><strong>AttnRes</strong>（实验 B 的 $\alpha$）</td>
+<td><code>[0.01563, 0.11548, 0.85327, 0.01563]</code></td>
+<td><code>[0.015628, 0.230954, 0.853267, 0.062512]</code></td>
+<td><strong>0.886316</strong></td>
+</tr>
+</tbody>
+</table>
+<p>自己验算中间那一行：$1.172604 = 4.690416 / 4$，<strong>均匀平均的范数正好是累加的 $1/l$。</strong></p>
 <blockquote>
-<p>⭐ <strong>所以标准残差就是 $\alpha\equiv 1$ 的特例。</strong> 两个直接后果：</p>
+<p>⭐ <strong>所以标准残差就是 $\alpha\equiv 1$ 的特例。</strong> 三个直接后果，前两个可以严格证明：</p>
 <p>```<br />
-✅ 权重和为 1 → §3.4 那个"残差范数按 √N 增长"的问题【自动消失】<br />
-                因为这是加权平均，不是累加<br />
-   ★ 独立论文摘要给出的动机与此完全一致：标准 PreNorm 残差以【固定单位权重】<br />
+✅ (1) §3.4 那个"残差范数按 sqrt(N) 增长"的问题【自动消失】，而且有硬上界：<br />
+       因为权重非负且和为 1，由三角不等式<br />
+           ||h_l|| = ||Sum alpha_i f_i|| &lt;= Sum alpha_i ||f_i|| &lt;= max_i ||f_i||<br />
+       本例 max||f_i|| = 4，而算出来是 0.886 —— 远在上界以内。<br />
+       ★ 无论 l 是 4 还是 93，这个上界都不随 l 增长。sqrt(N) 增长被【结构性地】消掉了。</p>
+<p>★ 独立论文摘要给出的动机与此完全一致：标准 PreNorm 残差以【固定单位权重】<br />
      累加每层输出，导致"随深度不受控的隐状态增长，逐步稀释每一层的贡献"</p>
-<p>⚠️ 代价（我的推断，报告没写）：平均是【压不出增长】的。<br />
-   如果第 l 层真想要"把前面全部加起来"，它最多只能拿到均值，幅度被压掉约 1/l<br />
-   —— 要靠可学的 w_l 和后面的 norm 补回来<br />
+<p>⚠️ (2) 代价（我的推断，报告没写）：平均是【压不出增长】的。<br />
+       如果第 l 层真想要"把前面全部加起来"，它最多只能拿到均值，<br />
+       幅度被压掉约 1/l（上表第二行就是这个：4.690 -&gt; 1.173）<br />
+       —— 要靠可学的 w_l 和后面的 norm 补回来</p>
+<p>⚠️ (3) 另一个代价（同样是我的推断）：softmax 不允许"全都不要"。<br />
+       这就是 <a href="05-注意力机制.html">05 章 §5.5</a> 那条"和必须为 1"的性质，换到了深度轴上。<br />
+       深度轴上也会出现"垃圾桶"吗？—— 见 §3.6.9 后续工作报告的"路由塌陷"。<br />
 ```</p>
 </blockquote>
-<p><strong>一次深度注意力长这样</strong>（softmax 是对<strong>层</strong>做的）：</p>
-<div class="codehilite"><pre><span></span><code>   源（每层写出的那一份）           第 l 层用一个 softmax 决定读谁
-
-   f_0 = token embedding ──┐  α=0.05
-   f_1 ────────────────────┤  α=0.02
-   f_2 ────────────────────┤  α=0.40  ← 这一层特别有用，重点读
-    ⋮                      ├──▶ 加权和 ──▶ 送进第 l 层的子层
-   f_{l−1} ────────────────┘  α=0.31
-                               └── Σα = 1，在【层】这个维度上归一
+<p><strong>一次深度注意力长这样</strong>（softmax 是对<strong>层</strong>做的）。把实验 B 的数字填进去：</p>
+<table>
+<thead>
+<tr>
+<th>源（每层写出的那一份）</th>
+<th>它的 $\alpha$</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$f_0$ = token embedding</td>
+<td>0.01563</td>
+<td>基本不看原始输入</td>
+</tr>
+<tr>
+<td>$f_1$ = 第 1 层的增量</td>
+<td>0.11548</td>
+<td>看一点</td>
+</tr>
+<tr>
+<td>$f_2$ = 第 2 层的增量</td>
+<td><strong>0.85327</strong></td>
+<td>★ <strong>这一层特别有用，重点读</strong></td>
+</tr>
+<tr>
+<td>$f_3$ = 第 3 层的增量</td>
+<td>0.01563</td>
+<td>基本不看</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>1.00000</strong></td>
+<td>← softmax 在【层】这个维度上归一</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>所有源的加权和  -&gt;  这就是送进第 l 层子层的东西
 </code></pre></div>
 
-<h3 id="token">形状：对<strong>每一个 token</strong> 都算一份</h3>
-<div class="codehilite"><pre><span></span><code>f_i(x_i)   [d]      每层写出的那一份                i = 0 … l−1
-w_l        [d]      第 l 层的伪 query
-scores     [l]      w_l · RMSNorm(f_i)
-α          [l]      ★ softmax 在【层】这个维度上做
-x_l        [d]      Σ α_i · f_i
+<h3 id="366-token">3.6.6 形状：对<strong>每一个 token</strong> 都算一份</h3>
+<div class="codehilite"><pre><span></span><code>f_i(x_i)   [d]      每层写出的那一份                i = 0 ... l-1
+w_l        [d]      第 l 层的伪 query（不依赖输入）
+scores     [l]      w_l . RMSNorm(f_i)
+alpha      [l]      ★ softmax 在【层】这个维度上做
+x_l        [d]      Sum alpha_i x f_i
 
-带上 batch 和序列：α 的形状是 [B, L_seq, l]
-                    —— 每个 token 各有一份&quot;我该读哪几层&quot;的分布
-                    ↑ ★ 显存问题就来自这里：
-                      l 份 [B, L_seq, d] 的层输出必须【全部留着】
+带上 batch 和序列：alpha 的形状是 [B, L_seq, l]
+                   —— 每个 token 各有一份&quot;我该读哪几层&quot;的分布
+                   ★ 显存问题就来自这里：
+                     l 份 [B, L_seq, d] 的层输出必须【全部留着】
 </code></pre></div>
 
-<h3 id="_10">代价：<strong>算得起，但存不起</strong></h3>
-<div class="codehilite"><pre><span></span><code>算术开销 O(L²d)   ✅ 报告明说【负担得起】—— 因为深度 L &lt; 100，L² 才 ~10⁴，
-                    和序列方向上动辄 (10⁶)² 完全不是一个量级
+<hr />
+<h3 id="367">3.6.7 代价：<strong>算得起，但存不起</strong>（把两笔账都算出来）</h3>
+<div class="codehilite"><pre><span></span><code>算术开销 O(L^2 d)   ✅ 报告明说【负担得起】—— 因为深度 L &lt; 100，L^2 才 ~10^4，
+                     和序列方向上动辄 (10^6)^2 = 10^12 完全不是一个量级
 
-内存开销 O(Ld)    ❌ ★ 这才是真正的问题：所有层的输出要同时留在显存里
-                    而且在【流水线并行】下这些输出要跨 stage 传输，
-                    通信开销同样是 O(Ld)
+内存开销 O(L d)     ❌ ★ 这才是真正的问题：所有层的输出要同时留在显存里
+                     而且在【流水线并行】下这些输出要跨 stage 传输，
+                     通信开销同样是 O(Ld)
 </code></pre></div>
 
+<p><strong>算术那一笔，代入 K3 的 $L=93$、$d=7168$，验证"负担得起"这句话：</strong></p>
+<div class="codehilite"><pre><span></span><code>第 l 层的 AttnRes：l 个源，每个源要算一次 d 维内积（打分）+ 一次 d 维加权累加
+                   约 4 x l x d FLOP
+全模型：Sum_{l=1..93} 4 l d = 4d x 93x94/2 = 4 x 7168 x 4371 = 1.25e8 FLOP / token
+
+对比全模型一次前向（§3.5.5 算过一层约 1.204e9）：
+        1.204e9 x 93 = 1.120e11 FLOP / token
+
+AttnRes 占比 = 1.25e8 / 1.120e11 = 0.11%          &lt;- 千分之一，确实负担得起
+</code></pre></div>
+
+<p><strong>内存那一笔，同样代入 K3（BF16，每个源每 token 是 $7168\times2 = 14{,}336$ 字节 = 14 KiB）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>版本</th>
+<th>要同时留着的源个数</th>
+<th>每 token</th>
+<th>一个 4096 token 的 micro-batch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>标准残差</strong></td>
+<td>1（只有累加值）</td>
+<td><strong>14 KiB</strong></td>
+<td><strong>58.7 MB</strong></td>
+</tr>
+<tr>
+<td><strong>完整 AttnRes</strong></td>
+<td>93</td>
+<td><strong>1.33 MB</strong></td>
+<td><strong>5.46 GB</strong></td>
+</tr>
+<tr>
+<td><strong>Block AttnRes（8 块 + embedding = 9 源）</strong></td>
+<td>9</td>
+<td><strong>126 KiB</strong></td>
+<td><strong>528 MB</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>5.46 GB vs 58.7 MB —— 差 93 倍，而且这只是一个 micro-batch、一条 4K 序列。</strong> K3 原生 1M 上下文，这条路走不通。</p>
 <blockquote>
 <p>🔑 <strong>这是一个很好的例子</strong>：<strong>同一个 $O(n^2)$，在序列轴上是灾难，在深度轴上根本不算事。</strong><br />
-<strong>复杂度符号本身不说明问题，要看 $n$ 到底多大。</strong></p>
+<strong>复杂度符号本身不说明问题，要看 $n$ 到底多大。</strong><br />
+但反过来也成立：<strong>同一个 $O(n)$ 的内存，在深度轴上（$n=93$，每份 14 KiB）就足以把显存吃穿。</strong></p>
 </blockquote>
-<h3 id="block-attnresk3">Block AttnRes：K3 实际用的版本</h3>
+<h3 id="368-block-attnresk3">3.6.8 Block AttnRes：K3 实际用的版本</h3>
 <p><strong>⚠️ 这一段常被讲反</strong>，包括不少二手解读：</p>
 <div class="codehilite"><pre><span></span><code>L 层切成 N 块，每块 S = L/N 层
 
-  块【内】：层输出直接【求和】  b_n = Σ_{j∈B_n} f_j(x_j)     ← 退化成普通残差
-  块【间】：对 N 个块级表示做【全注意力】                       ← ★ AttnRes 在这里生效
+  块【内】：层输出直接【求和】  b_n = Sum_{j in B_n} f_j(x_j)     &lt;- 退化成普通残差
+  块【间】：对 N 个块级表示做【全注意力】                          &lt;- ★ AttnRes 在这里生效
   b_0 := token embedding，永远是一个可选源
 </code></pre></div>
 
@@ -627,40 +1881,77 @@ x_l        [d]      Σ α_i · f_i
 ✅ <strong>是</strong>"块内求和、<strong>块间</strong>做注意力"，而且 K3 的块是 <strong>12 层</strong>、一共 <strong>8 块</strong>。</p>
 </blockquote>
 <p><strong>报告式 10 还有一个细节，决定了"块内的近邻层不会丢"</strong>——块内第 $i$ 层看到的源是：</p>
-<div class="codehilite"><pre><span></span><code>i = 1（块内第一层）:  V = [ b_0, b_1, …, b_{n−1} ]
-i ≥ 2              :  V = [ b_0, b_1, …, b_{n−1}, b_n^{i−1} ]
-                                                  └── 本块内前 i−1 层的【部分和】
+<div class="codehilite"><pre><span></span><code>i = 1（块内第一层）:  V = [ b_0, b_1, ..., b_{n-1} ]
+i &gt;= 2             :  V = [ b_0, b_1, ..., b_{n-1}, b_n^{i-1} ]
+                                                    ^^^^^^^^^
+                                       本块内前 i-1 层的【部分和】
 
-→ 每一层看到的是：
+-&gt; 每一层看到的是：
      已完成的各个块 —— 每块【单独占一个条目】，可以精确挑选
    + 自己块内已经走过的部分 —— 【合并成一个条目】
-→ 近邻信息没丢，只是分辨率变粗了
+-&gt; 近邻信息没丢，只是分辨率变粗了
 </code></pre></div>
 
-<p><strong>✅ K3 的具体数字</strong>：</p>
-<div class="codehilite"><pre><span></span><code>93 层 ÷ 12 = 7 个满块 + 1 个不满的尾块 = 8 块
-再加上 embedding                        = 9 个源
-开销 O(Ld) → O(Nd)，即 93 → 9，约 10×
-报告说 N ≈ 8 就能在各个模型规模上拿回大部分收益
+<p><strong>✅ K3 的具体数字，逐项验算：</strong></p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>块数</td>
+<td>$93 \div 12 = 7$ 个满块（84 层）+ 1 个 9 层的尾块</td>
+<td><strong>8 块</strong></td>
+</tr>
+<tr>
+<td>源的个数</td>
+<td>8 块 + 1 个 token embedding</td>
+<td><strong>9 个源</strong></td>
+</tr>
+<tr>
+<td>内存开销</td>
+<td>$O(Ld) \to O(Nd)$，即 $93 \to 9$</td>
+<td><strong>约 10.3×</strong></td>
+</tr>
+<tr>
+<td>每 token 要留的字节</td>
+<td>$1.33\ \text{MB} \to 9\times14\,\text{KiB}$</td>
+<td><strong>1.33 MB → 126 KiB</strong></td>
+</tr>
+<tr>
+<td>算术开销</td>
+<td>$4\times9\times d\times L = 4\times9\times7168\times93$</td>
+<td>$2.4\times10^7$ FLOP/token，<strong>占全模型 0.021%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>报告说 N ~ 8 就能在各个模型规模上拿回大部分收益
 </code></pre></div>
 
 <blockquote>
-<p>⭐ <strong>一个漂亮的跨章呼应</strong>：块结构让推理时的状态<strong>有界</strong>，于是"块间并行算出的结果"可以和"块内顺序累加的部分和"用 <strong>online softmax</strong> 合并——<br />
-<strong>这和 <a href="05-注意力机制.html">05 章 §5.7</a> 的 FlashAttention 是同一个算法</strong>，只不过一个用在序列轴上，一个用在深度轴上。</p>
+<p>⭐ <strong>一个漂亮的跨章呼应</strong>：块结构让推理时的状态<strong>有界</strong>，于是"块间并行算出的结果"可以和"块内顺序累加的部分和"用 <strong>online softmax</strong>（在线 softmax）合并——<br />
+<strong>这和 <a href="05-注意力机制.html">05 章 §5.7.4</a> 的 FlashAttention 是同一个算法</strong>，只不过一个用在序列轴上，一个用在深度轴上。那个递推式的 6 元素手算推演在 <a href="../../大模型算子开发/04-FlashAttention全系.html">../../大模型算子开发/04-FlashAttention全系.md</a> §4.2，<strong>按一遍就能同时理解这两处</strong>。</p>
 <p>📌 <strong>✅ 两处工程细节，说明上面那个显存问题是怎么被真正解决的</strong>（报告 §5.2 / §5.4）：<br />
 ```<br />
 训练：块表示在边界层【只生成一次】，之后所有层共享；整个 AttnRes 计算被<br />
-      checkpointing 包起来 → ★ 每层为反向保存的激活【与标准残差完全相同】<br />
+      checkpointing（激活重计算）包起来<br />
+      -&gt; ★ 每层为反向保存的激活【与标准残差完全相同】<br />
+         换句话说，上表那个 528 MB 在真实实现里也不驻留<br />
       流水线并行用 "cache-based pipeline communication"：只增量传输新生成的块，<br />
-      micro-batch 一结束就释放 → 报告称达到显存占用的理论下界</p>
+      micro-batch 一结束就释放 -&gt; 报告称达到显存占用的理论下界</p>
 <p>推理：两阶段调度 —— 批量的块间 pass 每块只读一次缓存的块表示，<br />
       之后每层用 online-softmax 把块内部分和折进去<br />
-      ⚠️ 报告明说这些 kernel 的成本【很大一部分是访存】，所以<br />
-         prefill 用序列并行让每个 token 的块表示只在一个 rank 上物化，<br />
-         decode 把块间 kernel 放到 side stream 上和主流重叠<br />
+      ⚠️ 报告明说这些 kernel 的成本【很大一部分是访存】<br />
+         —— 和 §3.3.3、§3.5.5 的结论一致：残差这一带的瓶颈永远在带宽<br />
+      所以 prefill 用序列并行让每个 token 的块表示只在一个 rank 上物化，<br />
+      decode 把块间 kernel 放到 side stream 上和主流重叠<br />
 ```</p>
 </blockquote>
-<h3 id="_11">谱系：往前三步，往后两步</h3>
+<h3 id="369">3.6.9 谱系：往前三步，往后两步</h3>
 <p><strong>✅ 以下 arXiv 编号、日期、方法描述均已逐条核对。</strong></p>
 <div class="codehilite"><pre><span></span><code>DenseFormer (2402.02622, 2024-02, Pagliardini 等)
         每层后插入&quot;深度加权平均&quot;，权重是【可学习标量】，与输入无关
@@ -668,7 +1959,7 @@ i ≥ 2              :  V = [ b_0, b_1, …, b_{n−1}, b_n^{i−1} ]
 DeepCrossAttention (2502.06785, 2025-02, Google, Heddes 等)
         用【可学习且输入相关】的权重动态组合各层输出，并加入深度方向的交叉注意力
         ↓ 把每个块的输入解耦
-MUDDFormer
+MUDDFormer   ⚠️ 这一项我没有核到 arXiv 编号，方法描述来自二手材料
         解耦成 Q / K / V / 残差 四路
         ↓ 换成一次真正的 softmax 注意力
 ★ AttnRes (2603.15031, 2026-03-16, Kimi Team)
@@ -678,33 +1969,34 @@ MUDDFormer
 <p><strong>⭐ 它是三家残差改动里唯一一个已经长出独立后续研究线的</strong>：</p>
 <div class="codehilite"><pre><span></span><code>Delta Attention Residuals (2605.18855, 2026-05, Luo / Cai / Hu)
    批评：AttnRes 在【累加隐状态】上做路由，这些状态高度冗余
-        → 深层出现&quot;路由塌陷&quot;，注意力分布趋于均匀（峰值权重仅 ≈ 0.2）
-   做法：改成在【相邻隐状态之差】（增量）上路由 → 分布更锐（峰值 ≈ 0.6）
-   结果：220M–7.6B 上验证困惑度改善 1.7%–8.2%
+        -&gt; 深层出现&quot;路由塌陷&quot;，注意力分布趋于均匀（峰值权重仅 ~0.2）
+   做法：改成在【相邻隐状态之差】（增量）上路由 -&gt; 分布更锐（峰值 ~0.6）
+   结果：220M-7.6B 上验证困惑度改善 1.7%-8.2%
 
 Multi-Head Attention Residuals (2607.27230, 2026-07, 同一组作者)
    批评：读深度用的是【整个宽度共享的一个 query】，所有特征子空间被迫
         用同一个分布去读历史层；子空间之间越&quot;意见不合&quot;代价越大，
         而这种分歧随宽度增长
    做法：把路由 query 拆成 H 个子空间头，各自独立 softmax（块对角读取）
-        零新增参数、计算可忽略；H=1 退化回原版 AttnRes，最优在 H ≈ 4~8
-   结果：100M / 350M / 1B 上验证损失 −0.061 / −0.149 / −0.140
+        零新增参数、计算可忽略；H=1 退化回原版 AttnRes，最优在 H ~ 4-8
+   结果：100M / 350M / 1B 上验证损失 -0.061 / -0.149 / -0.140
         ⚠️ 但也暴露了成本：即使配上融合 Triton kernel，
-           吞吐也只有 baseline 的 0.55~0.88×（不融合时只有 0.2~0.5×）
+           吞吐也只有 baseline 的 0.55-0.88x（不融合时只有 0.2-0.5x）
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>注意后续工作攻击的，正好是让 AttnRes 便宜的那两处简化</strong>：<br />
 <strong>"每层只有一个 query"</strong> 和 <strong>"源该怎么取"</strong>。<br />
 <strong>这是读技术报告很值得记的一课：一个设计的【简化点】，往往就是它的【下一个改进点】。</strong></p>
+<p>⚠️ 另外注意 Multi-Head AttnRes 那个"吞吐只有 baseline 的 0.55–0.88×"——<strong>换算成时间就是慢 1.14~1.82 倍</strong>（$1/0.88 = 1.14$，$1/0.55 = 1.82$）。<strong>"吞吐 0.55×"和"慢 45%"是两个不同的数，别混</strong>（慢的幅度是 82%，不是 45%）。</p>
 <p>⚠️ <strong>一处我没能核实的矛盾，如实标出</strong>：Delta AttnRes 说 AttnRes 是在"<strong>累加隐状态</strong>"上做路由，<br />
-但 <strong>K3 报告式 8 明确写的是 $f_i(h_i)$（增量）</strong>，而且块内求和 $b_n=\sum_j f_j(h_j)$ 只有在增量语义下才讲得通。<strong>二者对不上。</strong><br />
+但 <strong>K3 报告式 8 明确写的是 $f_i(h_i)$（增量）</strong>，而且块内求和 $b_n=\sum_j f_j(h_j)$ 只有在增量语义下才讲得通（§3.6.2 细节 b）。<strong>二者对不上。</strong><br />
 可能是两篇论文记号不同，也可能是独立论文原版与 K3 部署版有差异——<strong>仅凭摘要无法判断</strong>。<br />
 本节按 <strong>K3 报告正文</strong>讲，因为那是我核对过全文的一手来源。</p>
 </blockquote>
-<h3 id="_12">⚠️ 关于"代价"的一个说明</h3>
+<h3 id="3610">3.6.10 ⚠️ 关于"代价"的一个说明</h3>
 <p><strong>关于 AttnRes 的墙钟开销，需要说清楚一件事：</strong></p>
-<div class="codehilite"><pre><span></span><code>✅ K3 报告给出的： O(Ld) → O(Nd) 的【渐近】开销降低，
+<div class="codehilite"><pre><span></span><code>✅ K3 报告给出的： O(Ld) -&gt; O(Nd) 的【渐近】开销降低（§3.6.8 算出是 10.3 倍），
                   以及 &quot;checkpointing 后每层保存的激活与标准残差完全相同&quot;
 ❌ K3 报告【没有】给出： 任何百分比形式的墙钟开销 —— 全文检索无此数字
 ⚠️ 独立论文摘要页也没有给百分比，只有定性的 &quot;minimal overhead&quot;
@@ -712,7 +2004,7 @@ Multi-Head Attention Residuals (2607.27230, 2026-07, 同一组作者)
 
 <blockquote>
 <p>🔑 <strong>所以正确的说法是</strong>：<strong>AttnRes 的开销，在一手报告层面只有渐近界和工程手段，没有公开的墙钟百分比。</strong><br />
-这和 mHC 形成对比——<strong>DeepSeek-V4 明确给了 +6.7% 这个实测数字</strong>（§3.5）。<br />
+这和 mHC 形成对比——<strong>DeepSeek-V4 明确给了 +6.7% 这个实测数字</strong>（§3.5.5）。<br />
 <strong>⚠️ 网上流传的"训练 +4% / 推理 +2%"我无法回溯到一手来源，本教程不再采用。</strong></p>
 </blockquote>
 <hr />
@@ -724,6 +2016,7 @@ Multi-Head Attention Residuals (2607.27230, 2026-07, 同一组作者)
 <th>残差改动</th>
 <th>代价（厂商实测）</th>
 <th>层数</th>
+<th>最后一层的话语权（§3.4）</th>
 </tr>
 </thead>
 <tbody>
@@ -732,38 +2025,46 @@ Multi-Head Attention Residuals (2607.27230, 2026-07, 同一组作者)
 <td><strong>mHC</strong>（n=4, Sinkhorn 20）</td>
 <td>训练墙钟 <strong>+6.7%</strong></td>
 <td>61</td>
+<td>12.8%</td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
 <td><strong>mHC</strong>（n=4, Sinkhorn 20）+ 门控塌陷修复</td>
 <td>报告未给出墙钟数字</td>
 <td>50</td>
+<td>14.1%</td>
 </tr>
 <tr>
 <td><strong>Kimi K3</strong></td>
 <td><strong>AttnRes</strong>（93 层 → <strong>8 块 × 12 层</strong>，块间注意力）</td>
-<td>⚠️ 报告只给了 O(Ld)→O(Nd)，<strong>未给墙钟百分比</strong></td>
+<td>⚠️ 报告只给了 $O(Ld)\to O(Nd)$，<strong>未给墙钟百分比</strong></td>
 <td><strong>93</strong></td>
+<td><strong>10.4%（最严重）</strong></td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
 <td><strong>不改</strong></td>
 <td>0</td>
 <td>78</td>
+<td>11.3%</td>
 </tr>
 <tr>
 <td><strong>MiniMax M3</strong></td>
 <td><strong>不改</strong></td>
 <td>0</td>
 <td>60</td>
+<td>12.9%</td>
 </tr>
 </tbody>
 </table>
-<h3 id="_13">怎么理解这个分歧</h3>
+<blockquote>
+<p>📌 <strong>顺手记一个容易搞混的型号</strong>：本表的 <strong>DeepSeek-V4</strong> 是 61 层的 V4-Pro（<a href="01-鸟瞰全景.html">01 章 §1.6</a> 的口径）。后来的 <strong>DeepSeek-V4.1-Flash 是另一个模型，只有 40 层</strong>，它沿用 mHC 但做了 <strong>Single-Pass / Mega-mHC 融合 kernel</strong>，把访存从 $(4n+4)d$ 砍到 $(2n+2)d$（§3.5.5）。<strong>同一个"V4"字样下有两代不同配置，引数字前先确认是哪一个。</strong> 详见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.2。</p>
+</blockquote>
+<h3 id="371">3.7.1 怎么理解这个分歧</h3>
 <p><strong>⚠️ 以下是我的分析，不是厂商的说法。</strong></p>
 <div class="codehilite"><pre><span></span><code>支持&quot;改&quot;的一方的逻辑：
     §3.4 的两个问题（深层被稀释、等效学习率失控）是真实的
-    层数越多越严重 → K3 有 93 层，是五家最深的，动机最强
+    层数越多越严重 -&gt; 看表最后一列：K3 的 10.4% 是五家最低，动机最强
     残差是【全模型每一层都经过】的位置，改这里的杠杆最大
 
 支持&quot;不改&quot;的一方的逻辑：
@@ -771,65 +2072,112 @@ Multi-Head Attention Residuals (2607.27230, 2026-07, 同一组作者)
        但从它要专门写 checkpointing + cache-based 流水线通信 + 两阶段
        推理 kernel 来看，代价显然不是零）
     残差改动会让所有并行策略、算子融合、推理框架都要重写
+       -&gt; ★ 而且改的正好是 §3.3.3 那个算术强度只有 0.167 的地方，
+          任何额外访存都会被 Memory Bound 直接放大成墙钟
     GLM-5.2 明确走的是&quot;工程可落地优先&quot;路线（9 个国产芯片平台适配）
-       → 一个需要在 9 个芯片平台上都重新实现的残差结构，收益比很差
+       -&gt; 一个需要在 9 个芯片平台上都重新实现的残差结构，收益比很差
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>一个更根本的观察</strong>：<strong>残差改造是这一代五家分歧最大的一项。</strong> 注意力大家都在改（只是路线不同）、MoE 大家都在用、Muon 四家都上了——<strong>只有残差这一项，是"改不改"的二分</strong>。这通常意味着<strong>收益还没有大到形成共识</strong>。</p>
+<p>📌 对比 <a href="07-MHA到MLA.html">07 章 §7.6</a>：MLA 已经形成共识（四家都用），残差改造还没有。<strong>"是不是所有人都在用"是判断一项技术成熟度的一个实用标尺。</strong></p>
 <p>📌 详细的横向论证见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.2。</p>
 </blockquote>
 <hr />
 <h2 id="38-numpy">3.8 numpy 走一遍</h2>
 <div class="codehilite"><pre><span></span><code><span class="c1"># ---------- 标准残差 ----------</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">block_standard</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">attn</span><span class="p">,</span> <span class="n">ffn</span><span class="p">,</span> <span class="n">norm1</span><span class="p">,</span> <span class="n">norm2</span><span class="p">):</span>
-    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">attn</span><span class="p">(</span><span class="n">norm1</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">attn</span><span class="p">(</span><span class="n">norm1</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>         <span class="c1"># 读一次、写一次；默认行为是&quot;什么都不做&quot;（§3.1.3）</span>
     <span class="n">x</span> <span class="o">=</span> <span class="n">x</span> <span class="o">+</span> <span class="n">ffn</span><span class="p">(</span><span class="n">norm2</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
     <span class="k">return</span> <span class="n">x</span>
 
 <span class="c1"># ---------- mHC（n 条流）----------</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">block_mhc</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">F</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">C_raw</span><span class="p">,</span> <span class="n">n</span><span class="o">=</span><span class="mi">4</span><span class="p">):</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">block_mhc</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">F</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">B_raw</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="n">n</span><span class="o">=</span><span class="mi">4</span><span class="p">):</span>
     <span class="c1"># X: [L, n, d]   A: [n]   B_raw: [n,n]   C: [n]</span>
-    <span class="n">B</span> <span class="o">=</span> <span class="n">sinkhorn</span><span class="p">(</span><span class="n">B_raw</span><span class="p">,</span> <span class="n">iters</span><span class="o">=</span><span class="mi">20</span><span class="p">)</span>          <span class="c1"># 投影到双随机流形</span>
-    <span class="n">h</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;i,lid-&gt;ld&#39;</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">X</span><span class="p">)</span>       <span class="c1"># 读：n 条流 → 1 条</span>
-    <span class="n">y</span> <span class="o">=</span> <span class="n">F</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>                                <span class="c1"># 子层照常算</span>
-    <span class="n">mixed</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;ij,ljd-&gt;lid&#39;</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">X</span><span class="p">)</span> <span class="c1"># 流间混合</span>
-    <span class="k">return</span> <span class="n">mixed</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;i,ld-&gt;lid&#39;</span><span class="p">,</span> <span class="n">C_raw</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>   <span class="c1"># 写：1 条 → n 条</span>
+    <span class="n">B</span> <span class="o">=</span> <span class="n">sinkhorn</span><span class="p">(</span><span class="n">B_raw</span><span class="p">,</span> <span class="n">iters</span><span class="o">=</span><span class="mi">20</span><span class="p">)</span>           <span class="c1"># 投影到双随机流形，谱半径 = 1（§3.5.3）</span>
+    <span class="n">h</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;i,lid-&gt;ld&#39;</span><span class="p">,</span> <span class="n">A</span><span class="p">,</span> <span class="n">X</span><span class="p">)</span>        <span class="c1"># 读：n 条流 -&gt; 1 条</span>
+    <span class="n">y</span> <span class="o">=</span> <span class="n">F</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>                                 <span class="c1"># 子层照常算</span>
+    <span class="n">mixed</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;ij,ljd-&gt;lid&#39;</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">X</span><span class="p">)</span>  <span class="c1"># 流间混合（不经过子层）</span>
+    <span class="k">return</span> <span class="n">mixed</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;i,ld-&gt;lid&#39;</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span>   <span class="c1"># 写：1 条 -&gt; n 条</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">sinkhorn</span><span class="p">(</span><span class="n">M</span><span class="p">,</span> <span class="n">iters</span><span class="o">=</span><span class="mi">20</span><span class="p">):</span>
+    <span class="n">P</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">M</span><span class="p">)</span>                                    <span class="c1"># 保证严格正</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iters</span><span class="p">):</span>                           <span class="c1"># ★ 严格串行，这是墙钟开销的来源之一</span>
+        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>         <span class="c1"># 行和 -&gt; 1</span>
+        <span class="n">P</span> <span class="o">=</span> <span class="n">P</span> <span class="o">/</span> <span class="n">P</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>         <span class="c1"># 列和 -&gt; 1</span>
+    <span class="k">return</span> <span class="n">P</span>
 
 <span class="c1"># ---------- AttnRes（完整版）----------</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">attn_res</span><span class="p">(</span><span class="n">srcs</span><span class="p">,</span> <span class="n">w_l</span><span class="p">):</span>
-    <span class="c1"># ★ srcs: [l, d] —— 前面每一层【写出的增量】f_i(x_i)，不是累加状态 x_i</span>
+    <span class="c1"># ★ srcs: [l, d] —— 前面每一层【写出的增量】f_i(x_i)，不是累加状态 x_i（§3.6.2b）</span>
     <span class="c1">#                    srcs[0] 是 token embedding</span>
     <span class="c1">#   w_l : [d]    —— 第 l 层的可学习伪 query（不依赖输入）</span>
     <span class="c1">#   ★ key 和 value 是【同一个东西】，没有 W_K / W_V</span>
-    <span class="n">scores</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">w_l</span> <span class="o">@</span> <span class="n">rmsnorm</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">srcs</span><span class="p">])</span>   <span class="c1"># [l]，无 1/√d 缩放</span>
+    <span class="n">scores</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">w_l</span> <span class="o">@</span> <span class="n">rmsnorm</span><span class="p">(</span><span class="n">k</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">srcs</span><span class="p">])</span>   <span class="c1"># [l]，无 1/sqrt(d) 缩放</span>
     <span class="n">alpha</span>  <span class="o">=</span> <span class="n">softmax</span><span class="p">(</span><span class="n">scores</span><span class="p">)</span>                              <span class="c1"># ★ 在【层】维度上 softmax</span>
-    <span class="k">return</span> <span class="n">alpha</span> <span class="o">@</span> <span class="n">srcs</span>                                   <span class="c1"># [d]，★ 这是【替换】掉累加</span>
+    <span class="k">return</span> <span class="n">alpha</span> <span class="o">@</span> <span class="n">srcs</span>        <span class="c1"># [d]，★ 用【未归一化】的 srcs 当 value，这是【替换】掉累加</span>
 
 <span class="c1"># ---------- Block AttnRes（K3 真正用的版本）----------</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">block_attn_res</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="n">partial</span><span class="p">,</span> <span class="n">w_l</span><span class="p">):</span>
-    <span class="c1"># blocks : [n, d] —— 已完成的块表示 b_0…b_{n−1}，块【内】是直接求和</span>
-    <span class="c1"># partial: [d] 或 None —— 本块内前 i−1 层的部分和 b_n^{i−1}（块内第一层为 None）</span>
+    <span class="c1"># blocks : [n, d] —— 已完成的块表示 b_0...b_{n-1}，块【内】是直接求和</span>
+    <span class="c1"># partial: [d] 或 None —— 本块内前 i-1 层的部分和 b_n^{i-1}（块内第一层为 None）</span>
     <span class="n">srcs</span> <span class="o">=</span> <span class="n">blocks</span> <span class="k">if</span> <span class="n">partial</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">blocks</span><span class="p">,</span> <span class="n">partial</span><span class="p">])</span>
     <span class="k">return</span> <span class="n">attn_res</span><span class="p">(</span><span class="n">srcs</span><span class="p">,</span> <span class="n">w_l</span><span class="p">)</span>      <span class="c1"># ★ 注意力只在【块之间】做，源从 93 个降到 9 个</span>
 </code></pre></div>
 
+<blockquote>
+<p>📌 <strong>注意 <code>attn_res</code> 里一个容易写错的地方</strong>：<code>scores</code> 用的是 <code>rmsnorm(k)</code>（归一化后的，只看方向），而最后 <code>alpha @ srcs</code> 用的是 <strong><code>srcs</code>（未归一化的）</strong>。<strong>key 归一化、value 不归一化</strong> —— §3.6.4 实验 B 的输出表就是这么算出来的。写成 <code>alpha @ [rmsnorm(k) for k in srcs]</code> 会得到完全不同的结果。</p>
+</blockquote>
 <hr />
 <h2 id="39">3.9 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① 残差把梯度的【连乘】变成【连加】，这是深层网络能训练的唯一原因
-② 更好的图景：残差流是一条【总线】，每层从上面读、往上面写
-   W_Q/W_K/W_V/W_gate/W_up 是【读】，W_O/W_down 是【写】
-③ 因为只加不覆盖，残差范数按 √N 增长 → 深层被稀释、等效学习率被隐式改变
-④ mHC（V4/openPangu）：改成 n=4 条流，B 约束在双随机流形（谱半径=1）
-   用 Sinkhorn 20 次迭代投影。代价：显存×4，V4 实测训练 +6.7%
-⑤ AttnRes（K3）：在【深度方向】做 softmax 注意力，每层自选该读哪几层
-   ★ 源是每层写出的【增量】f_i(x_i)，不是累加状态；k=v，无 W_K/W_V
-   ★ 权重和为 1 → 它【替换】掉累加，标准残差 = α≡1 的特例，√N 增长消失
-   ★ K3 用 Block 版：93 层切 8 块 × 12 层，【块内求和、块间注意力】
-     （不是&quot;块内做注意力&quot;），加 embedding 共 9 个源，O(Ld)→O(Nd)
-   代价：算术 O(L²d) 报告说负担得起，真正的问题是 O(Ld) 显存与跨 stage 通信
-   ⚠️ K3 报告【没有】给出任何百分比开销数字
-⑥ GLM/M3 完全不改 —— 这是五家分歧最大的一项，说明收益尚未形成共识
+<div class="codehilite"><pre><span></span><code>(1) 残差把梯度的【连乘】变成【连加】，这是深层网络能训练的唯一原因
+    §3.2.1：rho 只要偏离 1 百分之五，93 层就衰减到 0.9% 或放大 89 倍；
+            而残差的恒等项无论多少层都恒等于 1
+    §3.2.2：N 层展开出 2^(N-1) 条路径，其中长度 0 的那条完全不衰减
+    ★ 更本质的说法（§3.1.3）：残差把每一层的【默认行为】从&quot;替换&quot;改成了&quot;什么都不做&quot;
+
+(2) 更好的图景：残差流是一条【总线】，共享 + 可寻址 + 只做加法
+    W_Q/W_K/W_V/W_gate/W_up 是【读】（5 个），W_O/W_down 是【写】（2 个）
+    一层 = 2 次读 + 2 次写；50 层 = 100 个增量叠在同一条 5120 维的流上
+    ⚠️ §3.3.3：残差相加本身的算术强度只有 1/6 = 0.167（屋脊点是 295），
+       彻底 Memory Bound —— 它的成本全在搬运，不在计算。这一条是理解 mHC 代价的钥匙
+
+(3) 叠加与干涉（§3.3.4 / §3.3.5，d=8 走一遍）
+    严格正交的方向：三个概念叠在一个 8 维向量上，一个内积就能精确取回（误差 0）
+    塞不下时：第 9 个概念和 e2 重叠 0.995 -&gt; 读 e2 读到 5.975（本该 1）
+    d=5120 里随手取两个方向，典型夹角 89.2 度（cos = 1/sqrt(d) = 0.014）
+    -&gt; 近似正交的方向数量指数级（JL 引理），叠加能工作的真正前提是【特征稀疏】
+
+(4) 因为只加不覆盖，残差范数按 sqrt(N) 增长（§3.4）
+    第 50 层的增量只占残差流 14.1%，第 93 层只占 10.4%
+    ★ 注意问题不是&quot;范数溢出&quot;（sqrt(93) = 9.6 一点不大），而是【稀释】
+
+(5) mHC（V4 / openPangu）：改成 n=4 条流，B 约束在双随机流形
+    §3.5.3：双随机 =&gt; 谱半径【恰好】= 1（两行可证），连乘不爆不消
+    §3.5.4：Sinkhorn 交替行/列归一化，每轮偏差乘约 0.27，20 轮到 1e-12
+            收敛后实测特征值 |1.0000|, |0.5345|, |0.3882| ✅ 谱半径定理验证通过
+    §3.5.5：⚠️ 代价【不在 FLOP】（只占一层的四千万分之一）：
+            显存 —— 残差流激活 x4（61 层 3.58 GB -&gt; 14.33 GB，不是整机 x4！）
+            访存 —— (4n+4)d = 20d（V4.1-Flash 口径），在一个 Memory Bound 的地方 x10
+            串行 —— 20 次 Sinkhorn 严格串行，4x4 矩阵打不满 GPU，纯延迟
+            ✅ V4 实测训练墙钟 +6.7%（⚠️ 分解归因是我的推断）
+
+(6) AttnRes（K3）：在【深度方向】做 softmax 注意力，每层自选该读哪几层
+    ★ 源是每层写出的【增量】f_i(x_i)，不是累加状态；k = v，无 W_K / W_V
+    ★ §3.6.4 实验 B：w=[0,1,2,0] 明说&quot;3 号频道要两倍&quot;，但没有 RMSNorm 时
+      f_1 的两倍幅度把这个偏好抹平，两源 44%:44% 打平；
+      加上 RMSNorm 后 f_2 拿到 85.3% —— 而它是四个源里【最小】的那个
+    ★ 权重和为 1 =&gt; ||h|| &lt;= max_i ||f_i||，【不随 l 增长】，sqrt(N) 增长被结构性消掉
+      标准残差累加得 4.690，AttnRes 得 0.886，均匀平均得 1.173（= 4.690/4）
+    ★ K3 用 Block 版：93 层切 8 块 x 12 层，【块内求和、块间注意力】
+      （不是&quot;块内做注意力&quot;），加 embedding 共 9 个源
+    代价：算术只占全模型 0.11%（报告说负担得起）；
+          真正的问题是内存 —— 完整版每 token 1.33 MB（4K micro-batch 5.46 GB），
+          Block 版降到 126 KiB（528 MB），10.3 倍
+          ⚠️ K3 报告【没有】给出任何百分比墙钟开销
+
+(7) GLM / M3 完全不改 —— 这是五家分歧最大的一项，说明收益尚未形成共识
+    对比 MLA（四家都用）：&quot;是不是所有人都在用&quot;是技术成熟度的实用标尺
 </code></pre></div>
 
 <p><strong>下一章</strong>讲那两个 <code>Norm(...)</code>：它是什么、放哪里、以及 openPangu 为什么必须在 mHC 之上再打一个归一化补丁。</p>

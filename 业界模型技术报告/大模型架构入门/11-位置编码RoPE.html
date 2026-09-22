@@ -252,7 +252,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="11-rope">11 · 位置编码：RoPE 与长度外推</h1>
 <blockquote>
 <p><strong>这一章的目标</strong>：讲清模型怎么知道词的顺序，以及"4K 训练怎么推到 1M"这件事到底是怎么做到的。<br />
-读完你应该能回答：RoPE 为什么是旋转？那个漂亮的相对位置性质怎么证？base 这个超参在控制什么？PI / NTK-aware / YaRN 三种外推法的区别？以及 <strong>Kimi K3 为什么敢完全不用位置编码（NoPE）</strong>？</p>
+读完你应该能回答：RoPE 为什么是旋转？那个漂亮的相对位置性质怎么证（§11.4 有一个 $d=4$ 的手算例子，所有数字都摆出来）？base 这个超参在控制什么？PI / NTK-aware / YaRN 各自改了公式里的<strong>哪一项</strong>？以及 <strong>Kimi K3 为什么敢完全不用位置编码（NoPE, No Positional Encoding，不加位置编码）</strong>？</p>
 </blockquote>
 <hr />
 <h2 id="111">11.1 为什么需要位置编码</h2>
@@ -271,34 +271,65 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="112">11.2 三代方案</h2>
-<div class="codehilite"><pre><span></span><code>┌── ① 绝对位置编码（原始 Transformer, 2017）──────────────┐
-│                                                          │
-│   x_i ← x_i + PE(i)      在 embedding 上【加】一个位置向量  │
-│                                                          │
-│   PE 可以是学出来的，也可以是正弦函数                       │
-│                                                          │
-│   ❌ 学出来的：训练时见过多长，就只能用多长（硬上限）        │
-│   ❌ 加在 embedding 上，位置信息会随着层数【被冲淡】         │
-│   ❌ 模型学的是&quot;第 5 个位置&quot;，而不是&quot;隔了 3 个词&quot;           │
-│      → 泛化差：训练时&quot;隔 3 个词&quot;的模式在位置 5 和位置 500    │
-│        要分别学两遍                                        │
-└──────────────────────────────────────────────────────────┘
-
-┌── ② 相对位置编码（T5 等）────────────────────────────────┐
-│                                                          │
-│   直接在注意力分数上加一个偏置 b(i−j)                       │
-│   ✅ 只依赖【相对距离】，泛化好                             │
-│   ❌ 要显式构造一个 [L, L] 的偏置矩阵 → 和 FlashAttention   │
-│      冲突，长序列开销大                                    │
-└──────────────────────────────────────────────────────────┘
-
-┌── ③ RoPE（2021）★ 现在的绝对主流 ────────────────────────┐
-│                                                          │
-│   不加任何东西，而是把 q 和 k 【旋转】一个角度              │
-│   ✅ 形式上是绝对的（每个位置独立旋转），                    │
-│      效果上是相对的（内积只依赖 i−j）                       │
-│   ✅ 不需要 [L,L] 矩阵，和 FlashAttention 完全兼容          │
-└──────────────────────────────────────────────────────────┘
+<table>
+<thead>
+<tr>
+<th></th>
+<th>① <strong>绝对位置编码</strong>（原始 Transformer, 2017）</th>
+<th>② <strong>相对位置编码</strong>（T5 等）</th>
+<th>③ <strong>RoPE</strong>（2021）★ 现在的绝对主流</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>在哪一步动手</strong></td>
+<td>在 embedding 上</td>
+<td>在注意力分数上</td>
+<td>在 $q$、$k$ 上</td>
+</tr>
+<tr>
+<td><strong>怎么做</strong></td>
+<td>$x_i \leftarrow x_i + \text{PE}(i)$，<strong>加</strong>一个位置向量（学出来的或正弦函数）</td>
+<td>注意力分数上<strong>加</strong>一个偏置 $b(i-j)$</td>
+<td>不加任何东西，把 $q$、$k$ <strong>旋转</strong>一个角度</td>
+</tr>
+<tr>
+<td><strong>模型学到的是</strong></td>
+<td>❌ "第 5 个位置"</td>
+<td>✅ "隔了 3 个词"</td>
+<td>✅ "隔了 3 个词"（效果上）</td>
+</tr>
+<tr>
+<td><strong>长度上限</strong></td>
+<td>❌ 学出来的 PE 训练多长就只能用多长，<strong>硬上限</strong></td>
+<td>✅ 无硬上限</td>
+<td>✅ 无硬上限（但要处理外推，见 §11.5）</td>
+</tr>
+<tr>
+<td><strong>能否活到深层</strong></td>
+<td>❌ 只在第 0 层注入，位置信息随层数<strong>被冲淡</strong></td>
+<td>✅ <strong>每层都重新注入</strong></td>
+<td>✅ <strong>每层都重新注入</strong></td>
+</tr>
+<tr>
+<td><strong>和 FlashAttention</strong></td>
+<td>✅ 兼容（根本没碰注意力）</td>
+<td>❌ 要显式构造 $[L,L]$ 的偏置矩阵，<strong>冲突</strong>，长序列开销大</td>
+<td>✅ <strong>完全兼容</strong>（只改 $q$、$k$，不碰分数矩阵）</td>
+</tr>
+<tr>
+<td><strong>泛化</strong></td>
+<td>❌ 差：训练时"隔 3 个词"这个模式，在位置 5 和位置 500 <strong>要分别学两遍</strong></td>
+<td>✅ 好</td>
+<td>✅ 好</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 一句话串起这三代：
+      ① 位置信息给对了地方（embedding），但给的是【绝对】的 → 泛化差
+      ② 改成【相对】的，泛化好了，但它要一张 [L,L] 的表 → 和 FlashAttention 打架
+      ③ RoPE 做到了【形式绝对、效果相对】：
+         逐位置独立地转一下（好并行、不用建表），内积却只看相对距离
 
     五家全部用 RoPE 系（K3 除外，见 §11.7）
 </code></pre></div>
@@ -341,12 +372,45 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>一个头有 $d_h$（比如 128）维，<strong>两两配对成 $d_h/2$ 组，每组用不同的旋转频率</strong>：</p>
 <p>$$\theta_i = \text{base}^{-2i/d_h},\qquad i = 0, 1, \ldots, d_h/2 - 1$$</p>
 <p><strong>base 通常是 10000（原始设定）。</strong></p>
-<div class="codehilite"><pre><span></span><code>    i = 0：   θ_0 = 10000^0    = 1           ← 转得最快，周期 ≈ 6.3 个 token
-    i = 1：   θ_1 = 10000^{-2/128} ≈ 0.87
-    ⋮
-    i = 63：  θ_63 = 10000^{-126/128} ≈ 0.00011   ← 转得最慢，周期 ≈ 57000 个 token
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>$i$</th>
+<th>$\theta_i = 10000^{-2i/128}$</th>
+<th>周期 $2\pi/\theta_i$（多少个 token 转一圈）</th>
+<th>它在分辨什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0</strong></td>
+<td>$10000^{0}=1$</td>
+<td><strong>6.3</strong></td>
+<td>★ 转得最快，分辨<strong>相邻</strong>的词</td>
+</tr>
+<tr>
+<td>1</td>
+<td>$10000^{-2/128}\approx 0.87$</td>
+<td>7.2</td>
+<td></td>
+</tr>
+<tr>
+<td>32</td>
+<td>$10000^{-64/128}=0.01$</td>
+<td>628</td>
+<td>分辨段落级的距离</td>
+</tr>
+<tr>
+<td><strong>63</strong></td>
+<td>$10000^{-126/128}\approx\mathbf{1.155\times10^{-4}}$</td>
+<td>⚠️ <strong>54,410</strong></td>
+<td>★ 转得最慢，在 4K 上下文里<strong>连 1/13 圈都没转完</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>最后一格的周期是 54,410 个 token，不是 5.7 万这个量级的随口数</strong>：$2\pi / 1.1548\times10^{-4} = 54{,}410$。<strong>这个数后面会反复用到</strong>——§11.5 的 NTK-aware 和 YaRN，本质上都是在问"哪些维度<strong>转过了一圈</strong>、哪些没有"。</p>
+</blockquote>
 <div class="codehilite"><pre><span></span><code>    维度对 0-1    ●→●→●→●→●→●→●    高频：区分【相邻】的词
     维度对 2-3    ●─→●─→●─→●
     维度对 4-5    ●──→●──→●
@@ -368,16 +432,246 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                      <span class="n">x0</span><span class="o">*</span><span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">ang</span><span class="p">)</span> <span class="o">+</span> <span class="n">x1</span><span class="o">*</span><span class="n">np</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">ang</span><span class="p">)],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">x</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
 </code></pre></div>
 
+<h3 id="d_h-4">★★ 最小例子：$d_h = 4$，两个频率，全部手算出来</h3>
+<p><strong>上面的公式都成立，但不动手算一遍，"内积只依赖相对位置"这句话是没有重量的。这一节把 $d_h$ 缩到 4，所有数字都列出来，可以拿计算器逐个核对。</strong></p>
+<p><strong>设定</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    d_h = 4  →  两两配对，只有【2 组】：(0,1) 和 (2,3)
+    base = 10000
+
+    θ_0 = 10000^(-2·0/4) = 10000^0    = 1.00      周期 2π/1.00 =   6.28 个 token
+    θ_1 = 10000^(-2·1/4) = 10000^-0.5 = 0.01      周期 2π/0.01 = 628.3 个 token
+                                    ↑ 一个&quot;快针&quot;，一个&quot;慢针&quot;
+
+    取一个最好算的向量：  q = k = (1, 0, 1, 0)
+    （也就是两组里都是&quot;指向东边的单位向量&quot;，角度 0）
+</code></pre></div>
+
+<p><strong>第一步：把 $q$ 转到位置 $m = 2$。</strong> 第 0 组转 $m\theta_0 = 2$ 弧度，第 1 组转 $m\theta_1 = 0.02$ 弧度：</p>
+<table>
+<thead>
+<tr>
+<th>组</th>
+<th>旋转角</th>
+<th>公式</th>
+<th>转之前</th>
+<th><strong>转之后</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>组 0 = 维度 (0,1)</td>
+<td>$2\times1.00=\mathbf{2.00}$ rad</td>
+<td>$(\cos\alpha,\ \sin\alpha)$</td>
+<td>$(1,\ 0)$</td>
+<td>$(\cos 2,\ \sin 2)=(\mathbf{-0.41615},\ \mathbf{0.90930})$</td>
+</tr>
+<tr>
+<td>组 1 = 维度 (2,3)</td>
+<td>$2\times0.01=\mathbf{0.02}$ rad</td>
+<td>同上</td>
+<td>$(1,\ 0)$</td>
+<td>$(\cos 0.02,\ \sin 0.02)=(\mathbf{0.99980},\ \mathbf{0.02000})$</td>
+</tr>
+</tbody>
+</table>
+<p>$$\Rightarrow\quad R_2\,q = (-0.41615,\ \ 0.90930,\ \ 0.99980,\ \ 0.02000)$$</p>
+<p><strong>第二步：把 $k$ 转到位置 $n = 5$。</strong> 角度分别是 $5\times1.00=5$ 和 $5\times0.01=0.05$：</p>
+<table>
+<thead>
+<tr>
+<th>组</th>
+<th>旋转角</th>
+<th>转之后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>组 0</td>
+<td>$\mathbf{5.00}$ rad</td>
+<td>$(\cos 5,\ \sin 5)=(\mathbf{0.28366},\ \mathbf{-0.95892})$</td>
+</tr>
+<tr>
+<td>组 1</td>
+<td>$\mathbf{0.05}$ rad</td>
+<td>$(\cos 0.05,\ \sin 0.05)=(\mathbf{0.99875},\ \mathbf{0.04998})$</td>
+</tr>
+</tbody>
+</table>
+<p>$$\Rightarrow\quad R_5\,k = (0.28366,\ \ -0.95892,\ \ 0.99875,\ \ 0.04998)$$</p>
+<p><strong>第三步：做内积，逐项列出来。</strong></p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>$R_2 q$ 的分量</th>
+<th>$R_5 k$ 的分量</th>
+<th>乘积</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>−0.41615</td>
+<td>0.28366</td>
+<td>−0.118047</td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.90930</td>
+<td>−0.95892</td>
+<td>−0.871945</td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.99980</td>
+<td>0.99875</td>
+<td>+0.998551</td>
+</tr>
+<tr>
+<td>3</td>
+<td>0.02000</td>
+<td>0.04998</td>
+<td>+0.001000</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>合计</strong></td>
+<td><strong>0.009558</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>第四步：★ 见证时刻——换两个位置，只要距离不变，结果一模一样。</strong></p>
+<table>
+<thead>
+<tr>
+<th>$m$（query 的位置）</th>
+<th>$n$（key 的位置）</th>
+<th>$n-m$</th>
+<th>$R_m q$</th>
+<th>$R_n k$</th>
+<th><strong>内积</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2</strong></td>
+<td><strong>5</strong></td>
+<td>3</td>
+<td>(−0.41615, 0.90930, 0.99980, 0.02000)</td>
+<td>(0.28366, −0.95892, 0.99875, 0.04998)</td>
+<td><strong>0.009558</strong></td>
+</tr>
+<tr>
+<td><strong>100</strong></td>
+<td><strong>103</strong></td>
+<td>3</td>
+<td>(0.86232, −0.50637, 0.54030, 0.84147)</td>
+<td>(−0.78223, 0.62299, 0.51482, 0.85730)</td>
+<td><strong>0.009558</strong></td>
+</tr>
+<tr>
+<td><strong>0</strong></td>
+<td><strong>3</strong></td>
+<td>3</td>
+<td>(1, 0, 1, 0)</td>
+<td>(−0.98999, 0.14112, 0.99955, 0.02999)</td>
+<td><strong>0.009558</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 三行的每一个分量都完全不同，内积却分毫不差 ★★
+</code></pre></div>
+
+<p><strong>第五步：为什么必然相等——不用矩阵，只用一条高中三角公式。</strong></p>
+<div class="codehilite"><pre><span></span><code>    每一【组】都是一个二维平面里的旋转。两个单位向量的内积 = cos(夹角)：
+
+      组 0 的贡献 = cos(nθ_0) · cos(mθ_0) + sin(nθ_0) · sin(mθ_0)
+                  = cos( nθ_0 − mθ_0 )          ← 和差化积，★ 就是这一步
+                  = cos( (n−m)·θ_0 )
+
+      组 1 的贡献 = cos( (n−m)·θ_1 )            ← 同理
+
+    ⟹ 总内积 = cos((n−m)·θ_0) + cos((n−m)·θ_1)
+             = cos(3 × 1.00) + cos(3 × 0.01)
+             = cos(3) + cos(0.03)
+             = −0.989992 + 0.999550
+             = 0.009558   ✓✓ 和第三步逐项加出来的完全一致
+
+    ★ m 和 n 只以【差】的形式出现，绝对值被 cos 的和差公式【消掉了】
+      —— 这就是 §11.3 那个 ⟨R_m q, R_n k⟩ = ⟨q, R_{n−m} k⟩ 的全部内容
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个必须说清楚的前提：消掉的条件是"$q$ 和 $k$ 用【同一套】$\theta$、每一组只转【自己那两维】"。</strong> 只要这两条中任何一条被破坏，相对性就不成立了——<strong>§11.9 里 DeepSeek-V4 那个"给输出补一次位置为 $-t$ 的 RoPE"，本质上就是在修复第二条被破坏之后的后果。</strong></p>
+<p>📌 <strong>顺手记两个对照数字</strong>：不加 RoPE 时这个内积是 $q\cdot k = 1+1 = \mathbf{2}$；距离 3 时是 <strong>0.0096</strong>；距离 0 时是 $\cos 0+\cos 0=\mathbf{2}$。<strong>也就是说 RoPE 把"完全相同的两个向量"的分数，从与距离无关变成了随距离震荡衰减。</strong></p>
+</blockquote>
 <hr />
 <h2 id="115-4k-1m">11.5 长度外推：4K 训练怎么用到 1M</h2>
 <h3 id="_4">问题</h3>
-<div class="codehilite"><pre><span></span><code>    模型在 4K 上训练 → 只见过 m−n ∈ [0, 4096] 的旋转角度
+<div class="codehilite"><pre><span></span><code>    模型在 4K 上训练 → 只见过 n−m ∈ [0, 4096] 的旋转角度
     直接用到 128K   → 出现了从未见过的角度
         ↓
     ★ 注意力分数完全失控，模型输出崩坏
 </code></pre></div>
 
 <p><strong>这是一个被反复验证的现象</strong>：不做任何处理，超出训练长度后困惑度会指数爆炸。</p>
+<p><strong>⚠️ 但"没见过的角度"这句话要说准，不然后面两个方法都讲不通。</strong> 用 §11.4 那张周期表逐维度看一遍（$d_h=128$、base = 10000、训练长度 4096）：</p>
+<table>
+<thead>
+<tr>
+<th>维度对 $i$</th>
+<th>$\theta_i$</th>
+<th>训练时最多转过几圈（$4096\,\theta_i/2\pi$）</th>
+<th>外推到 128K 时的处境</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0</strong></td>
+<td>1.0</td>
+<td><strong>651.9 圈</strong></td>
+<td>✅ 整个圆周被走烂了，再转多少圈都是<strong>老地方</strong></td>
+</tr>
+<tr>
+<td>16</td>
+<td>0.1</td>
+<td>65.2 圈</td>
+<td>✅ 同上</td>
+</tr>
+<tr>
+<td>32</td>
+<td>0.01</td>
+<td>6.5 圈</td>
+<td>✅ 还行</td>
+</tr>
+<tr>
+<td>48</td>
+<td>0.001</td>
+<td><strong>0.65 圈</strong></td>
+<td>⚠️ <strong>连一圈都没转完</strong></td>
+</tr>
+<tr>
+<td><strong>63</strong></td>
+<td>$1.155\times10^{-4}$</td>
+<td><strong>0.075 圈</strong></td>
+<td>❌ 只走过圆周的 <strong>7.5%</strong>，外推就是走进<strong>全新的角度</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 关键结论：崩的不是&quot;所有维度&quot;，只有【低频那几十个维度】没见过世面 ★★
+
+      高频维度：周期只有几个 token，训练时早就转了几百圈
+                → 位置 128000 落在的角度，和某个 4K 内的位置【完全一样】
+                → 它根本不知道自己在外推
+
+      低频维度：周期是几万个 token，训练时连半圈都没走完
+                → 位置 128000 对应的角度是【真正没见过的】
+
+    ⟹ 这直接决定了后面三种方法的高下：
+       谁能【只动低频、不动高频】，谁就赢
+</code></pre></div>
+
 <h3 id="pi-position-interpolation">方法一：位置插值（PI, Position Interpolation）</h3>
 <p><strong>思路：把位置"压缩"回训练范围内。</strong></p>
 <p>$$m \leftarrow m\cdot\frac{L_{\text{train}}}{L_{\text{target}}}$$</p>
@@ -392,6 +686,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <h3 id="ntk-aware">方法二：NTK-aware 缩放</h3>
+<blockquote>
+<p>📖 <strong>NTK = Neural Tangent Kernel（神经正切核）</strong>，是一套分析神经网络训练动力学的理论。<strong>这个名字对理解方法本身几乎没有帮助</strong>——它来自原作者的一个理论类比（高频信息难学、容易被网络当噪声丢掉）。<strong>把它当成一个专有名词记住就行，下面的推导不需要任何 NTK 理论。</strong></p>
+</blockquote>
 <p><strong>核心洞察：不该对所有频率一视同仁地压缩。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ★ 高频维度（区分相邻词）：训练时【见过完整的周期】，不需要压缩
     ★ 低频维度（区分远距离）：训练时【连一圈都没转完】，是它们在外推
@@ -401,63 +698,199 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p><strong>实现上非常简单：不改位置，改 base。</strong></p>
 <p>$$\text{base} \leftarrow \text{base}\times s^{\frac{d_h}{d_h-2}},\qquad s = \frac{L_{\text{target}}}{L_{\text{train}}}$$</p>
-<div class="codehilite"><pre><span></span><code>    因为 θ_i = base^{−2i/d_h}：
+<p><strong>★ 这个指数 $\frac{d_h}{d_h-2}$ 看着莫名其妙，但只要把它代回 $\theta_i$，它在干什么就完全暴露了</strong>：</p>
+<p>$$\theta_i^{\text{new}} = \left(\text{base}\cdot s^{\frac{d_h}{d_h-2}}\right)^{-2i/d_h} = \text{base}^{-2i/d_h}\cdot s^{-\frac{2i}{d_h-2}} = \theta_i\cdot \underbrace{s^{-\frac{2i}{d_h-2}}}_{\text{每个维度各自的压缩率}}$$</p>
+<div class="codehilite"><pre><span></span><code>    把两端代进去（d_h = 128，所以指数是 −2i/126）：
 
-    base 变大 →  i=0（高频）：θ_0 = base^0 = 1，【完全不变】 ★
-                 i 大（低频）：θ_i 显著变小 → 转得更慢 → 能覆盖更长范围
+      i = 0    （最高频）： s^0      = 1       ★ 【完全不动】
+      i = 63   （最低频）： s^(−126/126) = 1/s  ★ 【恰好等于 PI 的压缩量】
 
-    ★★ 一个超参就实现了&quot;高频不动、低频拉伸&quot;的分段效果 ★★
+    ⟹ ★★ NTK-aware 不是&quot;某种&quot;折中，它是一个【端点被钉死的插值】：
+         最高频那一维一点不改，最低频那一维和 PI 一模一样，
+         中间的维度按指数平滑过渡
+       —— 那个丑陋的 d_h/(d_h−2) 指数，唯一的作用就是把 i=63 这一端
+          精确地钉在 1/s 上
 </code></pre></div>
 
+<p><strong>逐维度看压缩率</strong>（$d_h=128$，$s=32$，base: 10000 → <strong>338,097</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>维度对 $i$</th>
+<th>$\theta_i$ 被乘上的系数</th>
+<th>相当于压缩几倍</th>
+<th>对照：PI 的做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0</strong></td>
+<td>$32^{0}=1.000$</td>
+<td>★ <strong>1×（不动）</strong></td>
+<td>32×</td>
+</tr>
+<tr>
+<td>16</td>
+<td>$32^{-32/126}=0.415$</td>
+<td>2.4×</td>
+<td>32×</td>
+</tr>
+<tr>
+<td>32</td>
+<td>$32^{-64/126}=0.172$</td>
+<td>5.8×</td>
+<td>32×</td>
+</tr>
+<tr>
+<td>48</td>
+<td>$32^{-96/126}=0.0713$</td>
+<td>14.0×</td>
+<td>32×</td>
+</tr>
+<tr>
+<td><strong>63</strong></td>
+<td>$32^{-126/126}=0.03125$</td>
+<td>★ <strong>32×</strong></td>
+<td>32×</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>NTK-aware 的优雅之处：它不需要改任何代码，只需要改一个数字。</strong></p>
+<p>🔑 <strong>NTK-aware 的优雅之处：它不需要改任何代码，只需要改一个数字。</strong> 在配置文件里就是 <code>rope_theta: 10000 → 338097</code>。</p>
 </blockquote>
 <h3 id="yarn">方法三：YaRN</h3>
-<p><strong>NTK-aware 的精细化版本，把维度显式分成三段</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ① 高频段（训练时转过 &gt; 1 圈）  → 完全不动
-    ② 低频段（训练时不到 1 圈）    → 按 PI 方式插值
-    ③ 中间段                      → 平滑过渡（斜坡插值）
+<blockquote>
+<p>📖 <strong>YaRN = Yet another RoPE extensioN method</strong>（又一个 RoPE 扩展方法）。<strong>名字是作者的自嘲，不用深究。</strong></p>
+</blockquote>
+<p><strong>NTK-aware 已经"高频轻压、低频重压"了，但它的分配方式是【纯指数的】——凭什么？YaRN 的回答是：不该凭指数，该凭"这一维在训练时到底转过几圈"。</strong></p>
+<p><strong>★ 用 §11.5 开头那张表的口径，把每一维分类</strong>（$d_h=128$、$L_{\text{train}}=4096$，YaRN 论文的默认门槛 $\alpha=1$、$\beta=32$）：</p>
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>判据（训练时转过的圈数 $r_i = L_{\text{train}}\theta_i/2\pi$）</th>
+<th>落在哪些维度</th>
+<th>怎么处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>高频段</strong></td>
+<td>$r_i &gt; \beta = 32$ 圈</td>
+<td>$i \lesssim 21$</td>
+<td>✅ <strong>完全不动</strong>（它根本没在外推）</td>
+</tr>
+<tr>
+<td>③ <strong>中间段</strong></td>
+<td>$1 \le r_i \le 32$</td>
+<td>$21 \lesssim i \lesssim 45$</td>
+<td><strong>斜坡插值</strong>：按 $r_i$ 在 1 和 32 之间的位置线性混合 ①②两种处理</td>
+</tr>
+<tr>
+<td>② <strong>低频段</strong></td>
+<td>$r_i &lt; \alpha = 1$ 圈</td>
+<td>$i \gtrsim 45$</td>
+<td>❌ <strong>按 PI 全量插值</strong>（$\theta_i \to \theta_i/s$）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 注意 ①③② 的顺序：维度编号 i 越大频率越低，
+       所以&quot;不动&quot;的是【小 i】那一头，&quot;全压&quot;的是【大 i】那一头
 
-    + 另加一个【注意力温度】修正：
-      logits 乘一个略大于 1 的常数，补偿长序列下 softmax 被摊薄的效应
+    ★ 和 NTK-aware 的区别就一句话：
+      NTK：压缩率按 i 【指数】分配        ← 只看维度编号
+      YaRN：压缩率按 r_i 【分段斜坡】分配  ← 看这一维在训练里【实际转了几圈】
+            ⟹ 换一个训练长度，分界点就跟着挪，这是 NTK 做不到的
 </code></pre></div>
 
-<p><strong>YaRN 通常效果最好，但超参最多。</strong></p>
-<h3 id="_5">三者对比</h3>
+<p><strong>★ 外加第二件 NTK 完全没做的事：注意力温度。</strong></p>
+<div class="codehilite"><pre><span></span><code>    问题：序列从 4K 拉到 128K，softmax 要在【32 倍多】的 key 上分概率
+          → 每个 key 分到的注意力被【摊薄】→ 分布变平 → 模型&quot;注意不集中&quot;
+
+    ✅ YaRN 论文的解法：给注意力 logits 乘一个 1/t，经验式是
+           √(1/t) = 0.1 · ln(s) + 1
+
+       s = 32  →  √(1/t) = 0.1 × 3.466 + 1 = 1.35
+               →  logits 被放大  1.35² ≈ 1.81 倍
+       ★ 放大 logits = 降低 softmax 温度 = 让分布重新变【尖】
+
+    ⚠️ 实现上通常不是真去改 softmax，而是把 cos/sin 查找表整体乘 1.35
+       —— q 和 k 各被放大 1.35 倍，内积自然就是 1.81 倍，等价且零开销
+</code></pre></div>
+
+<p><strong>YaRN 通常效果最好，但超参最多</strong>（$\alpha$、$\beta$、温度式子的那个 0.1）。</p>
+<h3 id="_5">★ 三者对比：各自改了公式里的哪一项</h3>
+<p><strong>把 RoPE 的分数写成一个式子，三种方法各自只动了其中一处，一目了然</strong>：</p>
+<p>$$\text{score} \;=\; \underbrace{\lambda}<em i="0">{\text{④ 温度}}\cdot\sum</em>}^{d_h/2-1}\Big(\cdots\Big)\cos\Big(\underbrace{(n-m)<em _text_="\text{③" 逐维系数="逐维系数">{\text{① 位置}}\cdot\underbrace{\gamma_i}</em>\Big)$$}}\cdot\underbrace{\text{base}^{-2i/d_h}}_{\text{② base}</p>
 <table>
 <thead>
 <tr>
 <th></th>
-<th>改什么</th>
-<th>高频</th>
-<th>低频</th>
+<th>① 位置 $(n-m)$</th>
+<th>② base</th>
+<th>③ 逐维系数 $\gamma_i$</th>
+<th>④ 温度 $\lambda$</th>
+<th>高频维度</th>
+<th>低频维度</th>
 <th>需要微调</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>PI</strong></td>
-<td>位置 $m$</td>
-<td>被压缩 ❌</td>
-<td>被压缩 ✅</td>
-<td>需要</td>
+<td><strong>直接外推</strong></td>
+<td>不动</td>
+<td>不动</td>
+<td>1</td>
+<td>1</td>
+<td>✅ 无所谓</td>
+<td>❌ <strong>崩</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>PI</strong>（位置插值）</td>
+<td>⭐ <strong>除以 $s$</strong></td>
+<td>不动</td>
+<td>1</td>
+<td>1</td>
+<td>❌ <strong>一起被压 $s$ 倍</strong>，分辨不出相邻词</td>
+<td>✅ 压回见过的范围</td>
+<td><strong>需要</strong>（必须微调才恢复局部精度）</td>
 </tr>
 <tr>
 <td><strong>NTK-aware</strong></td>
-<td>base</td>
-<td>不变 ✅</td>
-<td>被拉伸 ✅</td>
+<td>不动</td>
+<td>⭐ <strong>乘 $s^{\frac{d_h}{d_h-2}}$</strong></td>
+<td>1</td>
+<td>1</td>
+<td>✅ <strong>完全不动</strong></td>
+<td>✅ 被压 $s$ 倍</td>
 <td>少量或不需要</td>
 </tr>
 <tr>
 <td><strong>YaRN</strong></td>
-<td>分段处理 base + 温度</td>
-<td>不变 ✅</td>
-<td>插值 ✅</td>
+<td>不动</td>
+<td>不动</td>
+<td>⭐ <strong>按 $r_i$ 分三段：$1$ / 斜坡 / $1/s$</strong></td>
+<td>⭐ $(0.1\ln s+1)^2$</td>
+<td>✅ 完全不动</td>
+<td>✅ 被压 $s$ 倍</td>
 <td>少量</td>
 </tr>
 </tbody>
 </table>
+<div class="codehilite"><pre><span></span><code>    ★ 读这张表的正确方式：②③ 其实是【同一件事的两种写法】
+
+      NTK 改 base，等价于给每一维乘上 γ_i = s^(−2i/(d_h−2))  ← 指数曲线
+      YaRN 干脆直接给出 γ_i                                   ← 分段折线
+
+    ⟹ YaRN ⊃ NTK ⊃ PI：
+       PI 是&quot;所有 γ_i 都等于 1/s&quot;这个最粗暴的特例，
+       NTK 把它改成一条指数曲线，
+       YaRN 把曲线换成&quot;按实际圈数决定&quot;的折线，再补一个温度。
+
+    ⚠️ 别把 ① 和 ② 同时改 —— 那是双重压缩，等于把 s 算了两遍。
+</code></pre></div>
+
 <hr />
 <h2 id="116-openpangu-base">11.6 ✅ openPangu 的 base 阶梯：实际工程是怎么做的</h2>
 <p><strong>真实的做法不是"训完再外推"，而是【边训边逐步拉长，每一档配一个 base】。</strong></p>
@@ -504,6 +937,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ★ 后三档是【严格的 base ∝ 长度】的线性关系
 </code></pre></div>
 
+<p><strong>★ "base ∝ 长度"正好就是 §11.5 那个 NTK-aware 公式</strong>：$s^{\frac{d_h}{d_h-2}}$ 在 $d_h=128$ 时是 $s^{1.016}$，和 $s^1$ 只差 1.6%。<strong>所以这不是另一套办法，就是 NTK-aware，只不过把指数上那点零头省掉了。</strong></p>
 <blockquote>
 <p>🔑 <strong>这就是 NTK-aware 思想的工程落地</strong>：<br />
 <code>不做一次性的大跨度外推（那样必崩），
@@ -653,19 +1087,39 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ② RoPE = 把 q、k 按位置【旋转】一个角度，不改长度只改方向
    ★ 核心性质：⟨R_m q, R_n k⟩ = ⟨q, R_{n−m}k⟩ —— 内积只依赖相对距离
      证明只需要旋转矩阵的群性质 R_mᵀ = R_{−m}、R_a R_b = R_{a+b}
+   ✅ d=4 的手算例子（§11.4）：q=k=(1,0,1,0)，θ=(1, 0.01)
+      (m,n) = (2,5) / (100,103) / (0,3) 三组向量分量【全不一样】，
+      内积却都是 0.009558 = cos(3×1) + cos(3×0.01)
+      本质只是和差化积：cos(nθ)cos(mθ)+sin(nθ)sin(mθ) = cos((n−m)θ)
+      ★ m、n 只以【差】的形式出现，绝对值被消掉了
    → 形式绝对（好实现、兼容 FlashAttention），效果相对（泛化好）
 ③ 高维用多个频率 θ_i = base^{−2i/d_h}：高频分辨相邻，低频分辨远距离（像时钟）
-④ 长度外推三法：
-   PI        改位置，一刀切压缩 → 高频精度受损
-   NTK-aware 只改 base → 高频不动、低频拉伸 ★ 一个数字就搞定
-   YaRN      分三段 + 注意力温度，效果最好但超参最多
-⑤ openPangu 的 base 五级阶梯就是 NTK-aware 的工程落地：
+   ⚠️ d_h=128 时最低频 θ_63 ≈ 1.155e−4，周期【54,410】个 token
+④ ★ 外推为什么会崩，要说准：崩的只有【低频那几十维】
+   4K 训练时，i=0 转了 651.9 圈（早就转烂了），i=63 只转了 0.075 圈
+   ⟹ 高频维度根本不知道自己在外推，低频维度才是真的没见过
+⑤ 长度外推三法 —— 各自改了公式里的哪一项：
+   PI        ① 改位置 m ← m/s，所有维度一刀切 → 高频精度受损，必须微调
+   NTK-aware ② 只改 base ← base·s^(d_h/(d_h−2))
+             ★ 代回去看：等价于 θ_i ← θ_i·s^(−2i/(d_h−2))，
+               i=0 系数恰为 1（不动）、i=d_h/2−1 系数恰为 1/s（等于 PI）
+               那个丑指数的唯一作用就是把两端钉死 → 一个数字就搞定
+   YaRN      ③ 直接给出逐维系数 γ_i，按&quot;训练时转过几圈 r_i&quot;分三段
+               （r_i&gt;32 不动 / r_i&lt;1 全压 / 中间斜坡；d_h=128、4K 时
+                分界点在 i≈21 和 i≈45）
+             ④ 外加注意力温度：logits × (0.1·ln s + 1)²，s=32 时 ≈1.81
+   ⟹ YaRN ⊃ NTK ⊃ PI，②③ 是同一件事的两种写法（指数曲线 vs 分段折线）
+⑥ openPangu 的 base 五级阶梯就是 NTK-aware 的工程落地：
    分 5 段渐进拉长，每段外推倍数只有 2~4×，每段都继续训练适应
-⑥ ★ K3 的 NoPE 不是冒险：
+   ✅ 后三档 base ∝ 长度，正是 s^(d_h/(d_h−2)) = s^1.016 ≈ s
+⑦ ★ K3 的 NoPE 不是冒险：
    因果掩码本身携带位置 + KDA 是 RNN 自带顺序
    → 白赚：没有外推问题 + 和 MLA 矩阵吸收完全兼容
-⑦ Partial RoPE（其余四家）：只给一部分维度加，剩下的走矩阵吸收通路
+⑧ Partial RoPE（其余四家）：只给一部分维度加，剩下的走矩阵吸收通路
    openPangu 的 512 + 64 就是这个结构
+⑨ ⚠️ V4 的 partial RoPE 和 MLA 无关（V4 不用 MLA，用 CSA + HCA）：
+   它的压缩 KV entry 同时当 key 和 value，value 那一路会把【绝对】位置
+   带进输出 → 解法是给输出补一次位置为 −t 的 RoPE 转回去（§11.9）
 </code></pre></div>
 
 <p><strong>第三部分到此结束。</strong> 到这里，一个完整的模型你已经全部看过了。<strong>接下来三章讲的是"怎么让它跑得快、训得动"</strong>——这是这一代技术报告里篇幅最大、也最工程的部分。</p>

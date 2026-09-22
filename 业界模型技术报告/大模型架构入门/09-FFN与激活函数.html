@@ -252,7 +252,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="09-ffn-23">09 · FFN 与激活函数：模型 2/3 的参数都在这里</h1>
 <blockquote>
 <p><strong>这一章的目标</strong>：讲清模型的另一半积木。<br />
-读完你应该能回答：FFN 到底在干什么？为什么是"先扩再缩"？SwiGLU 的门控是什么意思、为什么那个 2/3 因子？以及一条完整的因果链——<strong>为什么想做 4-bit 量化，就必须给激活函数加界</strong>？</p>
+读完你应该能回答：FFN 到底在干什么？为什么是"先扩再缩"？SwiGLU 为什么非要<strong>三个</strong>矩阵、那个 2/3 因子是怎么算出来的、为什么 LLaMA-3 的中间维是 3.5 倍而不是 4 倍？以及一条完整的因果链——<strong>为什么想做 4-bit 量化，就必须给激活函数加界</strong>？</p>
 </blockquote>
 <hr />
 <h2 id="91-ffn">9.1 FFN 是什么</h2>
@@ -260,16 +260,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong>FFN（Feed-Forward Network）对每个 token 独立地做同一件事，位置之间毫无交流。</strong></p>
 <p>$$\text{FFN}(x) = W_{\text{down}}\ \text{act}!\left(W_{\text{up}}\,x\right)$$</p>
 <div class="codehilite"><pre><span></span><code>    x  [5120]
-      │
-      │  W_up  [5120, 13824]     ★ 先【扩张】到 2.7 倍
-      ▼
+      |
+      |  W_up  [5120, 13824]       ★ 先【扩张】
+      v
     h  [13824]
-      │
-      │  act(·)：非线性激活          ← 这一步是整个模型唯一的非线性来源之一
-      ▼
-      │  W_down  [13824, 5120]   ★ 再【压缩】回来
-      ▼
+      |
+      |  act(.) 非线性激活          ← 整个模型的非线性来源之一
+      v
+    h&#39; [13824]
+      |
+      |  W_down  [13824, 5120]     ★ 再【压缩】回来
+      v
     y  [5120]
+
+    ★ 扩张倍数 d_ff/d 在 2.7 ~ 3.5 之间，为什么是这个范围见 §9.3
 </code></pre></div>
 
 <h3 id="_1">为什么要"先扩再缩"</h3>
@@ -294,44 +298,229 @@ W_down 的每一【列】  = 一个往残差流【写入】的方向（"结论"�
 ```<br />
 <strong>这是一个非常有解释力的图景</strong>：FFN 常被理解为<strong>键值记忆</strong>（key-value memory）——$W_{up}$ 是键，$W_{down}$ 是值，激活函数决定匹配度。可解释性研究确实找到了很多这样的"事实神经元"。</p>
 </blockquote>
-<hr />
-<h2 id="92">9.2 激活函数的演化</h2>
-<div class="codehilite"><pre><span></span><code>┌── ReLU (2010) ────────────────────────────────────┐
-│   f(x) = max(0, x)                                 │
-│                    ╱                               │
-│   ────────────────●                                │
-│                                                    │
-│   ✅ 极简、极快   ❌ x&lt;0 时梯度恒为 0（神经元&quot;死亡&quot;） │
-│                   ❌ 在 0 处不可导                   │
-└────────────────────────────────────────────────────┘
-
-┌── GELU (2016) ────────────────────────────────────┐
-│   f(x) = x · Φ(x)      Φ 是标准正态的累积分布函数    │
-│                    ╱                               │
-│   ──────────╲___╱                                  │
-│              ↑ 负半轴有个小凹陷，不是硬截断           │
-│   ✅ 平滑可导  ✅ GPT/BERT 时代的标准                 │
-└────────────────────────────────────────────────────┘
-
-┌── SiLU / Swish (2017) ────────────────────────────┐
-│   f(x) = x · σ(x) = x / (1 + e^{−x})               │
-│   ✅ 和 GELU 形状几乎一样，但【算得更快】             │
-│      （只需要一个 sigmoid，不需要 erf）              │
-│   ★ 现在的事实标准                                  │
-└────────────────────────────────────────────────────┘
+<h3 id="23">✅ 先把标题那个"2/3"算出来</h3>
+<p><strong>本章标题说"模型 2/3 的参数都在这里"，这不是形容词，是可以当场算的。</strong> 一个 Transformer 层只有两块权重：注意力和 FFN。<strong>拿掉 embedding，逐层数一遍：</strong></p>
+<div class="codehilite"><pre><span></span><code>    注意力（标准 MHA = Multi-Head Attention，多头注意力，不用 GQA）：
+                       W_q, W_k, W_v, W_o 各 d×d              → 4d²
+    FFN（GLU 系，三个矩阵）：   W_gate, W_up, W_down        → 3·d·d_ff
 </code></pre></div>
 
-<p><strong>SiLU 的形状</strong>：</p>
-<div class="codehilite"><pre><span></span><code>       f(x)
-        ▲
-      3 ┤                          ╱
-      2 ┤                       ╱
-      1 ┤                    ╱
-      0 ┼───────────────╱──────────────→ x
-     -1 ┤      ╲____╱
-        └────┬────┬────┬────┬────
-           -4   -2    0    2    4
-              ↑ 最小值 ≈ −0.278 @ x ≈ −1.278
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>$d$</th>
+<th>$d_{ff}$</th>
+<th>注意力参数/层</th>
+<th>FFN 参数/层</th>
+<th><strong>FFN 占比</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LLaMA-2-7B（MHA）</td>
+<td>4096</td>
+<td>11008</td>
+<td>67.1 M</td>
+<td>135.3 M</td>
+<td><strong>66.8%</strong></td>
+</tr>
+<tr>
+<td>LLaMA-2-13B（MHA）</td>
+<td>5120</td>
+<td>13824</td>
+<td>104.9 M</td>
+<td>212.3 M</td>
+<td><strong>66.9%</strong></td>
+</tr>
+<tr>
+<td>LLaMA-3-8B（GQA 32:8）</td>
+<td>4096</td>
+<td>14336</td>
+<td>41.9 M</td>
+<td>176.2 M</td>
+<td><strong>80.8%</strong></td>
+</tr>
+<tr>
+<td>LLaMA-3-70B（GQA 64:8）</td>
+<td>8192</td>
+<td>28672</td>
+<td>151.0 M</td>
+<td>704.6 M</td>
+<td><strong>82.4%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 两个读数：
+
+    ① 标准 MHA 的年代，FFN 稳定占 【2/3】—— 标题的由来
+    ② ★ 用了 GQA（Grouped-Query Attention，分组查询注意力 —— 让多个 Q 头
+         共用一份 K/V，见 07 章）之后，注意力那块更瘦了
+       → FFN 的占比反而【涨到 80% 以上】
+       ⟹ 所以 [10 章](10-MoE.md) 要去拆的是 FFN，不是注意力：
+          参数的大头一直在这里，而且越优化注意力，它的占比越高
+</code></pre></div>
+
+<hr />
+<h2 id="92">9.2 激活函数的演化</h2>
+<table>
+<thead>
+<tr>
+<th>年份</th>
+<th>名字</th>
+<th>公式</th>
+<th>✅ 优点</th>
+<th>❌ 缺点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2010</td>
+<td><strong>ReLU</strong>（Rectified Linear Unit，修正线性单元）</td>
+<td>$\max(0,x)$</td>
+<td>极简、极快</td>
+<td>$x&lt;0$ 时梯度<strong>恒为 0</strong> → 神经元"死亡"；在 0 处不可导</td>
+</tr>
+<tr>
+<td>2016</td>
+<td><strong>GELU</strong>（Gaussian Error Linear Unit，高斯误差线性单元）</td>
+<td>$x\cdot\Phi(x)$，$\Phi$ = 标准正态的<strong>累积分布函数</strong></td>
+<td>平滑可导；负半轴是软凹陷不是硬截断；GPT/BERT 时代的标准</td>
+<td>要算 <code>erf</code>（误差函数），<strong>慢</strong></td>
+</tr>
+<tr>
+<td>2017</td>
+<td><strong>SiLU</strong>（Sigmoid Linear Unit）/ <strong>Swish</strong></td>
+<td>$x\cdot\sigma(x)=\dfrac{x}{1+e^{-x}}$</td>
+<td>形状和 GELU 几乎重合，但<strong>只需一个 sigmoid</strong>，算得快；★ 现在的事实标准</td>
+<td>同样无界（这是 §9.4 的祸根）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">★ 同一组输入，走一遍看差别</h3>
+<p><strong>光看公式感觉不出区别。把同一列 $x$ 灌进三个函数，差别一眼就出来了</strong>（$\Phi$ 用精确值，不是 tanh 近似）：</p>
+<table>
+<thead>
+<tr>
+<th>$x$</th>
+<th>ReLU</th>
+<th>GELU</th>
+<th>SiLU</th>
+<th>GELU − SiLU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>−5</strong></td>
+<td>0</td>
+<td>−0.0000</td>
+<td><strong>−0.0335</strong></td>
+<td>+0.033</td>
+</tr>
+<tr>
+<td><strong>−3</strong></td>
+<td>0</td>
+<td>−0.0041</td>
+<td><strong>−0.1423</strong></td>
+<td>+0.138</td>
+</tr>
+<tr>
+<td><strong>−2</strong></td>
+<td>0</td>
+<td>−0.0455</td>
+<td><strong>−0.2384</strong></td>
+<td>+0.193</td>
+</tr>
+<tr>
+<td><strong>−1.278</strong></td>
+<td>0</td>
+<td>−0.1286</td>
+<td>★ <strong>−0.2785</strong>（SiLU 最小值）</td>
+<td>+0.150</td>
+</tr>
+<tr>
+<td><strong>−1</strong></td>
+<td>0</td>
+<td><strong>−0.1587</strong>（GELU 最小值附近）</td>
+<td>−0.2689</td>
+<td>+0.110</td>
+</tr>
+<tr>
+<td><strong>−0.5</strong></td>
+<td>0</td>
+<td>−0.1543</td>
+<td>−0.1888</td>
+<td>+0.035</td>
+</tr>
+<tr>
+<td><strong>0</strong></td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>+0.5</strong></td>
+<td><strong>0.5</strong></td>
+<td>0.3457</td>
+<td>0.3112</td>
+<td>+0.035</td>
+</tr>
+<tr>
+<td><strong>+1</strong></td>
+<td><strong>1</strong></td>
+<td>0.8413</td>
+<td>0.7311</td>
+<td>+0.110</td>
+</tr>
+<tr>
+<td><strong>+2</strong></td>
+<td><strong>2</strong></td>
+<td>1.9545</td>
+<td>1.7616</td>
+<td>+0.193</td>
+</tr>
+<tr>
+<td><strong>+3</strong></td>
+<td><strong>3</strong></td>
+<td>2.9960</td>
+<td>2.8577</td>
+<td>+0.138</td>
+</tr>
+<tr>
+<td><strong>+5</strong></td>
+<td><strong>5</strong></td>
+<td>5.0000</td>
+<td>4.9665</td>
+<td>+0.033</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 三个能直接读出来的结论：
+
+    ① 正半轴 x ≥ 3 时，三个函数已经【几乎相同】，都 ≈ x
+       ⟹ 差别全部发生在 |x| &lt; 3 这个窄窗口里
+       ⟹ ★★ 这也说明：三者在【大值区都是线性无界】的 —— 记住这一点，§9.4 要用
+
+    ② 负半轴：ReLU 一刀切到 0，GELU 和 SiLU 留了一个【小凹陷】
+       中等负值（x ≈ −1 到 −2）拿到一个小负输出，很负的值才趋近 0
+       ⟹ 这是&quot;软抑制&quot;：ReLU 说&quot;不要&quot;，GELU/SiLU 说&quot;少要一点，而且还能回头&quot;
+          （梯度不为 0 ⟹ 这个神经元还活着）
+
+    ③ GELU 和 SiLU 的最大差距只有 【0.19】，出现在 x = ∓2
+       ⟹ 形状几乎重合 ⟹ ★ 既然效果一样，就选【算得快】的那个 → SiLU 胜出
+</code></pre></div>
+
+<p><strong>SiLU 的形状</strong>（横轴 x，纵轴 f(x)）：</p>
+<div class="codehilite"><pre><span></span><code>      3 |                           _
+      2 |                        _-
+      1 |                    _-
+      0 +---------------_---------------  x
+     -1 |      \____/
+        +----+----+----+----+----+
+            -4   -2    0    2    4
+                  |
+                  +-- 最小值 = -0.2785，在 x = -1.278 处
 </code></pre></div>
 
 <blockquote>
@@ -341,18 +530,30 @@ W_down 的每一【列】  = 一个往残差流【写入】的方向（"结论"�
 <h2 id="93-glu">9.3 GLU：加一个门</h2>
 <p><strong>GLU（Gated Linear Unit）是这一代 FFN 的标配。它的改动是：把 $x$ 投影两次，一份过激活当"门"，一份不过激活当"内容"，然后逐元素相乘。</strong></p>
 <p>$$\text{SwiGLU}(x) = W_{\text{down}}\Big(\underbrace{\text{SiLU}(W_{\text{gate}}\,x)}<em _text_up="\text{up">{\text{门：开多大}}\ \odot\ \underbrace{W</em>\Big)$$}}\,x}_{\text{内容：传什么}</p>
-<div class="codehilite"><pre><span></span><code>              ┌──── W_gate ──→ SiLU ──┐
-    x  [5120]─┤                        ⊙  ──→ W_down ──→ y [5120]
-              └──── W_up ─────────────┘
-                                       ↑
-                              逐元素相乘（element-wise）
-
-    门 ≈ 0  →  这个通道被【关闭】，内容传不过去
-    门 ≈ 1  →  内容原样通过
-    门 &lt; 0  →  内容被【反向】传递
+<div class="codehilite"><pre><span></span><code>    x [5120]
+      |
+      +-- W_gate [5120, 13824] --&gt; g [13824] --&gt; SiLU --&gt; gate [13824]   &quot;开多大&quot;
+      |                                                        |
+      |                                                        * 逐元素相乘
+      |                                                        |
+      +-- W_up   [5120, 13824] ----------------&gt; up   [13824] -+
+                                                               |
+                                                               v
+                                                  h [13824]
+                                                               |
+                                            W_down [13824, 5120]
+                                                               v
+                                                          y [5120]
 </code></pre></div>
 
-<h3 id="_2">为什么门控有用</h3>
+<div class="codehilite"><pre><span></span><code>    第 j 个通道在干什么（j = 0 .. 13823）：
+
+      gate[j] ≈ 0   -&gt;  h[j] ≈ 0           这个通道被【关闭】，内容传不过去
+      gate[j] ≈ 1   -&gt;  h[j] ≈ up[j]       内容原样通过
+      gate[j] &lt;  0  -&gt;  h[j] = -|..|·up[j] 内容被【反向】传递
+</code></pre></div>
+
+<h3 id="_3">为什么门控有用</h3>
 <div class="codehilite"><pre><span></span><code>① 标准 FFN：act(W·x) —— 一个神经元是否激活，只取决于【一个】线性投影
 ② GLU：     两个独立的投影，一个决定&quot;传不传&quot;，一个决定&quot;传什么&quot;
    → 【乘法交互】。乘法比加法的表达力强得多：
@@ -362,23 +563,169 @@ W_down 的每一【列】  = 一个往残差流【写入】的方向（"结论"�
 </code></pre></div>
 
 <p><strong>实证上 SwiGLU 稳定优于 ReLU/GELU FFN</strong>（Noam Shazeer 的原论文里做了完整的消融）。<strong>五家全部用 GLU 系。</strong></p>
-<h3 id="23">⚠️ 那个奇怪的 2/3 因子</h3>
-<p><strong>GLU 有【三个】矩阵（$W_{gate}, W_{up}, W_{down}$），而标准 FFN 只有两个。</strong> 为了参数量公平对比：</p>
+<h3 id="_4">★ 为什么是【三个】矩阵，不是两个</h3>
+<p><strong>这里有个很自然的疑问：门控不就是"多乘一下"吗，为什么要多一整个矩阵？</strong></p>
+<div class="codehilite"><pre><span></span><code>    ① 用两个矩阵做不了门控：
+       h = act(W_up x) ⊙ (W_up x)     ← 门和内容来自【同一个】投影
+       = act(z) ⊙ z  = 这就是 SiLU(z) 本身，什么都没多出来 ★
+
+    ② 想让&quot;开多大&quot;和&quot;传什么&quot;是两个【独立】的判断，
+       就必须有两个【不同】的读取方向 → 两个矩阵 → 加上 W_down 共三个
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>矩阵</th>
+<th>形状</th>
+<th>参数量</th>
+<th>这个矩阵在回答什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>标准 FFN</td>
+<td>$W_{up}$</td>
+<td>$d\times d_{ff}$</td>
+<td>$d\,d_{ff}$</td>
+<td>这个通道的<strong>读数</strong>是多少</td>
+</tr>
+<tr>
+<td></td>
+<td>$W_{down}$</td>
+<td>$d_{ff}\times d$</td>
+<td>$d\,d_{ff}$</td>
+<td>读数变成什么<strong>结论</strong>写回总线</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>合计</strong></td>
+<td></td>
+<td>$\mathbf{2\,d\,d_{ff}}$</td>
+<td></td>
+</tr>
+<tr>
+<td>GLU 系</td>
+<td>$W_{gate}$</td>
+<td>$d\times d_{ff}$</td>
+<td>$d\,d_{ff}$</td>
+<td>这个通道该<strong>开多大</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>$W_{up}$</td>
+<td>$d\times d_{ff}$</td>
+<td>$d\,d_{ff}$</td>
+<td>开了之后<strong>传什么</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>$W_{down}$</td>
+<td>$d_{ff}\times d$</td>
+<td>$d\,d_{ff}$</td>
+<td>变成什么<strong>结论</strong>写回总线</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>合计</strong></td>
+<td></td>
+<td>$\mathbf{3\,d\,d_{ff}}$</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="23_1">⚠️ 那个奇怪的 2/3 因子</h3>
+<p><strong>既然 GLU 每个通道贵了 50%，为了参数量公平对比，通道数就得少 1/3：</strong></p>
 <p>$$3\,d\,d_{ff}^{\text{GLU}} = 2\,d\,d_{ff}^{\text{标准}}\quad\Longrightarrow\quad d_{ff}^{\text{GLU}} = \tfrac{2}{3}\,d_{ff}^{\text{标准}}$$</p>
 <div class="codehilite"><pre><span></span><code>    标准 FFN 的惯例：d_ff = 4d
     GLU 版本：      d_ff = (2/3) × 4d = 8d/3 ≈ 2.67d
 
-    d = 5120  →  d_ff ≈ 13653  →  取整到 128 的倍数 → 13824
+    d = 5120  →  8d/3 = 13653.3  →  向上对齐到 256 的倍数 → 13824 ✓
+    d = 4096  →  8d/3 = 10922.7  →  向上对齐到 256 的倍数 → 11008 ✓
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>这就是你在配置文件里看到 <code>intermediate_size: 13824</code> 这种"奇怪"数字的原因。</strong><br />
+<p>🔑 <strong>这就是你在配置文件里看到 <code>intermediate_size: 13824</code> / <code>11008</code> 这种"奇怪"数字的原因。</strong><br />
 它不是随便定的，是 $\frac{8}{3}d$ 向上对齐到硬件友好的倍数。</p>
+</blockquote>
+<h3 id="83">⚠️ 但别把 8/3 当定律：真实模型的比值是散的</h3>
+<p><strong>上面那条推导只说明了"2/3 这个折算是怎么来的"，它没有说 $d_{ff}=4d$ 这个前提本身有多硬。事实上后来的模型普遍把中间维又往上抬了：</strong></p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>$d$</th>
+<th>$d_{ff}$</th>
+<th><strong>$d_{ff}/d$</strong></th>
+<th>对应"折算前"的 $d_{ff}^{\text{标准}}/d$</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LLaMA-2-7B</td>
+<td>4096</td>
+<td>11008</td>
+<td><strong>2.69</strong></td>
+<td>4.03 ← 教科书式的 $8d/3$</td>
+</tr>
+<tr>
+<td>LLaMA-2-13B</td>
+<td>5120</td>
+<td>13824</td>
+<td><strong>2.70</strong></td>
+<td>4.05 ← 同上</td>
+</tr>
+<tr>
+<td>LLaMA-2-70B</td>
+<td>8192</td>
+<td>28672</td>
+<td>⚠️ <strong>3.50</strong></td>
+<td>5.25</td>
+</tr>
+<tr>
+<td><strong>LLaMA-3-8B</strong></td>
+<td>4096</td>
+<td>⚠️ <strong>14336</strong></td>
+<td>⚠️ <strong>3.50</strong></td>
+<td>5.25</td>
+</tr>
+<tr>
+<td>LLaMA-3-70B</td>
+<td>8192</td>
+<td>28672</td>
+<td>⚠️ <strong>3.50</strong></td>
+<td>5.25</td>
+</tr>
+<tr>
+<td>Mistral-7B</td>
+<td>4096</td>
+<td>14336</td>
+<td><strong>3.50</strong></td>
+<td>5.25</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 这里有个很常见的口径错误，值得单独标出来：
+
+    ✗ 错：&quot;LLaMA-3-8B 的 intermediate 是 4h&quot;
+          4 × 4096 = 16384 ≠ 14336
+    ✗ 错：&quot;所有 GLU 模型都是 8h/3&quot;
+          8/3 × 4096 = 10923 ≠ 14336
+    ✅ 对：LLaMA-3-8B 是 h = 4096、intermediate = 14336，比值【3.5】
+
+    ★ 从 2.69 涨到 3.50 是一个【主动的选择】，不是算错：
+      LLaMA-3 用了 GQA（K/V 头数从 32 砍到 8），注意力那块省下了一大笔参数
+      → 省下来的预算被【挪进了 FFN】（回看 §9.1 那张表：FFN 占比从 67% 涨到 81%）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>正确的说法是</strong>：<code>8/3</code> 是<strong>"给 GLU 做等参数折算"这个动作</strong>的系数，不是中间维的最终答案。<strong>实际取值 = (这一代认为 FFN 该拿多少预算) × 2/3，再向上对齐到 128/256 的倍数。</strong> 见到 2.67、3.0、3.5 都不要惊讶，见到恰好 4.0 反而要怀疑它是不是没用 GLU。</p>
 </blockquote>
 <hr />
 <h2 id="94-swiglu">9.4 ⚠️ SwiGLU 的一个大麻烦：它无界</h2>
 <p><strong>这一节是本章最重要的部分，它连着 <a href="14-量化.html">14 量化</a>。</strong></p>
-<h3 id="_3">问题</h3>
+<h3 id="_5">问题</h3>
 <div class="codehilite"><pre><span></span><code>    SwiGLU(x) = SiLU(W_g x) ⊙ (W_u x)
 
     ① SiLU 在正半轴是【线性增长】的：SiLU(100) ≈ 100
@@ -389,7 +736,7 @@ W_down 的每一【列】  = 一个往残差流【写入】的方向（"结论"�
 </code></pre></div>
 
 <p><strong>再叠加 <a href="05-注意力机制.html">05 章 §5.5</a> 那条链</strong>（softmax 和为 1 → attention sink → 巨大激活），FFN 的输入本来就可能带着离群值进来，<strong>经过 SwiGLU 的乘法会被平方放大</strong>。</p>
-<h3 id="_4">后果</h3>
+<h3 id="_6">后果</h3>
 <div class="codehilite"><pre><span></span><code>① 训练不稳定：偶发的巨大激活 → loss spike → 甚至 NaN
 ② ★ 量化崩溃：一个 10,000 的离群值和一堆 0.1 的正常值在同一个量化组里
    → 量化区间被离群值撑满 → 正常值全部塌成 0
@@ -433,18 +780,134 @@ $$\text{SiTU-GLU}(x) = \Big[\beta_1\tanh!\left(\tfrac{W_g x}{\beta_1}\right)\odo
     ✅ 大值区软饱和 —— 离群值被自动压住，但仍保留大小顺序
 </code></pre></div>
 
-<h3 id="_5">对比</h3>
-<div class="codehilite"><pre><span></span><code>        clamp（V4/M3）              SiTU-GLU（K3）
-              ┌────                       ┌──────
-             ╱│                          ╱
-    ────────╱ │              ────────╱‾‾
-           ╱  │                     ╱
-      ────┘   ▲                ────┘
-              截断处梯度=0        处处可导，软饱和
+<h3 id="_7">对比</h3>
+<p><strong>先看形状</strong>（横轴 = 输入 z，纵轴 = 输出；<code>|</code> 标出上界）：</p>
+<div class="codehilite"><pre><span></span><code>    clamp(z, -c, c)                 beta * tanh(z / beta)
 
-    简单、够用                复杂、更优雅、上界更精确可控
+           _______  &lt;- c                   ______   &lt;- beta（渐近，永不到达）
+          |                              _-
+         /|                            _-
+        / |                          _-
+    ___/  |                     ____-
+       ^                            ^
+       |                            |
+    在 z = c 处【折断】：           处处光滑：
+    导数从 1 突变成 0               导数从 1 平滑衰减到 0，但【永远 &gt; 0】
 </code></pre></div>
 
+<p><strong>再看数字</strong>（这一列是 $\beta_1=4$ 的门分支：SiLU 对 SiTU 的 $\beta_1\tanh(z/\beta_1)\cdot\sigma(z)$）：</p>
+<table>
+<thead>
+<tr>
+<th>输入 $z$</th>
+<th>SiLU $=z\sigma(z)$</th>
+<th>SiTU 的门分支</th>
+<th>差多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>−4</td>
+<td>−0.072</td>
+<td>−0.055</td>
+<td>几乎一样</td>
+</tr>
+<tr>
+<td>−1</td>
+<td>−0.269</td>
+<td>−0.264</td>
+<td>几乎一样</td>
+</tr>
+<tr>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>相同</td>
+</tr>
+<tr>
+<td><strong>1</strong></td>
+<td>0.731</td>
+<td><strong>0.716</strong></td>
+<td>★ 正常区<strong>基本恒等</strong></td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td>1.762</td>
+<td><strong>1.628</strong></td>
+<td>开始压</td>
+</tr>
+<tr>
+<td>4</td>
+<td>3.928</td>
+<td>2.992</td>
+<td>压得明显</td>
+</tr>
+<tr>
+<td>6</td>
+<td>5.985</td>
+<td>3.612</td>
+<td></td>
+</tr>
+<tr>
+<td><strong>10</strong></td>
+<td>10.00</td>
+<td><strong>3.946</strong></td>
+<td>★ 已经贴着上界</td>
+</tr>
+<tr>
+<td><strong>100</strong></td>
+<td><strong>100.0</strong></td>
+<td><strong>4.000</strong></td>
+<td>★★ SiLU 线性爆炸，SiTU 钉死在 4</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>clamp</strong>（V4 / M3）</th>
+<th><strong>SiTU-GLU</strong>（K3）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>怎么加界</td>
+<td>硬截断</td>
+<td>$\beta\tanh(\cdot/\beta)$ 软饱和</td>
+</tr>
+<tr>
+<td>小值区行为</td>
+<td><strong>完全恒等</strong></td>
+<td><strong>近似恒等</strong>（$\tanh z\approx z$）</td>
+</tr>
+<tr>
+<td>大值区行为</td>
+<td>拍平成常数，<strong>丢失大小顺序</strong></td>
+<td>仍单调递增，<strong>保留大小顺序</strong></td>
+</tr>
+<tr>
+<td>截断处梯度</td>
+<td>❌ <strong>恒为 0</strong>，这个通道学不动</td>
+<td>✅ 处处 &gt; 0</td>
+</tr>
+<tr>
+<td>上界</td>
+<td>精确等于 $c$</td>
+<td>渐近到 $\beta_1\beta_2=100$（取不到）</td>
+</tr>
+<tr>
+<td>实现代价</td>
+<td>一条 <code>min/max</code></td>
+<td>两个 <code>tanh</code> + 两个标量</td>
+</tr>
+<tr>
+<td>一句话</td>
+<td>简单、够用</td>
+<td>复杂、更优雅、上界更精确可控</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>🔑 <strong>为什么 K3 值得做这么复杂的东西</strong>：见下一节的因果链。</p>
 </blockquote>
@@ -467,7 +930,7 @@ $$\text{SiTU-GLU}(x) = \Big[\beta_1\tanh!\left(\tfrac{W_g x}{\beta_1}\right)\odo
     ⑥ 加界的两种方式：硬截断（简单）/ 软饱和（优雅）
 </code></pre></div>
 
-<h3 id="_6">反向验证：用这条链去看五家</h3>
+<h3 id="_8">反向验证：用这条链去看五家</h3>
 <table>
 <thead>
 <tr>
@@ -537,7 +1000,7 @@ $$\text{SiTU-GLU}(x) = \Big[\beta_1\tanh!\left(\tfrac{W_g x}{\beta_1}\right)\odo
 <tr>
 <th></th>
 <th>激活</th>
-<th>$d_{ff}$（专家）</th>
+<th>专家的工作宽度</th>
 <th>特别的</th>
 </tr>
 </thead>
@@ -551,8 +1014,8 @@ $$\text{SiTU-GLU}(x) = \Big[\beta_1\tanh!\left(\tfrac{W_g x}{\beta_1}\right)\odo
 <tr>
 <td><strong>Kimi K3</strong></td>
 <td><strong>SiTU-GLU</strong>（$\beta_1{=}4,\beta_2{=}25$，$\vert f\vert\le100$）</td>
-<td>latent 3584</td>
-<td>见 <a href="10-MoE.html">10 章</a> 的 Stable LatentMoE</td>
+<td>路由专家在 <strong>latent $\ell=3584$</strong>（= $d/2$）里进出</td>
+<td>见 <a href="10-MoE.html">10 章 §10.8</a> 的 Stable LatentMoE</td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
@@ -576,16 +1039,30 @@ $$\text{SiTU-GLU}(x) = \Big[\beta_1\tanh!\left(\tfrac{W_g x}{\beta_1}\right)\odo
 </table>
 <blockquote>
 <p>📌 完整的横向论证见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.4「激活函数的四种补丁」。</p>
+<p>📌 <strong>本章只讲"FFN 这块积木长什么样"。它在系统侧的两个下游后果，在别的教程里已经展开过，这里不重复</strong>：<br />
+- <strong>一个 FFN 拆成很多专家之后，算子形状会变得参差不齐</strong>（Grouped GEMM）→ <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> §8.2<br />
+- <strong>FFN 的三个矩阵怎么切到多张卡上</strong> → <a href="../../训练框架/分布式训练入门/09-专家并行EP.html">../../训练框架/分布式训练入门/09-专家并行EP.md</a> §9.1</p>
 </blockquote>
 <hr />
 <h2 id="97">9.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① FFN = 先扩张到 2.7d，过激活，再压缩回 d。对每个 token 独立
+<div class="codehilite"><pre><span></span><code>① FFN = 先扩张到 2.7~3.5 倍，过激活，再压缩回 d。对每个 token 独立
    总线视角：W_up 的行是【检测器】，W_down 的列是【结论】
    → 常被理解为&quot;键值记忆&quot;
+   ✅ 标题那个 2/3：MHA 时代 FFN 占每层参数 67%；
+      用了 GQA 之后注意力更瘦，FFN 占比反而涨到 81%
+      ⟹ 参数大头一直在 FFN，所以 10 章要拆的是它
 ② 激活函数演化：ReLU → GELU → SiLU（x·σ(x)，形状同 GELU 但更快）
+   同一组输入走一遍：|x| ≥ 3 时三者几乎相同，差别只在窄窗口里
+   GELU 与 SiLU 最大差 0.19（在 x = ∓2）→ 效果一样就选快的 → SiLU
+   ★ 三者在大值区【都是线性无界】的 —— 这是 ④ 的祸根
 ③ GLU 门控：两个投影，一个当门一个当内容，逐元素相乘
+   ★ 为什么必须是三个矩阵：门和内容若来自同一个投影，act(z)⊙z 就是 SiLU 本身，
+     什么都没多出来 → 要两个【独立】方向 → 加 W_down 共三个
    乘法交互比加法表达力强 → 实证稳定优于普通 FFN，五家全用
-   三个矩阵 → d_ff 要乘 2/3 才公平 → 8d/3 ≈ 13824 这个&quot;怪&quot;数字的由来
+   三个矩阵 → 每通道贵 50% → d_ff 要乘 2/3 才公平 → 8d/3 ≈ 13824、11008
+   ⚠️ 但 8/3 只是【折算系数】，不是定律：
+      LLaMA-2-7B/13B 是 2.69/2.70，而 LLaMA-3-8B 是 h=4096、
+      intermediate=14336 → 比值【3.5】，既不是 4 也不是 8/3
 ④ ★ SwiGLU 是【无界】的，且两个无界量相乘 → 离群值的主要产地
    解法一：clamp（V4 [−10,10]，M3 7.0）—— 简单，但截断处梯度为 0
    解法二：SiTU-GLU（K3）—— β₁tanh(·/β₁)⊙σ ⊙ β₂tanh(·/β₂)

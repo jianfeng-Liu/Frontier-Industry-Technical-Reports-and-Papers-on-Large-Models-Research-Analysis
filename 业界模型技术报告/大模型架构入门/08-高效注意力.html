@@ -252,101 +252,404 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="08">08 · 把注意力本身改掉：四条路</h1>
 <blockquote>
 <p><strong>这一章的目标</strong>：这是五家<strong>分歧最大、创新最密集</strong>的一章，也是五份技术报告篇幅占比最高的部分。<br />
-<a href="07-MHA到MLA.html">07 章</a>回答了"每个 token 存多少"，本章回答"<strong>到底要不要看那么多 token</strong>"。<br />
+<a href="07-MHA到MLA.html">07 章</a>回答了"每个 token 存多宽"，本章回答"<strong>到底要不要看那么多 token</strong>"。<br />
 读完你应该能回答：滑窗、稀疏、压缩、线性这四条路各自的原理和代价是什么？<strong>为什么线性注意力这一代又火了、但 MiniMax 从它退回去了？</strong> 为什么 attention sink 是所有稀疏方案的必备补丁？</p>
+<p>📌 <strong>本章的定位是模型架构侧</strong>：这些结构<strong>为什么</strong>这么设计、代价在哪、五家怎么组合。两份相邻的教程不重复：<strong>算子实现侧</strong>（在线 softmax 怎么推、FA1/FA2/FA3 各改了哪一层、块开多大、varlen 和 Paged KV）在 <a href="../../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 04 章</a>；<strong>推理服务侧</strong>（一张卡的显存怎么分、KV 读取什么时候反超权重读取）在 <a href="../../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架 02 / 07 章</a>。</p>
 </blockquote>
 <hr />
-<h2 id="81-l2">8.1 问题：$L^2$ 这笔债</h2>
-<p>回忆 <a href="01-鸟瞰全景.html">01 章 §1.5</a> 和 <a href="06-KV-cache.html">06 章</a>：</p>
-<div class="codehilite"><pre><span></span><code>    注意力矩阵 S 是 [L, L]
+<h2 id="81-s2">8.1 问题：$s^2$ 这笔债</h2>
+<p>回忆 <a href="01-鸟瞰全景.html">01 章 §1.5</a> 和 <a href="06-KV-cache.html">06 章 §6.6</a>：注意力矩阵 $S$ 是 $[s,s]$ 的，$s$ 是序列长度。</p>
+<blockquote>
+<p>📌 <strong>本章一律用 $s$ 表示序列长度</strong>（sequence length），因为 $L$ 在本教程别处被用作层数。$d$ 一律指 $d_{\text{model}}$，$d_h$ 指 head_dim。</p>
+</blockquote>
+<p><strong>每一层的注意力有两个跟 $s^2$ 相关的矩阵乘</strong>（<a href="06-KV-cache.html">06 章 §6.6</a> 推过）：</p>
+<p>$$\underbrace{QK^\top}<em 2s_2d="2s^2d">{2s^2d}\;+\;\underbrace{PV}</em>\qquad \approx 2s^2d$$}\;=\;4s^2d\qquad\xrightarrow{\ \text{因果掩码只算下三角}\ </p>
+<p><strong>换成一个更好用的说法</strong>：注意力的 FLOPs 只和<strong>"有多少对 (query, key) 需要真的算内积"</strong>成正比。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 每一对 (query, key) 的成本 = 4d FLOPs
+      （QKᵀ 那一步 2d，PV 那一步 2d，跨头求和已经包含在 d = H·d_h 里了）
 
-    L = 4K：    L² = 1.7e7      在总 FLOPs 里占 ~12%
-    L = 128K：  L² = 1.6e10     开始主导
-    L = 1M：    L² = 1.1e12     占 ~97%，【完全主导】
+    全注意力 + 因果掩码：配对数 = s²/2
+    -&gt; 每层 FLOPs = 4d × s²/2 = 2s²d          ← 和上面那个式子一致
 
-    ★ 而且长度翻 8 倍，这一项涨 64 倍
+    ⟹ ★★ 本章四条路，本质上都是在【减少配对数】这一件事上做文章 ★★
 </code></pre></div>
 
-<p><strong><a href="05-注意力机制.html">05 章</a>的 FlashAttention 解决了显存（$O(L^2)\to O(L)$），但计算量一点没减。</strong></p>
-<p><strong>要减计算量，只能改数学本身。</strong> 只有四种改法：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────┐
-│  ① 滑窗    只看最近的 w 个 token          O(L·w)             │
-│  ② 稀疏    动态挑出最相关的 k 个 token    O(L·k)             │
-│  ③ 压缩    把远处的 token 打包成&quot;摘要&quot;     O(L·L/r)          │
-│  ④ 线性    换掉 softmax，变成 RNN 式状态   O(L)              │
-└──────────────────────────────────────────────────────────────┘
+<h3 id="_1">★ 先把这笔债的绝对值算出来</h3>
+<p><strong>大 O 记号最大的问题是它把绝对值藏起来了。</strong> 用 openPangu-2.0-Pro 的规模（✅ 报告：50 层、$d=5120$）把 $s^2$ 换成秒：</p>
+<table>
+<thead>
+<tr>
+<th>序列长度 $s$</th>
+<th>配对数（每层）</th>
+<th>注意力 FLOPs（全 50 层，一次前向）</th>
+<th>理想满算力耗时（989 TFLOP/s）</th>
+<th>真实 kernel 耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>4K</strong></td>
+<td>$8.4\times10^6$</td>
+<td><strong>8.59 TFLOPs</strong></td>
+<td>8.7 ms</td>
+<td>约 12 ms（FA3）</td>
+</tr>
+<tr>
+<td><strong>128K</strong></td>
+<td>$8.6\times10^9$</td>
+<td><strong>8.80 PFLOPs</strong></td>
+<td>8.9 s</td>
+<td>约 <strong>12 s</strong>（FA3）</td>
+</tr>
+<tr>
+<td><strong>1M</strong></td>
+<td>$5.5\times10^{11}$</td>
+<td>★ <strong>563 PFLOPs</strong></td>
+<td>569 s</td>
+<td>★ 约 <strong>13 分钟</strong>（FA3）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"真实 kernel 耗时"那一列的口径</strong>：按 FlashAttention-3 在 H100 上的官方吞吐 <strong>约 740 TFLOP/s（峰值的 75%）</strong> 折算。如果用上一代 FlashAttention-2（H100 上 <strong>约 350 TFLOP/s，峰值的 35%</strong>），1M 那一行要变成 <strong>约 27 分钟</strong>。✅ 这两个吞吐数字都出自 FA3 官方博客，⚠️ <strong>不是 540 / 810</strong>——那两个数在中文材料里流传很广但查不到来源。三代 kernel 的差别在 <a href="../../大模型算子开发/04-FlashAttention全系.html">大模型算子开发 §4.4.6 / §4.5</a>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ★ 1M 上下文、一次前向，光注意力就要跑 13 分钟。
+      而这只是【一层层算完一遍】，不含 FFN、不含反向、不含 batch。
+    ⟹ 这不是&quot;优化一下能接受&quot;的量级，是【必须改数学】的量级。
+
+    ★ 而且它是平方的：128K -&gt; 1M 是 8 倍长度，这一项涨 64 倍。
+      12 秒 × 64 ≈ 13 分钟 —— 表里那两行就是这么来的。
 </code></pre></div>
 
+<h3 id="flashattention">FlashAttention 解决的是另一个问题</h3>
+<p><strong><a href="05-注意力机制.html">05 章 §5.7</a> 的 FlashAttention 非常重要，但它解决的不是上面这笔账。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>FlashAttention 改善了</th>
+<th>FlashAttention <strong>没有</strong>改善</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>显存</td>
+<td>✅ $[s,s]$ 那张大表从不落显存，$O(s^2)\to O(s)$</td>
+<td>—</td>
+</tr>
+<tr>
+<td>搬运量</td>
+<td>✅ 降了一个量级（分块 + 不物化中间结果）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>FLOPs</strong></td>
+<td>—</td>
+<td>❌ <strong>一个都没少</strong>，配对数完全没变</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>所以 FlashAttention 和本章是【互补】而不是替代</strong>：<br />
+```<br />
+FlashAttention：同样多的配对，用【更聪明的 kernel】去算   -&gt; 省显存、省搬运<br />
+本章四条路：    直接把【配对数本身】砍掉                  -&gt; 省 FLOPs</p>
+<p>★ 实际系统里两者一定同时用：先用本章的方法决定"算哪些配对"，<br />
+  再用 FlashAttention 式的 kernel 去算这些配对。<br />
+```</p>
+</blockquote>
+<p><strong>要减配对数，只能改数学本身。只有四种改法</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>怎么减配对</th>
+<th>配对数</th>
+<th>对 $s$ 的阶</th>
+<th>代表方案</th>
+<th>在哪节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 滑窗</strong></td>
+<td>只看最近的 $w$ 个 token</td>
+<td>$s\cdot w$</td>
+<td>★ 线性</td>
+<td>SWA</td>
+<td><strong>§8.2</strong></td>
+</tr>
+<tr>
+<td><strong>② 稀疏</strong></td>
+<td>动态挑出最相关的 $k$ 个 token</td>
+<td>$s\cdot k$</td>
+<td>★ 线性</td>
+<td>DSA、MSA</td>
+<td><strong>§8.3</strong></td>
+</tr>
+<tr>
+<td><strong>③ 压缩</strong></td>
+<td>把远处的 token 打包成"摘要"，压缩率 $r$</td>
+<td>$\dfrac{(s/r)^2}{2}$</td>
+<td>⚠️ <strong>还是平方</strong>，只是常数小了 $r^2$</td>
+<td>CSA、HCA</td>
+<td><strong>§8.4</strong></td>
+</tr>
+<tr>
+<td><strong>④ 线性</strong></td>
+<td>换掉 softmax，历史压进一个固定大小的矩阵</td>
+<td>不适用（没有配对了）</td>
+<td>★ 线性</td>
+<td>KDA、Mamba 系</td>
+<td><strong>§8.5</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>注意第 ③ 行那个"还是平方"，这是本章最容易读漏的一点。</strong> 压缩注意力并<strong>没有降低复杂度的阶</strong>——它只是把 $s$ 换成 $s/r$，常数砍掉 $r^2$ 倍。$r=128$ 时这个常数是 16384 倍，大到在 1M 以内比线性注意力还便宜；<strong>但它依然是平方的，长度再涨它就会重新追上来</strong>。§8.7 那张表会把这个交叉点算出来。</p>
+</blockquote>
 <p><strong>五家的方案全部是这四条路的组合。</strong> 下面一条一条讲。</p>
 <hr />
 <h2 id="82-1swa-sliding-window-attention">8.2 路线①：滑动窗口（SWA, Sliding Window Attention）</h2>
-<h3 id="_1">原理：最简单的那个</h3>
+<h3 id="_2">原理：最简单的那个</h3>
 <p><strong>只看最近的 $w$ 个 token，更早的直接不看。</strong></p>
-<div class="codehilite"><pre><span></span><code>        j=1  j=2  j=3  j=4  j=5  j=6  j=7  j=8      w = 3
- i=5  [  ✗    ✗   ✓    ✓    ✓   -inf -inf -inf ]
- i=6  [  ✗    ✗   ✗    ✓    ✓    ✓   -inf -inf ]
- i=7  [  ✗    ✗   ✗    ✗    ✓    ✓    ✓   -inf ]
-         ↑ 太远，看不见            ↑ 未来，因果掩码
+<div class="codehilite"><pre><span></span><code>        j = 1    2    3    4    5    6    7    8        窗口 w = 3
+i = 5       .    .    #    #    #    x    x    x
+i = 6       .    .    .    #    #    #    x    x
+i = 7       .    .    .    .    #    #    #    x
+
+    #  = 这一对要算内积（key 落在窗口里）
+    .  = 太远，被滑窗丢掉          &lt;- ★ SWA 新加的限制
+    x  = 未来，因果掩码本来就禁止
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>✅ 计算量：O(L·w)，【和 L 成线性】
-✅ KV cache：只需要存最近 w 个 → 【常数显存】，与 L 无关！
-❌ 信息只能靠层层堆叠慢慢传递
-</code></pre></div>
-
-<h3 id="_2">感受野：为什么它还能工作</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>全注意力</th>
+<th><strong>SWA</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>配对数</td>
+<td>$s^2/2$</td>
+<td>★ $s\cdot w$</td>
+</tr>
+<tr>
+<td>计算量对 $s$</td>
+<td>平方</td>
+<td>★ <strong>线性</strong></td>
+</tr>
+<tr>
+<td>KV cache</td>
+<td>随 $s$ 线性增长</td>
+<td>★★ <strong>常数！只需存最近 $w$ 个</strong>，与 $s$ 完全无关</td>
+</tr>
+<tr>
+<td>代价</td>
+<td>—</td>
+<td>❌ 远处的信息只能靠层层堆叠慢慢往前传</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>注意 SWA 那个"KV cache 是常数"有多猛</strong>：回到 <a href="06-KV-cache.html">06 章 §6.3</a>，MHA 在 1M 上下文要 1000 GiB；SWA 窗口 512 的话，无论上下文是 1M 还是 100M，<strong>每层只存 512 个 token 的 KV</strong>。这是四条路里唯一能把 KV cache 变成<strong>与长度无关的常数</strong>的两条之一（另一条是线性注意力）。</p>
+</blockquote>
+<h3 id="_3">感受野：为什么它还能工作</h3>
+<p><strong>单看一层，SWA 确实看不见远处。但堆起来就不一样了</strong>——这和卷积网络（CNN）的感受野是同一个机制：</p>
 <div class="codehilite"><pre><span></span><code>    第 1 层：位置 i 能看到 [i−w, i]
-    第 2 层：能看到&quot;能看到 [i−w,i] 的那些位置&quot;能看到的 → [i−2w, i]
-    第 N 层：[i − N·w, i]
+    第 2 层：它能看到的那些位置，各自又能往前看 w  -&gt;  [i−2w, i]
+    第 3 层：                                      -&gt;  [i−3w, i]
+     :
+    第 N 层：                                      -&gt;  [i − N·w, i]
 
-    ★ 有效感受野 = N × w（线性增长，像 CNN）
+    ★ 有效感受野 = N × w （线性增长）
+</code></pre></div>
 
-    openPangu: 50 层 × 512 = 25,600      ← 远小于 512K 上下文！
+<p><strong>★ 把数字代进去，问题立刻暴露</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>层数 $N$</th>
+<th>窗口 $w$</th>
+<th>理论感受野 $N\times w$</th>
+<th>对比 openPangu 宣称的 512K 上下文</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>50</strong></td>
+<td><strong>512</strong>（✅ openPangu 的真实窗口）</td>
+<td><strong>25,600</strong></td>
+<td>★ 只覆盖 <strong>5%</strong></td>
+</tr>
+<tr>
+<td>50</td>
+<td>4096</td>
+<td>204,800</td>
+<td>40%</td>
+</tr>
+<tr>
+<td>50</td>
+<td><strong>10,486</strong></td>
+<td>524,288</td>
+<td>100%（但窗口开这么大就不省了）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这个 5% 是本节的关键数字</strong>：openPangu 的 SWA 窗口只有 512，50 层堆起来理论感受野只有 25.6K，<strong>而它宣称支持 512K</strong>。<br />
+<strong>所以 SWA 绝不能单独用</strong>——必须和"能看全局"的层混合。这正是它做 <strong>DSA–SWA 1:2 交错</strong>的原因。</p>
+</blockquote>
+<h3 id="_4">★ 混合怎么排：层级交错的图示</h3>
+<p><strong>"混合"不是把两种注意力揉在一层里，而是【不同的层用不同的注意力】。</strong> 这是本章反复出现的模式，先在这里把图画清楚：</p>
+<div class="codehilite"><pre><span></span><code>openPangu-2.0-Pro 的 50 层，按 DSA : SWA = 1 : 2 交错（✅ 比例来自报告）
+
+  层 1   [ SWA  w=512 ]   只看最近 512 个 ............ 便宜
+  层 2   [ SWA  w=512 ]   只看最近 512 个 ............ 便宜
+  层 3   [ DSA  top-k ]   可以看到任意远处 ........... 贵，但有全局视野
+  层 4   [ SWA  w=512 ]
+  层 5   [ SWA  w=512 ]
+  层 6   [ DSA  top-k ]
+   :         :
+  层 48  [ SWA  w=512 ]
+  层 49  [ SWA  w=512 ]
+  层 50  [ DSA  top-k ]   &lt;- ★ 每 3 层必有 1 层能看全局
+
+  ⟹ 全局层约 17 层，局部层约 33 层
+  ⟹ 注意力成本 ≈ 1/3 × DSA + 2/3 × SWA
+  ⟹ 而&quot;看远处&quot;的能力每 3 层就被补一次，不用等 50 层攒够感受野
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>注意这个数字</strong>：openPangu 的 SWA 窗口是 512，50 层堆起来理论感受野只有 25.6K，<strong>而它宣称支持 512K</strong>。<br />
-<strong>所以 SWA 绝不能单独用</strong>——必须和"能看全局"的层混合。这正是它做 <strong>DSA–SWA 1:2 交错</strong>的原因（§8.6）。</p>
+<p>⚠️ <strong>报告只给了 1:2 这个比例，没有给具体排布</strong>（哪一层是 DSA、是不是严格每 3 层一次、最后一层是哪种），上图是按比例画的示意。</p>
 </blockquote>
 <h3 id="swa">⚠️ 三份负面证据：SWA 没有大家想的那么好</h3>
-<p><strong>这是本章最有价值的一段，因为它是这一代报告里罕见的"公开的失败数据"。</strong></p>
+<p><strong>这是本章最有价值的一段，因为它是这一代报告里罕见的"公开的失败数据"。三家独立做了消融，结论完全同向。</strong></p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>实验规模</th>
+<th>固定交错 SWA 的结果</th>
+<th>全注意力基线</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ <strong>GLM-5.2 报告</strong>（GLM-9B 消融，无额外训练）</td>
+<td>9B</td>
+<td>128K RULER <strong>6.51</strong></td>
+<td><strong>75.28</strong></td>
+</tr>
+<tr>
+<td>✅ <strong>MiniMax M2 报告 §2.2.2</strong>（续训数千亿~数万亿 token）</td>
+<td>M2 架构量级</td>
+<td>RULER-128K CWE <strong>72.0</strong></td>
+<td><strong>90.0</strong></td>
+</tr>
+<tr>
+<td>✅ <strong>openPangu 报告</strong>（MoE 15B-A2B 消融）</td>
+<td>15B</td>
+<td>3:1 / 5:1 在 4K 上不掉，<strong>扩到 32K / 128K 训练 loss 退化</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>✅ <strong>证据一（GLM-5.2 报告的 GLM-9B 消融，一手数据）</strong>：<br />
-<code>128K RULER 得分
-    全注意力                      75.28
-    固定交错 SWA                   6.51      ← 崩了</code><br />
-<strong>68.77 分的断崖。</strong> 这不是"略有下降"，是<strong>长上下文能力基本报废</strong>。</p>
-<p>✅ <strong>证据二（MiniMax M2 报告 §2.2.2）</strong>：MiniMax 在 M2 里<strong>从线性/高效注意力退回了全注意力</strong>，明确记录了这个回退。</p>
-<p>✅ <strong>证据三</strong>：openPangu 用 SWA，但<strong>窗口只有 512，且必须按 1:2 与 DSA 交错</strong>——如果 SWA 真的好用，不会配得这么保守。</p>
+<p>📌 <strong>RULER</strong> 是长上下文评测集（多跳检索、变量追踪、聚合等子任务），<strong>CWE</strong> 是其中的 Common Words Extraction 子项。分数越高越好。</p>
+</blockquote>
+<p><strong>★ 三份证据各自的独特价值，值得分开读</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① GLM-9B 那个 75.28 -&gt; 6.51 的断崖（差 68.77 分）
+   ★ 这不是&quot;略有下降&quot;，是【长上下文能力基本报废】。
+   ⚠️ 但要加一个重要的限定：那是【固定位置模式】的 SWA。
+      ✅ 同一份报告里，经过搜索调优的 SWA Pattern 能回到 53.95。
+   ⟹ 所以准确的结论是&quot;固定交错模式是灾难性的&quot;，而不是&quot;SWA 一定崩&quot;。
+
+② MiniMax M2 那份是【投入最大】的一份：续训了数千亿到数万亿 token，
+   扫过 SWA/全注意力比例、RoPE 设置、层内与层间混合、sink token。
+   ✅ 结论是&quot;没有任何变体能在生产场景下可靠追平全注意力&quot;。
+   ⟹ 它证明的不是&quot;SWA 算得不对&quot;，是【搜不出一个够用的配方】。
+   ⚠️ 但也别过度推广：同一张表里 SWA 在 IFBench +4.1、τ²-retail +5.2 上
+      是【真的赢了】。它证明的是&quot;在 MiniMax 关心的长程 agent 任务上不行&quot;。
+
+③ openPangu 那份给的是【安全线】而不只是红线：
+   ★ 同一个比例在 4K 上完全看不出问题，到 32K 才暴露。
+   ⟹ 这直接解释了为什么很多团队的短序列消融会得出过于乐观的结论。
+   ⟹ 它最后退到 1:2（每 3 层必有 1 层全局），并给 SWA 层配 PAS 兜底（§8.6）。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>三份证据的可比性是有限的</strong>：GLM 用 RULER 分数、MiniMax 用 RULER + 下游任务、华为用的是<strong>训练 loss</strong>（而且没公开任何长上下文评测）。<strong>"训练 loss 退化"和"长上下文检索崩掉"不是同一个量</strong>，只能说方向一致。完整对照在 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1.1。</p>
 <p>🔑 <strong>结论</strong>：<br />
-<strong>SWA 的省是真的，但它单独用的代价也是真的。这一代没有任何一家敢纯用 SWA。</strong><br />
-它现在的定位是<strong>"廉价的局部层"，必须和全局能力的层混合</strong>。</p>
+<strong>SWA 的省是真的（配对数从 $s^2/2$ 掉到 $s\cdot w$，KV cache 还变成常数），但它单独用的代价也是真的。这一代没有任何一家敢纯用 SWA。</strong><br />
+它现在的定位是<strong>"廉价的局部层"，必须和有全局能力的层混合</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="83-2-dsa-deepseek-sparse-attention">8.3 路线②：动态稀疏（代表方案 DSA, DeepSeek Sparse Attention）</h2>
-<h3 id="_3">原理：不是"看最近的"，而是"看最相关的"</h3>
-<p><strong>SWA 的问题在于"最近"是个很笨的启发式。</strong> 有用的信息可能在 30 万字之前。</p>
-<p><strong>DSA 的做法：先用一个便宜的方法估计"哪些 token 最相关"，只对这 top-k 个算真正的注意力。</strong></p>
-<div class="codehilite"><pre><span></span><code>        ① 便宜的打分：用一个【小的索引器】给所有 L 个位置打分
-                      比如把 K 压到 32 维再和压缩的 Q 算内积
+<h3 id="_5">原理：不是"看最近的"，而是"看最相关的"</h3>
+<p><strong>SWA 的问题在于"最近"是个很笨的启发式。</strong> 有用的信息完全可能在 30 万字之前。</p>
+<p><strong>DSA 的做法：先用一个便宜的方法估计"哪些 token 最相关"，只对这 top-$k$ 个算真正的注意力。</strong></p>
+<div class="codehilite"><pre><span></span><code>① 便宜的打分：用一个【小的索引器】（indexer）给所有 s 个位置打分
+              比如把 K 压到 32 维、Q 也压到 32 维，再算内积
+              -&gt; 成本远低于完整注意力（维度小了好几倍）
 
-        score:  0.1  0.9  0.2  0.8  0.1  0.1  0.7  0.1  ...
-                      ↑         ↑              ↑
-        ② 选 top-k（比如 k=2048），只对这些算完整注意力
+   score:   0.1  0.9  0.2  0.8  0.1  0.1  0.7  0.1  ...
+                 ^         ^              ^
+② 选 top-k（比如 k = 2048），只对这 k 个位置算完整注意力
 
-        ③ 其余位置的权重直接置 0
+③ 其余位置的注意力权重直接置 0（等于根本没算）
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>✅ 计算量 O(L·k)，且【k 是常数】，不随 L 增长
-✅ 保留了&quot;看任意远处&quot;的能力 —— 这是相比 SWA 的根本优势
-❌ 索引器本身要花钱（虽然便宜）
-❌ top-k 是【不可微】的操作，训练需要技巧
-❌ 稀疏的 gather 在 GPU 上不友好，需要专门的核函数
+<p><strong>★ 和 SWA 并排看一眼，区别一目了然</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   同一个 query 在位置 i = 20 时，三种方案各看哪些 key：
+
+   key 位置:  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
+   full    :  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #    20 对
+   SWA w=7 :  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  #  #     7 对
+   DSA k=6 :  .  #  .  .  .  .  #  .  .  .  .  #  .  .  .  .  #  #  .  #     6 对
+
+   ★ SWA 选的是【位置靠近的】—— 一条固定的、贴着对角线的带子
+   ★ DSA 选的是【内容相关的】—— 位置 2 那个 key 隔了 18 步照样能被选中
+   ⟹ 两者【配对数是同一个量级】，但 DSA 保留了&quot;看任意远处&quot;的能力
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th></th>
+<th>收益</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DSA</strong></td>
+<td>✅ 配对数 $s\cdot k$，<strong>$k$ 是常数</strong>，不随 $s$ 增长</td>
+<td>❌ 索引器本身要花钱（虽然便宜）</td>
+</tr>
+<tr>
+<td></td>
+<td>✅ ★ 保留了"看任意远处"的能力——相比 SWA 的<strong>根本优势</strong></td>
+<td>❌ top-k 是<strong>不可微</strong>的操作，训练需要技巧</td>
+</tr>
+<tr>
+<td></td>
+<td>✅ 对 prefill 和 decode <strong>两边都省</strong>（既少算，又少读 KV）</td>
+<td>❌ 稀疏的 gather 在 GPU 上不友好，需要专门的核函数</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"索引器很便宜"这句话有个上限，而且已经被撞到过</strong>：索引器要给<strong>全部 $s$ 个位置</strong>打分，所以它本身也是 $O(s)$ 每 query、$O(s^2)$ 每层——<strong>只是常数小</strong>。✅ GLM 报告的实测：<strong>200K prefill 时，indexer 占了 81% 的延迟</strong>。<br />
+⟹ 这就是下面 IndexShare 存在的全部理由：<strong>稀疏注意力省下来的钱，可能被"决定省哪些"这件事本身吃掉。</strong></p>
+<p>📌 <strong>DSA 在 §8.7 那张总表里是"稀疏 top-2048"那一行</strong>。先记住一个反直觉的数：<strong>在 4K 上下文下它一点都不省</strong>（因为 $k=2048 \approx s/2$，选不选都是那么多对），<strong>要到 128K 才省 32 倍、1M 才省 256 倍</strong>。★ 稀疏的收益完全来自长度。</p>
+</blockquote>
 <h3 id="dsa-mla">⭐ DSA 的底座是 MLA——为什么偏偏是它</h3>
 <blockquote>
-<p>✅ <strong>事实先摆出来</strong>：目前用 DSA 的三家，底座清一色是 MLA（第 7 章讲的那个"把 KV 压成低维 latent"的方案）。</p>
+<p>✅ <strong>事实先摆出来</strong>：目前用 DSA 的三家，底座清一色是 MLA（<a href="07-MHA到MLA.html">07 章</a>讲的那个"把 KV 压成低维 latent"的方案）。</p>
 </blockquote>
 <table>
 <thead>
@@ -370,32 +673,34 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<h4 id="_4">第一步：它俩省的根本不是同一样东西</h4>
+<h4 id="_6">第一步：它俩省的根本不是同一样东西</h4>
 <p><strong>所以不是二选一，是叠乘。</strong></p>
-<div class="codehilite"><pre><span></span><code>    MLA  → 砍【每个 token 的 KV 有多宽】   2048 维 → 576 维 latent   ⇒ 省显存
-    DSA  → 砍【一共要看多少个 token】       L 个    → 固定 2048 个    ⇒ 省算力 + 访存
+<div class="codehilite"><pre><span></span><code>    MLA  -&gt;  砍【每个 token 的 KV 有多宽】：5120 维 -&gt; 576 维 latent  ⟹ 省显存
+    DSA  -&gt;  砍【一共要看多少个 token】 ：s 个 -&gt; 固定 2048 个        ⟹ 省算力 + 访存
 
-              KV cache 的实际读取量  =  看多少个 token  ×  每个有多宽
-                                          ↑ DSA 砍这个      ↑ MLA 砍这个
+    ★ KV cache 的实际读取量 =「看多少个 token」（DSA 砍它）乘「每个有多宽」（MLA 砍它）
 </code></pre></div>
 
-<p>一个走<strong>序列长度</strong>方向，一个走<strong>特征维度</strong>方向，正交，可以同时用。</p>
+<p>一个走<strong>序列长度</strong>方向，一个走<strong>特征维度</strong>方向，<strong>正交，可以同时用，效果是乘起来的</strong>。</p>
 <h4 id="gather">第二步：关键在上面那个 ❌「gather 不友好」</h4>
-<p>稀疏真正的代价是 <strong>gather</strong>——拿着 top-k 算出来的下标，去显存里一个一个地"抓" KV。这些地址不连续，是 GPU 最不喜欢的访存模式。<strong>那么 gather 要抓几趟，就成了成败的关键。</strong></p>
+<blockquote>
+<p>📌 <strong>gather</strong>（聚集）—— 拿着一串下标去显存里"跳着抓"数据。这些地址不连续，是 GPU 最不喜欢的访存模式：显存一次搬运的最小单位是一整段（cache line），抓 1 个数和抓一整段花的时间差不多，所以<strong>跳着抓等于白搬很多字节</strong>。</p>
+</blockquote>
+<p>稀疏真正的代价就在这里。<strong>那么 gather 要抓几趟，就成了成败的关键。</strong></p>
 <blockquote>
 <p>⚠️ <strong>我的理解</strong>（这一步的因果关系官方没有明说，是我从各家配置反推的）：</p>
 <p>```<br />
   MHA / GQA 底座：每个头（或每个 KV 组）各选各的 top-k<br />
-                  → 有几组就要 gather 几趟  ❌</p>
-<p>MLA 底座    ：解码时是【MQA 吸收形态】，所有头共用同一份 latent KV<br />
-                  → 一次 gather 就服务了全部头  ✅<br />
+                  -&gt; 有几组就要 gather 几趟  ❌</p>
+<p>MLA 底座      ：解码时是【吸收式 / MQA 形态】，所有头共用同一份 latent KV<br />
+                  -&gt; 一次 gather 就服务了全部头  ✅<br />
 ```</p>
-<p>✅ 其中"MLA 解码走 MQA 形态"这件事本身是有报告原文的，见 <a href="../openPangu-2.0-Pro.html">../openPangu-2.0-Pro.md</a> §十「训推不一致解剖」（原文：<em>"MLA switching between Absorptive (MQA, decode) and Non-Absorptive (MHA, training/prefill) modes"</em>）。</p>
+<p>✅ 其中"MLA 解码走 MQA 形态"这件事本身是有报告原文的（<a href="07-MHA到MLA.html">07 章 §7.4</a> 已经引过）：<em>"MLA switching between Absorptive (MQA, decode) and Non-Absorptive (MHA, training/prefill) modes"</em>，见 <a href="../openPangu-2.0-Pro.html">../openPangu-2.0-Pro.md</a> §十「训推不一致解剖」。</p>
 </blockquote>
 <p><strong>这解释了 DSA 为什么敢用最激进的形式</strong>：<strong>token 级</strong>的 top-k，而且<strong>全部注意力头共用同一份选择</strong>。因为在 MLA 底座上，这份选择只需要 gather 一趟。</p>
-<p><strong>反过来看 MiniMax 的 MSA 就更清楚了</strong>：同样是"精确 softmax + 动态稀疏选择"、同样落在 2048 的预算上，但它的底座是 <strong>GQA</strong>，4 个 KV 组得各选各的——于是它退了一步，改成<strong>块级</strong>选择（16 个块 × 每块 128 token）。块内地址是连续的，正好把 gather 的开销摊薄。</p>
+<p><strong>反过来看 MiniMax 的 MSA 就更清楚了</strong>：同样是"精确 softmax + 动态稀疏选择"、同样落在 2048 的预算上，但它的底座是 <strong>GQA</strong>（64 q 头 / 4 kv 头），4 个 KV 组得各选各的——于是它退了一步，改成<strong>块级</strong>选择（16 个块 × 每块 128 token）。<strong>块内地址是连续的</strong>，正好把 gather 的开销摊薄。</p>
 <blockquote>
-<p>📌 <strong>底座决定了稀疏的形态</strong>，这条对照的完整版在 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1.2。</p>
+<p>📌 <strong>底座决定了稀疏的形态</strong>——这一行对照不是审美差异，是被硬件逼出来的。完整版在 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1.2。</p>
 </blockquote>
 <h4 id="mla">第三步：但"必须建在 MLA 上"是错的</h4>
 <p>DSA 依赖 MLA 是<strong>工程上的划算</strong>，不是<strong>原理上的必需</strong>。三个反例：</p>
@@ -406,76 +711,223 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                       内核直接就是共享 KV 的 MQA
 </code></pre></div>
 
-<p><strong>还有一条旁证</strong>：DSA 模型基本都是从<strong>已有的稠密 MLA 模型转换出来</strong>的（DeepSeek-V3.2 花 943.7B tokens，GLM-5 只花 20B，openPangu 花 100B + 8B 预热）。是"转换"而不是"重新设计"——这说明 DSA 是<strong>长在 MLA 之上的一个增量模块</strong>，而不是一套从头设计的新注意力。</p>
+<p><strong>还有一条旁证</strong>：DSA 模型基本都是从<strong>已有的稠密 MLA 模型转换出来</strong>的。</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>从稠密转 DSA 的预算</th>
+<th>附加条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V3.2</strong></td>
+<td><strong>943.7B tokens</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td><strong>100B tokens</strong> + 8B dense 预热</td>
+<td>只在 512K 末段做，且<strong>只转换全局层，SWA 层原封不动</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td>★ <strong>20B tokens</strong></td>
+<td>1000 步 dense 预热</td>
+</tr>
+</tbody>
+</table>
+<p>是"转换"而不是"重新设计"——这说明 DSA 是<strong>长在已有注意力之上的一个增量模块</strong>，而不是一套从头设计的新注意力。</p>
 <blockquote>
+<p>⚠️ <strong>注意这三个数跨了 47 倍</strong>（943.7B vs 20B）。三家最终都声称"适配后与原模型持平"，那么这个预算显然不是由 DSA 本身决定的，而是由<strong>基座状态、预热配方、以及"持平"的判定标准</strong>决定的。<strong>看到"只用 XX tokens 就完成适配"这类宣传，先问它的基线和判定标准。</strong></p>
 <p>⚠️ <strong>一个待核的细节</strong>：lightning indexer 用的是<strong>独立的一套小 Q/K 投影</strong>，还是<strong>复用 MLA 的 latent</strong>？几份报告都没写清楚。已知的只有 GLM-5.3 的配置显示<strong>索引器自己带 RoPE</strong>（<code>indexer_rope_interleave: true</code>），这更像是独立的一套。</p>
 </blockquote>
 <h3 id="glm-indexshare">GLM 的 IndexShare：一个很聪明的工程优化</h3>
-<p><strong>观察</strong>：索引器本身也要对全部 $L$ 个位置打分，也是 $O(L)$ 的。层数一多就不便宜了。</p>
+<p><strong>问题就是上面那个 81%</strong>：索引器本身也要对全部 $s$ 个位置打分，层数一多就不便宜了。</p>
 <blockquote>
 <p>✅ <strong>GLM-5.2 的做法：每 4 层只算一次索引，4 层共享同一套 top-k 选择。</strong></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    层 1  ── 算索引 ──┐
-    层 2  ────────────┤
-    层 3  ────────────┤  共用同一套 top-k
-    层 4  ────────────┘
-    层 5  ── 算索引 ──┐
-    ⋮                 ⋮
+<div class="codehilite"><pre><span></span><code>    层 1  --- 算一次索引 ---+
+    层 2  ------------------+
+    层 3  ------------------+--  这 4 层共用同一套 top-k
+    层 4  ------------------+
+    层 5  --- 算一次索引 ---+
+    层 6  ------------------+
+     :                      :
+
+    ⟹ 索引器的总开销直接 ÷ 4
 </code></pre></div>
 
-<p><strong>假设</strong>：相邻层关注的位置高度重叠。<strong>这是个合理的假设</strong>（可解释性研究确实观察到相邻层注意力模式相似），而且 GLM 用实测效果验证了它。</p>
+<p><strong>它依赖的假设</strong>：相邻层关注的位置高度重叠。<strong>这是个合理的假设</strong>（可解释性研究确实观察到相邻层注意力模式相似），而且 GLM 用实测效果验证了它。</p>
+<blockquote>
+<p>📌 <strong>顺带指出一个信息量很大的空白</strong>：理论上 IndexShare 可以直接叠到 MiniMax 的 MSA 上（把块级索引在相邻层间复用），<strong>目前没有任何一方做过这个组合</strong>。GLM 关心的是"索引器太贵"，MiniMax 关心的是"索引器选不准"——两家问的正好是互补的子问题。</p>
+</blockquote>
 <hr />
 <h2 id="84-3">8.4 路线③：压缩注意力</h2>
 <h3 id="token">原理：远处的 token 不需要逐个看，打包成摘要就行</h3>
-<div class="codehilite"><pre><span></span><code>    最近的：       逐个看，全精度
-    ├─ t_L  t_{L−1}  t_{L−2}  ...
+<div class="codehilite"><pre><span></span><code>    原始序列（长度 s）
+    |
+    +-- 最近的一小段：逐个看，全精度
+    |       ...  t(s-3)   t(s-2)   t(s-1)   t(s)
+    |
+    +-- 远处的全部：每 r 个 token 打包成 1 个&quot;摘要 token&quot;
+            [ t1  t2  t3  t4 ]  --&gt;  c1
+            [ t5  t6  t7  t8 ]  --&gt;  c2
+            [ t9  t10 t11 t12]  --&gt;  c3
+              ^ 压缩率 r = 4
+              ^ &quot;打包&quot;通常是一个小的可学习池化或一维卷积
 
-    远处的：       每 r 个打包成 1 个&quot;摘要 token&quot;
-    ├─ [t1..t4]→c1   [t5..t8]→c2   [t9..t12]→c3  ...
-         ↑ 压缩率 r=4
-
-    → 序列长度从 L 变成 L/r，计算量降到 O(L²/r²)
+    ⟹ 序列长度从 s 变成 s/r，配对数从 s²/2 变成 (s/r)²/2
+    ⟹ 计算量降到 1/r²
+    ⚠️ 但【阶还是平方】—— 只是常数被砍了 r² 倍
 </code></pre></div>
 
-<p><strong>"打包"通常是一个小的可学习池化或卷积。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>收益</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>压缩注意力</strong></td>
+<td>✅ 常数砍掉 $r^2$ 倍，$r=128$ 时是 <strong>16384 倍</strong></td>
+<td>❌ 摘要<strong>必然有损</strong>，细节召回会受影响</td>
+</tr>
+<tr>
+<td></td>
+<td>✅ ★ <strong>没有"选错"的风险</strong>——不做 top-k，一个摘要都不漏</td>
+<td>❌ 打包本身要花钱（池化/卷积）</td>
+</tr>
+<tr>
+<td></td>
+<td>✅ 完全避开了 top-k 不可微、gather 不友好这两个麻烦</td>
+<td>⚠️ <strong>复杂度的阶没变</strong>，长度再涨它会重新追上来</td>
+</tr>
+</tbody>
+</table>
 <h3 id="deepseek-v4">✅ DeepSeek-V4 的双注意力</h3>
 <blockquote>
 <p><strong>V4 报告明确给出的两种注意力</strong>：<br />
 <code>CSA (Compressed Sparse Attention，压缩稀疏注意力)：  4:1 【重叠】压缩
 HCA (Heavily Compressed Attention，重度压缩注意力)：128:1 【稠密】</code><br />
-✅ 两个全称都是报告摘要里的原文：<em>"a hybrid attention architecture that combines<br />
-Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)"</em>。<br />
-⚠️ 注意 <strong>HCA 的名字里没有 "Sparse"</strong>——✅ 报告写得很明确：<br />
-<em>"HCA applies more aggressive compression to the KV caches but </em><em>keeps dense attention</em><em>"</em>。</p>
+✅ 两个全称都是报告摘要里的原文：<em>"a hybrid attention architecture that combines Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)"</em>。<br />
+⚠️ 注意 <strong>HCA 的名字里没有 "Sparse"</strong>——✅ 报告写得很明确：<em>"HCA applies more aggressive compression to the KV caches but </em><em>keeps dense attention</em><em>"</em>。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    CSA  4:1  重叠压缩   → 中等压缩率，重叠保证边界信息不丢
-    HCA  128:1 稠密      → 极高压缩率，但【稠密】：所有摘要都看，不做稀疏选择
+<div class="codehilite"><pre><span></span><code>    CSA  4:1   重叠压缩  -&gt; 中等压缩率，&quot;重叠&quot;保证块边界的信息不被切断
+    HCA  128:1 稠密      -&gt; 极高压缩率，但【稠密】：所有摘要都看，不做稀疏选择
 
     两者组合：
-      · CSA 提供较细的粒度（4 个 token 一个摘要）
+      · CSA 提供较细的粒度（4 个 token 一个摘要）+ 稀疏选择
       · HCA 提供极廉价的全局视野（128 个 token 一个摘要，但一个不漏地全看）
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>"稠密"这个词是关键</strong>：HCA 压缩了 128 倍之后，序列长度只剩 $L/128$，此时<strong>再做完整的 $O((L/128)^2)$ 注意力也很便宜</strong>（1M → 8K，完全可接受）。</p>
-<p><strong>这是一个很干净的设计：用极致压缩把"看全局"这件事变得便宜到可以不做稀疏。</strong> 它避开了 §8.3 提到的 top-k 不可微和 gather 不友好的全部麻烦。</p>
+<p>🔑 <strong>"稠密"这个词是关键，把数字算出来就懂了</strong>：HCA 压缩 128 倍之后，1M 的序列只剩 <strong>8192</strong> 个摘要，此时<strong>再做完整的注意力也很便宜</strong>：<br />
+<code>全注意力 @ 1M：     配对 5.5e11 / 层，全 50 层 563 PFLOPs   -&gt; 约 13 分钟
+    HCA 128:1 @ 1M：    配对 3.4e7  / 层，全 50 层 34.4 TFLOPs  -&gt; ★ 约 46 毫秒
+                                                       ↑ 便宜 16384 倍</code><br />
+<strong>这是一个很干净的设计：用极致压缩把"看全局"这件事变得便宜到可以不做稀疏。</strong></p>
+<p>⚠️ <strong>上面只算了 HCA</strong>。CSA 的名字里有 Sparse，说明它在 4:1 压缩之后<strong>还要做稀疏选择</strong>，而报告没给它的 $k$，所以算不出来。<strong>别把 HCA 的 46 毫秒当成 V4 注意力的全部成本。</strong></p>
 </blockquote>
-<h3 id="minimax-m3-msa">✅ MiniMax M3 的 MSA：块级结构</h3>
+<h3 id="_7">⚠️ 压缩这条路的隐藏代价：它依然是平方的</h3>
+<p><strong>这是 §8.1 那张表里第 ③ 行的警告，现在把交叉点算出来。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>每层的注意力 FLOPs</th>
+<th>对 $s$ 的阶</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>压缩注意力</strong>（压缩率 $r$）</td>
+<td>$4d\cdot\dfrac{(s/r)^2}{2} = \dfrac{2ds^2}{r^2}$</td>
+<td>⚠️ 平方</td>
+</tr>
+<tr>
+<td><strong>线性注意力</strong></td>
+<td>$4\,s\,d_h\,d$</td>
+<td>★ 线性</td>
+</tr>
+</tbody>
+</table>
+<p><strong>令两者相等</strong>（$d=5120$、$d_h=128$、$r=128$）：</p>
+<p>$$0.625\,s^2 = 2{,}621{,}440\,s \quad\Longrightarrow\quad s = \frac{2{,}621{,}440}{0.625} = 4{,}194{,}304 = \mathbf{4M}$$</p>
+<table>
+<thead>
+<tr>
+<th>序列长度</th>
+<th>HCA 128:1（压缩，平方）</th>
+<th>线性注意力</th>
+<th>谁更便宜</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>128K</td>
+<td>0.54 TFLOPs</td>
+<td>17.2 TFLOPs</td>
+<td>★ <strong>压缩赢 32 倍</strong></td>
+</tr>
+<tr>
+<td>1M</td>
+<td>34.4 TFLOPs</td>
+<td>137 TFLOPs</td>
+<td>★ <strong>压缩赢 4 倍</strong></td>
+</tr>
+<tr>
+<td><strong>4M</strong></td>
+<td>550 TFLOPs</td>
+<td>550 TFLOPs</td>
+<td><strong>打平</strong></td>
+</tr>
+<tr>
+<td>16M</td>
+<td>8.8 PFLOPs</td>
+<td>2.2 PFLOPs</td>
+<td>★ <strong>线性赢 4 倍</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p><strong>M3 报告的配置</strong>：块大小 $B_k = 128$，选 $k=16$ 个块 → 有效上下文 $16\times128 = 2048$。</p>
+<p>🔑 <strong>这张表说明了一件很重要的事</strong>：<br />
+```<br />
+在【1M 以内】这个当前主流的长度区间，压缩注意力比线性注意力还便宜，<br />
+而且它【不会遗忘】（摘要有损，但所有历史都还在序列里）。</p>
+<p>★ 这就是 DeepSeek-V4 敢把整个注意力都换成压缩、一点线性都不用的原因，<br />
+  也解释了为什么 §8.7 会说"压缩是四条路里最安全的那条"。</p>
+<p>⚠️ 但它的优势【随长度衰减】：到 4M 就被线性追上，再往后就是线性的天下。<br />
+   ⟹ 如果上下文真的要奔向 10M+，这个格局会翻过来。<br />
+```<br />
+⚠️ 上表是我按"只数注意力那两个矩阵乘"的推演，没算压缩器/池化本身的开销，也没算线性注意力 chunkwise 实现的额外常数。<strong>用来判断量级和趋势，不要当精确预测。</strong></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    把序列切成 128 个 token 一块，
-    以【块】为单位做 top-k 选择（选 16 块），
-    块内做完整注意力
+<h3 id="minimax-m3-msa">★ 顺带说清一个容易混的邻居：MiniMax M3 的 MSA 是"块级稀疏"，不是压缩</h3>
+<p><strong>MSA 看起来很像压缩（它也按块处理），但它属于路线 ②。区别是一句话：</strong></p>
+<div class="codehilite"><pre><span></span><code>    压缩（HCA）：把 128 个 token 【真的合成 1 个摘要向量】，
+                 之后只和摘要算注意力，原始 128 个 token 不再参与
+                 -&gt; 信息有损，但一个块都不漏
+
+    块级稀疏（MSA）：把序列切成 128 个 token 一块，
+                 以【块】为单位选 top-16 块，
+                 ★ 选中的块【块内做完整注意力，一个 token 都不合并】
+                 -&gt; 信息无损，但没被选中的块【完全看不见】
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>为什么按块而不按 token 选</strong>：<br />
+<p>✅ <strong>M3 报告的配置</strong>：块大小 $B_k = 128$，选 $k=16$ 个块 → 有效上下文 $16\times128 = 2048$。</p>
+<p>🔑 <strong>为什么按块而不按 token 选</strong>——回到 §8.3 那个 gather：<br />
 ```<br />
-按 token 选 2048 个 → GPU 要做 2048 次分散的随机访存 → 极慢<br />
-按块选 16 块        → 16 次连续访存，每次 128 个 → GPU 友好 ★</p>
-<p>这是【算法迁就硬件】的典型例子，和 §5.7 FlashAttention 是同一种思路<br />
-```</p>
+按 token 选 2048 个  -&gt;  GPU 要做 2048 次分散的随机访存  -&gt;  极慢<br />
+按块选 16 块         -&gt;  16 次【连续】访存，每次 128 个   -&gt;  GPU 友好 ★</p>
+<p>这是【算法迁就硬件】的典型例子，和 FlashAttention（05 章 §5.7）<br />
+是同一种思路：数学上更"粗糙"的方案，因为贴合硬件而整体更快。<br />
+```<br />
+📌 M3 的底座是 GQA（4 个 KV 组各选各的），所以它<strong>必须</strong>退到块级——这条因果链在 §8.3 第二步。</p>
 </blockquote>
 <hr />
 <h2 id="85-4linear-attention">8.5 路线④：线性注意力（Linear Attention）</h2>
@@ -484,102 +936,119 @@ Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA)"</em>�
 <p>🔑 <strong>先说清楚它和前三条路的根本区别</strong>，否则后面全是公式：</p>
 <p>```<br />
 路线①②③（滑窗 / 稀疏 / 压缩）<br />
-    骨架还是 O(L²) 那张【L × L 的大表】，只是把大部分格子划掉不算<br />
-    → 省，但没有【消灭】那张表；KV cache 仍然随长度增长</p>
+    骨架还是那张【s × s 的大表】，只是把大部分格子划掉不算（或先把表变小）<br />
+    -&gt; 省，但没有【消灭】那张表；KV cache 仍然要按 token 存着</p>
 <p>路线④（线性注意力）<br />
     ★ 把那张表从公式里【彻底消掉】<br />
-    → 历史不再逐个存着，而是压进【一个固定大小的矩阵】<br />
-    → 代价：压缩就会有损，所以它【必然遗忘】<br />
+    -&gt; 历史不再逐个存着，而是压进【一个固定大小的矩阵】<br />
+    -&gt; 代价：压缩就会有损，所以它【必然遗忘】<br />
 ```</p>
 <p><strong>一句话：前三条是"少看几个 token"，第四条是"根本不存 token"。</strong></p>
 </blockquote>
 <hr />
-<h3 id="l2">第一步：$L^2$ 到底卡在哪一个符号上</h3>
+<h3 id="s2">第一步：$s^2$ 到底卡在哪一个符号上</h3>
 <p>标准注意力（<a href="05-注意力机制.html">05 章</a>）写成逐个 token 的形式：</p>
 <p>$$O_i = \frac{\sum_{j\le i}\exp(q_i^\top k_j)\,v_j}{\sum_{j\le i}\exp(q_i^\top k_j)}$$</p>
-<p><strong>为什么这一定要算 $L^2$ 次？</strong> 因为分子里的 $\exp(q_i^\top k_j)$ <strong>同时缠住了 $i$ 和 $j$</strong>：</p>
+<p><strong>为什么这一定要算 $s^2$ 次？</strong> 因为分子里的 $\exp(q_i^\top k_j)$ <strong>同时缠住了 $i$ 和 $j$</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    想算第 i 个 token 的输出，就得对每一个 j 单独求一次 exp(q_i·k_j)
     换一个 i，前面算的全部作废，因为 exp 里的 q 变了
-        → L 个 i × L 个 j = L² 次，一次都省不掉
+        -&gt; s 个 i × s 个 j = s² 次，一次都省不掉
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>这里要引入一个词：「可分解」</strong>。<br />
+<p>📌 <strong>这里要引入一个词：「可分解」</strong>（decomposable）。<br />
 ```<br />
-可分解  =  能写成  f(q_i) · g(k_j)  的形式，两个因子各自只依赖一边</p>
+可分解  =  能写成  f(q_i) · g(k_j)  的形式，两个因子【各自只依赖一边】</p>
 <p>exp(q·k)        ❌ 不可分解 —— q 和 k 被锁死在同一个 exp 里<br />
 φ(q)ᵀ φ(k)      ✅ 可分解  —— 一个只碰 q，一个只碰 k，中间是普通内积<br />
 ```<br />
-<strong>整条路线的全部动机，就是把不可分解的 $\exp$ 换成可分解的东西。</strong> 至于为什么"可分解"就能省掉 $L^2$——那是下一步，也是本节最关键的一步。</p>
+<strong>整条路线的全部动机，就是把不可分解的 $\exp$ 换成可分解的东西。</strong> 至于为什么"可分解"就能省掉 $s^2$——那是下一步，也是本节最关键的一步。</p>
 </blockquote>
 <hr />
-<h3 id="_5">第二步：★★ 核心 —— 矩阵乘法的结合律</h3>
+<h3 id="_8">第二步：★★ 核心 —— 矩阵乘法的结合律</h3>
 <p><strong>这一步是整节的心脏。如果只看懂一段，就看这一段。</strong></p>
 <p>先忘掉 softmax，只看注意力最裸的骨架 $\;O = (QK^\top)V$。<strong>矩阵乘法有结合律，所以括号可以换个位置</strong>：</p>
-<div class="codehilite"><pre><span></span><code>   记 L = 序列长度（比如 1,000,000），d = 每个头的维度（比如 128）
-   Q: [L, d]      K: [L, d]      V: [L, d]
+<div class="codehilite"><pre><span></span><code>   记 s = 序列长度（比如 1,000,000），d_h = 每个头的维度（比如 128）
+   Q: [s, d_h]      K: [s, d_h]      V: [s, d_h]
 
-┌─ 先算 QKᵀ ─（标准做法）──────────────────────────────────┐
-│                                                          │
-│    Q [L,d] × Kᵀ[d,L]  →  【 L × L 】 ← ★ 这张巨表就是 O(L²)│
-│                              ↓  × V [L,d]                │
-│                          结果 [L, d]                      │
-│                                                          │
-│    L=1M 时这张表有 10¹² 个数 —— 存都存不下                 │
-└──────────────────────────────────────────────────────────┘
+  ┌── 路线甲：先算 QKᵀ（标准做法）
+  │
+  │     Q [s,d_h] × Kᵀ[d_h,s]  --&gt;  【 s × s 】   ← ★ 这张巨表就是 O(s²)
+  │                                     |  再 × V [s,d_h]
+  │                                     v
+  │                                  结果 [s, d_h]
+  │
+  └──  s = 1M 时这张表有 10¹² 个数 —— 存都存不下
 
-┌─ 先算 KᵀV ─（线性注意力）────────────────────────────────┐
-│                                                          │
-│    Kᵀ[d,L] × V [L,d]  →  【 d × d 】 ← ★ 和 L 完全无关！   │
-│                              ↑  Q [L,d] 再乘上来          │
-│                          结果 [L, d]                      │
-│                                                          │
-│    d=128 时这个矩阵只有 16,384 个数 —— 一直是这么大        │
-└──────────────────────────────────────────────────────────┘
+  ┌── 路线乙：先算 KᵀV（线性注意力）
+  │
+  │     Kᵀ[d_h,s] × V [s,d_h]  --&gt;  【 d_h × d_h 】 ← ★ 和 s 完全无关！
+  │                                     |  再让 Q [s,d_h] 乘上来
+  │                                     v
+  │                                  结果 [s, d_h]
+  │
+  └──  d_h = 128 时这个矩阵只有 16,384 个数 —— 无论 s 多大，一直是这么大
 
    ★★ 两条路的【结果完全相同】，只是先算哪一步不同 ★★
 </code></pre></div>
 
 <p><strong>算一笔账</strong>（乘加次数）：</p>
-<div class="codehilite"><pre><span></span><code>(QKᵀ)V ：  L·L·d  +  L·L·d  =  2L²d
-Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
-                                 ↑ L 和 d 换了位置
+<table>
+<thead>
+<tr>
+<th>先算哪一步</th>
+<th>乘加次数</th>
+<th>展开</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>路线甲 $(QK^\top)V$</td>
+<td>$2s^2d_h$</td>
+<td>$s\cdot s\cdot d_h$（算大表）$+\;s\cdot s\cdot d_h$（乘 V）</td>
+</tr>
+<tr>
+<td><strong>路线乙</strong> $Q(K^\top V)$</td>
+<td>★ $2sd_h^2$</td>
+<td>$d_h\cdot s\cdot d_h$（算小矩阵）$+\;s\cdot d_h\cdot d_h$（乘 Q）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    两者之比 = s / d_h
 
-    两者之比 = L / d
-
-    L = 4K，  d=128  →   32 倍
-    L = 128K，d=128  →  1024 倍
-    L = 1M，  d=128  →  ★ 8192 倍
+    s = 4K，  d_h = 128  -&gt;     32 倍
+    s = 128K，d_h = 128  -&gt;   1024 倍
+    s = 1M，  d_h = 128  -&gt; ★ 8192 倍
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>这就是"线性"两个字的全部来历</strong>：$2L^2d \to 2Ld^2$，<strong>对 $L$ 从平方变成了一次</strong>。<br />
-<strong>代价也一目了然</strong>：中间那个 $[d,d]$ 的矩阵，就是"全部历史"被压缩成的<strong>唯一容器</strong>。$L$ 再大它也不变大——<strong>省就省在这里，忘也忘在这里。</strong></p>
+<p>🔑 <strong>这就是"线性"两个字的全部来历</strong>：$2s^2d_h \to 2sd_h^2$，<strong>对 $s$ 从平方变成了一次</strong>。<br />
+<strong>代价也一目了然</strong>：中间那个 $[d_h,d_h]$ 的矩阵，就是"全部历史"被压缩成的<strong>唯一容器</strong>。$s$ 再大它也不变大——<strong>省就省在这里，忘也忘在这里。</strong></p>
 </blockquote>
 <hr />
 <h3 id="exp">第三步：为什么必须先把 $\exp$ 换掉</h3>
 <p><strong>因为 softmax 让你没法挪括号。</strong></p>
-<div class="codehilite"><pre><span></span><code>    有 exp：   O = softmax(Q Kᵀ) V
-                          └──┬──┘
-                     exp 是【逐元素】作用在乘完之后的 L×L 表上
-                     → 那张表必须先【真的算出来】，才能取 exp
-                     → 括号焊死了，挪不动
+<div class="codehilite"><pre><span></span><code>    有 exp   ：O = softmax(Q Kᵀ) V
+                          ^^^^^^
+                   exp 是【逐元素】作用在乘完之后那张 s×s 表上
+                   -&gt; 那张表必须先【真的算出来】，才能对它取 exp
+                   -&gt; 括号被焊死了，挪不动
 
-    换成 φ：   O = (Φ_Q Φ_Kᵀ) V   →   Φ_Q (Φ_Kᵀ V)
-                                        ↑ 纯矩阵乘法，结合律随便用
+    换成 phi ：O = (Φ_Q Φ_Kᵀ) V   -&gt;   Φ_Q (Φ_Kᵀ V)
+                                        ^ 到这里就是纯矩阵乘法，结合律随便用
 </code></pre></div>
 
-<p>所以把 $\exp(q^\top k)$ 换成 $\phi(q)^\top\phi(k)$（$\phi$ 是某个<strong>特征映射</strong>，早期工作用 $\mathrm{elu}(x)+1$）：</p>
+<p>所以把 $\exp(q^\top k)$ 换成 $\phi(q)^\top\phi(k)$（$\phi$ 是某个<strong>特征映射</strong> feature map，早期工作用 $\mathrm{elu}(x)+1$）：</p>
 <p>$$O_i = \frac{\sum_{j\le i}\phi(q_i)^\top\phi(k_j)\,v_j}{\sum_{j\le i}\phi(q_i)^\top\phi(k_j)} = \frac{\phi(q_i)^\top\left(\sum_{j\le i}\phi(k_j)v_j^\top\right)}{\phi(q_i)^\top\left(\sum_{j\le i}\phi(k_j)\right)}$$</p>
 <p><strong>逐字看懂右边这一步是怎么来的</strong>（很多材料到这里就一句"提出来"带过了）：</p>
 <div class="codehilite"><pre><span></span><code>① φ(q_i)ᵀφ(k_j) 是一个【标量】（两个向量的内积）
 ② 标量 × 向量 v_j，可以改写成矩阵形式：
         [φ(q_i)ᵀ φ(k_j)] · v_jᵀ  =  φ(q_i)ᵀ · [φ(k_j) v_jᵀ]
-         └──── 标量 ────┘             └──── 外积，[d_k, d_v] ────┘
+         ^^^^^ 标量 ^^^^^^             ^^ 外积，形状 [d_k, d_v] ^^
    ★ 这一步用的就是结合律：(aᵀb)cᵀ = aᵀ(bcᵀ)
-③ φ(q_i) 与求和变量 j 无关 → 提到 Σ 外面
+③ φ(q_i) 与求和变量 j 无关 -&gt; 提到 Σ 外面
 
-   于是括号里剩下   Σ_{j≤i} φ(k_j) v_jᵀ    ← 【完全不依赖 i】
+   于是括号里剩下   Σ_{j≤i} φ(k_j) v_jᵀ    ← ★【完全不依赖 i】
 </code></pre></div>
 
 <blockquote>
@@ -587,52 +1056,81 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 <strong>K3 的 KDA 换了个办法</strong>：不用 $\phi$，而是对 $q,k$ 做 <strong>L2Norm</strong>（把向量长度固定成 1），后面会看到这个选择还有一个更漂亮的用处。</p>
 </blockquote>
 <hr />
-<h3 id="_6">第四步：因果掩码，把"一次大矩阵乘"变成"一个滚动累加"</h3>
+<h3 id="_9">第四步：因果掩码，把"一次大矩阵乘"变成"一个滚动累加"</h3>
 <p><strong>这是很多讲解跳过、但恰恰是 RNN 冒出来的地方。</strong></p>
 <div class="codehilite"><pre><span></span><code>如果没有因果掩码（每个 token 能看全序列）：
     Σ_{j≤i} 里的 i 就消失了，所有 token 共用【同一个】 Kᵀ V
-    → 一次矩阵乘算完，干净利落
+    -&gt; 一次矩阵乘算完，干净利落
 
 但语言模型必须因果（第 i 个字看不到未来）：
-    → 上界是 i，每个 token 的括号内容都【不一样】
-    → 看起来又要算 L 次？
+    -&gt; 求和上界是 i，每个 token 的括号内容都【不一样】
+    -&gt; 看起来又要算 s 次？
 </code></pre></div>
 
 <p><strong>★ 但它们之间只差一项</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    第 i 个 token 的括号  =  第 (i−1) 个的括号  +  φ(k_i) v_iᵀ
-                                                  └─ 只跟第 i 个 token 有关 ─┘
+                                                  ^ 只跟第 i 个 token 有关
 
     这就是一个【滚动累加】(running sum)：
         来一个 token，往上加一项，前面的结果完全复用，不重算
 
     ★★ 而&quot;用上一步的状态 + 当前输入，算出这一步的状态&quot;
-       —— 这在数学上就是【递推式】，也就是一个 RNN ★★
+       —— 这在数学上就是【递推式】，也就是一个 RNN（循环神经网络）★★
 </code></pre></div>
 
 <hr />
 <h3 id="rnn">第五步：于是得到一个 RNN</h3>
 <p>$$\boxed{\ S_t = S_{t-1} + \phi(k_t)v_t^\top,\qquad o_t = \phi(q_t)^\top S_t\ }$$</p>
-<div class="codehilite"><pre><span></span><code>★ 先把形状钉死（不看形状就永远读不懂这个式子）：
-
-    φ(k_t)          [d_k]          第 t 个 token 的&quot;地址&quot;
-    v_t             [d_v]          第 t 个 token 的&quot;内容&quot;
-    φ(k_t) v_tᵀ     [d_k, d_v]     ← 外积！一个矩阵，不是一个数
-    S_t             [d_k, d_v]     ★ 状态矩阵，模型全部的&quot;记忆&quot;
-    φ(q_t)ᵀ S_t     [d_v]          读出来的结果
-
-    ★★ 注意 S 的形状里【没有 L】—— 这就是全部的秘密
+<p><strong>★ 先把形状钉死</strong>（不看形状就永远读不懂这个式子）：</p>
+<table>
+<thead>
+<tr>
+<th>符号</th>
+<th>形状</th>
+<th>是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$\phi(k_t)$</td>
+<td>$[d_k]$</td>
+<td>第 $t$ 个 token 的"地址"</td>
+</tr>
+<tr>
+<td>$v_t$</td>
+<td>$[d_v]$</td>
+<td>第 $t$ 个 token 的"内容"</td>
+</tr>
+<tr>
+<td>$\phi(k_t)v_t^\top$</td>
+<td>$[d_k, d_v]$</td>
+<td>★ <strong>外积</strong>！是一个矩阵，不是一个数</td>
+</tr>
+<tr>
+<td>$S_t$</td>
+<td>$[d_k, d_v]$</td>
+<td>★★ <strong>状态矩阵，模型全部的"记忆"</strong></td>
+</tr>
+<tr>
+<td>$\phi(q_t)^\top S_t$</td>
+<td>$[d_v]$</td>
+<td>读出来的结果</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 注意 S 的形状里【没有 s】—— 这就是全部的秘密
 </code></pre></div>
 
 <p><strong>把它当成一张会被反复涂改的表来读</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ┌─────────────────────────────────────────────────────────┐
-    │  S 是一张表：  key 是【栏目名】，value 是【栏目内容】     │
-    │                                                          │
-    │  每来一个 token：                                        │
-    │    ① 写：把 φ(k_t) v_tᵀ 加到表上                          │
-    │         ——&quot;在 k_t 这一栏，记下 v_t&quot;                       │
-    │    ② 读：用 φ(q_t) 去查这张表，得到 o_t                    │
-    │         ——&quot;我想找 q_t 这样的东西，表里有什么？&quot;            │
-    └─────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>    S 是一张表：  key 是【栏目名】，value 是【栏目内容】
+
+    每来一个 token，做两件事：
+      ① 写：把 φ(k_t) v_tᵀ 加到表上
+             ——&quot;在 k_t 这一栏，记下 v_t&quot;
+      ② 读：用 φ(q_t) 去查这张表，得到 o_t
+             ——&quot;我想找 q_t 这样的东西，表里有什么？&quot;
+
+    ⟹ 整个 Transformer 的注意力，被改写成了一个【可微的读写内存】
 </code></pre></div>
 
 <blockquote>
@@ -640,35 +1138,58 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 ⚠️ <strong>原因是我的解释，不是报告的说法</strong>：分母 $\phi(q)^\top\sum\phi(k_j)$ 会随序列变长而不断增大，是个已知的不稳定来源；改成"对 $q,k$ 做 L2Norm + 输出侧再过 RMSNorm 和门控"来控制尺度，工程上更稳（✅ 这套参数化是报告式 (2) 明确写的）。</p>
 </blockquote>
 <hr />
-<h3 id="_7">第六步：★ 算一笔真实的账，感受一下差多少</h3>
-<p><strong>这才是这条路线的卖点所在</strong>（⚠️ 以下是我按标准配置的估算，不是任何一家的官方数字）：</p>
-<div class="codehilite"><pre><span></span><code>设 d_k = d_v = 128（单个头），BF16 每个数 2 字节，看【一层、一个头】：
-
-┌─ 标准注意力的 KV cache ─────────────────────────────────┐
-│   每个 token 存 K 和 V 两份：2 × 128 × 2 字节 = 512 字节  │
-│   L = 1K     →      512 KB                              │
-│   L = 128K   →       64 MB                              │
-│   L = 1M     →  ★   512 MB      ← 随长度【线性增长】     │
-└─────────────────────────────────────────────────────────┘
-
-┌─ 线性注意力的状态 S ────────────────────────────────────┐
-│   S 是 [128, 128] 的矩阵：128 × 128 × 2 字节 = 32 KB     │
-│   L = 1K     →       32 KB                              │
-│   L = 128K   →       32 KB                              │
-│   L = 1M     →  ★    32 KB      ← 【一个字节都不涨】     │
-└─────────────────────────────────────────────────────────┘
-
-    1M 上下文下相差 512 MB / 32 KB = 【16,384 倍】
+<h3 id="_10">第六步：★ 算一笔真实的账，感受一下差多少</h3>
+<p><strong>这才是这条路线的卖点所在</strong>（⚠️ 以下是我按标准配置的估算，不是任何一家的官方数字）。</p>
+<p><strong>设定</strong>：$d_k = d_v = 128$（单个头），BF16 每个数 2 字节，只看<strong>一层、一个头</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>序列长度 $s$</th>
+<th>标准注意力的 KV cache（每 token 存 K、V 两份 = 512 字节）</th>
+<th>线性注意力的状态 $S$（$[128,128]$ 矩阵 = 32 KiB）</th>
+<th>相差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1K</td>
+<td>512 KiB</td>
+<td><strong>32 KiB</strong></td>
+<td>16×</td>
+</tr>
+<tr>
+<td>32K</td>
+<td>16 MiB</td>
+<td><strong>32 KiB</strong></td>
+<td>512×</td>
+</tr>
+<tr>
+<td>128K</td>
+<td>64 MiB</td>
+<td><strong>32 KiB</strong></td>
+<td>2048×</td>
+</tr>
+<tr>
+<td><strong>1M</strong></td>
+<td>★ <strong>512 MiB</strong>（随长度<strong>线性增长</strong>）</td>
+<td>★ <strong>32 KiB</strong>（<strong>一个字节都不涨</strong>）</td>
+<td>★ <strong>16,384×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 左边那一列在涨，右边那一列是【一条水平线】。
+      这就是&quot;状态大小与序列长度解耦&quot;的全部含义。
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>回到 <a href="06-KV-cache.html">06 章</a> 那条主线</strong>：decode 是<strong>访存受限</strong>的，省下的字节几乎直接变成速度。<strong>这就是为什么明知道线性注意力会遗忘，五家里还是有人愿意用它当主力层。</strong></p>
+<p>🔑 <strong>回到 <a href="06-KV-cache.html">06 章 §6.4</a> 那条主线</strong>：decode 是<strong>访存受限</strong>的，省下的字节几乎直接变成速度。<strong>这就是为什么明知道线性注意力会遗忘，五家里还是有人愿意用它当主力层。</strong></p>
+<p>📌 它在 §8.7 那张总表里是"线性"那一行：1M 上下文下，注意力 FLOPs 比全注意力省 <strong>4096 倍</strong>。</p>
 </blockquote>
 <hr />
-<h3 id="_8">⚠️ 三个必须知道的代价</h3>
+<h3 id="_11">⚠️ 三个必须知道的代价</h3>
 <div class="codehilite"><pre><span></span><code>① ★ 必然遗忘 —— 这是【信息论层面】的，不是工程没做好
      1M 个 token、每个 128 维的 value，一共 1.34 亿个数
-     全部要塞进 S 的 16,384 个数里 → 压缩比 8192 : 1
+     全部要塞进 S 的 16,384 个数里  -&gt;  压缩比 8192 : 1
      ★ 压缩比这么高，丢信息是【数学上必然的】，不可能靠调参解决
 
 ② 训练并行需要特殊算法
@@ -676,20 +1197,20 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
      解法：chunkwise（分块）—— 块【内】并行、块【间】递推
      ✅ K3 报告式 (3) 写的就是这个：
         O[t] = (Γ ⊙ Q[t]) S[t]  +  A[t] Ṽ[t]
-                └ 块间：读入状态 ┘   └ 块内：并行算 ┘
+               ^ 块间：读入状态 ^   ^ 块内：并行算 ^
      ⚠️ 而块内计算要【除以累积衰减 Γ】，衰减连乘会变得极小、倒数极大
-        → 这正是 K3 把衰减改成&quot;有下界&quot;的原因，见 [../Kimi-K3.md](../Kimi-K3.md) §二
-        ★ 一个很典型的因果链：数学形式 → 数值范围 → 必须改设计
+        -&gt; 这正是 K3 把衰减改成&quot;有下界&quot;的原因，见 [../Kimi-K3.md](../Kimi-K3.md) §二
+        ★ 一个很典型的因果链：数学形式 -&gt; 数值范围 -&gt; 必须改设计
 
 ③ 精确检索会崩
      &quot;大海捞针&quot;这类任务要的是【原样召回】，而它给的是【有损摘要】
-     → 所以没有一家纯用线性注意力，见本节末
+     -&gt; 所以没有一家纯用线性注意力，见本节末
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>一句话对比</strong>：<br />
-<code>softmax 注意力：把所有历史【原样存着】，每次精确检索  → 完美但 O(L²)
-线性注意力：   把所有历史【压进一个矩阵】，有损检索   → O(L) 但会忘
+<code>softmax 注意力：把所有历史【原样存着】，每次精确检索  -&gt; 完美但 O(s²)
+线性注意力：   把所有历史【压进一个矩阵】，有损检索   -&gt; O(s) 但会忘
 ★ 这就是 RNN 和 Transformer 之争的现代版本</code></p>
 </blockquote>
 <hr />
@@ -698,7 +1219,7 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 <div class="codehilite"><pre><span></span><code>    &quot;小明住在北京。……（500 字后）……小明搬到了上海。&quot;
 
     朴素线性注意力：北京和上海的信息【都在 S 里叠着】
-    → 问&quot;小明住在哪&quot;，读出来的是两者的混合 → 错
+    -&gt; 问&quot;小明住在哪&quot;，读出来的是两者的混合 -&gt; 错
 </code></pre></div>
 
 <h4 id="i-beta-k-ktop">★ 为什么恰好是 $(I-\beta k k^\top)$ 这个形状</h4>
@@ -707,10 +1228,10 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
       希望&quot;用 k_t 去读，能读出 v_t&quot;，也就是   Sᵀ k_t ≈ v_t
 
 ② 把它写成一个损失函数：
-      ℒ(S) = ½ ‖ Sᵀ k_t − v_t ‖²
+      L(S) = ½ ‖ Sᵀ k_t − v_t ‖²
 
 ③ 对 S 求梯度：
-      ∇_S ℒ = k_t ( S ᵀ k_t − v_t )ᵀ
+      ∇_S L = k_t ( Sᵀ k_t − v_t )ᵀ
 
 ④ 用学习率 β 走一步梯度下降：
       S_t = S_{t−1} − β k_t ( S_{t−1}ᵀ k_t − v_t )ᵀ
@@ -719,7 +1240,7 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 </code></pre></div>
 
 <blockquote>
-<p>⭐ <strong>"delta"这个名字就来自第 ④ 步的括号</strong>：$\delta = v_t - S_{t-1}^\top k_t$ 是<strong>"想要的" 减去 "现在读到的"</strong>，也就是<strong>误差</strong>。更新量正比于这个 $\delta$——这是 1960 年 Widrow–Hoff 的经典 delta rule，在这里被搬进了注意力。</p>
+<p>⭐ <strong>"delta"这个名字就来自第 ④ 步的括号</strong>：$\delta = v_t - S_{t-1}^\top k_t$ 是<strong>"想要的"减去"现在读到的"</strong>，也就是<strong>误差</strong>。更新量正比于这个 $\delta$——这是 1960 年 Widrow–Hoff 的经典 delta rule，在这里被搬进了注意力。</p>
 <p>🔑 <strong>换句话说：每读入一个 token，模型就在对自己的记忆做一次在线学习。</strong></p>
 </blockquote>
 <h4 id="kda-k-l2norm">★ 顺带解释一个细节：为什么 KDA 要对 $k$ 做 L2Norm</h4>
@@ -739,7 +1260,7 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 <h4 id="kda">完整的 KDA 更新式</h4>
 <p>$$S_t = \underbrace{\left(I - \beta_t k_t k_t^\top\right)}<em _text_逐通道遗忘门="\text{逐通道遗忘门">{\text{擦除 }k_t\text{ 方向的旧内容}}\cdot\underbrace{\text{Diag}(\alpha_t)}</em>,\qquad \tilde o_t = S_t^\top q_t$$}}\cdot S_{t-1} + \underbrace{\beta_t k_t v_t^\top}_{\text{写入新内容}</p>
 <blockquote>
-<p>✅ <strong>这就是 K3 报告的式 (1)，逐符号核对过。</strong></p>
+<p>✅ <strong>这就是 K3 报告的式 (1)，逐符号核对过。</strong> KDA = <strong>K</strong>imi <strong>D</strong>elta <strong>A</strong>ttention。</p>
 </blockquote>
 <table>
 <thead>
@@ -780,9 +1301,12 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 <div class="codehilite"><pre><span></span><code>★ 读式子要【从右往左】读（矩阵乘法的作用顺序）：
 
     S_{t−1}                       ← 上一刻的记忆
-      ↓ × Diag(α_t)               ① 先让每一栏各自淡化一点
-      ↓ × (I − β_t k_t k_tᵀ)      ② 再把 k_t 这一栏的旧内容擦掉 β 的比例
-      ↓ + β_t k_t v_tᵀ            ③ 最后把新的 v_t 写进这一栏
+      |  × Diag(α_t)              ① 先让每一栏各自淡化一点
+      v
+      |  × (I − β_t k_t k_tᵀ)     ② 再把 k_t 这一栏的旧内容擦掉 β 的比例
+      v
+      |  + β_t k_t v_tᵀ           ③ 最后把新的 v_t 写进这一栏
+      v
     S_t                           ← 这一刻的记忆
 
     ✅ 报告的措辞也是这个顺序：&quot;KDA 在 delta-rule 更新【之前】施加逐通道衰减&quot;
@@ -790,9 +1314,9 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 
 <blockquote>
 <p>⭐ <strong>"逐通道"三个字是 Kimi 的核心贡献，别读漏了</strong>：<br />
-<code>普通遗忘门：整张表用【同一个】衰减率 → 所有记忆一起褪色
+<code>普通遗忘门：整张表用【同一个】衰减率 -&gt; 所有记忆一起褪色
 逐通道遗忘：S 的【每一行】有自己的衰减率
-             → "这一栏记的是人名，慢点忘"
+             -&gt; "这一栏记的是人名，慢点忘"
                "那一栏是临时数字，快点忘"
 ★ α_t 是 d_k 维向量而不是一个标量，差别就在这里</code><br />
 <strong>★ 这就是一个可微、可学习的读写内存</strong>：读写地址、写入强度、遗忘速度，全部由数据学出来。</p>
@@ -804,10 +1328,12 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 </blockquote>
 <p><strong>★ 拿架构表验算一遍</strong>（<a href="17-延伸阅读.html">17 章 §17.5</a> 那条"数字要能互相印证"的实践）：</p>
 <div class="codehilite"><pre><span></span><code>    93 层 = 23 个 block × 4 层  +  末尾额外 1 层 MLA
-                ↓
+                |
+                v
     KDA = 23 × 3 = 69
     MLA = 23 × 1 + 1 = 24
-                ↓
+                |
+                v
     ✅ 和报告架构表里的 &quot;69 KDA + 24 MLA&quot; 完全对上，69 + 24 = 93 ✓
 </code></pre></div>
 
@@ -821,52 +1347,230 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 <hr />
 <h2 id="86-attention-sink">8.6 Attention Sink：所有稀疏方案的必备补丁</h2>
 <h3 id="05-55">回忆 <a href="05-注意力机制.html">05 章 §5.5</a> 的伏笔</h3>
-<div class="codehilite"><pre><span></span><code>    softmax 权重和必须 = 1
-        → 模型没有&quot;什么都不看&quot;的选项
-        → 它自己发明了 attention sink：把 ~90% 权重倒给第一个 token
+<div class="codehilite"><pre><span></span><code>    softmax 的权重和必须 = 1
+        -&gt; 模型没有&quot;这一步什么都不看&quot;的选项
+        -&gt; 它自己发明了 attention sink（注意力沉降）：
+           把 ~90% 的权重倒给第一个 token，当作一个&quot;垃圾桶&quot;
 </code></pre></div>
 
 <h3 id="sink">⚠️ 稀疏化会把 sink 弄丢</h3>
-<div class="codehilite"><pre><span></span><code>    滑窗 w=512，当前在第 100000 个位置：
-        窗口 = [99488, 100000]
+<div class="codehilite"><pre><span></span><code>    滑窗 w=512，当前 query 在第 100,000 个位置：
+        窗口 = [99,488 .. 100,000]
         ★ 第 1 个 token 【不在窗口里】了！
 
-    → sink 消失 → 那 90% 的权重被迫重新分配给窗口内的普通 token
-    → 模型行为剧烈改变 → 输出崩坏
+    -&gt; sink 消失 -&gt; 那 90% 的权重被迫重新分配给窗口内的普通 token
+    -&gt; 模型行为剧烈改变 -&gt; 输出崩坏
 </code></pre></div>
 
 <p><strong>这是一个被反复观察到的现象</strong>：朴素的滑窗实现，一旦滑过初始 token，<strong>困惑度会突然爆炸</strong>。</p>
-<h3 id="_9">解法：显式给一个官方垃圾桶</h3>
-<div class="codehilite"><pre><span></span><code>① StreamingLLM 式：永远保留最前面的 4 个 token，不管窗口滑到哪
-② 可学习的 sink token：加几个专门的、不代表任何真实内容的 KV
-③ 给 softmax 加一个不参与输出的额外项（&quot;softmax + 1&quot;）
+<h3 id="_12">解法：显式给一个官方垃圾桶</h3>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>怎么做</th>
+<th>代表</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>保留最前面几个 token</strong></td>
+<td>永远把最前面的 4 个 token 留在窗口里，不管滑到哪</td>
+<td>StreamingLLM</td>
+</tr>
+<tr>
+<td>② <strong>可学习的 sink token</strong></td>
+<td>加几个专门的、不代表任何真实内容的 KV</td>
+<td>openPangu 的 PAS</td>
+</tr>
+<tr>
+<td>③ <strong>给 softmax 加一个额外项</strong></td>
+<td>分母里多加一个不参与输出的常数项（"softmax + 1"）</td>
+<td>gpt-oss 系</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sink_1">★ 把"滑窗 + sink + 全局槽位"叠在一张掩码图上</h3>
+<p><strong>这三样东西不是三个方案，而是通常一起用的三层。看一张图就清楚了</strong>（当前 query 在位置 $i=20$）：</p>
+<div class="codehilite"><pre><span></span><code>   key pos  :  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20  |  PAS
+   full     :  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  |   -
+   SWA only :  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  #  |   -
+   SWA+sink :  #  #  #  #  .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  #  |   -
+     +PAS   :  #  #  #  #  .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  #  | ###
+
+   逐行读：
+     full      —— 20 对全算，最准最贵
+     SWA only  —— 只留最近 w=6 个。★ 第 1 个 token 丢了，sink 没了，输出崩
+     SWA+sink  —— 额外无条件保留最前面 4 个 key。垃圾桶回来了 ✅
+     +PAS      —— 再挂 128 个【与输入无关的可学习 KV 槽位】（图上简写成 PAS）
+                  它们永远可见，不受任何滑窗 / 稀疏规则影响
 </code></pre></div>
 
 <h3 id="openpangu-pas">✅ openPangu 的 PAS</h3>
 <blockquote>
-<p><strong>PAS = 每层 128 个可学习的 KV</strong>（华为报告明确给出）。</p>
+<p><strong>PAS = 每层 128 个可学习的 KV</strong>（✅ 华为报告明确给出）。</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    在每一层的 KV cache 里，除了真实 token 的 KV，
     再放 128 个【可学习的、与输入无关的】KV 对。
-    它们永远可见，不受任何稀疏/滑窗规则影响。
+    它们永远可见，不受任何稀疏 / 滑窗规则影响。
+
+    ⚠️ 顺带算一下它的成本（按 07 章 §7.2 那张表，MLA-576，BF16）：
+        128 × 576 × 2 字节 = 147,456 字节 = 144 KiB / 层
+        50 层合计 = 7,372,800 字节 ≈ 7.0 MiB
+        ★ 相比 512K 上下文那 28 GiB 的 KV cache，这是 1/4000，完全可以忽略。
+        这是一个【几乎免费】的补丁 —— 便宜是它能被普遍采用的关键。
 </code></pre></div>
 
 <p><strong>它同时干了两件事</strong>：</p>
 <div class="codehilite"><pre><span></span><code>① 充当官方 sink：模型想&quot;什么都不看&quot;时，就把权重倒给 PAS
-   → 不用再扭曲某个真实 token 的数值当垃圾桶
-   → ★ 这条对 [14 量化](14-量化.md) 有直接好处：少一个离群值来源
+   -&gt; 不用再扭曲某个真实 token 的数值去当垃圾桶
+   -&gt; ★ 这条对 14 章「量化」有直接好处：少一个离群值（outlier）来源
 
-② 充当&quot;全局寄存器&quot;：128 个可学习的槽位可以存放任务级的全局信息
-   即使在滑窗层，模型也有一条稳定的全局通道
+② 充当&quot;全局寄存器&quot;：128 个可学习槽位可以存放任务级的全局信息
+   -&gt; 即使在滑窗层，模型也有一条稳定的全局通道
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>PAS 的消融数据在 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1.3。</strong></p>
+<p>📌 <strong>PAS 的消融数据在 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.1.3</strong>——那是五家里唯一有人做过的一次 sink 机制对照实验。</p>
 <p>🔑 <strong>这一代模型普遍引入显式 sink 机制，根因就是 §8.2~8.5 全面的稀疏化。</strong><br />
-<strong>稀疏化打破了模型自己找到的平衡，就必须补一个官方机制回去。</strong></p>
+<strong>稀疏化打破了模型自己找到的平衡，就必须补一个官方机制回去。这是"下游后果"的典型例子：改了 A，B 就必须跟着改。</strong></p>
 </blockquote>
 <hr />
-<h2 id="87">8.7 五家的组合：一张总表</h2>
+<h2 id="87">8.7 四条路的总账，和五家的组合</h2>
+<h3 id="_13">★ 先把四条路的绝对值并排算出来</h3>
+<p><strong>用 §8.1 的同一个配置</strong>（openPangu 规模：50 层、$d=5120$；线性那一行取 $d_h=128$），<strong>只数注意力那两个矩阵乘，因果掩码已计入</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>配对数（每层）</th>
+<th>4K 省几倍</th>
+<th>128K 省几倍</th>
+<th><strong>1M 省几倍</strong></th>
+<th>1M 的绝对 FLOPs</th>
+<th>1M 的理想耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>全注意力</strong>（基准）</td>
+<td>$s^2/2$</td>
+<td>1×</td>
+<td>1×</td>
+<td>1×</td>
+<td><strong>563 PFLOPs</strong></td>
+<td>约 <strong>13 分钟</strong></td>
+</tr>
+<tr>
+<td><strong>① 滑窗</strong> $w=512$</td>
+<td>$s\cdot w$</td>
+<td>4×</td>
+<td>128×</td>
+<td>★ <strong>1024×</strong></td>
+<td>550 TFLOPs</td>
+<td><strong>0.74 s</strong></td>
+</tr>
+<tr>
+<td><strong>② 稀疏</strong> top-2048</td>
+<td>$s\cdot k$</td>
+<td>⚠️ <strong>1×（一点不省）</strong></td>
+<td>32×</td>
+<td>256×</td>
+<td>2.20 PFLOPs</td>
+<td><strong>3.0 s</strong></td>
+</tr>
+<tr>
+<td><strong>③ 压缩</strong> 128:1 稠密</td>
+<td>$(s/128)^2/2$</td>
+<td>★ <strong>16384×</strong></td>
+<td>16384×</td>
+<td><strong>16384×</strong></td>
+<td>34.4 TFLOPs</td>
+<td>★ <strong>0.046 s</strong></td>
+</tr>
+<tr>
+<td><strong>④ 线性</strong> $d_h=128$</td>
+<td>不适用</td>
+<td>16×</td>
+<td>512×</td>
+<td><strong>4096×</strong></td>
+<td>137 TFLOPs</td>
+<td><strong>0.19 s</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>口径</strong>：耗时按 FlashAttention-3 在 H100 上的 <strong>740 TFLOP/s</strong> 折算，只是为了让"省几倍"变成能感受的秒数。<strong>这个吞吐是稠密 softmax kernel 的数字</strong>，稀疏和线性有各自的 kernel 效率（通常更低），所以后四行的秒数是<strong>乐观下界</strong>。</p>
+</blockquote>
+<p><strong>★ 三条读法，每一条都比表里的数字更重要</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 「省几倍」随长度变化的规律，四条路完全不同：
+     滑窗   倍数 = s / (2w)      -&gt; ★ 随长度线性涨
+     稀疏   倍数 = s / (2k)      -&gt; ★ 随长度线性涨
+     压缩   倍数 = r^2           -&gt; ★ 恒定！四条路里唯一在短序列也省的
+     线性   倍数 = s / (2 d_h)   -&gt; ★ 随长度线性涨
+
+   ⟹ 稀疏在 4K 上【一点都不省】（k=2048 已经是 s/2 了），
+     它的全部收益来自长度。⚠️ 拿短序列做消融会得出&quot;稀疏没用&quot;的错误结论。
+
+② 这张表只数了两个矩阵乘。四条路各有一笔【表外账】：
+     滑窗   -&gt;  0，没有额外模块              ★ 这是它最大的魅力：便宜且简单
+     稀疏   -&gt;  索引器本身 O(s²)（常数小），✅ GLM 实测 200K prefill 占 81% 延迟
+     压缩   -&gt;  池化 / 卷积的打包开销
+     线性   -&gt;  chunkwise 的额外常数，训练要专门 kernel
+
+③ ★★ 还有一整列这张表里没有的东西：KV cache
+</code></pre></div>
+
+<h3 id="_14">★ 第三条读法单独拿出来：省算力 ≠ 省显存</h3>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>注意力 FLOPs</th>
+<th><strong>KV cache 随 $s$ 怎么变</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>全注意力</td>
+<td>$O(s^2)$</td>
+<td>线性增长</td>
+</tr>
+<tr>
+<td><strong>① 滑窗</strong></td>
+<td>$O(s)$</td>
+<td>★★ <strong>常数</strong>（只存最近 $w$ 个）</td>
+</tr>
+<tr>
+<td><strong>② 稀疏</strong></td>
+<td>$O(s)$</td>
+<td>⚠️⚠️ <strong>照样线性增长！</strong></td>
+</tr>
+<tr>
+<td><strong>③ 压缩</strong></td>
+<td>$O(s^2/r^2)$</td>
+<td>线性增长，但常数小 $r$ 倍</td>
+</tr>
+<tr>
+<td><strong>④ 线性</strong></td>
+<td>$O(s)$</td>
+<td>★★ <strong>常数</strong>（一个 $[d_k,d_v]$ 矩阵）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>⚠️ 稀疏那一行是全章最容易漏的一点</strong>：<br />
+```<br />
+稀疏只算 top-2048 个配对，但它【必须把全部 s 个 token 的 KV 都留在显存里】<br />
+    —— 因为任何一个 token 都【有可能】在下一步被索引器选中。<br />
+    扔掉就再也选不回来了。</p>
+<p>⟹ ★★ 稀疏省算力、省"读多少"，但【一点不省"存多少"】。<br />
+⟹ 这就是它非得配 MLA 的第二个理由（第一个是 §8.3 的 gather）：<br />
+   稀疏管不了显存，只有 MLA 能管。两者【必须叠乘】。<br />
+```<br />
+<strong>把这条和 <a href="07-MHA到MLA.html">07 章 §7.5</a> 那句"两步是乘起来不是加起来"合起来读，就完整了。</strong></p>
+</blockquote>
+<h3 id="_15">五家的组合</h3>
 <table>
 <thead>
 <tr>
@@ -887,19 +1591,19 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 <td><strong>Kimi K3</strong></td>
 <td>④ 线性 + 全注意力</td>
 <td><strong>KDA</strong>（delta rule）+ <strong>MLA</strong></td>
-<td><strong>3:1</strong></td>
+<td><strong>3:1</strong>（69 + 24 层）</td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
 <td>② 稀疏</td>
 <td><strong>DSA</strong> + <strong>IndexShare</strong>（每 4 层算一次索引）</td>
-<td>—</td>
+<td>底座 MLA-256</td>
 </tr>
 <tr>
 <td><strong>MiniMax M3</strong></td>
 <td>② 稀疏（块级）</td>
 <td><strong>MSA</strong>：块 128，选 16 块 → 2048</td>
-<td>+ GQA-16</td>
+<td>底座 GQA-16</td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
@@ -909,51 +1613,92 @@ Q(KᵀV) ：  d·L·d  +  L·d·d  =  2Ld²
 </tr>
 </tbody>
 </table>
-<h3 id="_10">⚠️ 几个值得记住的横向观察</h3>
+<h3 id="_16">⚠️ 几个值得记住的横向观察</h3>
 <div class="codehilite"><pre><span></span><code>① 【没有一家纯用一条路】
    全部是混合。原因：每条路都有一个致命弱点，必须靠另一条补
-      滑窗 → 看不见远处      → 混全局层
-      线性 → 必然遗忘        → 混全注意力层
-      稀疏 → top-k 可能选错  → 混稠密层或滑窗
+      滑窗  -&gt;  看不见远处          -&gt;  混全局层（openPangu 1:2）
+      线性  -&gt;  必然遗忘            -&gt;  混全注意力层（K3 3:1）
+      稀疏  -&gt;  top-k 可能选错      -&gt;  混稠密层或滑窗
+      稀疏  -&gt;  不省显存            -&gt;  必须叠 MLA
 
 ② 【压缩（③）这条路最&quot;安全&quot;】
    DeepSeek-V4 的 HCA 是稠密的 —— 不做任何选择，一个不漏地看全部摘要
-   → 没有&quot;选错&quot;的风险，只有&quot;摘要有损&quot;的风险
+   -&gt; 没有&quot;选错&quot;的风险，只有&quot;摘要有损&quot;的风险
+   -&gt; 而且它是唯一在【短序列也省】的路（省 r² 倍，与长度无关）
    ⚠️ 这是我的判断，V4 报告没有这样对比过
+   ⚠️ 代价是它【阶还是平方】，到约 4M 会被线性追上（§8.4）
 
 ③ 【线性注意力的地位在下降】
    K3 只给它 3/4 的层，且必须配全注意力
    MiniMax 在 M2 里直接退回去了
-   → 从&quot;可能取代 Transformer&quot;降级为&quot;混合方案里的廉价层&quot;
+   -&gt; 从&quot;可能取代 Transformer&quot;降级为&quot;混合方案里的廉价层&quot;
+   ★ 但注意 §8.4 那个交叉点：如果上下文真的走向 10M+，它会重新占优
 
 ④ 【所有稀疏方案都需要 sink 补丁】
-   这是 §5.5「softmax 和必须为 1」这条约束的下游后果
+   这是 §5.5「softmax 权重和必须为 1」这条约束的下游后果
+   而 PAS 这类补丁成本只有 7 MiB 量级（是 28 GiB 的 1/4000）—— 几乎免费，所以会被普遍采用
+
+⑤ 【五家在&quot;稀疏&quot;上撞到了同一个数：2048】
+   GLM 的 DSA top-2048、MiniMax 的 MSA 16×128=2048
+   不同底座、不同粒度、不同团队，收敛到同一个数字
+   -&gt; ⚠️ 这只能算&quot;当前长上下文的一个经验甜点&quot;，不是什么定律
 </code></pre></div>
 
 <hr />
 <h2 id="88">8.8 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① 只有四条路减少 O(L²)：滑窗 / 稀疏 / 压缩 / 线性
-② 滑窗最简单，KV cache 变常数，但感受野只有 N×w
-   ⚠️ 三份负面证据：GLM-9B 消融 128K RULER 从 75.28 掉到 6.51
-      → 这一代没人敢纯用 SWA
-③ 稀疏（DSA）：便宜的索引器打分 → 只算 top-k
-   保留了看远处的能力，但 top-k 不可微、gather 不 GPU 友好
-   GLM 的 IndexShare：每 4 层共享一次索引
-④ 压缩：远处打包成摘要。V4 的 HCA 128:1 【稠密】——
-   压得够狠之后，全看也很便宜，从而避开稀疏选择的全部麻烦
-   M3 的 MSA 按【块】选（128×16=2048），为的是 GPU 访存连续
-⑤ 线性：换掉 softmax → S_t = S_{t−1} + φ(k_t)v_tᵀ，变成 RNN
-   KV cache 变成固定大小的矩阵，O(L) 计算
-   ⚠️ 但只会加不会删 → Delta rule 加上&quot;擦除 + 遗忘门&quot;
-      S_t = (I − β k kᵀ)·Diag(α)·S_{t−1} + β k vᵀ
-   K3 的 KDA 用它，但必须 3:1 配 MLA；MiniMax 在 M2 里退回了全注意力
-⑥ ★ 所有稀疏化都会弄丢 attention sink → 必须补显式机制
+<div class="codehilite"><pre><span></span><code>① 注意力的 FLOPs 只和【配对数】成正比：每对 (query, key) 花 4d FLOPs
+   全注意力 + 因果掩码的配对数 = s²/2
+   ★ 绝对值：1M 上下文、50 层、d=5120，一次前向要 563 PFLOPs
+      = FA3 满速跑 13 分钟。这是【必须改数学】的量级
+   ⚠️ FlashAttention 省的是显存和搬运，FLOPs 一个都没少 —— 两者互补不替代
+
+② 只有四条路减少配对数：滑窗 / 稀疏 / 压缩 / 线性
+   ⚠️ 其中【压缩那条路的阶还是平方】，只是常数砍掉 r²
+
+③ ① 滑窗最简单，KV cache 变常数，但感受野只有 N×w
+   openPangu：50 层 × 512 = 25.6K，只覆盖它宣称的 512K 的 5%
+   ⚠️ 三家独立消融，结论同向：
+      GLM-9B 128K RULER 75.28 -&gt; 6.51（⚠️ 但搜索调优后能回到 53.95）
+      MiniMax M2 RULER-128K CWE 90.0 -&gt; 72.0（续训数千亿~数万亿 token）
+      openPangu 4K 上完全看不出问题，32K 才暴露 ★ 短序列消融会骗人
+   -&gt; 这一代没人敢纯用 SWA
+
+④ ② 稀疏（DSA）：便宜的索引器打分 -&gt; 只算 top-k
+   ★ 相比滑窗的根本优势：选的是【内容相关】而不是【位置靠近】
+   ⚠️ 三个代价：top-k 不可微、gather 不 GPU 友好、索引器本身也 O(s²)
+      （✅ GLM 实测 200K prefill 时索引器占 81% 延迟 -&gt; 才有了 IndexShare）
+   ⚠️⚠️ 而且【稀疏一点都不省 KV cache】—— 任何 token 都可能被选中，
+        全部得留着。所以它必须叠 MLA，两者是【乘】的关系
+   ★ 底座决定稀疏形态：MLA 底座(MQA 形态)一次 gather 服务全部头 -&gt; 敢用 token 级
+                        GQA 底座 4 组各抓各的 -&gt; MSA 只能退到块级
+
+⑤ ③ 压缩：远处打包成摘要。V4 的 HCA 128:1 【稠密】——
+   压得够狠之后（1M -&gt; 8192），全看也只要 34 TFLOPs，比线性还便宜
+   ★ 唯一在短序列也省的一条路（省 r²，与长度无关），也没有&quot;选错&quot;风险
+   ⚠️ 但它是平方的，约 4M 之后会被线性反超
+
+⑥ ④ 线性：换掉 softmax -&gt; S_t = S_{t−1} + φ(k_t)v_tᵀ，变成一个 RNN
+   来历只有一句话：矩阵乘法的结合律，(QKᵀ)V 改成 Q(KᵀV)
+   -&gt; 2s²d_h 变成 2sd_h²，省 s/d_h 倍（1M 时 8192 倍）
+   KV cache 变成固定大小的 [d_k,d_v] 矩阵（1M 时 512 MiB -&gt; 32 KiB，16384×）
+   ⚠️ 代价是【必然遗忘】，压缩比 8192:1 是信息论层面的，调参救不了
+   ⚠️ 只会加不会删 -&gt; Delta rule 补上&quot;擦除 + 遗忘门&quot;
+      S_t = (I − β k kᵀ)·Diag(α)·S_{t−1} + β k vᵀ      （★ 它是一步梯度下降）
+      ★ Kimi 的贡献是 Diag(α) 那个【逐通道】遗忘门：每一栏自己决定忘多快
+      ★ L2Norm 让 β=1 变成一次干净的完全覆盖，不是可选的归一化
+   K3 用它，但必须 3:1 配 MLA（69 KDA + 24 MLA = 93 ✓）
+   MiniMax 在 M2 里退回了全注意力
+
+⑦ ★ 所有稀疏化都会弄丢 attention sink -&gt; 必须补显式机制
    openPangu 的 PAS（128 个可学习 KV/层）同时充当 sink 和全局寄存器
-   这条线索来自 [05 章] 的&quot;softmax 和必须为 1&quot;，会一直通到 [14 章] 量化
-⑦ 五家【无一例外都是混合方案】—— 每条路都有致命弱点，必须互补
+   成本只有约 7 MiB / 模型（144 KiB × 50 层）—— 几乎免费
+   这条线索来自 05 章的&quot;softmax 权重和必须为 1&quot;，会一直通到 14 章量化
+
+⑧ 五家【无一例外都是混合方案】—— 每条路都有致命弱点，必须互补
+   区别只在混多少、怎么排
 </code></pre></div>
 
-<p><strong>注意力的三章到此结束</strong>（05 讲原理、06 讲代价、07/08 讲解法）。<strong>下一章开始讲模型的另一半：FFN。</strong></p>
+<p><strong>注意力的四章到此结束</strong>（05 讲原理、06 讲代价、07 讲"每个 token 存多宽"、08 讲"要不要看那么多 token"）。<strong>下一章开始讲模型的另一半：FFN。</strong></p>
 <hr />
 <blockquote>
 <p><a href="07-MHA到MLA.html">← 07 从 MHA 到 MLA</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-FFN与激活函数.html">09 FFN 与激活函数</a></p>

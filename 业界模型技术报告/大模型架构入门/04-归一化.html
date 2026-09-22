@@ -252,74 +252,275 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="04">04 · 归一化：一个除法，和它放在哪</h1>
 <blockquote>
 <p><strong>这一章的目标</strong>：讲清 <code>Norm(x)</code> 是什么、为什么必须有、放在残差前面还是后面为什么是个大问题。<br />
-读完你应该能回答：RMSNorm 的公式为什么长这样？Pre-Norm 和 Post-Norm 的分歧点在哪？openPangu 的"门控塌陷"是怎么回事？</p>
+读完你应该能回答：RMSNorm 的公式为什么长这样？Pre-Norm 和 Post-Norm 的分歧点在哪？openPangu 的"门控塌陷"是怎么回事？<br />
+<strong>读法</strong>：本章有两张"同一组数值走一遍"的表（§4.1.2 和 §4.3.2），<strong>都用同一个 4 维向量 <code>x = [1, 2, 3, 4]</code></strong>。把这两张表按一遍，归一化这一章就没有黑箱了。</p>
 </blockquote>
 <hr />
+<p><strong>本章关键词</strong>（每个缩写第一次出现都给中英文全称）</p>
+<p><strong>LayerNorm / LN</strong>（Layer Normalization，层归一化）—— 2016 年的原始版本：减均值、除标准差、再缩放平移。</p>
+<p><strong>RMSNorm</strong>（Root Mean Square Normalization，均方根归一化）—— 现在所有大模型用的简化版：<strong>只除以均方根，不减均值</strong>。本章主角。</p>
+<p><strong>Pre-Norm / Post-Norm</strong>（前置归一化 / 后置归一化）—— 归一化放在子层<strong>之前</strong>还是放在残差相加<strong>之后</strong>。§4.3 的全部内容。</p>
+<p><strong>Sandwich-Norm</strong>（三明治归一化）—— 子层前后<strong>各放一个</strong>归一化。openPangu 用它救了一个真实故障（§4.4）。</p>
+<p><strong>QK-Norm</strong>（Query-Key Normalization，查询-键归一化）—— 归一化的第三个位置：注意力内部的 $q$ 和 $k$（§4.5）。</p>
+<p><strong>FLOP</strong>（Floating-Point Operation，浮点运算次数）／<strong>算术强度</strong>（Arithmetic Intensity）—— 每搬 1 字节能算多少次浮点运算，$I = \text{FLOP} / \text{Byte}$。判断一个算子卡在算力还是卡在带宽，全靠它。</p>
+<p><strong>Memory Bound</strong>（带宽受限）—— 算术强度低于<strong>屋脊点</strong>（Ridge Point，算力屋顶与带宽斜线的交点）时，算力空转等数据。H100 SXM5 的 BF16 屋脊点是 <strong>295 FLOP/Byte</strong>，而归一化只有 1~2，深陷带宽受限区。</p>
+<p><strong>BF16</strong>（Brain Float 16，脑浮点 16 位）—— 2 字节的浮点格式，本章数字节都按它算。</p>
+<p><strong>mHC</strong>（manifold-constrained Hyper-Connections，流形约束超连接）—— <a href="03-残差流.html">03 章 §3.5</a> 讲的残差改造，本章 §4.4 是它的一个副作用。</p>
+<p><strong>H100 SXM5 关键数字</strong>（本章所有屋顶线计算都用这一组）：BF16 稠密算力 <strong>989 TFLOPS</strong>、HBM3 显存 <strong>80 GB / 3.35 TB/s</strong>、屋脊点 <strong>295 FLOP/Byte</strong>。⚠️ 常见的 <strong>1979 TFLOPS 是 2:4 结构化稀疏</strong>的数字，不适用于这里的稠密算子。</p>
+<hr />
 <h2 id="41">4.1 先看公式：它就是一个除法</h2>
-<p>现在所有大模型用的是 <strong>RMSNorm</strong>（Root Mean Square Normalization）：</p>
+<p>现在所有大模型用的是 <strong>RMSNorm</strong>：</p>
 <p>$$y_i = \frac{x_i}{\sqrt{\frac{1}{d}\sum_{j=1}^{d} x_j^2 + \varepsilon}}\cdot g_i$$</p>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rmsnorm</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">g</span><span class="p">,</span> <span class="n">eps</span><span class="o">=</span><span class="mf">1e-6</span><span class="p">):</span>
-    <span class="n">rms</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">x</span><span class="o">**</span><span class="mi">2</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">+</span> <span class="n">eps</span><span class="p">)</span>   <span class="c1"># 固定前面的维度，然后最后一个axis取平均，一般是hidden dimension</span>
+    <span class="c1"># 固定前面的维度，只在最后一个 axis（一般是 hidden dim）上取平均</span>
+    <span class="n">rms</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">x</span><span class="o">**</span><span class="mi">2</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">+</span> <span class="n">eps</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">x</span> <span class="o">/</span> <span class="n">rms</span> <span class="o">*</span> <span class="n">g</span>        <span class="c1"># g 是可学习的缩放，形状 [d]</span>
 </code></pre></div>
 
-<p>拆开看只有三步：</p>
-<div class="codehilite"><pre><span></span><code>① 算这个向量的&quot;平均能量&quot;          mean(x²)
-② 开根号，得到一个标量 rms         √(mean(x²) + ε)     ← ε 防除零，通常 1e-5 或 1e-6
-③ 整个向量除以它，再逐维乘 g       x / rms * g
+<h3 id="411">4.1.1 拆开看只有三步</h3>
+<div class="codehilite"><pre><span></span><code>(1) 算这个向量的&quot;平均能量&quot;          mean(x^2)
+(2) 开根号，得到一个标量 rms         sqrt(mean(x^2) + eps)   &lt;- eps 防除零，通常 1e-5 或 1e-6
+(3) 整个向量除以它，再逐维乘 g       x / rms * g
 </code></pre></div>
 
 <p><strong>做完之后，向量的长度被拉到固定值</strong>（不管 $g$ 的话，$|y| = \sqrt{d}$），<strong>但方向完全不变</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    归一化前              归一化后
-        ↗ x                  ↗ y      方向一样
-       ╱  长度=37           ╱   长度=√d，固定
-      ╱                    ╱
-     ●                    ●
+<div class="codehilite"><pre><span></span><code>    归一化前                   归一化后
+      /  x                       /  y          方向一样
+     /   长度 = 37              /   长度 = sqrt(d)，固定
+    /                          /
+   o                          o
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>一句话理解</strong>：RMSNorm <strong>只管长度，不管方向</strong>。它是在说"我不关心这个向量有多大，我只关心它指向哪"。</p>
+<p><strong>为什么 $|y| = \sqrt{d}$</strong>：$\text{rms}(y) = 1$ 意味着 $\frac{1}{d}\sum y_i^2 = 1$，即 $\sum y_i^2 = d$，所以 $|y| = \sqrt{d}$。$d=5120$ 时 $|y| = 71.55$。<strong>归一化后的向量长度不是 1，是 $\sqrt{d}$，这一点经常被记错。</strong></p>
 </blockquote>
-<h3 id="layernorm">和老的 LayerNorm 差在哪</h3>
-<p>$$\text{LayerNorm}:\quad y = \frac{x - \mu}{\sqrt{\sigma^2 + \varepsilon}}\cdot g + b,\qquad \mu = \tfrac{1}{d}\textstyle\sum x_j$$</p>
+<h3 id="412-layernorm-vs-rmsnorm">4.1.2 ★ 同一组数值走一遍：LayerNorm vs RMSNorm 到底差在哪</h3>
+<p>老的版本是 <strong>LayerNorm</strong>：</p>
+<p>$$\text{LayerNorm}:\quad y = \frac{x - \mu}{\sqrt{\sigma^2 + \varepsilon}}\cdot g + b,\qquad \mu = \tfrac{1}{d}\textstyle\sum x_j,\quad \sigma^2 = \tfrac{1}{d}\textstyle\sum (x_j-\mu)^2$$</p>
 <div class="codehilite"><pre><span></span><code>LayerNorm   =  减均值 + 除标准差 + 缩放 g + 平移 b
-RMSNorm     =           除 RMS   + 缩放 g          ← 去掉了减均值和平移
+RMSNorm     =           除 RMS   + 缩放 g          &lt;- 去掉了减均值和平移
 </code></pre></div>
 
-<p><strong>为什么可以去掉减均值</strong>：实验发现减均值这一步对 Transformer 的效果几乎没贡献，而它<strong>需要多一遍归约</strong>（先算均值、再算方差），在 GPU 上是实打实的开销。</p>
-<div class="codehilite"><pre><span></span><code>✅ RMSNorm 比 LayerNorm 快 7~64%（论文报告的范围），效果持平
-✅ 五家【全部】用 RMSNorm，无一例外。这个已经没有争议了
+<p><strong>现在拿 $d = 4$、$x = [1, 2, 3, 4]$ 走一遍</strong>（取 $g=1, b=0, \varepsilon\to 0$，好手算）：</p>
+<div class="codehilite"><pre><span></span><code>共用的中间量：
+  mean(x)   = (1+2+3+4)/4      = 2.5
+  mean(x^2) = (1+4+9+16)/4     = 7.5        -&gt; rms = sqrt(7.5) = 2.73861
+  var(x)    = ((-1.5)^2 + (-0.5)^2 + 0.5^2 + 1.5^2)/4 = 5/4 = 1.25
+                                             -&gt; std = sqrt(1.25) = 1.11803
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th></th>
+<th>公式</th>
+<th>输出 $y$</th>
+<th>$|y|$</th>
+<th>均值</th>
+<th>保留了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始 $x$</td>
+<td>—</td>
+<td><code>[1, 2, 3, 4]</code></td>
+<td>5.47723</td>
+<td>2.5</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>RMSNorm</strong></td>
+<td>$x / 2.73861$</td>
+<td><code>[0.36515, 0.73030, 1.09545, 1.46060]</code></td>
+<td><strong>2.00000</strong></td>
+<td>0.91287</td>
+<td><strong>方向完全不变</strong>（每个分量同比缩小）</td>
+</tr>
+<tr>
+<td><strong>LayerNorm</strong></td>
+<td>$(x - 2.5)/1.11803$</td>
+<td><code>[-1.34164, -0.44721, 0.44721, 1.34164]</code></td>
+<td><strong>2.00000</strong></td>
+<td><strong>0</strong></td>
+<td>只保留"相对高低"，扔掉整体水平</td>
+</tr>
+</tbody>
+</table>
+<p><strong>两个都把长度拉到 $\sqrt{d} = 2$，但 RMSNorm 的输出全是正数、LayerNorm 的输出均值是 0。差别就在"减均值"这一步上。</strong></p>
+<p><strong>让差别更明显：把 $x$ 整体加 10，变成 $x' = [11, 12, 13, 14]$。</strong></p>
+<div class="codehilite"><pre><span></span><code>  mean(x&#39;)   = 12.5
+  mean(x&#39;^2) = (121+144+169+196)/4 = 157.5   -&gt; rms = sqrt(157.5) = 12.54990
+  var(x&#39;)    = 1.25（和平移无关）              -&gt; std = 1.11803
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>输出 $y'$</th>
+<th>和平移前比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RMSNorm</strong></td>
+<td><code>[0.87650, 0.95618, 1.03586, 1.11554]</code></td>
+<td>❌ <strong>完全变了</strong>（四个分量被挤到 1 附近）</td>
+</tr>
+<tr>
+<td><strong>LayerNorm</strong></td>
+<td><code>[-1.34164, -0.44721, 0.44721, 1.34164]</code></td>
+<td>✅ <strong>一个字没变</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这就是"减均值"的唯一功能：让归一化对【整体平移】免疫。</strong> LayerNorm 是平移不变的，RMSNorm 不是。</p>
+<p><strong>那为什么 Transformer 不需要这个不变性？</strong> 因为 $d$ 维残差流里的"整体平移"只占<strong>一个方向</strong>（全 1 方向），而残差流有 5120 个方向（<a href="03-残差流.html">03 章 §3.3</a>）。这一个方向该留还是该扔，<strong>下游那个线性层自己能学</strong>——$W$ 的每一行减掉一个常数就等价于减均值。<strong>实验发现的"减均值几乎没贡献"，机制上就是这个。</strong></p>
+</blockquote>
+<h3 id="413-flop-rmsnorm">4.1.3 ★ FLOP 与访存的账：RMSNorm 到底省在哪（⚠️ 不省带宽）</h3>
+<p><strong>把每个元素上发生的运算数出来</strong>（$H$ 个元素一行，行级的 <code>rsqrt</code>、除法被 $H$ 摊薄，忽略）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>LayerNorm 每元素 FLOP</th>
+<th>RMSNorm 每元素 FLOP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>求均值 <code>sum += x</code></td>
+<td>1（加）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>求平方和 <code>sum2 += x²</code></td>
+<td>—</td>
+<td>2（平方、加）</td>
+</tr>
+<tr>
+<td>求方差 <code>sum2 += (x-mean)²</code></td>
+<td>3（减、乘、加）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>输出</td>
+<td>4（减、乘、乘、加）</td>
+<td>2（乘 <code>inv_rms</code>、乘 <code>g</code>）</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>8</strong></td>
+<td><strong>4</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>字节呢？两者一模一样</strong>：读 $x$ 一次（BF16，2 字节）+ 写 $y$ 一次（2 字节）= <strong>每元素 4 字节</strong>（$g$、$b$ 各只有 $H$ 个元素，被 $T$ 行摊薄，忽略）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>FLOP/元素</th>
+<th>Byte/元素</th>
+<th><strong>算术强度 $I$</strong></th>
+<th>屋顶线上界 $P = 3350\times I$</th>
+<th>占 989 TFLOPS 峰值</th>
+<th>归约遍数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LayerNorm</td>
+<td>8</td>
+<td>4</td>
+<td><strong>2.0</strong></td>
+<td>6.7 TFLOPS</td>
+<td>0.68%</td>
+<td><strong>2</strong>（先均值，再方差）</td>
+</tr>
+<tr>
+<td><strong>RMSNorm</strong></td>
+<td>4</td>
+<td>4</td>
+<td><strong>1.0</strong></td>
+<td>3.35 TFLOPS</td>
+<td>0.34%</td>
+<td><strong>1</strong>（只要平方和）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这张表有一个非常反直觉的结论，是全章最该记住的一条</strong>：</p>
+<p>```<br />
+RMSNorm 的算术强度【更低】（1.0 &lt; 2.0），不是更高。<br />
+因为它省掉的是【分子】（FLOP 少一半），分母（字节数）一点没变。</p>
+<p>两者都远低于 H100 的屋脊点 295，都深陷 Memory Bound。<br />
+Memory Bound 区里性能只由【字节数】决定，而字节数完全相同<br />
+    =&gt;  屋顶线预测的【理论时间完全一样】。<br />
+```</p>
+<p><strong>所以"RMSNorm 省下的"不是带宽，具体是这三样：</strong></p>
+<p>```<br />
+(1) 少一遍【归约】。归约要跨线程同步（warp shuffle + 块内 barrier）。<br />
+    H = 5120 时一行归约大约要 log2(5120) ≈ 13 轮 shuffle。<br />
+    LayerNorm 要走两遍（或者用 Welford 单遍但每步更贵），RMSNorm 只走一遍。<br />
+    -&gt; 省的是【延迟与同步】，不是带宽。</p>
+<p>(2) 朴素（非融合）实现下，LayerNorm 要把 x 从 HBM 读【两次】：<br />
+    一次求均值、一次求方差。<br />
+    每元素 Byte 从 4 变成 6  -&gt;  I 掉到 8/6 = 1.33，时间【多 50%】。<br />
+    ★ 这一条才是真正能测出差别的地方。融合 kernel 把 x 留在寄存器里就没这问题了,<br />
+      但这恰好说明"为什么融合重要"（见 [../../大模型算子开发/05-算子融合.md]）。</p>
+<p>(3) 少一个平移参数 b：少一份权重、一份梯度、一份优化器状态。量级很小，但不是零。<br />
+```</p>
+<p>⚠️ <strong>顺手改掉一个含糊的说法。</strong> 常见的"RMSNorm 比 LayerNorm 快 7~64%"这个区间，来自 RMSNorm 原论文（Zhang &amp; Sennrich, NeurIPS 2019）在<strong>当时的 RNN 系 seq2seq 模型</strong>上的端到端实测。<br />
+<code>⚠️ 它不是现代 LLM 融合 kernel 的数字。按上面那笔账，融合实现下两者
+   【带宽时间相同】，差别只剩归约遍数，量级远小于 64%。
+⚠️ 引用时必须带口径：这是【整个模型的训练/推理步时间】，不是【归一化算子本身】的加速。
+⚠️ 而且"快 X%"本身就是含糊说法，一定要分清两件事：
+     时间 100 -&gt; 60 ：  "时间减少 40%"，但"加速 1.67 倍"（★ 不是 1.4 倍）
+     时间 100 -&gt; 50 ：  "时间减少 50%"，"加速 2.00 倍"
+   本教程一律只说【时间减少 X%】或【加速 X 倍】，不说裸的"快 X%"。</code></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>✅ 效果持平这一点是共识：五家【全部】用 RMSNorm，无一例外。这件事已经没有争议了。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>一个写法上的小变体</strong>：MiniMax M3 用的是"Gemma 式"的归一化写法（见 <a href="../模型技术对比.html">../模型技术对比.md</a> 第二节"稳定性土办法"一行），即把可学习缩放写成 $(1+g)$ 而不是 $g$、$g$ 初始化为 0。<br />
+⚠️ <strong>我的判断（M3 报告只写了"Gemma 式 norm"，没解释）</strong>：这和 $g$ 初始化为 1 在数学上等价，好处是<strong>初始时刻恰好是"纯归一化"</strong>，而且 $g$ 上的权重衰减会把它拉向 0（即拉向"纯归一化"）而不是拉向 0 倍（即拉向"整层失效"）。</p>
+</blockquote>
 <hr />
 <h2 id="42">4.2 为什么必须有归一化</h2>
-<h3 id="_1">表面理由：防止数值失控</h3>
+<h3 id="421">4.2.1 表面理由：防止数值失控</h3>
 <p>回忆 <a href="03-残差流.html">03 章 §3.4</a>：残差流的范数会随层数增长。如果不归一化：</p>
-<div class="codehilite"><pre><span></span><code>第 1 层输入 ‖x‖ ≈ 1
-第 50 层输入 ‖x‖ ≈ 7    → 送进 softmax 之前 QK 内积会大 49 倍
-                        → softmax 饱和（见 §4.5），梯度趋近 0
+<div class="codehilite"><pre><span></span><code>第 1 层输入  ||x|| ≈ 1
+第 50 层输入 ||x|| ≈ 7    -&gt; 送进 softmax 之前 QK 内积会大 7 x 7 = 49 倍
+                         -&gt; softmax 饱和（见 §4.5），梯度趋近 0
 </code></pre></div>
 
 <p><strong>归一化保证每个子层看到的输入尺度是固定的</strong>，无论它在第 1 层还是第 50 层。这样：</p>
-<div class="codehilite"><pre><span></span><code>① 每层可以用【同一套超参】（初始化、学习率）
-② 激活值不会溢出低精度格式（BF16 的动态范围虽大，FP16/FP8 就很吃紧）
-   → 直接关系到 [14 量化](14-量化.md)
+<div class="codehilite"><pre><span></span><code>(1) 每层可以用【同一套超参】（初始化、学习率）
+(2) 激活值不会溢出低精度格式（BF16 的动态范围虽大，FP16/FP8 就很吃紧）
+    -&gt; 直接关系到 [14 量化](14-量化.md)
 </code></pre></div>
 
-<h3 id="_2">更深的理由：它让损失曲面变平滑</h3>
+<p><strong>为什么"内积大 49 倍"</strong>：$q = W_Q x$、$k = W_K x$ 都正比于 $|x|$，所以内积 $q\cdot k$ 正比于 $|x|^2$。$|x|$ 从 1 长到 7，内积就涨 $7^2 = 49$ 倍。<strong>而 <a href="05-注意力机制.html">05 章 §5.3</a> 的表告诉我们：logit 从 ±1 涨到 ±49，softmax 就彻底变成 one-hot，导数为 0。</strong></p>
+<h3 id="422">4.2.2 更深的理由：它让损失曲面变平滑</h3>
 <p>早期的解释是"减少 internal covariate shift"（内部协变量偏移），<strong>这个解释后来被实验推翻了</strong>——人为往归一化后注入协变量偏移，训练依然稳定。</p>
-<p><strong>目前更被接受的解释</strong>（Santurkar et al. 2018）：<strong>归一化让损失曲面的 Lipschitz 常数变小，梯度更可预测</strong>。</p>
+<p><strong>目前更被接受的解释</strong>（Santurkar et al. 2018，⚠️ 论文结论是"归一化改善了损失与梯度的 Lipschitz 性质"，本教程按这个口径转述）：<strong>归一化让损失曲面的 Lipschitz 常数变小，梯度更可预测</strong>。</p>
 <div class="codehilite"><pre><span></span><code>无归一化的损失曲面：           有归一化：
 
-     ╱╲    ╱╲                     ╱‾‾‾╲
-    ╱  ╲__╱  ╲                   ╱     ╲
-   ╱  陡峭、多尖峰                ╱  平滑、可用大学习率
+     /\    /\                     /~~~\
+    /  \__/  \                   /     \
+   陡峭、多尖峰                   平滑、可用大学习率
    走一大步可能直接跳到           走一大步大概率还在下坡
    一个更糟的地方
 </code></pre></div>
 
 <p><strong>一个直观的机制</strong>：归一化让权重的<strong>尺度</strong>变得无关紧要。</p>
 <p>$$\text{RMSNorm}(\alpha \cdot x) = \text{RMSNorm}(x)\quad\text{对任意 } \alpha &gt; 0$$</p>
+<p><strong>用 §4.1.2 的数字验一下</strong>：$x=[1,2,3,4]$ 乘 10 变成 $[10,20,30,40]$，<code>mean(x²)</code> 从 7.5 变成 750，<code>rms</code> 从 2.73861 变成 27.3861（正好 10 倍），除完之后<strong>输出一模一样</strong>。</p>
 <p>所以如果把某层权重整体乘 10，归一化会把它除回来 —— <strong>模型只能通过改变"方向"来学习，不能靠"变大"来作弊</strong>。这消掉了一整个无用的自由度。</p>
 <blockquote>
 <p>📌 <strong>副作用</strong>：这也意味着权重的模长会自由漂移（因为它不影响输出）。这正是<strong>权重衰减在有归一化的网络里仍然重要</strong>的原因——它把模长拉回来，从而间接控制有效学习率。这条线索会在 <a href="13-优化器与Muon.html">13 优化器</a>里再出现。</p>
@@ -327,49 +528,178 @@ RMSNorm     =           除 RMS   + 缩放 g          ← 去掉了减均值和�
 <hr />
 <h2 id="43">4.3 放哪里：三种选择</h2>
 <p>这是本章真正有分量的部分。<strong>同一个 RMSNorm，放的位置不同，训练行为天差地别。</strong></p>
-<div class="codehilite"><pre><span></span><code>┌─── Post-Norm（原始 Transformer, 2017）──────────────────┐
-│                                                          │
-│     x ──┬─────────────────────┐                          │
-│         └──[ 子层 F ]──────────┤                          │
-│                              ( + )                       │
-│                                │                         │
-│                            [ Norm ]  ← 归一化在【残差相加之后】│
-│                                │                         │
-│                                ▼                         │
-│     x_{l+1} = Norm( x_l + F(x_l) )                       │
-└──────────────────────────────────────────────────────────┘
+<h3 id="431">4.3.1 三种放法的结构图</h3>
+<p>三张图都只有<strong>一列</strong>主干，所有说明写在行尾——这样你不用数空格也能看清"Norm 卡在哪一步"。</p>
+<div class="codehilite"><pre><span></span><code>【A】Post-Norm（2017 原始 Transformer）     x_{l+1} = Norm( x_l + F(x_l) )
+     图里的 F 就是子层（Attention 或 FFN）
 
-┌─── Pre-Norm（现在的主流）────────────────────────────────┐
-│                                                          │
-│     x ──┬────────────────────────────┐                   │
-│         │                            │                   │
-│     [ Norm ]  ← 归一化在【子层之前】   │                   │
-│         │                            │                   │
-│      [ 子层 F ]───────────────────────┤                   │
-│                                    ( + )                 │
-│                                      ▼                   │
-│     x_{l+1} = x_l + F( Norm(x_l) )                       │
-└──────────────────────────────────────────────────────────┘
-
-┌─── Sandwich-Norm（两边都放）─────────────────────────────┐
-│                                                          │
-│     x_{l+1} = x_l + Norm₂( F( Norm₁(x_l) ) )             │
-│                       ↑ 子层输出【也】归一化再写回残差流    │
-└──────────────────────────────────────────────────────────┘
+   x_l
+   |
+   |--&gt; [ F ] --&gt; delta            子层直接吃【原始的】x_l，前面没有 Norm
+   |
+  (+)                              残差相加：x_l 和 delta 在这里汇合
+   |
+  [ Norm ]                         &lt;- 归一化压在【相加之后】
+   |
+   x_{l+1}                         =&gt; 恒等通路【穿过了】这个 Norm
 </code></pre></div>
 
-<h3 id="_3">分歧的关键：那条恒等通路有没有被打断</h3>
+<div class="codehilite"><pre><span></span><code>【B】Pre-Norm（现在的主流）                 x_{l+1} = x_l + F( Norm(x_l) )
+
+   x_l
+   |
+   |--&gt; [ Norm ] --&gt; [ F ] --&gt; delta  &lt;- 归一化只挡在【子层那条支路】上
+   |
+  (+)                                残差相加
+   |
+   x_{l+1}                           =&gt; 恒等通路上【什么都没有】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>【C】Sandwich-Norm（两边都放）              x_{l+1} = x_l + Norm2( F( Norm1(x_l) ) )
+
+   x_l
+   |
+   |--&gt; [ Norm1 ] --&gt; [ F ] --&gt; [ Norm2 ] --&gt; delta
+   |                            ^
+   |                            &#39;-- 新增的就是这一个：控制【写回残差流的幅度】
+  (+)
+   |
+   x_{l+1}                      =&gt; 恒等通路仍然干净
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>三张图只有一处不同：那个 <code>|</code> 竖线（恒等通路）上有没有挡东西。</strong> Post-Norm 挡了，Pre-Norm 和 Sandwich 都没挡。<strong>整节的结论就这一句。</strong></p>
+</blockquote>
+<h3 id="432">4.3.2 ★ 同一组数值走一遍：三种放法的输出差在哪</h3>
+<p>继续用 §4.1.2 的 $x_l = [1, 2, 3, 4]$（$|x_l| = 5.47723$）。<strong>子层 $F$ 取一个最简单的固定映射：把向量倒过来再除以 2</strong>，即 $F(u) = 0.5\cdot[u_4, u_3, u_2, u_1]$。$g$ 全取 1。</p>
+<p>先把要用的三个中间量算出来：</p>
+<div class="codehilite"><pre><span></span><code>F(x_l)              = 0.5 x [4, 3, 2, 1]  = [2.00000, 1.50000, 1.00000, 0.50000]
+Norm(x_l)           = [1,2,3,4] / 2.73861 = [0.36515, 0.73030, 1.09545, 1.46060]
+F( Norm(x_l) )      = 0.5 x [1.46060, 1.09545, 0.73030, 0.36515]
+                    = [0.73030, 0.54772, 0.36515, 0.18257]      范数正好 = 1.00000
+</code></pre></div>
+
+<p>四种放法逐行代进去：</p>
+<table>
+<thead>
+<tr>
+<th>放法</th>
+<th>送进子层的东西</th>
+<th>子层写出的增量</th>
+<th>增量范数</th>
+<th>相加后 $x_{l+1}$</th>
+<th>$|x_{l+1}|$</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>无归一化</strong>（基线）</td>
+<td><code>[1, 2, 3, 4]</code></td>
+<td><code>[2.000, 1.500, 1.000, 0.500]</code></td>
+<td>2.73861</td>
+<td><code>[3.000, 3.500, 4.000, 4.500]</code></td>
+<td><strong>7.58288</strong></td>
+</tr>
+<tr>
+<td><strong>【A】Post-Norm</strong></td>
+<td><code>[1, 2, 3, 4]</code></td>
+<td><code>[2.000, 1.500, 1.000, 0.500]</code></td>
+<td>2.73861</td>
+<td><code>[0.79126, 0.92314, 1.05501, 1.18688]</code></td>
+<td><strong>2.00000</strong></td>
+</tr>
+<tr>
+<td><strong>【B】Pre-Norm</strong></td>
+<td><code>[0.365, 0.730, 1.095, 1.461]</code></td>
+<td><code>[0.73030, 0.54772, 0.36515, 0.18257]</code></td>
+<td><strong>1.00000</strong></td>
+<td><code>[1.73030, 2.54772, 3.36515, 4.18257]</code></td>
+<td><strong>6.18902</strong></td>
+</tr>
+<tr>
+<td><strong>【C】Sandwich</strong></td>
+<td><code>[0.365, 0.730, 1.095, 1.461]</code></td>
+<td><code>[1.46060, 1.09545, 0.73030, 0.36515]</code></td>
+<td><strong>2.00000</strong></td>
+<td><code>[2.46060, 3.09545, 3.73030, 4.36515]</code></td>
+<td><strong>6.97180</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>这张表能读出三条结论，每一条都对应后面一整段：</strong></p>
+<div class="codehilite"><pre><span></span><code>(1) Post-Norm 的输出范数【恒等于 sqrt(d) = 2】，和输入是什么无关。
+    -&gt; 残差流的范数被【每层压回固定值】，永远不会增长。
+    -&gt; 代价：恒等通路上多了一个 1/rms 的缩放。§4.3.3 会把这个缩放的连乘算出来。
+
+(2) Pre-Norm 的【增量范数恒等于 1.00000】，因为子层的输入被归一化了、
+    F 又是固定映射，所以 F 的输出尺度被钉住了。
+    但 ||x|| 从 5.47723 长到 6.18902 —— 这正是 [03 章 §3.4] 的 sqrt(N) 增长。
+
+(3) ★ Sandwich 的增量范数是 2.00000，不是变小，是【变大了】（从 1.0 拉到 2.0）。
+    因为 Norm2 做的事是&quot;把幅度钉在 sqrt(d)&quot;，而不是&quot;把幅度压小&quot;。
+    -&gt; 所以 Sandwich-Norm 的作用要准确地说成：让每层写入的幅度
+       【受控、逐层可比、不随层深漂移】，而不是&quot;自动变小&quot;。
+    -&gt; 真正把这个值压到合适大小，靠的是可学习的 g（实践中初始化远小于 1）
+       以及 openPangu 那种【块级后归一化】（§4.4）。
+</code></pre></div>
+
+<blockquote>
+<p>📌 <strong>第 (3) 条是这张表最值得算一遍的地方。</strong> 很多二手材料会说"Sandwich Norm 把子层输出压小了"——<strong>在 $g=1$ 的情况下它其实是放大</strong>。把数字算出来就不会记错方向。</p>
+</blockquote>
+<h3 id="433">4.3.3 分歧的关键：那条恒等通路有没有被打断</h3>
 <p>回到 <a href="03-残差流.html">03 章 §3.2</a> 的核心——<strong>梯度能不能沿一条"什么都不做"的路径直达浅层</strong>。</p>
 <div class="codehilite"><pre><span></span><code>Post-Norm:  x_{l+1} = Norm(x_l + F(x_l))
-            ↑ 恒等路径【经过了 Norm】，梯度被 1/rms 反复缩放 N 次
-            → §3.2 的连乘问题【部分回来了】
-            → 深层网络必须靠【warmup】才能训起来，超过 ~20 层非常难训
+            -&gt; 恒等路径【经过了 Norm】，梯度被 1/rms 反复缩放 N 次
+            -&gt; §3.2 的连乘问题【部分回来了】
+            -&gt; 深层网络必须靠【warmup】才能训起来，超过 ~20 层非常难训
 
 Pre-Norm:   x_{l+1} = x_l + F(Norm(x_l))
-            ↑ 恒等路径【完全干净】，∂x_{l+1}/∂x_l = I + ...
-            → 可以不用 warmup、可以堆到 100 层
+            -&gt; 恒等路径【完全干净】，d x_{l+1} / d x_l = I + (子层那一项)
+            -&gt; 可以不用 warmup、可以堆到 100 层
 </code></pre></div>
 
+<p><strong>把 Post-Norm 那个 $1/\text{rms}$ 的连乘算出来。</strong> 设已经进入稳态（$|x_l|$ 已经被 Norm 钉在 $\sqrt{d}$ 上），每层的缩放因子是</p>
+<p>$$\frac{|x_l|}{|x_l + F(x_l)|} = \frac{1}{\sqrt{1 + r^2}},\qquad r \equiv \frac{|F|}{|x_l|}\ \ (\text{假设 } F \perp x_l)$$</p>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>每层缩放因子</th>
+<th>连乘 20 层</th>
+<th>连乘 50 层</th>
+<th>连乘 93 层</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>$r = 0.5$，$F \perp x$（$1/\sqrt{1.25}$）</td>
+<td>0.89443</td>
+<td>0.1074</td>
+<td><strong>0.00378</strong></td>
+<td>$3.1\times10^{-5}$</td>
+</tr>
+<tr>
+<td>$r = 0.5$，<strong>本例的 $F$</strong>（和 $x$ 不正交，实测比值 1.38444）</td>
+<td>0.72231</td>
+<td>0.00150</td>
+<td>$8.6\times10^{-8}$</td>
+<td>$7.3\times10^{-14}$</td>
+</tr>
+<tr>
+<td><strong>Pre-Norm 的恒等项</strong></td>
+<td><strong>1.00000</strong></td>
+<td><strong>1</strong></td>
+<td><strong>1</strong></td>
+<td><strong>1</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这就是 Post-Norm 的病灶，而且是可以算出来的</strong>：50 层之后，梯度沿恒等通路传回第 1 层时，<strong>只剩千分之三点八到亿分之一</strong>。而 Pre-Norm 那一项<strong>恒等于 1，连乘多少层都是 1</strong>。</p>
+<p>⚠️ <strong>口径提醒</strong>：上表只算了"恒等通路被 Norm 缩放"这一项，<strong>不是完整的梯度</strong>（完整梯度还有子层那一项，以及 Norm 对方向的雅可比）。它说明的是<strong>机制</strong>和<strong>量级</strong>，不是可以直接去和实测对比的数字。<br />
+⚠️ <strong>我的推断（不是论文结论）</strong>：真实训练里 $F$ 会学着把自己的输出变小（让 $r$ 变小、缩放因子趋近 1）来抵消这个衰减，<strong>而"学到这个状态之前的那段不稳定期"正是 Post-Norm 必须 warmup 的原因之一</strong>。</p>
+</blockquote>
+<h3 id="434">4.3.4 三种放法的对照表</h3>
 <table>
 <thead>
 <tr>
@@ -406,15 +736,21 @@ Pre-Norm:   x_{l+1} = x_l + F(Norm(x_l))
 </tr>
 <tr>
 <td>残差范数</td>
-<td>每层被压回固定值</td>
-<td><strong>按 √N 增长</strong>（<a href="03-残差流.html">§3.4</a>）</td>
-<td>增长被抑制</td>
+<td>每层被压回 $\sqrt{d}$（§4.3.2 实测 2.00000）</td>
+<td><strong>按 $\sqrt{N}$ 增长</strong>（<a href="03-残差流.html">§3.4</a>）</td>
+<td>增长被抑制（每层写入幅度受控）</td>
+</tr>
+<tr>
+<td>每层写入的增量幅度</td>
+<td>不受控（§4.3.2 实测 2.73861）</td>
+<td>受控（实测 1.00000）</td>
+<td><strong>钉死在 $|g|$ 决定的值</strong>（实测 2.00000）</td>
 </tr>
 <tr>
 <td>额外开销</td>
 <td>0</td>
 <td>0</td>
-<td>多一次 Norm</td>
+<td>多一次 Norm（按 §4.1.3，即每元素多搬 4 字节）</td>
 </tr>
 </tbody>
 </table>
@@ -422,102 +758,349 @@ Pre-Norm:   x_{l+1} = x_l + F(Norm(x_l))
 <p>🔑 <strong>Pre-Norm 用一点点最终效果，换到了"能训起来"。</strong> 这个交易在 100B+ 规模上根本没得选——一次训练几千万美元，训崩了就全没了。</p>
 <p><strong>五家【全部】是 Pre-Norm 基础</strong>（Sandwich 是在此之上的加固）。</p>
 </blockquote>
-<h3 id="pre-norm">Pre-Norm 的那个代价，具体是什么</h3>
+<h3 id="435-pre-norm">4.3.5 Pre-Norm 的那个代价，具体是什么</h3>
 <p>$$x_{l+1} = x_l + F(\text{Norm}(x_l)),\qquad |x_l| \approx \sqrt{l}$$</p>
 <p>因为 $F$ 的输入被归一化了，$|F(\cdot)|$ 大致是常数，而 $|x_l|$ 在长大：</p>
 <p>$$\frac{|F_l|}{|x_l|} \approx \frac{1}{\sqrt{l}}$$</p>
-<div class="codehilite"><pre><span></span><code>第 1 层：子层的贡献占残差流的 100%
-第 50 层：子层的贡献占 1/7
-
-→ 深层的子层【实际上在做很小的修正】，表达力被浪费了
-→ 这就是 Pre-Norm &quot;最终效果略差&quot; 的机制性解释
+<p><strong>逐层代出来</strong>（这张表和 <a href="03-残差流.html">03 章 §3.4</a> 的是同一张，从"稀释"这一侧读）：</p>
+<table>
+<thead>
+<tr>
+<th>层 $l$</th>
+<th>$|x_l| \approx \sqrt{l}$</th>
+<th>本层子层的贡献占比 $1/\sqrt{l}$</th>
+<th>等效学习率相对第 1 层</th>
+<th>对应模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>1.000</td>
+<td><strong>100%</strong></td>
+<td>1.00</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>2.000</td>
+<td>50.0%</td>
+<td>0.50</td>
+<td>—</td>
+</tr>
+<tr>
+<td>16</td>
+<td>4.000</td>
+<td>25.0%</td>
+<td>0.25</td>
+<td>—</td>
+</tr>
+<tr>
+<td>25</td>
+<td>5.000</td>
+<td>20.0%</td>
+<td>0.20</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>50</strong></td>
+<td><strong>7.071</strong></td>
+<td><strong>14.1%</strong></td>
+<td>0.141</td>
+<td>openPangu 的最后一层</td>
+</tr>
+<tr>
+<td>61</td>
+<td>7.810</td>
+<td>12.8%</td>
+<td>0.128</td>
+<td>DeepSeek-V4 的最后一层</td>
+</tr>
+<tr>
+<td>78</td>
+<td>8.832</td>
+<td>11.3%</td>
+<td>0.113</td>
+<td>GLM-5.2 的最后一层</td>
+</tr>
+<tr>
+<td><strong>93</strong></td>
+<td><strong>9.644</strong></td>
+<td><strong>10.4%</strong></td>
+<td>0.104</td>
+<td>Kimi K3 的最后一层</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>-&gt; 深层的子层【实际上在做很小的修正】，表达力被浪费了
+-&gt; 这就是 Pre-Norm &quot;最终效果略差&quot; 的机制性解释
+-&gt; ★ 也解释了为什么【层数越多的模型越有动机去改残差】：
+   K3 有 93 层，最后一层只剩 10.4% 的话语权，是五家里最严重的
+   —— 它也确实是唯一做 AttnRes 的那一家（[03 章 §3.6]）
 </code></pre></div>
 
 <blockquote>
-<p>📌 <strong>Sandwich-Norm 正是针对这一点的补丁</strong>：给子层输出也加一个 Norm，让每层写入的幅度<strong>受控且可比</strong>，缓解深层被稀释。</p>
+<p>📌 <strong>Sandwich-Norm 正是针对这一点的补丁</strong>：给子层输出也加一个 Norm，让每层写入的幅度<strong>受控且逐层可比</strong>，缓解深层被稀释。<br />
+⚠️ 但按 §4.3.2 第 (3) 条，它<strong>本身不会把幅度压小</strong>，压小要靠可学习的 $g$。</p>
+<p>⚠️ <strong>上表的 $\sqrt{l}$ 是理论近似，不是实测。</strong> 它依赖"每层写入的增量互相大致独立"这个假设（<a href="03-残差流.html">03 章 §3.4</a> 有推导）。真实模型里增量之间有相关性，实测曲线会偏离 $\sqrt{l}$。<strong>五家报告都没有公开逐层残差范数曲线</strong>，所以这张表只能当量级参考。</p>
 </blockquote>
 <hr />
 <h2 id="44-openpangu">4.4 openPangu 的门控塌陷：一个真实的故障与修复</h2>
 <p>这是本章唯一一个五家里有明确一手记录的故障案例，<strong>值得完整看一遍</strong>，因为它把 <a href="03-残差流.html">03 章</a>和本章连在了一起。</p>
-<h3 id="_4">背景</h3>
+<h3 id="441">4.4.1 背景</h3>
 <p>openPangu-2.0-Pro 用了 mHC（<a href="03-残差流.html">§3.5</a>）。mHC 引入了 $A_l$（读门控）和 $C_l$（写门控）。</p>
-<h3 id="_5">故障</h3>
+<h3 id="442">4.4.2 故障</h3>
 <blockquote>
 <p>✅ <strong>华为报告明确记录</strong>：训练早期，<strong>早期层的 mHC 门控出现塌陷</strong>——报告中记为 $H_{\text{pre}}$、$H_{\text{post}}$ 趋近于 0。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>门控 → 0 意味着什么：
+<div class="codehilite"><pre><span></span><code>门控 -&gt; 0 意味着什么：
 
     x_{l+1} = B_l x_l + C_l F_l(A_l x_l)
-                        ↑ 这一项被门控乘成了 0
+                        ^ 这一项被门控乘成了 0
 
-    → 子层【完全不起作用】，那一层退化成纯粹的 B_l x_l（只是流间混合）
-    → 参数白白浪费，而且是发生在【最该学基础特征的浅层】
+    -&gt; 子层【完全不起作用】，那一层退化成纯粹的 B_l x_l（只是流间混合）
+    -&gt; 参数白白浪费，而且是发生在【最该学基础特征的浅层】
 </code></pre></div>
 
-<h3 id="_6">为什么恰好在早期层</h3>
+<p><strong>为什么它出不来：这是一个标准的"死单元"陷阱，把两个梯度并排写出来就看明白了。</strong> 设写门控是一个标量 $c$，那一层是 $x_{l+1} = B x_l + c\cdot F(\cdot)$：</p>
+<table>
+<thead>
+<tr>
+<th>$c$ 的取值</th>
+<th>这一层的实际贡献</th>
+<th>$\partial \mathcal{L}/\partial c \propto F(\cdot)$</th>
+<th>$\partial \mathcal{L}/\partial W_F \propto c$</th>
+<th>能不能爬出来</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.00</td>
+<td>100%</td>
+<td>正常</td>
+<td>正常</td>
+<td>—</td>
+</tr>
+<tr>
+<td>0.10</td>
+<td>10%</td>
+<td>正常</td>
+<td><strong>×0.10</strong></td>
+<td>子层学得慢</td>
+</tr>
+<tr>
+<td>0.01</td>
+<td>1%</td>
+<td>正常</td>
+<td><strong>×0.01</strong></td>
+<td>子层几乎不动</td>
+</tr>
+<tr>
+<td><strong>0.00</strong></td>
+<td><strong>0</strong></td>
+<td>正常但无用</td>
+<td><strong>×0 = 0</strong></td>
+<td>❌ <strong>永远出不来</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>看最后两列的乘法关系</strong>：$c$ 越小，$F$ 里的权重收到的梯度就越小（正比于 $c$）；$F$ 越学不动，$c$ 就越没有理由被调大。<strong>这是一个自锁的局部最优——门控一旦接近 0，就再也出不来了。</strong></p>
+</blockquote>
+<h3 id="443">4.4.3 为什么恰好在早期层</h3>
 <p><strong>⚠️ 以下是我的推断，华为报告没有给出机制解释。</strong></p>
-<div class="codehilite"><pre><span></span><code>回忆 §4.3：Pre-Norm 下 ‖x_l‖ ≈ √l
+<div class="codehilite"><pre><span></span><code>回忆 §4.3.5：Pre-Norm 下 ||x_l|| ~ sqrt(l)
 
-    浅层 l 小  →  ‖x_l‖ 小  →  归一化的除数小  →  子层输出相对【偏大】
-    → 早期层的子层输出更容易冲击残差流
-    → 优化器为了稳定，最简单的办法就是【把门控关掉】
+    浅层 l 小  -&gt;  ||x_l|| 小  -&gt;  子层输出相对于残差流【偏大】
+</code></pre></div>
 
-    这是一个【局部最优陷阱】：门控一旦接近 0，梯度也趋近 0，就再也出不来了
+<p><strong>用 §4.3.5 那张表直接读数字</strong>（$|F| \approx 1$）：</p>
+<table>
+<thead>
+<tr>
+<th>层 $l$</th>
+<th>$|x_l| \approx \sqrt{l}$</th>
+<th>子层输出 / 残差流 $= 1/\sqrt{l}$</th>
+<th>优化器眼里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>1.000</td>
+<td><strong>1.000</strong>（和整条流一样大）</td>
+<td>⚠️ 子层一写就把流冲翻</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.414</td>
+<td>0.707</td>
+<td>⚠️ 还是很大</td>
+</tr>
+<tr>
+<td>5</td>
+<td>2.236</td>
+<td>0.447</td>
+<td>偏大</td>
+</tr>
+<tr>
+<td>25</td>
+<td>5.000</td>
+<td>0.200</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>50</td>
+<td>7.071</td>
+<td>0.141</td>
+<td>偏小</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    -&gt; 早期层的子层输出【和整条残差流一个量级】，一写就是剧烈扰动
+    -&gt; 优化器为了稳定，最简单的办法就是【把门控关掉】
+    -&gt; 关到 0 之后撞上 §4.4.2 那个自锁陷阱，再也出不来
 </code></pre></div>
 
 <p>并且这和 <a href="01-鸟瞰全景.html">01 章 §1.3</a> 的分层现象一致：<strong>浅层做的事最简单</strong>，所以"关掉也不太掉 loss"，优化器就真的关掉了。</p>
-<h3 id="_7">修复</h3>
+<h3 id="444">4.4.4 修复</h3>
 <blockquote>
 <p>✅ <strong>华为报告给出的两条措施</strong>：</p>
 <p><strong>① Sandwich Norm</strong> —— 给子层输出也加归一化，控制它写回残差流的幅度<br />
 <strong>② 块级后归一化</strong> —— 在<strong>第 1 层之后</strong>、以及<strong>每 5 层的块之后</strong>，各加一次归一化</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    层 1  ──[Sandwich Norm 的 block]──  ← 后面加一次块级归一化 ★
-    层 2~5 ─────────────────────────────  ← 第 5 层后加一次 ★
-    层 6~10 ────────────────────────────  ← 第 10 层后加一次 ★
-    ⋮
-    层 46~50 ───────────────────────────  ← 第 50 层后 ★
-</code></pre></div>
-
+<p><strong>50 层模型上，这些额外的归一化落在哪里</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>序号</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>第 <strong>1</strong> 层之后</td>
+<td>单独一次——最容易塌陷的就是它</td>
+</tr>
+<tr>
+<td>2</td>
+<td>第 <strong>5</strong> 层之后</td>
+<td>第一个 5 层块的末尾</td>
+</tr>
+<tr>
+<td>3</td>
+<td>第 <strong>10</strong> 层之后</td>
+<td></td>
+</tr>
+<tr>
+<td>4–10</td>
+<td>第 <strong>15 / 20 / 25 / 30 / 35 / 40 / 45</strong> 层之后</td>
+<td>每 5 层一次</td>
+</tr>
+<tr>
+<td>11</td>
+<td>第 <strong>50</strong> 层之后</td>
+<td>最后一个块的末尾</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"一共 11 次"是我按 50 层数出来的</strong>（1 次 + 50÷5 = 10 次），<strong>报告只给了规则，没给总数</strong>。</p>
+</blockquote>
 <p><strong>为什么这管用</strong>：</p>
-<div class="codehilite"><pre><span></span><code>Sandwich Norm 保证子层输出【尺度受控】
-    → 它不会因为浅层 ‖x‖ 小就相对过大
-    → 优化器不再有&quot;必须关掉门控&quot;的压力
+<div class="codehilite"><pre><span></span><code>Sandwich Norm 保证子层输出【尺度受控、逐层可比】
+    -&gt; 它不会因为浅层 ||x|| 小就相对过大（对治 §4.4.3 那张表的第 1~2 行）
+    -&gt; 优化器不再有&quot;必须关掉门控&quot;的压力
 
 块级后归一化【周期性地把残差流范数压回来】
-    → 直接对治 §3.4 的 √N 增长
-    → 深层的相对话语权被恢复
+    -&gt; 直接对治 §3.4 的 sqrt(N) 增长
+    -&gt; 深层的相对话语权被恢复
+    -&gt; ★ 注意这一条【局部恢复了 Post-Norm 的做法】：每 5 层把恒等通路压一次。
+      50 层里只压 11 次（而不是 50 次），所以 §4.3.3 那个连乘衰减只发生 11 次，
+      按正交情形 0.89443^11 = 0.2931 —— 还能承受。
+      =&gt; 这是一个很典型的【折中】：不是&quot;Pre 还是 Post&quot;，而是&quot;多久压一次&quot;。
 </code></pre></div>
 
+<p>自己验算：$0.89443^{11} = e^{11\times(-0.1115718)} = e^{-1.2273} = 0.2931$。再对比一下：如果 50 层每层都压（也就是纯 Post-Norm），那是 $0.89443^{50} = 0.00378$ —— <strong>压 11 次和压 50 次差了 78 倍</strong>，这就是「块级」这个词的全部分量。</p>
 <blockquote>
-<p>🔑 <strong>这个案例的价值</strong>：它说明 <a href="03-残差流.html">03 章</a>那些"改残差"的方案<strong>不是免费午餐</strong>。mHC 带来的不只是 +6.7% 墙钟，还带来了新的、需要额外补丁才能压住的训练不稳定性。<strong>这是"三家改、两家不改"这个分歧的一条实证注脚。</strong></p>
+<p>🔑 <strong>这个案例的价值</strong>：它说明 <a href="03-残差流.html">03 章</a>那些"改残差"的方案<strong>不是免费午餐</strong>。mHC 带来的不只是 +6.7% 墙钟（✅ 这个数字是 DeepSeek-V4 报告给的，openPangu 报告<strong>未披露</strong>墙钟），还带来了新的、需要额外补丁才能压住的训练不稳定性。<strong>这是"三家改、两家不改"这个分歧的一条实证注脚。</strong></p>
 </blockquote>
 <hr />
 <h2 id="45-qk-norm">4.5 另一个位置：QK-Norm</h2>
 <p>除了残差前后，还有第三个常放归一化的地方——<strong>注意力内部的 Q 和 K</strong>。</p>
 <p>$$\text{score} = \frac{\text{RMSNorm}(q)\cdot \text{RMSNorm}(k)^\top}{\sqrt{d_h}}$$</p>
-<h3 id="softmax">动机：softmax 饱和</h3>
-<p><a href="05-注意力机制.html">05 章</a>会详讲 softmax，这里只需要知道结论：</p>
+<h3 id="451-softmax">4.5.1 动机：softmax 饱和</h3>
+<p><a href="05-注意力机制.html">05 章 §5.3</a> 会详讲，这里只需要知道结论：</p>
 <div class="codehilite"><pre><span></span><code>如果 q·k 的数值变得很大（比如 200），softmax 会变成【近乎 one-hot】：
 
     softmax([200, 5, 3]) ≈ [1.0, 0.0, 0.0]
 
-    → 梯度几乎全是 0（softmax 在饱和区导数趋近 0）
-    → 这个注意力头【卡死了】，再也学不动
-    → 训练日志上表现为【loss spike】或者干脆发散
+    -&gt; 梯度几乎全是 0（softmax 在饱和区导数趋近 0）
+    -&gt; 这个注意力头【卡死了】，再也学不动
+    -&gt; 训练日志上表现为【loss spike】或者干脆发散
 </code></pre></div>
 
-<p><strong>而 $q\cdot k$ 变大是很容易发生的</strong>：$q$ 和 $k$ 都是无约束的线性投影输出，训练中它们的范数会自由漂移。</p>
-<h3 id="qk-norm">QK-Norm 的修复</h3>
-<p><strong>先把 $q$ 和 $k$ 归一化到固定长度，再算内积。</strong> 这样内积被<strong>硬性限制在有界范围内</strong>，softmax 永远不会饱和。</p>
+<p><strong>而 $q\cdot k$ 变大是很容易发生的</strong>：$q$ 和 $k$ 都是无约束的线性投影输出，训练中它们的范数会自由漂移（§4.2 已经说过：归一化让权重模长变得"不影响输出"，于是它会自由漂移）。</p>
+<h3 id="452-qk-norm">4.5.2 QK-Norm 的修复，以及它的上界能算出来</h3>
+<p><strong>先把 $q$ 和 $k$ 归一化到固定长度，再算内积。</strong> 这样内积被<strong>限制在有界范围内</strong>。</p>
+<p><strong>上界是多少？两行柯西–施瓦茨就出来了</strong>（取 $g$ 全为 1）：</p>
+<div class="codehilite"><pre><span></span><code>||RMSNorm(q)|| = sqrt(d_h)      （§4.1.1：rms = 1  =&gt;  范数 = sqrt(d_h)）
+||RMSNorm(k)|| = sqrt(d_h)
+
+柯西-施瓦茨： | q_hat . k_hat |  &lt;=  ||q_hat|| x ||k_hat||  =  d_h
+
+再除以 sqrt(d_h)：   | score |  &lt;=  sqrt(d_h)
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>$d_h$</th>
+<th>QK-Norm 后 logit 的上界 $\sqrt{d_h}$</th>
+<th>无 QK-Norm 时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>64</td>
+<td>8.00</td>
+<td>无界</td>
+</tr>
+<tr>
+<td><strong>128</strong></td>
+<td><strong>11.31</strong></td>
+<td>无界</td>
+</tr>
+<tr>
+<td>256</td>
+<td>16.00</td>
+<td>无界</td>
+</tr>
+<tr>
+<td>512</td>
+<td>22.63</td>
+<td>无界</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>🔑 <strong>这张表把 QK-Norm 的作用说准了：它给 logit 一个【上界】，不是把 logit 压到 ±1。</strong></p>
+<p><code>✅ 它治的是【发散 / loss spike】：从"可以涨到几百"变成"最多 11.31"。
+❌ 它【不】把注意力分布变平。11.31 这个上界本身已经足够尖：
+   softmax([11.31, 0, 0, ...]) 在 4096 个候选里，头名仍能拿到 ~95% 的权重。</code></p>
+<p>⭐ <strong>一个漂亮的跨章呼应</strong>：<a href="05-注意力机制.html">05 章 §5.5</a> 算过，要让 attention sink 稳定拿到 90% 的权重，需要的 logit 差是 $\ln(0.9\times4095/0.1) = 10.5$。<strong>而 QK-Norm 的上界是 11.31 —— 刚好还够。</strong> 所以 <strong>QK-Norm 不会把 sink 机制砍掉</strong>，两件事在数值上并不矛盾。这不太可能是巧合：$d_h$ 选 128 本来就有"$\sqrt{d_h}$ 够大"的考虑。⚠️ 这最后一句是我的推测，没有任何报告这么说。</p>
+<p>⚠️ <strong>严格说那个上界不是硬的</strong>：$g$ 可学，真正的上界是 $|g_q \odot \hat q|\cdot|g_k\odot \hat k| / \sqrt{d_h}$，$g$ 学大了上界也跟着大。<strong>QK-Norm 的真实价值是把"尺度"从【自由漂移的激活值】挪到了【一个 $d_h$ 维、能被权重衰减管住的小参数】上。</strong></p>
 <p>✅ <strong>DeepSeek-V4 明确使用 QK-RMSNorm</strong>（报告有记）。<br />
-⚠️ 其他几家报告中我没有找到明确记载，<strong>不代表没用</strong>——这是个很常规的稳定化手段。</p>
+✅ <strong>MiniMax M3 用的是 per-head QK-Norm</strong>（见 <a href="../模型技术对比.html">../模型技术对比.md</a> 第二节"位置编码"与"稳定性土办法"两行）。<br />
+⚠️ 其余几家报告中我没有找到明确记载，<strong>不代表没用</strong>——这是个很常规的稳定化手段。<br />
+✅ <strong>另一条有意思的一手记录</strong>：openPangu 报告说它的 attention logits <strong>全程有界在 ≈20</strong>、不需要任何 clipping，而它把这个归因于 <strong>sandwich norm + 块级后归一化</strong>（§4.4）而不是 QK-Norm。GLM-5.2 也说 logits 全程稳定，但归因于 <strong>Muon Split</strong>。⚠️ <strong>同一个现象、三种互斥归因</strong>，详见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.8 与 <a href="13-优化器与Muon.html">13 章 §13.8</a>。</p>
 <p>📌 <strong>这条"softmax 会饱和"的线索非常重要</strong>，它在教程里出现三次：<br />
-<code>这里（§4.5）      → 训练不稳定的一个来源，用 QK-Norm 治
-[05 章 §5.x]     → softmax 和必须为 1，模型没有"什么都不看"的选项
-[14 章 §14.6]    → 上一条导致模型自造巨大激活当泄压阀 = 离群值
-                   这是低比特量化最大的敌人</code></p>
+<code>这里（§4.5）         -&gt; 训练不稳定的一个来源，用 QK-Norm 治
+[05 章 §5.5]        -&gt; softmax 和必须为 1，模型没有"什么都不看"的选项
+[14 章 §14.6]       -&gt; 上一条导致模型自造巨大激活当泄压阀 = 离群值
+                      这是低比特量化最大的敌人</code></p>
 </blockquote>
 <hr />
 <h2 id="46">4.6 挂回五家</h2>
@@ -541,7 +1124,7 @@ Pre-Norm:   x_{l+1} = x_l + F(Norm(x_l))
 <td><strong>Kimi K3</strong></td>
 <td>RMSNorm</td>
 <td>Pre-Norm</td>
-<td>AttnRes 内部对 $k_i$ 用 RMSNorm（<a href="03-残差流.html">§3.6</a>）</td>
+<td>AttnRes 内部对 $k_i$ 用 RMSNorm（<a href="03-残差流.html">§3.6</a>）；另在 up-projection 前插 RMSNorm</td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
@@ -551,36 +1134,53 @@ Pre-Norm:   x_{l+1} = x_l + F(Norm(x_l))
 </tr>
 <tr>
 <td><strong>MiniMax M3</strong></td>
-<td>RMSNorm</td>
+<td>RMSNorm（Gemma 式写法）</td>
 <td>Pre-Norm</td>
-<td>—</td>
+<td>✅ <strong>per-head QK-Norm</strong> + 激活 clamp</td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
 <td>RMSNorm</td>
 <td><strong>Pre + Sandwich</strong></td>
-<td>✅ <strong>块级后归一化（第1层后 + 每5层），修 mHC 门控塌陷</strong></td>
+<td>✅ <strong>块级后归一化（第 1 层后 + 每 5 层，50 层共 11 次），修 mHC 门控塌陷</strong></td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>🔑 <strong>归一化这一格，是五家最一致的地方之一</strong>：全部 RMSNorm、全部 Pre-Norm。<strong>唯一的差异都是"因为改了别的东西，所以不得不在这里打补丁"</strong> —— openPangu 是因为 mHC，V4 的 QK-Norm 是因为要压 softmax。</p>
+<p>🔑 <strong>归一化这一格，是五家最一致的地方之一</strong>：全部 RMSNorm、全部 Pre-Norm。<strong>唯一的差异都是"因为改了别的东西，所以不得不在这里打补丁"</strong> —— openPangu 是因为 mHC，V4 / M3 的 QK-Norm 是因为要压 softmax，K3 的 RMSNorm 是因为 AttnRes 要做纯方向匹配（<a href="03-残差流.html">§3.6</a>）。</p>
 <p>这本身就是个有用的判断：<strong>归一化不是创新点，它是稳定器。谁在这里做了额外动作，说明谁在别处冒了额外的险。</strong></p>
 </blockquote>
 <hr />
 <h2 id="47">4.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① RMSNorm = 除以 RMS 再乘可学习的 g。只改长度，不改方向
-   比 LayerNorm 少了减均值和平移，快 7~64%，效果持平。五家全用
-② 它有效的原因不是&quot;减少协变量偏移&quot;（已被推翻），
-   而是【让损失曲面变平滑】+【消掉权重尺度这个无用自由度】
-③ Pre-Norm vs Post-Norm 的分歧点只有一个：
-   恒等通路有没有被 Norm 打断 → 决定了能不能堆到 100 层
-   五家全部 Pre-Norm，用一点最终效果换&quot;能训起来&quot;
-④ Pre-Norm 的代价：深层贡献被稀释成 1/√l → Sandwich Norm 是补丁
-⑤ openPangu 的门控塌陷：mHC 的门控在早期层塌到 0
-   修复 = Sandwich Norm + 第1层后及每5层的块级后归一化
-   这是&quot;改残差不是免费午餐&quot;的实证
-⑥ QK-Norm：防 softmax 饱和。这条&quot;softmax 饱和&quot;的线索会一路通到量化章
+<div class="codehilite"><pre><span></span><code>(1) RMSNorm = 除以 RMS 再乘可学习的 g。只改长度（拉到 sqrt(d)，不是 1），不改方向
+    比 LayerNorm 少了减均值和平移。减均值的唯一功能是【对整体平移免疫】
+    （§4.1.2 实测：x 加 10 之后 LayerNorm 输出一字不变，RMSNorm 全变）
+    Transformer 不需要这个不变性，因为&quot;整体平移&quot;只占 5120 个方向里的 1 个
+(2) ⚠️ RMSNorm 的算术强度是 1.0，比 LayerNorm 的 2.0 【更低】
+    —— 省的是分子（FLOP 减半），分母（每元素 4 字节）一点没变
+    两者都远在屋脊点 295 以下、都 Memory Bound =&gt; 屋顶线预测的时间【完全一样】
+    真正省的是：少一遍归约（少一轮同步）+ 朴素实现下少读一遍 x + 少一个 b
+    ⚠️ &quot;快 7~64%&quot; 是 RMSNorm 原论文在 RNN 系模型上的端到端数字，不是现代融合 kernel
+    ⚠️ &quot;快 X%&quot; 含糊：时间减少 40% = 加速 1.67 倍，不是 1.4 倍
+(3) 它有效的原因不是&quot;减少协变量偏移&quot;（已被推翻），
+    而是【让损失曲面变平滑】+【消掉权重尺度这个无用自由度】
+(4) Pre / Post / Sandwich 的分歧点只有一个：恒等通路有没有被 Norm 打断
+    §4.3.2 用同一个 x=[1,2,3,4] 把三种放法算出来：
+      Post ：输出范数恒为 sqrt(d)=2，但恒等通路每层被乘 ~0.894，50 层剩 0.0038
+      Pre  ：增量范数恒为 1，恒等项恒为 1，但 ||x|| 按 sqrt(N) 增长
+      ★ Sandwich：增量范数被【钉在 sqrt(d)=2】—— 是&quot;受控&quot;，不是&quot;变小&quot;，
+        g=1 时它其实把增量从 1.0 放大到 2.0。压小要靠可学习的 g
+    五家全部 Pre-Norm 基础，用一点最终效果换&quot;能训起来&quot;
+(5) Pre-Norm 的代价：第 l 层的贡献被稀释成 1/sqrt(l)
+    50 层剩 14.1%、93 层剩 10.4% -&gt; ★ 层数越多越有动机改残差，K3 最深也最激进
+(6) openPangu 的门控塌陷：mHC 的门控在早期层塌到 0，而且是【自锁】的
+    （门控 -&gt; 0 使子层梯度正比于门控也 -&gt; 0，永远出不来）
+    为什么在浅层：浅层 ||x|| 小，子层输出相对过大，优化器只好关门控
+    修复 = Sandwich Norm + 第 1 层后及每 5 层的块级后归一化（50 层共 11 次）
+    ★ 块级后归一化本质是&quot;局部用回 Post-Norm&quot;：50 层只压 11 次，衰减可承受
+(7) QK-Norm：给 logit 一个上界 sqrt(d_h)（d_h=128 时是 11.31），治发散不治&quot;太尖&quot;
+    ⭐ 而 05 章算出 attention sink 需要 logit 差 10.5 —— 11.31 刚好还够，两者不矛盾
+    这条&quot;softmax 饱和&quot;的线索会一路通到量化章
 </code></pre></div>
 
 <p><strong>下一章</strong>进入正题：注意力。这是 Transformer 里唯一真正"新"的东西，也是后面 08 章五家主战场的基础。</p>

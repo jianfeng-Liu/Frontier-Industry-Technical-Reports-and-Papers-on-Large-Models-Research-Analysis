@@ -247,144 +247,297 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="page-wrap">
 <div class="md-body">
 <blockquote>
-<p><a href="17-延伸阅读.html">← 17 延伸阅读</a> ｜ <a href="README.html">目录</a></p>
+<p><a href="19-算子开发与实现.html">← 19 算子开发与实现</a> ｜ <a href="README.html">目录</a></p>
 </blockquote>
 <h1 id="_1">附 · 一页速查表</h1>
 <blockquote>
 <p><strong>打印出来贴在显示器旁边的那一页。</strong> 全部内容都能在正文里找到出处。</p>
+<p>📌 <strong>本表七节</strong>：<strong>A</strong> 形状与记号 → <strong>B</strong> 核心公式 → <strong>C</strong> 关键的量级感 → <strong>D</strong> 三条因果链 → <strong>E</strong> 五家一句话 → <strong>F</strong> 章节索引 → <strong>G</strong> 缩写总表。<strong>查不认识的缩写直接翻到最后的 §G。</strong></p>
+<p>⚠️ <strong>本表是"结论层"，每条后面的 <code>[x.y]</code> 是它在正文里的出处。</strong> 凡是标 ⚠️ 的都是<strong>最高频的算错点</strong>——那些数字不是可以省略的细节，而是"差一倍"级别的分歧。</p>
 </blockquote>
 <hr />
 <h2 id="a">A. 形状与记号</h2>
-<div class="codehilite"><pre><span></span><code>┌─ 形状 ─────────────────────────────────────────────────────┐
-│ x            [B, L, d]        残差流（&quot;总线&quot;）              │
-│ Q, K, V      [B, H, L, d_h]   注意力的三个角色              │
-│ scores       [B, H, L, L]     ★ O(L²) 就在这里             │
-│ KV cache     [B, L, H_kv, d_h] × 2 × 层数                  │
-│ logits       [B, L, V]        每个位置对词表的打分          │
-└────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>─ 形状 ────────────────────────────────────────────────
+  x            [B, L, d]          残差流（&quot;总线&quot;）
+  Q, K, V      [B, H, L, d_h]     注意力的三个角色
+  scores       [B, H, L, L]       ★ O(L²) 就在这里
+  KV cache     [B, L, H_kv, d_h] × 2 × 层数   ★ 是 H_kv，不是 H
+  logits       [B, L, V]          每个位置对词表的打分
 
-B = batch    L = 序列长度    d = hidden 维    H = 头数
-d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
+─ 记号 ────────────────────────────────────────────────
+  B    = batch                  L    = 序列长度
+  d    = hidden 维（d_model）    H    = 注意力头数
+  H_kv = ★ KV 头数（GQA 里比 H 少几倍，MQA = 1）
+  d_h  = 每头维度                d_ff = FFN 中间维
+  V    = 词表大小                N    = 层数
+  γ    = 投机解码一次猜几个       α    = 单步接受率
+  g    = 量化分组大小            c    = 草稿/主模型单步耗时比
 
-约定：本教程用【行向量】，即 x @ W（x 在左）
+  约定：本教程用【行向量】，即 x @ W（x 在左）
+
+  ⚠️ 唯一的例外：`6N`（训练 FLOPs）和 `16 字节/参数` 这两笔账里的 N
+     沿用文献习惯，指【参数量】。本表其余所有地方 N 一律是【层数】。
+  ⚠️ 单位口径：算容量一律 GiB / KiB（2³⁰ / 2¹⁰），算带宽才用十进制 GB / TB。
+     两套差 7.4%，混着用是这个主题最常见的错账来源。
 </code></pre></div>
 
 <hr />
 <h2 id="b">B. 核心公式</h2>
-<div class="codehilite"><pre><span></span><code>┌─ 前向 ─────────────────────────────────────────────────────┐
-│ RMSNorm(x)   = x / √(mean(x²)+ε) ⊙ g                       │
-│ Attention    = softmax(QKᵀ/√d_h + M) V                     │
-│ RoPE         θ_i = base^(−2i/d_h)，位置 m 转 m·θ_i          │
-│   核心性质    ⟨R_m q, R_n k⟩ = ⟨q, R_{n−m} k⟩  只依赖相对距离 │
-│   ★ V4 变体  KV entry 兼作 value，输出会带【绝对】位置       │
-│               给输出再补一次位置 −t 的 RoPE 转回相对 [11.9]  │
-│ SwiGLU(x)    = W_d( SiLU(W_g x) ⊙ W_u x )                  │
-│   SiLU(x)    = x·σ(x)                                      │
-│   d_ff       = 8d/3（GLU 三个矩阵 → 乘 2/3 才公平）          │
-│ MoE(x)       = Σ_{i∈TopK} (s_i/Σs) · E_i(x)                │
-│ 残差         x_{l+1} = x_l + F_l(x_l)                       │
-│   mHC        x_{l+1} = B_l x_l + C_l F_l(A_l x_l)，B 双随机  │
-│   AttnRes    x_l = Σ_{i&lt;l} α_{i→l} · f_i(x_i)   ★【替换】累加│
-│     源 k_i=v_i= f_i(x_i)【增量】，i=0 是 embedding；无 W_K/W_V│
-│     α_{i→l}  = softmax_i( w_lᵀ · RMSNorm(k_i) )  无 1/√d     │
-│     标准残差 = α ≡ 1 的特例；Σα=1 → √N 增长消失              │
-│     K3 Block 版：93 层→8 块×12 层，块【内】求和、块【间】注意力│
-└────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>─ 前向 ────────────────────────────────────────────────
+  RMSNorm(x)  = x / √(mean(x²)+ε) ⊙ g
+  Attention   = softmax(QKᵀ/√d_h + M) V
+  RoPE        θ_i = base^(−2i/d_h)，位置 m 转 m·θ_i
+    核心性质  ⟨R_m q, R_n k⟩ = ⟨q, R_{n−m} k⟩   只依赖相对距离
+    ★ V4 变体 压缩后的 KV entry 兼作 value，输出会带【绝对】位置
+              → 给输出再补一次位置 −t 的 RoPE 转回相对  [11.9]
 
-┌─ MLA ──────────────────────────────────────────────────────┐
-│ 只缓存 c^KV = x W_DKV（低维），用时再升维                    │
-│ 矩阵吸收     qᵀk = c^Q ᵀ(W^UQ ᵀ W^UK) c^KV                  │
-│ ⚠️ RoPE 会插在两个矩阵中间 → 吸收失效 → decoupled RoPE       │
-│ openPangu：512（压缩，无 RoPE）+ 64（解耦，有 RoPE）= 576    │
-└────────────────────────────────────────────────────────────┘
+  SwiGLU(x)   = W_d( SiLU(W_g x) ⊙ W_u x )
+    SiLU(x)   = x·σ(x)
+    ⚠️⚠️ d_ff = 8d/3 【不是定律】。8/3 只是&quot;GLU 有三个矩阵，要乘 2/3
+       才和 d_ff = 4d 的两矩阵 FFN 等参数&quot;这个【折算系数】，不是最终答案。
+       真实配置的 d_ff / d：
+         LLaMA-2-7B  2.69      LLaMA-2-13B 2.70      LLaMA-2-70B 3.50
+         LLaMA-3-8B  ★ 3.50（h=4096、intermediate=14336）
+         LLaMA-3-70B 3.50      Mistral-7B  3.50
+       ⟹ 既不是 4，也不是 8/3。见到恰好 4.0 反而要怀疑它没用 GLU  [9.3]
 
-┌─ 线性注意力 ────────────────────────────────────────────────┐
-│ ★★ 全部来自结合律：(QKᵀ)V → Q(KᵀV)                          │
-│    2L²d  →  2Ld²    省 L/d 倍（L=1M, d=128 → 8192×）        │
-│    ↑ 中间那个 [d,d] 就是&quot;全部历史&quot;被压成的唯一容器           │
-│ 前提   exp(qᵀk) 不可分解 → 换成 φ(q)ᵀφ(k) 才能挪括号         │
-│ 因果掩码 → 上界随 i 变 → 滚动累加 → ★ 这就是 RNN 递推        │
-│ S_t = S_{t−1} + φ(k_t) v_tᵀ,      o_t = φ(q_t)ᵀ S_t         │
-│   φ(k)v ᵀ 是【外积】[d_k,d_v]；S 的形状里【没有 L】          │
-│ delta rule  S_t = (I − β_t k_t k_tᵀ)·Diag(α_t)·S_{t−1}      │
-│                   + β_t k_t v_tᵀ                            │
-│   来历：对 ½‖Sᵀk_t − v_t‖² 走一步梯度下降（Widrow–Hoff）     │
-│   α_t ∈ (0,1)^{d_k} 【逐通道】遗忘门 ← Kimi 的核心贡献       │
-│   β_t ∈ (0,1) 是【标量】写入强度；‖k‖=1 时 β=1 即精确覆盖    │
-│ ★ 状态大小恒定，与 L 无关 —— 但召回能力受限于状态容量        │
-│   1M 上下文单头：KV cache 512 MB  vs  状态 32 KB（16384×）   │
-└────────────────────────────────────────────────────────────┘
+  MoE(x)      = Σ_{i∈TopK} (s_i/Σs) · E_i(x)
+  残差        x_{l+1} = x_l + F_l(x_l)
+    mHC       x_{l+1} = B_l x_l + C_l F_l(A_l x_l)，B 双随机
+    AttnRes   x_l = Σ_{i&lt;l} α_{i→l} · f_i(x_i)   ★【替换】累加
+      源 k_i = v_i = f_i(x_i)【增量】，i=0 是 embedding；无 W_K / W_V
+      α_{i→l} = softmax_i( w_lᵀ · RMSNorm(k_i) )   无 1/√d
+      标准残差 = α ≡ 1 的特例；Σα = 1 → √N 增长消失
+      K3 Block 版：93 层切【8 块】（7 个满块 × 12 层 + 1 个 9 层尾块），
+                   块【内】求和、块【间】注意力  [3.6.8]
 
-┌─ 训练 ─────────────────────────────────────────────────────┐
-│ 训练目标      L = −(1/L) Σ log P(x_{t+1} | x_≤t)            │
-│ AdamW        θ ← θ − η( m̂/(√v̂+ε) + λθ )   ★ λθ 不过 √v      │
-│ Muon         G = UΣVᵀ → 用 UVᵀ 更新                        │
-│   真正含义    谱范数球上的最速下降（不是&quot;拉平奇异值&quot;这个技巧）│
-│   Newton-Schulz  X ← aX + b(XXᵀ)X + c(XXᵀ)²X               │
-│                  (a,b,c) = (3.4445, −4.7750, 2.0315)       │
-│   用/不用     矩阵形参数 ✅ ／ embedding、LM head、norm ❌   │
-│   ★ 正交化谁  对象应是【逻辑上的一个线性映射】，不是显存里连续 │
-│               的一块。融合张量要先切开：                     │
-│               W_qkv → 按 Q/K/V、再按 head（GLM 的 Muon Split）│
-│               W_gate_up → chunk(2) 各自正交化 ⚠️ 五家未披露    │
-│               见 [13.7](13-优化器与Muon.md)                  │
-│ MoE 均衡      b_i ← b_i − γ(F_i − Q_i)/RMS(F−Q)  积分控制器  │
-└────────────────────────────────────────────────────────────┘
+─ MLA ────────────────────────────────────────────────
+  只缓存 c^KV = x W_DKV（低维），用时再升维
+  矩阵吸收    qᵀk = c^Q ᵀ(W^UQ ᵀ W^UK) c^KV
+    ★ 被吸的是【上投影矩阵】，方向是：W^UK → 吸到 Q 侧，W^UV → 吸到输出侧
+  ⚠️⚠️ 吸收【不改变 cache 里存什么】—— 照样缓存压缩后的 c^KV，
+        这正是 MLA 省显存的全部来源。写成&quot;吸收后 K 直接算出来、
+        不用存 c^KV&quot;就全错了（那样存的是全维 K，压缩率归零）
+  ⚠️ 吸收也不是&quot;计算量也变小&quot;：head_dim 从 128 变成 512，注意力 FLOPs ×4。
+     赚的是 decode 不必物化 K/V ⟹ 训练/Prefill 走非吸收式、Decode 走吸收式
+  ⚠️ RoPE 会插在两个上投影矩阵中间 → 吸收失效 → decoupled RoPE
+  openPangu：512（压缩，无 RoPE）+ 64（解耦，有 RoPE）= 576     [7.4/7.5]
 
-┌─ 投机解码 / MTP ────────────────────────────────────────────┐
-│ 接受概率      min(1, p(x)/q(x))                             │
-│ 残差分布      p&#39; = max(0, p−q) / β                          │
-│ 单步接受率    α = Σ_x min(p(x), q(x)) = 1 − TV(p, q)         │
-│ 接受长度      E = (1 − α^(γ+1)) / (1 − α)                   │
-│ 加速比        ≈ E / (1 + γc)     c = 草稿/主模型单步耗时比    │
-│ MTP 模块      h&#39;^k = M_k[RMSNorm(h^{k−1}); RMSNorm(Emb(t_{i+k}))] │
-│ MTP 损失      L = L_main + (λ/D)·Σ_k L^k_MTP,  λ ≈ 0.1~0.3  │
-│ ★ 输出分布严格等于不用投机解码时 —— 纯加速，不是近似          │
-└────────────────────────────────────────────────────────────┘
+─ 线性注意力 ──────────────────────────────────────────
+  ★★ 全部来自结合律：(QKᵀ)V → Q(KᵀV)
+     2L²d  →  2Ld²    省 L/d 倍（L=1M, d=128 → 8192×）
+     ↑ 中间那个 [d,d] 就是&quot;全部历史&quot;被压成的唯一容器
+  前提     exp(qᵀk) 不可分解 → 换成 φ(q)ᵀφ(k) 才能挪括号
+  因果掩码 → 上界随 i 变 → 滚动累加 → ★ 这就是 RNN 递推
+  S_t = S_{t−1} + φ(k_t) v_tᵀ,      o_t = φ(q_t)ᵀ S_t
+    φ(k)v ᵀ 是【外积】[d_k,d_v]；S 的形状里【没有 L】
+  delta rule  S_t = (I − β_t k_t k_tᵀ)·Diag(α_t)·S_{t−1} + β_t k_t v_tᵀ
+    来历：对 ½‖Sᵀk_t − v_t‖² 走一步梯度下降（Widrow–Hoff）
+    α_t ∈ (0,1)^{d_k} 【逐通道】遗忘门 ← Kimi 的核心贡献
+    β_t ∈ (0,1) 是【标量】写入强度；‖k‖=1 时 β=1 即精确覆盖
+  ★ 状态大小恒定，与 L 无关 —— 但召回能力受限于状态容量
+    1M 上下文单头：KV cache 512 MiB  vs  状态 32 KiB（16384×）  [8.5]
+</code></pre></div>
 
-┌─ 量化 ─────────────────────────────────────────────────────┐
-│ 对称量化      s = max|x| / (2^(b−1) − 1),  x_q = round(x/s)  │
-│ 误差方差      Var[ε] = s²/12                                │
-│ ★★ 铁律      scale 必须在【求和维】上是常数，否则提不出求和号 │
-│ MXFP4        32 个 FP4 共享一个 E8M0 scale → 4 + 8/32 = 4.25 位│
-│ SmoothQuant   XW = (X·diag(s)⁻¹)(diag(s)·W)   结果不变       │
-│               s_j = max|X_j|^α / max|W_j|^(1−α),  α≈0.5      │
-│ 旋转量化      XW = (XQ)(Qᵀ W)，Q 正交         结果不变       │
-│ QAT 的 STE    forward=xq, backward=1  写作 x + sg(xq − x)    │
-│ 记号          W8A8 / W4A16 / W4A8 / KV8                     │
-└────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>─ 训练 ────────────────────────────────────────────────
+  训练目标    L = −(1/L) Σ log P(x_{t+1} | x_≤t)
+
+  前向 FLOPs  ≈ 2N   （N = 参与计算的参数量；MoE 这里要用【激活参数】）
+  训练 FLOPs  ★ ≈ 6N = 2N 前向
+                     + 2N 反向算【输入】梯度（往前一层传）
+                     + 2N 反向算【权重】梯度（这一层参数怎么改）
+    ⚠️ 6N 【不含】优化器更新，也不含激活重计算
+    补全式    6N + 12 · L_layers · s · h     ← 把注意力矩阵那一项补回来
+              Llama-3-70B（80 层 / h=8192 / N=70B）：
+                 s = 4096  →  3.22e10 vs 6N = 4.2e11  →  ★ +7.7%
+                 s = 8192  →  6.44e10 vs 6N = 4.2e11  →  ★ +15.3%
+    ⚠️ 该补正项【未扣因果掩码】（实际只算一半），是【上界】；
+       对 DSA-SWA 这类注意力成本常数化的架构不适用           [1.5.2]
+
+  显存        ★ 16 字节 / 参数
+              = BF16 权重 2 + 梯度 2 + FP32 主权重 4 + Adam m 4 + Adam v 4
+    ⚠️⚠️ m 和 v 是【各】4 字节，不是加起来 4。漏掉一半就会把
+          70B 的 1120 GB 写成 560 GB、14 张 80 GB 卡写成 7 张
+    Muon 不要 v → 12 字节 / 参数
+          ⚠️ &quot;优化器状态减半&quot;≠&quot;总显存减半&quot;：16 → 12 是降 25%   [1.5.3/13.6]
+
+  AdamW       θ ← θ − η( m̂/(√v̂+ε) + λθ )   ★ λθ 不过 √v
+  Muon        G = UΣVᵀ → 用 UVᵀ 更新
+    真正含义  谱范数球上的最速下降（不是&quot;拉平奇异值&quot;这个技巧）
+    Newton-Schulz  X ← aX + b(XXᵀ)X + c(XXᵀ)²X
+                   (a,b,c) = (3.4445, −4.7750, 2.0315)
+                   ★ p&#39;(0)=a 很大 → 极小奇异值也能被快速拉起；p(1)=0.701≠1
+    用/不用   矩阵形参数 ✅ ／ embedding、LM head、norm ❌
+    ★ 正交化谁  对象应是【逻辑上的一个线性映射】，不是显存里连续的一块。
+                融合张量要先切开：
+                W_qkv     → 按 Q/K/V、再按 head（GLM 的 Muon Split）
+                W_gate_up → chunk(2) 各自正交化    ⚠️ 五家均未披露
+                见 §13.7
+  MoE 均衡    b_i ← b_i − γ(F_i − Q_i)/RMS(F−Q)   本质是积分控制器（I 控制器）
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 投机解码 / MTP ──────────────────────────────────────
+  接受概率    min(1, p(x)/q(x))
+  残差分布    p&#39; = max(0, p−q) / β
+  单步接受率  α = Σ_x min(p(x), q(x)) = 1 − TV(p, q)
+
+  ★★ 期望接受长度   E = (1 − α^(γ+1)) / (1 − α)     ← 就是几何级数求和
+    ⚠️⚠️ 【不是 α × γ】，也不是 α × γ + 1。
+          α = 0.95、γ = 4 的真值是 ★ 4.52（α×γ 给 3.80，α×γ+1 给 4.80）
+          ★ α 越低，线性错法错得越离谱
+    🔑 天花板  E → 1 / (1 − α)   （γ → ∞）
+          α = 0.95 → 20.0    α = 0.8 → 5.0    α = 0.5 → 2.0
+          ⟹ γ 加到多大都突破不了它；α 一掉，上限直接被压死        [12.5]
+
+  加速比      ≈ E / (1 + γc)      c = 草稿/主模型单步耗时比
+  MTP 模块    h&#39;^k = M_k[RMSNorm(h^{k−1}); RMSNorm(Emb(t_{i+k}))]
+  MTP 损失    L = L_main + (λ/D)·Σ_k L^k_MTP,   λ ≈ 0.1~0.3（主任务永远是主角）
+
+  ✅ DeepSeek-V3 的官方口径（被传错得最厉害的一组数）：
+       第二个 token 的接受率 ★ 85%~90%，据此解码吞吐（TPS）提升 ★ 1.8×
+    ⚠️⚠️ 【不是 3×】。V3 的深度是 1，即 γ=1，代入 α=0.875 得 E = 1+α = 1.875，
+          与官方 1.8× 吻合；而 γ=1 时理论天花板就是 1+α &lt; 2，
+          ★ 3× 在数学上根本到不了                                 [12.12]
+
+  ★ 输出分布严格等于不用投机解码时 —— 纯加速，不是近似
+  ⚠️ 但&quot;配好了&quot;≠&quot;线上一定开&quot;：batch 大到 decode 已算力受限时它会净亏
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 量化 ────────────────────────────────────────────────
+  对称量化    s = max|x| / (2^(b−1) − 1),   x_q = round(x/s)
+  误差方差    Var[ε] = s²/12
+  ★★ 铁律    scale 必须在【求和维】上是常数，否则提不出求和号
+
+  有效位宽（★ scale 自己也占字节，所以&quot;4-bit = 省 4 倍&quot;只是上界）
+    MXFP4  g=32、E8M0 scale（纯指数）→ 4 + 8/32 = 4.25 bit   压缩 3.76×
+    INT4   g=128、非对称、FP16 scale → ★ 4.15625 bit（不是 4 bit）
+                                       压缩 ★ 3.85×（不是 4×）   [14.5]
+
+  十进制有效位 = log₁₀(2^有效数位)
+    E4M3 ★ ≈ 1.2 位（尾数 3 bit + 隐含位 = 4 bit 有效数）
+    E5M2   ≈ 0.9 位      INT8 ≈ 2.4 位      INT4 ≈ 1.2 位      BF16 ≈ 2.4 位
+    ⟹ ★★ FP8 赢在【动态范围】，不赢在精度 —— E4M3 和 INT4 精度同量级，
+         FP8 多出来的位全花在指数上，一位都没花在精度上
+    ⟹ 分工：训练梯度能跨好几个数量级 → 必须 FP8；
+            推理里没有离群值时 ★ INT8 per-channel 反而更准        [14.2]
+
+  SmoothQuant  XW = (X·diag(s)⁻¹)(diag(s)·W)    结果不变
+               s_j = max|X_j|^α / max|W_j|^(1−α),   α ≈ 0.5
+  旋转量化     XW = (XQ)(Qᵀ W)，Q 正交           结果不变
+  QAT 的 STE   forward = x_q, backward = 1   写作 x + sg(x_q − x)
+  记号         W8A8 / W4A16 / W4A8 / KV8
 </code></pre></div>
 
 <hr />
 <h2 id="c">C. 关键的量级感</h2>
-<div class="codehilite"><pre><span></span><code>┌─ 显存与带宽 ───────────────────────────────────────────────┐
-│ H100：显存 80 GB，带宽 3.35 TB/s，ridge point ≈ 295 FLOP/字节│
-│ 505B 权重：BF16 1010 GB / INT8 505 GB / FP4 253 GB          │
-│ KV cache（GQA-8, 60 层, 1M, BF16）      ≈ 240 GB            │
-│ KV cache（MLA-576, 50 层, 512K, BF16）  ≈  28 GB            │
-│ MHA 500B 模型：约 1 MB / token                              │
-└────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>─ H100 SXM5：一切估算的锚点 ───────────────────────────
+  BF16 / FP16 【稠密】算力   ★ 989 TFLOPS
+  FP8（E4M3 / E5M2）        1979 TFLOPS
+  INT8                      1979 TOPS
+  FP32                      67 TFLOPS
+  HBM3                      80 GB / 3.35 TB/s（实际可用 79.6 GiB）
+  ★ 屋脊点（ridge point）   BF16    989 / 3.35 ≈ ★ 295 FLOP/字节
+                            FP8·INT8             ≈ ★ 591（正好翻倍）
 
-┌─ 计算 ─────────────────────────────────────────────────────┐
-│ 单层 FLOPs（每 token）≈ 8d² + 6d·d_ff + 4Ld                 │
-│   L=4K   时 4Ld 项占 ~12%                                  │
-│   L=1M   时 4Ld 项占 ~97%   ← ★ 长上下文的全部麻烦在这一项   │
-│ 长度 128K → 1M：长度 ×8，但 L² 项 ×64                       │
-│ 参数量经验：MoE ≈ √(总参数 × 激活参数) 量级的稠密模型 ⚠️粗糙  │
-└────────────────────────────────────────────────────────────┘
+  ⚠️⚠️ BF16 的 1979 TFLOPS 是【2:4 结构化稀疏】值（要求每 4 个权重有 2 个是 0），
+        稠密只有 989。拿 1979 去算 BF16 屋脊点会得到 591，
+        把后面所有&quot;算力受限还是访存受限&quot;的判断整整带偏一倍。
+        ★ 看到任何算力数字，第一句话先问：稠密还是稀疏？         [6.4/14.9]
+</code></pre></div>
 
-┌─ 两个阶段 ─────────────────────────────────────────────────┐
-│ prefill：一次处理 L 个 token   → compute-bound  → 决定 TTFT │
-│ decode ：一次处理 1 个 token   → memory-bound   → 决定 TPOT │
-│   TTFT = Time To First Token   首字延迟，按回车到第一个字(s)│
-│   TPOT = Time Per Output Token 每字延迟，之后每个字的间隔(ms)│
-│          = 你看到的「打字速度」，10 ms → 每秒 100 字         │
-│   TPS  = Tokens Per Second     吞吐量，一块卡每秒总产出      │
-│          ★ TPS ≈ batch ÷ TPOT，两者互相打架（延迟↔吞吐取舍）│
-│   ISL / OSL = 输入 / 输出序列长度（&quot;8K+1K&quot; = ISL 8K, OSL 1K）│
-│   ★ decode 的算术强度 ≈ batch size                         │
-│   ★★ 所以：省 KV cache 的字节数 ≈ 直接提吞吐                │
-└────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>─ KV cache 通式（★ 全教程最高频的算错点）──────────────
+  每 token 每层 = 2 × H_kv × d_h × 字节数        ← 2 是 K、V 各存一份
+  全量          = 上式 × 层数 × L × batch
+                  （bytes：BF16 = 2，FP8 = 1，INT4 = 0.5）
+
+  ⚠️⚠️ 公式里那个头数必须是 n_kv_heads，【不是 n_heads】。
+        流传很广的简写「每 token 每层 = 4 × d_model 字节」只对 MHA 成立
+        （只有 MHA 才有 H_kv × d_h = d_model）。套到别的架构上会高估：
+
+          Llama-3-70B（GQA，80 层，64 q / 8 kv，d_h=128）
+                正确 320 KiB/token   ❌ 硬套 2560 KiB   高估 ★ 8 倍
+          同规模改成 MQA（1 kv 头）
+                正确  40 KiB/token   ❌ 硬套 2560 KiB   高估 ★ 64 倍
+          DeepSeek-V3（MLA，61 层，latent 512 + 解耦 RoPE 64）
+                正确 68.6 KiB/token  ❌ 硬套 1708 KiB   高估 ★ 25 倍
+
+  ★ 看到任何 KV cache 估算，第一件事是去 config.json 确认
+    `num_key_value_heads`，而不是照抄公式                          [6.3]
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 显存账 ──────────────────────────────────────────────
+  505B 权重   BF16 1010 GB / INT8 505 GB / FP4 253 GB
+              （✅ openPangu 报告实测 BF16 1009 GB、W8A8 517 GB）
+  MHA 500B 级（50 层、d=5120、64 头、d_h=80、BF16）
+              ★ 1000 KiB ≈ 1 MB / token   ⟹ 128K 就已经装不进一张卡
+  GQA-16（M3 口径：64 q / 4 kv、d_h=128、60 层、1M、BF16）
+              2 × 4 × 128 × 2 = 2 KiB /层/token → 120 KiB/token
+              ⟹ ★ 约 120 GiB（≈ 128.8 GB）
+  MLA-576（512+64、50 层、512K、BF16）
+              576 × 2 × 50 = 56.25 KiB/token  ⟹ 约 28 GiB
+  训练静态状态 505B × 16 字节 = 8080 GB = 7525 GiB = 7.35 TiB
+              ⟹ ★ 光是静态状态就要 101 张 80 GB 卡（不含激活、通信缓冲、KV）
+
+  ⚠️ 上面这几行 KV 数字是按标准配置的【推演】，用来建立直觉，
+     不是任何一家的官方披露值。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 卡间带宽（★ 口径最容易被放大一倍的地方）──────────────
+  NVLink      标称 900 GB/s 是【双向聚合】带宽 → 算单向要用 ★ 450 GB/s
+  InfiniBand  400 Gb/s 里的小写 b 是【比特】 → ÷ 8 = ★ 50 GB/s 才是字节口径
+  ⟹ 同口径下 NVLink : IB = 450 : 50 = ★ 9 倍，【不是 18 倍】
+     （900 ÷ 50 = 18 是拿双向比特混着单向字节比出来的）           [2.3/10.5]
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 计算账 ──────────────────────────────────────────────
+  单层 FLOPs（每 token）≈ 8d² + 6d·d_ff + 4Ld
+        └ 8d² 四个注意力投影   6d·d_ff 三个 FFN 矩阵   4Ld 注意力矩阵
+    L = 4K 时 4Ld 项占 ~12%
+    L = 1M 时 4Ld 项占 ~97%   ← ★ 长上下文的全部麻烦就在这一项
+  长度 128K → 1M：单 token 的这一项 ×8，【整条序列】的这一项 ×64
+  记法：前向 FLOPs ≈ 2 × 参与计算的参数量（一次乘加 = 2 FLOP）
+
+─ 稀疏度：口径决定结论 ────────────────────────────────
+  ✅ 正确口径    总参数 ÷ 激活参数   —— 这才是&quot;显存账 vs 算力账&quot;的比值
+       openPangu-2.0-Pro：505B / 18B = ★ 28.1 ×
+       其余：V4-Pro 32.7× ／ K3 26.7× ／ M3 见 §E 的 ⚠️
+  ❌ 错误口径    路由专家数 ÷ 激活专家数（384 / 8 = 48×）
+       那只是【路由选择比】，不是全模型稀疏度。
+    ⚠️ 差别来自&quot;注意力 + Embedding 这部分【完全不稀疏】&quot;：
+       它只占 openPangu 总参数的 ★ 1.3%，却占激活参数的 ★ 35%。
+       分母里那 35% 拖住了整体稀疏度，48× 因此虚高                [1.4.4]
+  参数量经验：MoE ≈ √(总参数 × 激活参数) 量级的稠密模型   ⚠️ 很粗糙
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 两个阶段 ────────────────────────────────────────────
+  prefill：一次处理 L 个 token   → compute-bound  → 决定 TTFT
+  decode ：一次处理 1 个 token   → memory-bound   → 决定 TPOT
+    TTFT = Time To First Token   首字延迟，按回车到第一个字（秒）
+    TPOT = Time Per Output Token 每字延迟，之后每个字的间隔（毫秒）
+           = 你看到的「打字速度」，10 ms → 每秒 100 字
+    TPS  = Tokens Per Second     吞吐量，一块卡每秒总产出
+           ★ TPS ≈ batch ÷ TPOT，两者互相打架（延迟 ↔ 吞吐取舍）
+    ISL / OSL = 输入 / 输出序列长度（&quot;8K+1K&quot; = ISL 8K，OSL 1K）
+    ★ decode 的算术强度 ≈ batch size（远小于屋脊点 295）
+    ★★ 所以：省 KV cache 的字节数 ≈ 直接提吞吐
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>─ 读数字时的五个陷阱（★ 每条都值一倍的误差）────────────
+  ① GB ≠ GiB
+       1 GB = 10⁹ 字节，1 GiB = 2³⁰ ≈ 1.074×10⁹ 字节，差 7.4%。
+       容量用 GiB、带宽用十进制 GB；厂商标的&quot;80 GB&quot;是十进制口径。
+  ② 「时间减少 X%」≠「加速 X%」
+       加速倍数 = 1 / (1 − 时间减少比例)
+       时间减少 60%  ⟹  加速 ★ 2.5 倍（不是 1.6 倍，更不是&quot;快 60%&quot;）
+       反过来：加速 2 倍 ⟹ 时间减少 50%
+  ③ MFU（Model FLOPs Utilization，模型算力利用率）★ 必须带硬件平台
+       &quot;35% MFU&quot;在 H100 千卡 MoE 训练上和在昇腾 NPU 上完全不是一件事。
+       ⚠️ 而且分子用 6N 还是补全式也会差出 15%：
+          s ≥ 32K 还只用 6N 算分子，就是在虚报效率。
+  ④ 「某项减半」≠「总量减半」
+       Muon 把优化器状态从 8 字节降到 4 字节是减半，
+       但每参数总显存 16 → 12 只是降 25%。这类偷换在读报告时极常见。
+  ⑤ 无一手来源的「实测」数字，一律标 ⚠️ 之后再引用。
 </code></pre></div>
 
 <hr />
@@ -424,56 +577,217 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <tr>
 <td><strong>DeepSeek-V4</strong></td>
 <td>压缩 KV，保住 softmax</td>
-<td>1.6T / 49B，61 层</td>
-<td><strong>CSA 4:1 + HCA 128:1</strong>（★ 没有 MLA）</td>
+<td>1.6T / 49B，61 层，稀疏 32.7×</td>
+<td><strong>CSA 4:1 重叠 + HCA 128:1 稠密</strong>（★ 没有 MLA）</td>
 <td><strong>mHC</strong></td>
 <td>FP4 存 + FP8 算</td>
 </tr>
 <tr>
 <td><strong>Kimi K3</strong></td>
 <td>softmax 退居配角</td>
-<td>2.78T / 104B，93 层</td>
-<td><strong>KDA + MLA 3:1</strong>，NoPE</td>
-<td><strong>AttnRes</strong></td>
+<td>2.78T / 104B，93 层，稀疏 26.7×</td>
+<td><strong>KDA + MLA 3:1</strong>（69 + 24 层），NoPE</td>
+<td><strong>AttnRes</strong>（8 块）</td>
 <td>MXFP4 + MXFP8</td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
 <td>只挑重要的 2048 个看</td>
 <td>78 层</td>
-<td><strong>DSA + IndexShare</strong></td>
+<td><strong>MLA-256 + DSA top-2048 + IndexShare</strong></td>
 <td>不改</td>
 <td>INT4 + W8A8</td>
 </tr>
 <tr>
 <td><strong>MiniMax M3</strong></td>
 <td>块级动态选择</td>
-<td>230B / 10B，60 层</td>
-<td>GQA + <strong>MSA 块级</strong></td>
+<td>⚠️ 见下方冲突说明，60 层</td>
+<td><strong>GQA-16（64 q / 4 kv）+ MSA 块级</strong>（块 128、选 16 块 → 2048）</td>
 <td>不改</td>
 <td>MXFP8</td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
 <td>层级分工</td>
-<td>505B / 18B，50 层</td>
-<td><strong>DSA-SWA 1:2</strong> + PAS</td>
+<td>505B / 18B，50 层，稀疏 <strong>28.1×</strong></td>
+<td><strong>MLA-576 + DSA-SWA 1:2</strong>（窗口 512）+ PAS 128</td>
 <td><strong>mHC</strong></td>
 <td>W8A8</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>⚠️ <strong>MiniMax M3 的参数量在本仓库里有两处冲突，尚未定论，两个来源都列在这里，引用前请自行确认</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>总参 / 激活</th>
+<th>稀疏度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="01-鸟瞰全景.html">01 章 §1.6</a></td>
+<td><strong>230B / 10B</strong></td>
+<td>23.0 ×</td>
+</tr>
+<tr>
+<td><a href="../模型技术对比.html">../模型技术对比.md</a> §二（引 HuggingFace <code>config.json</code>，一手出货配置）</td>
+<td><strong>428B / ~23B</strong></td>
+<td>18.6 ×</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 两者差近一倍。<strong>注意 229.9B / 9.8B 正好是 MiniMax M2 的配置</strong>，所以怀疑其中一处混了型号——但本表不替你二选一。M3 的层数（60）、hidden dim（6144）、<code>64 q / 4 kv</code>、<code>128 专家选 4</code>、<code>MTP × 7</code> 这几项两边一致，可以放心用。</p>
+</blockquote>
 <div class="codehilite"><pre><span></span><code>五家共识（可以直接抄的部分）：
-  ✅ Pre-Norm + RMSNorm         ✅ SwiGLU 系激活
-  ✅ MoE + aux-loss-free 均衡    ✅ MTP
+  ✅ Pre-Norm + RMSNorm          ✅ SwiGLU 系激活
+  ✅ MoE + aux-loss-free 均衡     ✅ MTP
+  ✅ Muon（用在矩阵形参数上，4/5 家；M3 未披露）
+  ✅ 没有一家用原版全注意力        ✅ 没有一家动 W_O
+
   ⚠️ 没人用原版 MHA，但也【不是全都用 MLA】：
-     MLA 系：GLM-5.2（MLA-256）/ openPangu / K3（Gated MLA，仅 1/4 层）
-     GQA  ：MiniMax M3（64q / 8kv）
-     ★ V4 两者都不是：CSA / HCA 内核都是【共享 KV 的 MQA】
-  ✅ Muon（矩阵参数，4/5 家）
-  ✅ 没有一家用原版全注意力       ✅ 没有一家动 W_O
+     MLA 系：GLM-5.2（MLA-256）／ openPangu（MLA-576）／ K3（Gated MLA，仅 1/4 层）
+     GQA  ：MiniMax M3 —— ★ 64 q / 4 kv，即 GQA-16
+            （本教程约定 GQA-n 的 n = &quot;几个 q 头共享一组 KV&quot;，
+              所以 64÷4 = 16；⚠️ 别处写的 &quot;GQA-8&quot; 要先确认它指组数还是共享数）
+     ★ V4 两者都不是：CSA / HCA 的内核都是【共享 KV 的 MQA】
 </code></pre></div>
 
+<div class="codehilite"><pre><span></span><code>★ DeepSeek-V3 基线：各章反复引用的参照系，★ 别和 V4 混
+
+  结构    61 层 = ★ 前 3 层【稠密 FFN】 + 58 层 MoE；d_model = 7168
+  MoE     每个 MoE 层 256 个路由专家 + 1 个共享专家，每 token ★ Top-8（共 9 个）
+  注意力  MLA：latent 512 + 解耦 RoPE 64 ⟹ 68.6 KiB / token（61 层、BF16）
+  训练    ✅ 2048 张 H800，EP = 64（横跨 8 台机）、PP = 16、★ TP = 1、ZeRO-1 式 DP
+  丢不丢  ✅ ★ 训练和推理【都不丢 token】（dropless）。
+          &quot;MoE 会丢 token&quot;是 2021 年 Switch Transformer 那代&quot;超容量就扔&quot;的说法
+  均衡    无辅助损失的偏置法 b_i ← b_i − γ(F_i − Q_i)/RMS(F−Q)
+          ★ b 完全【不参与梯度】，由这条独立规则更新
+          ★ 训练时每个 step 更新一次，★ 推理时【固定】（训完冻住、跟权重一起发布）
+          ★ b 只进入&quot;选谁&quot;的比较，【不进入】权重 w_i（选完仍用原始分数归一化）
+          ⚠️ 并非完全不用辅助损失 —— 仍保留一项【极小的序列级】aux loss，
+             防单条序列内部极端不均。&quot;aux-loss-free&quot;指去掉的是
+             那个会和主损失打架的【全局】aux loss
+  MTP     深度 1；第二 token 接受率 85~90%、TPS 提升 1.8×（⚠️ 不是 3×）
+
+  ⚠️ V3 ≠ V4：V4-Pro 是 61 层 / 1.6T / 49B，注意力换成 CSA + HCA，★ 已不用 MLA
+  ⚠️ V4.1-Flash 又是另一个模型（40 层），沿用 mHC 但做了融合 kernel。
+     同一个&quot;V4&quot;字样下有两代不同配置，引数字前先确认是哪一个
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>上面那行训练并行配置的出处</strong>：V3 技术报告 §3.1，本仓库的逐项核对在 <a href="../../训练框架/分布式训练入门/09-专家并行EP.html">训练框架 · 专家并行 EP</a> §9.5；MoE 偏置法和 dropless 的完整口径在 <a href="10-MoE.html">10 章 §10.5</a>。</p>
+</blockquote>
+<hr />
+<h2 id="f">F. 章节索引</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>章节</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01</td>
+<td><a href="01-鸟瞰全景.html">鸟瞰全景</a></td>
+<td>两块积木、三个改动位置、<code>6N</code> 与 16 字节/参数两笔账</td>
+</tr>
+<tr>
+<td>02</td>
+<td><a href="02-Embedding与词表.html">Embedding 与词表</a></td>
+<td>BPE、查表、权重绑定、词表并行的带宽账</td>
+</tr>
+<tr>
+<td>03</td>
+<td><a href="03-残差流.html">残差流</a></td>
+<td>⭐ 总线视角、2^(N−1) 条路径、<strong>mHC 与 AttnRes</strong></td>
+</tr>
+<tr>
+<td>04</td>
+<td><a href="04-归一化.html">归一化</a></td>
+<td>RMSNorm、Pre/Post/Sandwich、QK-Norm、<strong>门控塌陷</strong></td>
+</tr>
+<tr>
+<td>05</td>
+<td><a href="05-注意力机制.html">注意力机制</a></td>
+<td>⭐ QKV、√d_h、因果掩码、<strong>和为 1 的诅咒</strong>、FlashAttention</td>
+</tr>
+<tr>
+<td>06</td>
+<td><a href="06-KV-cache.html">KV cache</a></td>
+<td>⭐ <strong>KV 通式</strong>、roofline、<strong>decode 访存受限</strong>、TTFT / TPOT</td>
+</tr>
+<tr>
+<td>07</td>
+<td><a href="07-MHA到MLA.html">MHA 到 MLA</a></td>
+<td>省 KV 的四条路、<strong>矩阵吸收到底吸了什么</strong>、RoPE 冲突与解耦</td>
+</tr>
+<tr>
+<td>08</td>
+<td><a href="08-高效注意力.html">高效注意力</a></td>
+<td>改注意力的四条路、线性注意力推导、delta rule、sink 补丁</td>
+</tr>
+<tr>
+<td>09</td>
+<td><a href="09-FFN与激活函数.html">FFN 与激活函数</a></td>
+<td>SwiGLU、<strong>2/3 是折算系数不是定律</strong>、无界的代价</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="10-MoE.html">MoE</a></td>
+<td>505B / 18B、马太效应、积分控制器、<strong>QB 分位数均衡</strong></td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="11-位置编码RoPE.html">位置编码 RoPE</a></td>
+<td>旋转、PI / NTK / YaRN、base 阶梯、<strong>NoPE</strong>、Partial RoPE</td>
+</tr>
+<tr>
+<td>12</td>
+<td><a href="12-MTP与投机解码.html">MTP 与投机解码</a></td>
+<td>拒绝采样证明、<strong>接受长度是几何求和</strong>、MTP 的两个身份</td>
+</tr>
+<tr>
+<td>13</td>
+<td><a href="13-优化器与Muon.html">优化器与 Muon</a></td>
+<td>⭐ <strong>谱范数最速下降</strong>、正交化的粒度、三种互斥归因</td>
+</tr>
+<tr>
+<td>14</td>
+<td><a href="14-量化.html">量化</a></td>
+<td>⭐ <strong>求和维铁律</strong>、离群值、<strong>有效位宽</strong>、PTQ vs QAT</td>
+</tr>
+<tr>
+<td>15</td>
+<td><a href="15-五家总装图.html">五家总装图</a></td>
+<td>13 个可改位置 × 五家、三条因果链再走一遍</td>
+</tr>
+<tr>
+<td>16</td>
+<td><a href="16-最小数值走查.html">最小数值走查</a></td>
+<td>L=3、d=4、词表=4，拿笔算完一次完整 forward</td>
+</tr>
+<tr>
+<td>17</td>
+<td><a href="17-延伸阅读.html">延伸阅读</a></td>
+<td>阅读顺序、论文清单、读技术报告的五条经验</td>
+</tr>
+<tr>
+<td>18</td>
+<td><a href="18-Engram与条件记忆.html">Engram 与条件记忆</a></td>
+<td>⭐ <strong>加餐</strong>：MoE 之外的第二根稀疏轴（10 章的姊妹章）</td>
+</tr>
+<tr>
+<td>19</td>
+<td><a href="19-算子开发与实现.html">算子开发与实现</a></td>
+<td>⭐ <strong>加餐</strong>：这些结构最后怎么变成 GPU 上跑的代码</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="g">★ G. 缩写总表（看不懂哪个词就查这里）</h2>
 <blockquote>
@@ -502,21 +816,21 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <td><strong>MQA</strong></td>
 <td>Multi-Query Attention</td>
 <td>多查询注意力</td>
-<td>所有头<strong>共用一套</strong> KV，省 8 倍但掉效果</td>
+<td>所有头<strong>共用一套</strong> KV，最省但掉效果</td>
 <td><a href="07-MHA到MLA.html">07</a></td>
 </tr>
 <tr>
 <td><strong>GQA</strong></td>
 <td>Grouped-Query Attention</td>
 <td>分组查询注意力</td>
-<td>折中：分组，<strong>组内共用</strong> KV</td>
+<td>折中：分组，<strong>组内共用</strong> KV。⚠️ 本教程的 <strong>GQA-n</strong> 指"n 个 q 头共享一组 KV"，所以 M3 的 64 q / 4 kv 记作 <strong>GQA-16</strong></td>
 <td><a href="07-MHA到MLA.html">07</a></td>
 </tr>
 <tr>
 <td><strong>MLA</strong></td>
 <td>Multi-head Latent Attention</td>
 <td>多头潜在注意力</td>
-<td>把 KV <strong>压成低维</strong>再存，用时升维</td>
+<td>把 KV <strong>压成低维</strong>再存，用时升维；⚠️ 吸收后<strong>照样存压缩后的 c_KV</strong></td>
 <td><a href="07-MHA到MLA.html">07</a></td>
 </tr>
 <tr>
@@ -529,29 +843,29 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <tr>
 <td><strong>DSA</strong></td>
 <td>DeepSeek Sparse Attention</td>
-<td>稀疏注意力</td>
+<td>（DeepSeek 的）稀疏注意力</td>
 <td>用轻量索引器<strong>只挑最相关的 k 个</strong></td>
 <td><a href="08-高效注意力.html">08</a></td>
 </tr>
 <tr>
 <td><strong>MSA</strong></td>
+<td>MiniMax Sparse Attention</td>
 <td>（MiniMax 的）块级稀疏注意力</td>
-<td>—</td>
-<td>按<strong>块</strong>选，不按单 token 选</td>
+<td>按<strong>块</strong>选，不按单 token 选（块 128、选 16 块）</td>
 <td><a href="08-高效注意力.html">08</a></td>
 </tr>
 <tr>
 <td><strong>CSA</strong></td>
 <td><strong>C</strong>ompressed <strong>S</strong>parse <strong>A</strong>ttention</td>
 <td>压缩稀疏注意力</td>
-<td>✅ V4 用：先把每 ℓ 个 token 的 KV 压成一条，再做 DSA 稀疏挑选</td>
+<td>✅ V4 用：先把每 ℓ 个 token 的 KV 压成一条（4:1 重叠），再做稀疏挑选</td>
 <td><a href="08-高效注意力.html">08</a></td>
 </tr>
 <tr>
 <td><strong>HCA</strong></td>
 <td><strong>H</strong>eavily <strong>C</strong>ompressed <strong>A</strong>ttention</td>
 <td>重度压缩注意力</td>
-<td>✅ V4 用：压得更狠（128:1），但★<strong>保持稠密</strong>、不做稀疏挑选</td>
+<td>✅ V4 用：压得更狠（128:1），但 ★<strong>保持稠密</strong>、不做稀疏挑选</td>
 <td><a href="08-高效注意力.html">08</a></td>
 </tr>
 <tr>
@@ -567,6 +881,13 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <td>位置注意力沉降点</td>
 <td>给"没处放的注意力"一个专门的垃圾桶</td>
 <td><a href="05-注意力机制.html">05</a></td>
+</tr>
+<tr>
+<td><strong>IndexShare</strong></td>
+<td>（自造词，无缩写展开）</td>
+<td>索引复用</td>
+<td>GLM 的做法：DSA 的索引器<strong>每 4 层才算一次</strong>，中间几层直接复用</td>
+<td><a href="08-高效注意力.html">08</a></td>
 </tr>
 </tbody>
 </table>
@@ -615,6 +936,13 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <td>No Positional Encoding</td>
 <td>无位置编码</td>
 <td><strong>什么位置编码都不用</strong>（K3 的选择）</td>
+<td><a href="11-位置编码RoPE.html">11</a></td>
+</tr>
+<tr>
+<td><strong>PI / NTK / YaRN</strong></td>
+<td>Position Interpolation / NTK-aware scaling / Yet another RoPE extensioN</td>
+<td>位置插值 / NTK 感知缩放 / —</td>
+<td>三代长度外推方案，本质都是改 RoPE 的频率</td>
 <td><a href="11-位置编码RoPE.html">11</a></td>
 </tr>
 <tr>
@@ -715,6 +1043,13 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <td>把全角/半角、组合字符归一；Engram 用它压词表</td>
 <td><a href="18-Engram与条件记忆.html">18</a></td>
 </tr>
+<tr>
+<td><strong>MFU</strong></td>
+<td>Model FLOPs Utilization</td>
+<td>模型算力利用率</td>
+<td>实际达到的 FLOPS ÷ 硬件峰值。⚠️ <strong>报 MFU 必须同时说硬件平台和分子用的哪个公式</strong>，否则数字不可比</td>
+<td><a href="01-鸟瞰全景.html">01</a></td>
+</tr>
 </tbody>
 </table>
 <h3 id="g3">G3. 量化</h3>
@@ -754,14 +1089,35 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 <td><strong>MXFP4</strong></td>
 <td>Microscaling FP4</td>
 <td>微缩放 4 位浮点</td>
-<td>32 个数共享一个 scale，实际 4.25 位</td>
+<td>32 个数共享一个 E8M0 scale，实际 <strong>4.25 位</strong>、压缩 3.76×</td>
+<td><a href="14-量化.html">14</a></td>
+</tr>
+<tr>
+<td><strong>E4M3 / E5M2</strong></td>
+<td>4-bit <strong>E</strong>xponent + 3-bit <strong>M</strong>antissa（等）</td>
+<td>—</td>
+<td>两种 FP8 排布。⚠️ E4M3 的十进制有效位只有约 <strong>1.2 位</strong>，和 INT4 同量级——<strong>FP8 赢在动态范围不是精度</strong></td>
+<td><a href="14-量化.html">14</a></td>
+</tr>
+<tr>
+<td><strong>E8M0</strong></td>
+<td>8-bit <strong>E</strong>xponent + 0-bit <strong>M</strong>antissa</td>
+<td>纯 2 的幂次 scale</td>
+<td>只有指数没有尾数，所以只占 8 bit，MXFP4 用它当分组 scale</td>
+<td><a href="14-量化.html">14</a></td>
+</tr>
+<tr>
+<td><strong>SQNR</strong></td>
+<td>Signal-to-Quantization-Noise Ratio</td>
+<td>信号量化噪声比</td>
+<td>量化好不好的一个指标，越高越好</td>
 <td><a href="14-量化.html">14</a></td>
 </tr>
 <tr>
 <td><strong>W8A8</strong></td>
 <td>Weight 8-bit / Activation 8-bit</td>
 <td>—</td>
-<td>权重 8 位、激活 8 位（同理 W4A16）</td>
+<td>权重 8 位、激活 8 位（同理 W4A16 / W4A8 / KV8）</td>
 <td><a href="14-量化.html">14</a></td>
 </tr>
 </tbody>
@@ -817,9 +1173,11 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
    两者的关系：  TPS ≈ batch ÷ TPOT
    ⚠️ 而且它们互相打架：batch 开大 → TPS 涨，但每个人的 TPOT 变差
 
-   openPangu 实测就是一对活例子（同一个模型的两个取舍点）：
+   ✅ openPangu 报告里就是一对活例子（同一个模型的两个取舍点，8K+1K）：
        超低延迟档： TPOT  9.53 ms                      ← 延迟优先
        高吞吐档：   TPOT 23.2 ms，batch 40，1727 TPS   ← 吞吐优先
+   ⚠️ 这两组数【不能凑在一起用】（报告没给超低延迟档的 batch 和 TPS）。
+      验算：40 ÷ 0.0232 s ≈ 1724 TPS，和 1727 只差 0.2% —— 高吞吐档自洽
 
    一次完整对话的耗时 ≈ TTFT + TPOT × 输出字数
                         └首字┘  └── 后面每个字 ──┘
@@ -874,113 +1232,80 @@ d_h = 每头维度   d_ff = FFN 中间维   V = 词表大小   N = 层数
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="f">F. 章节索引</h2>
+<h3 id="g6-19">G6. 算子与硬件（19 章）</h3>
 <table>
 <thead>
 <tr>
-<th>#</th>
-<th>章节</th>
+<th>缩写</th>
+<th>全称</th>
+<th>中文</th>
 <th>一句话</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>01</td>
-<td><a href="01-鸟瞰全景.html">鸟瞰全景</a></td>
-<td>两块积木、三个改动位置</td>
+<td><strong>算子</strong></td>
+<td>operator / kernel</td>
+<td>内核</td>
+<td>一段能在 GPU 上独立执行的运算实现（矩阵乘、Softmax、LayerNorm…）</td>
 </tr>
 <tr>
-<td>02</td>
-<td><a href="02-Embedding与词表.html">Embedding 与词表</a></td>
-<td>BPE、查表、权重绑定</td>
+<td><strong>GEMM</strong></td>
+<td>General Matrix Multiply</td>
+<td>通用矩阵乘法</td>
+<td>最核心的那个算子，大模型 90% 以上的 FLOPs 是它</td>
 </tr>
 <tr>
-<td>03</td>
-<td><a href="03-残差流.html">残差流</a></td>
-<td>⭐ 总线视角、2^(N−1) 条路径、mHC</td>
+<td><strong>HBM</strong></td>
+<td>High Bandwidth Memory</td>
+<td>高带宽内存</td>
+<td>GPU 的"主内存"，快但容量有限（H100 是 HBM3，80 GB / 3.35 TB/s）</td>
 </tr>
 <tr>
-<td>04</td>
-<td><a href="04-归一化.html">归一化</a></td>
-<td>RMSNorm、Pre/Post/Sandwich、gate collapse</td>
+<td><strong>SRAM</strong></td>
+<td>Static Random-Access Memory</td>
+<td>片上缓存</td>
+<td>极快但极小；FlashAttention 的全部把戏都在"让数据住在这里"</td>
 </tr>
 <tr>
-<td>05</td>
-<td><a href="05-注意力机制.html">注意力机制</a></td>
-<td>⭐ QKV、√d_h、因果掩码、<strong>和为 1 的诅咒</strong></td>
+<td><strong>Roofline</strong></td>
+<td>—</td>
+<td>屋顶线</td>
+<td>判断瓶颈在算力还是带宽的模型。★ H100 的 BF16 屋脊点是 295 FLOP/字节</td>
 </tr>
 <tr>
-<td>06</td>
-<td><a href="06-KV-cache.html">KV cache</a></td>
-<td>⭐ roofline、<strong>decode 访存受限</strong></td>
+<td><strong>Triton</strong></td>
+<td>—</td>
+<td>—</td>
+<td>OpenAI 开源的 GPU 内核语言，比 CUDA 好写、比 PyTorch 快</td>
 </tr>
 <tr>
-<td>07</td>
-<td><a href="07-MHA到MLA.html">MHA 到 MLA</a></td>
-<td>矩阵吸收、<strong>RoPE 冲突与解耦</strong></td>
+<td><strong>All-to-All</strong></td>
+<td>—</td>
+<td>全交换</td>
+<td>MoE 把 token 分发到各专家用的通信原语，EP 的主要瓶颈</td>
 </tr>
 <tr>
-<td>08</td>
-<td><a href="08-高效注意力.html">高效注意力</a></td>
-<td>四条路、线性注意力推导、delta rule</td>
-</tr>
-<tr>
-<td>09</td>
-<td><a href="09-FFN与激活函数.html">FFN 与激活函数</a></td>
-<td>SwiGLU、2/3 因子、<strong>无界的代价</strong></td>
-</tr>
-<tr>
-<td>10</td>
-<td><a href="10-MoE.html">MoE</a></td>
-<td>505B/18B、马太效应、积分控制器</td>
-</tr>
-<tr>
-<td>11</td>
-<td><a href="11-位置编码RoPE.html">位置编码 RoPE</a></td>
-<td>旋转、PI/NTK/YaRN、<strong>NoPE</strong></td>
-</tr>
-<tr>
-<td>12</td>
-<td><a href="12-MTP与投机解码.html">MTP 与投机解码</a></td>
-<td>拒绝采样证明、两个身份</td>
-</tr>
-<tr>
-<td>13</td>
-<td><a href="13-优化器与Muon.html">优化器与 Muon</a></td>
-<td>⭐ <strong>谱范数最速下降</strong>、三种互斥归因</td>
-</tr>
-<tr>
-<td>14</td>
-<td><a href="14-量化.html">量化</a></td>
-<td>⭐ <strong>求和维铁律</strong>、离群值、PTQ vs QAT</td>
-</tr>
-<tr>
-<td>15</td>
-<td><a href="15-五家总装图.html">五家总装图</a></td>
-<td>13 个位置、三条因果链</td>
-</tr>
-<tr>
-<td>16</td>
-<td><a href="16-最小数值走查.html">最小数值走查</a></td>
-<td>拿笔算一遍完整 forward</td>
-</tr>
-<tr>
-<td>17</td>
-<td><a href="17-延伸阅读.html">延伸阅读</a></td>
-<td>读报告的五条经验</td>
+<td><strong>PagedAttention</strong></td>
+<td>—</td>
+<td>分页注意力</td>
+<td>把 KV cache 像操作系统的虚拟内存一样分页管理，消灭显存碎片</td>
 </tr>
 </tbody>
 </table>
 <hr />
 <blockquote>
-<p><strong>可靠性说明</strong>：本表中的<strong>通用公式</strong>是教科书内容，按标准形式给出。<br />
-<strong>归属到具体厂商的配置和数字</strong>全部来自本目录已核对的一手报告，可在对应模型文件里回溯；有疑问以 <a href="../papers/">../papers/</a> 下的 PDF 原文为准。<br />
-<strong>量级感一栏中的 KV cache 账目</strong>是按标准配置估算的，用于建立直觉，<strong>不是任何一家的官方披露数字</strong>。</p>
+<p><strong>可靠性说明</strong></p>
+<ul>
+<li>本表中的<strong>通用公式</strong>是教科书内容，按标准形式给出。</li>
+<li><strong>归属到具体厂商的配置和数字</strong>全部来自本目录已核对的一手报告，可在对应模型文件里回溯；有疑问以 <a href="../papers/">../papers/</a> 下的 PDF 原文为准。</li>
+<li><strong>量级感一栏（§C）中的 KV cache 账目</strong>是按标准配置估算的，用于建立直觉，<strong>不是任何一家的官方披露数字</strong>。</li>
+<li>标 ✅ 的能追到一手报告原文；标 ⚠️ 的是推断、估算，或本仓库内部尚存冲突（如 §E 的 MiniMax M3 参数量），<strong>引用前请自行核实</strong>。</li>
+</ul>
 </blockquote>
 <hr />
 <blockquote>
-<p><a href="17-延伸阅读.html">← 17 延伸阅读</a> ｜ <a href="README.html">目录</a></p>
+<p><a href="19-算子开发与实现.html">← 19 算子开发与实现</a> ｜ <a href="README.html">目录</a></p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

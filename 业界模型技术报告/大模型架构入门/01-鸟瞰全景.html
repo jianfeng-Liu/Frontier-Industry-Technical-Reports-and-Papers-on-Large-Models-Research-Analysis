@@ -255,42 +255,130 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 读完你应该能回答：模型里到底有哪些东西？"505B 参数"这个数字是怎么来的？为什么所有架构创新都只发生在三个位置？</p>
 </blockquote>
 <hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>token</strong>（词元）—— 模型处理的最小单位，一段文本被切成若干个 token。<br />
+<strong>Embedding</strong>（词嵌入）—— 一张 <code>[V, d]</code> 的查找表，把 token 的整数编号换成一行 <code>d</code> 个实数。<br />
+<strong>残差流</strong>（Residual Stream）—— 贯穿所有层的那一条 <code>[L, d]</code> 数据流，每一层都在上面做加法而不是替换。<br />
+<strong>Attention</strong>（注意力）—— 让不同位置的 token 互相读取信息的模块，<strong>横向</strong>。<br />
+<strong>FFN</strong>（Feed-Forward Network，前馈网络）—— 对每个 token 单独做的非线性变换，<strong>纵向</strong>。<br />
+<strong>MoE</strong>（Mixture of Experts，混合专家）—— 把一个大 FFN 拆成很多个小 FFN，每个 token 只激活其中几个。<br />
+<strong>LM Head</strong>（Language Model Head，语言模型输出头）—— 最后那个 <code>[d, V]</code> 的矩阵，把向量变回"每个候选词得几分"。<br />
+<strong>logits</strong>（未归一化打分）—— LM Head 的原始输出，还没过 softmax。<br />
+<strong>FLOP</strong>（Floating-point Operation，浮点运算次数）—— 衡量计算量的单位；一次乘加算 2 FLOP。<br />
+<strong>MFU</strong>（Model FLOPs Utilization，模型算力利用率）—— 实际达到的 FLOPS ÷ 硬件峰值 FLOPS。  </p>
+<hr />
 <h2 id="11">1.1 全景图</h2>
-<div class="codehilite"><pre><span></span><code>        输入文本 &quot;今天天气&quot;
-             │
-             │  ① Tokenizer：切成 token，查表变成整数 ID
-             ▼
-        [1234, 567, 890]                      形状 [L] = [3]
-             │
-             │  ② Embedding：每个 ID 查一个 d 维向量
-             ▼
-        ┌──────────────────┐                  形状 [L, d] = [3, 5120]
-        │  x  (残差流起点)  │
-        └──────────────────┘
-             │
-    ╔════════╪══════════════════════════════════════╗
-    ║        ▼        重复 N 层（N = 50~93）          ║
-    ║   ┌─────────────────────────────────────────┐ ║
-    ║   │  x = x + Attention( Norm(x) )           │ ║  ← ③ 让 token 之间交换信息
-    ║   │  x = x + FFN_or_MoE( Norm(x) )          │ ║  ← ④ 让每个 token 自己加工信息
-    ║   └─────────────────────────────────────────┘ ║
-    ╚════════╪══════════════════════════════════════╝
-             │
-             │  ⑤ 最后一次 Norm
-             ▼
-        ┌──────────────────┐
-        │   LM Head (W_out) │                  [L, d] × [d, V] → [L, V]
-        └──────────────────┘
-             │
-             ▼
-        每个位置上，对 V 个候选词的打分（logits）
-             │
-             │  ⑥ softmax → 概率 → 采样
-             ▼
-        下一个 token：&quot;真&quot;
+<p><strong>模型只干一件事</strong>：给它前面若干个 token，让它猜下一个 token。生成一整篇文章，就是把这件事重复几千次，每次把刚猜出来的那个 token 接到输入末尾再猜一遍。</p>
+<p>下面这张图就是这一件事的全部：</p>
+<div class="codehilite"><pre><span></span><code>输入文本    &quot;今天天气&quot;
+   |
+   |  (1) Tokenizer 分词：切成 token，每个查表换成一个整数编号
+   v
+token 编号  [1234, 567, 890]
+   |
+   |  (2) Embedding 查表：拿编号当行号，取出 E 的那一行
+   v
+x           &lt;- 残差流的起点
+   |
+   |=== 以下重复 N 层（五家 N = 50 ~ 93），x 的形状全程不变 ========
+   |
+   |  (3) x = x + Attention( Norm(x) )      让 token 之间交换信息
+   |  (4) x = x + FFN_or_MoE( Norm(x) )     让每个 token 自己加工信息
+   |
+   |=== 第 N 层结束 ==============================================
+   |
+   |  (5) 最后一次 Norm
+   v
+x_final
+   |
+   |  (6) LM Head：乘 W_out
+   v
+logits      &lt;- 每个位置上，对 V 个候选词各打一个分
+   |
+   |  (7) 取最后一个位置那一行，softmax -&gt; 概率 -&gt; 采样
+   v
+下一个 token  &quot;真&quot;
 </code></pre></div>
 
-<p><strong>这张图就是全部。</strong> 一个 500B 参数的前沿模型，结构上和一个 100M 的玩具模型<strong>没有任何区别</strong>——只是 <code>N</code> 更大、<code>d</code> 更宽、FFN 换成了 MoE。</p>
+<p><strong>每一步的张量形状</strong>（标注写在图外，图里只画流向；代入 openPangu-2.0-Pro 的 <code>d</code>=5120、<code>V</code>=151552、<code>N</code>=50）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>数据</th>
+<th>通用形状</th>
+<th>代入本例</th>
+<th>这一步做了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入</td>
+<td>文本</td>
+<td>—</td>
+<td><code>"今天天气"</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>(1) 后</td>
+<td>token 编号</td>
+<td><code>[L]</code></td>
+<td><code>[3]</code></td>
+<td>查 tokenizer 的词表，<strong>纯查表</strong></td>
+</tr>
+<tr>
+<td>(2) 后</td>
+<td><code>x</code></td>
+<td><code>[L, d]</code></td>
+<td><code>[3, 5120]</code></td>
+<td>查 Embedding 表，<strong>纯查表，零乘法</strong></td>
+</tr>
+<tr>
+<td>(3) 每层</td>
+<td><code>x</code></td>
+<td><code>[L, d]</code></td>
+<td><code>[3, 5120]</code></td>
+<td>加上注意力的输出</td>
+</tr>
+<tr>
+<td>(4) 每层</td>
+<td><code>x</code></td>
+<td><code>[L, d]</code></td>
+<td><code>[3, 5120]</code></td>
+<td>加上 FFN/MoE 的输出</td>
+</tr>
+<tr>
+<td>(5) 后</td>
+<td><code>x_final</code></td>
+<td><code>[L, d]</code></td>
+<td><code>[3, 5120]</code></td>
+<td>最后一次归一化</td>
+</tr>
+<tr>
+<td>(6) 后</td>
+<td>logits</td>
+<td><code>[L, V]</code></td>
+<td><code>[3, 151552]</code></td>
+<td><strong>唯一一次维度从 <code>d</code> 涨到 <code>V</code></strong></td>
+</tr>
+<tr>
+<td>(7) 后</td>
+<td>概率</td>
+<td><code>[V]</code></td>
+<td><code>[151552]</code></td>
+<td>非负、和为 1</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>这张图里最反直觉、也最该先记住的一点</strong>：<strong>中间 N 层没有改变形状</strong>。进去是 <code>[3, 5120]</code>，第 50 层出来还是 <code>[3, 5120]</code>。N 层不是"把东西越堆越大"，而是<strong>在同一块 <code>[L, d]</code> 的数据上原地反复改写</strong>。这就是 <a href="03-残差流.html">03 章 残差流</a> 那个"总线"比喻的全部来源。</p>
+<p>🔑 <strong>第 (7) 步只取了最后一个位置，那前面那些位置的 logits 呢？</strong><br />
+<code>推理时：丢掉。你只想要下一个词，只有最后一个位置在预测它
+训练时：全都要。第 0 个位置在预测第 1 个词，第 1 个位置在预测第 2 个词 ……
+        一次前向就拿到 L 份监督信号 —— 这是 Transformer 训练效率高的直接原因</code><br />
+为什么第 0 个位置看不见第 1 个词，见 <a href="05-注意力机制.html">05 章 §5.4 因果掩码</a>。</p>
+</blockquote>
+<p><strong>这张图就是全部。</strong> 一个 500B 参数的前沿模型，结构上和一个 100M 的玩具模型<strong>没有任何区别</strong>——只是 <code>N</code> 更大、<code>d</code> 更宽、FFN 换成了 MoE。想看这张图上每个数字的真实取值（缩到 <code>d</code>=4、<code>V</code>=4 的玩具尺寸，全部能手算），见 <a href="16-最小数值走查.html">16 章 最小数值走查</a>。</p>
 <hr />
 <h2 id="12">1.2 只有两种积木</h2>
 <p>整个 Transformer 只有两种"积木"在交替堆叠：</p>
@@ -318,28 +406,28 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>        位置 →   t1    t2    t3    t4    t5
-                 │     │     │     │     │
- Attention:      ●━━━━━●━━━━━●━━━━━●━━━━━●     横向连线：token 之间交换信息
-                 │     │     │     │     │
- FFN:            ▓     ▓     ▓     ▓     ▓     竖直独立：每个 token 各算各的
-                 │     │     │     │     │     （同一份参数，但互不影响）
- Attention:      ●━━━━━●━━━━━●━━━━━●━━━━━●
-                 │     │     │     │     │
- FFN:            ▓     ▓     ▓     ▓     ▓
-                 ⋮     ⋮     ⋮     ⋮     ⋮
+<div class="codehilite"><pre><span></span><code>   pos:            t1    t2    t3    t4    t5      &lt;- 序列里的 5 个位置
+                   |     |     |     |     |
+   Attention:      o=====o=====o=====o=====o       横向连线：token 之间交换信息
+                   |     |     |     |     |
+   FFN:            #     #     #     #     #       竖直独立：每个 token 各算各的
+                   |     |     |     |     |          （同一份参数，但互不影响）
+   Attention:      o=====o=====o=====o=====o
+                   |     |     |     |     |
+   FFN:            #     #     #     #     #
+                   :     :     :     :     :
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>记住这个二分法。五家所有的架构改动，最后都能归到三个位置之一</strong>：</p>
-<p><code>① 改 Attention        —— 怎么横向交换       → 第 05 / 07 / 08 章
-② 改 FFN / MoE        —— 怎么纵向加工       → 第 09 / 10 章
-③ 改这两块之间的连接   —— 残差流本身         → 第 03 / 04 章</code></p>
+<p><code>(1) 改 Attention        —— 怎么横向交换       -&gt; 第 05 / 07 / 08 章
+(2) 改 FFN / MoE        —— 怎么纵向加工       -&gt; 第 09 / 10 章
+(3) 改这两块之间的连接   —— 残差流本身         -&gt; 第 03 / 04 章</code></p>
 </blockquote>
 <h3 id="_1">为什么恰好是这两种</h3>
 <p>这不是随便设计的。<strong>任何一个序列模型都必须回答两个问题</strong>：</p>
-<div class="codehilite"><pre><span></span><code>问题 1：不同位置的信息怎么混合？    ← 必须有，否则模型看不见上下文
-问题 2：单个位置的信息怎么变换？    ← 必须有，否则模型没有非线性表达力
+<div class="codehilite"><pre><span></span><code>问题 1：不同位置的信息怎么混合？    &lt;- 必须有，否则模型看不见上下文
+问题 2：单个位置的信息怎么变换？    &lt;- 必须有，否则模型没有非线性表达力
 </code></pre></div>
 
 <p>历史上的答案：</p>
@@ -349,6 +437,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <th>模型</th>
 <th>怎么混合位置（问题 1）</th>
 <th>怎么变换单点（问题 2）</th>
+<th>任意两点的路径长度</th>
 <th>问题</th>
 </tr>
 </thead>
@@ -357,24 +446,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><strong>RNN / LSTM</strong></td>
 <td>沿时间递归，一步传一步</td>
 <td>门控 + tanh</td>
+<td>$O(L)$</td>
 <td><strong>串行</strong>，没法并行训练；长程信息经过 L 步衰减</td>
 </tr>
 <tr>
 <td><strong>CNN</strong></td>
 <td>卷积核，只看邻域</td>
 <td>逐点非线性</td>
+<td>$O(L / k)$，$k$ 为卷积核</td>
 <td><strong>感受野有限</strong>，看远处要堆很多层</td>
 </tr>
 <tr>
 <td><strong>Transformer</strong></td>
 <td><strong>注意力：任意两个位置直接连通</strong></td>
 <td>FFN</td>
-<td>$O(L^2)$，长序列贵</td>
+<td><strong>$O(1)$</strong></td>
+<td>计算量 $O(L^2)$，长序列贵</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p><strong>Transformer 赢在"任意两点一步可达"</strong>：第 100 万个 token 和第 1 个 token 之间的路径长度是 <strong>1</strong>，不是 100 万（RNN）也不是 100 万/卷积核大小（CNN）。梯度不需要走长路，信息不会被逐步稀释。</p>
+<p><strong>Transformer 赢在"任意两点一步可达"</strong>：第 100 万个 token 和第 1 个 token 之间的路径长度是 <strong>1</strong>，不是 100 万（RNN）也不是 100 万 ÷ 卷积核大小（CNN）。梯度不需要走长路，信息不会被逐步稀释。</p>
 <p><strong>代价就是 $O(L^2)$。这一代五份技术报告，一半篇幅都在还这笔债。</strong>（见 <a href="06-KV-cache.html">06 KV cache</a>、<a href="08-高效注意力.html">08 高效注意力</a>）</p>
 </blockquote>
 <hr />
@@ -385,10 +477,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p>所谓"505B 参数"，就是这 50 层的权重全部加起来（再加上 embedding）。</p>
 <p><strong>不同层学到的东西差别很大</strong>（这是可解释性研究的共识）：</p>
-<div class="codehilite"><pre><span></span><code>浅层（1~10）    →  语法、词性、局部搭配、&quot;这个 token 是不是标点&quot;
-中层（10~40）   →  语义、指代消解、事实关联、任务识别
-深层（40~50）   →  输出规划、&quot;下一个词具体是什么&quot;
-最后 1~2 层     →  几乎只在做&quot;把内部表示翻译成词表分布&quot;
+<div class="codehilite"><pre><span></span><code>浅层（1~10）    -&gt;  语法、词性、局部搭配、&quot;这个 token 是不是标点&quot;
+中层（10~40）   -&gt;  语义、指代消解、事实关联、任务识别
+深层（40~50）   -&gt;  输出规划、&quot;下一个词具体是什么&quot;
+最后 1~2 层     -&gt;  几乎只在做&quot;把内部表示翻译成词表分布&quot;
 </code></pre></div>
 
 <blockquote>
@@ -398,66 +490,536 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="14">1.4 参数量是怎么算出来的</h2>
-<p>这一节能帮你把"505B"这种数字从抽象变具体。<strong>以一个稠密（非 MoE）模型为例</strong>，设 $d$ = hidden dim、$d_{ff}$ = FFN 中间维、$N$ = 层数、$V$ = 词表：</p>
-<div class="codehilite"><pre><span></span><code>┌─────────────────┬────────────────────────┬─────────────────────────────┐
-│ 组件             │ 参数量                  │ 代入 d=5120, d_ff=13824,     │
-│                 │                        │ N=50, V=153600               │
-├─────────────────┼────────────────────────┼─────────────────────────────┤
-│ Embedding        │ V × d                  │ 0.79 B                      │
-│ LM Head          │ V × d（常与上面共享）    │ 0.79 B（或 0）               │
-├─────────────────┼────────────────────────┼─────────────────────────────┤
-│ 每层 Attention   │ 4 d²  (W_Q,W_K,W_V,W_O)│ 105 M                       │
-│ 每层 FFN(SwiGLU) │ 3 d·d_ff               │ 212 M                       │
-│ 每层 Norm        │ 2 d（可忽略）            │ 10 K                        │
-│ ── 每层小计 ──    │ 4d² + 3d·d_ff          │ 317 M                       │
-├─────────────────┼────────────────────────┼─────────────────────────────┤
-│ N 层合计         │ N(4d² + 3d·d_ff)       │ 15.9 B                      │
-│ 总计             │                        │ ≈ 17.5 B                    │
-└─────────────────┴────────────────────────┴─────────────────────────────┘
-</code></pre></div>
-
+<p>这一节能帮你把"505B"这种数字从抽象变具体。</p>
+<h3 id="141-moe">1.4.1 先用一个稠密（非 MoE）模型热身</h3>
+<p>设 $d$ = hidden dim、$d_{ff}$ = FFN 中间维、$N$ = 层数、$V$ = 词表。⚠️ 下面这组数是<strong>为了好算而虚构的一个稠密模型</strong>（<code>d=5120, d_ff=13824, N=50, V=153600</code>），<strong>不是任何一家的真实配置</strong>；真机的账在 §1.4.2。</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>参数量公式</th>
+<th>代入</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Embedding</td>
+<td>$V \times d$</td>
+<td>153600 × 5120</td>
+<td><strong>0.79 B</strong></td>
+</tr>
+<tr>
+<td>LM Head</td>
+<td>$V \times d$（常与上面绑定共享）</td>
+<td>153600 × 5120</td>
+<td><strong>0.79 B</strong>（绑定则为 0）</td>
+</tr>
+<tr>
+<td>每层 Attention</td>
+<td>$4d^2$（$W_Q, W_K, W_V, W_O$ 各一个 $d\times d$）</td>
+<td>4 × 5120²</td>
+<td><strong>105 M</strong></td>
+</tr>
+<tr>
+<td>每层 FFN（SwiGLU 三个矩阵）</td>
+<td>$3\,d\,d_{ff}$</td>
+<td>3 × 5120 × 13824</td>
+<td><strong>212 M</strong></td>
+</tr>
+<tr>
+<td>每层 Norm</td>
+<td>$2d$（可忽略）</td>
+<td>2 × 5120</td>
+<td>10 K</td>
+</tr>
+<tr>
+<td><strong>每层小计</strong></td>
+<td>$4d^2 + 3d\,d_{ff}$</td>
+<td>105 M + 212 M</td>
+<td><strong>317 M</strong></td>
+</tr>
+<tr>
+<td><strong>N 层合计</strong></td>
+<td>$N(4d^2 + 3d\,d_{ff})$</td>
+<td>50 × 317 M</td>
+<td><strong>15.9 B</strong></td>
+</tr>
+<tr>
+<td><strong>总计（绑定）</strong></td>
+<td>$N(\cdots) + Vd$</td>
+<td>15.9 + 0.79</td>
+<td><strong>16.6 B</strong></td>
+</tr>
+<tr>
+<td><strong>总计（不绑定）</strong></td>
+<td>$N(\cdots) + 2Vd$</td>
+<td>15.9 + 1.57</td>
+<td><strong>17.4 B</strong></td>
+</tr>
+</tbody>
+</table>
 <p><strong>两个可以直接记住的经验比例</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① FFN 占约 2/3 的参数，Attention 占约 1/3
-   （因为 d_ff ≈ 2.7d，所以 3·d·d_ff ≈ 8d²  vs  Attention 的 4d²）
+<div class="codehilite"><pre><span></span><code>(1) FFN 占约 2/3 的参数，Attention 占约 1/3
+    因为 d_ff ≈ 2.7d，所以 3·d·d_ff ≈ 8.1d²  vs  Attention 的 4d²
+    8.1 / (8.1 + 4) = 67%
 
-② 参数量随 d 是【平方】增长的，随 N 是【线性】增长的
-   → 想加参数，加宽比加深&quot;效率&quot;高，但加宽会让每层的计算和通信都变重
+(2) 参数量随 d 是【平方】增长，随 N 是【线性】增长
+    -&gt; 想加参数，加宽比加深&quot;效率&quot;高，但加宽会让每层的计算和通信都变重
 </code></pre></div>
 
-<p><strong>MoE 模型怎么算</strong>（这就是"505B / 18B"两个数字的由来）：</p>
-<div class="codehilite"><pre><span></span><code>总参数   = Embedding + N × (Attention + 【全部 384 个专家】)
-激活参数 = Embedding + N × (Attention + 【被选中的 8 个专家】)
+<h3 id="142-openpangu-20-pro-505b">1.4.2 ★ 真机推演：把 openPangu-2.0-Pro 的 505B 一项一项加出来</h3>
+<p>✅ 下面所有输入数字都来自 openPangu-2.0 技术报告 <strong>附录 Table 8（架构超参表）</strong>，可逐项回溯：</p>
+<div class="codehilite"><pre><span></span><code>Total Layers 50      Dense Layers 3      MoE Layers 47
+Hidden Size 5120     Vocabulary Size 151552
+Attention Heads 64   Query Projection Rank 1536   Key-Value Projection Rank 512
+Non-Positional QK Dimensions 128   RoPE Dimensions 64   Value Head Dimensions 128
+Dense FFN Intermediate Size 16128
+Routed Experts 384   Shared Experts 1   Activated Routed Experts 8
+Expert Intermediate Size 1792
+</code></pre></div>
 
-openPangu-2.0-Pro:  505B 总参数  /  18B 激活参数     稀疏度 = 384/8 = 48×
-                    ↑ 决定显存        ↑ 决定推理速度和成本
+<p><strong>第一步：一个专家有多大。</strong> 一个专家就是一个小 SwiGLU，三个矩阵（gate / up / down），每个 <code>d × 专家中间维</code>：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>算式</th>
+<th>数值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个专家</td>
+<td>$3 \times 5120 \times 1792$</td>
+<td><strong>27.53 M</strong></td>
+</tr>
+<tr>
+<td>一个 MoE 层的全部专家</td>
+<td>$(384 + 1) \times 27.53\,\text{M}$</td>
+<td><strong>10.60 B</strong> ← 一层就 106 亿</td>
+</tr>
+<tr>
+<td>47 个 MoE 层</td>
+<td>$47 \times 10.60\,\text{B}$</td>
+<td><strong>498.07 B</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>第二步：其余部分。</strong></p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 505B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>47 个 MoE 层的专家</td>
+<td>上表</td>
+<td><strong>498.07 B</strong></td>
+<td><strong>98.7 %</strong></td>
+</tr>
+<tr>
+<td>3 个稠密层的 FFN</td>
+<td>$3 \times (3 \times 5120 \times 16128)$</td>
+<td>0.74 B</td>
+<td>0.15 %</td>
+</tr>
+<tr>
+<td>Embedding + LM Head（按不绑定算）</td>
+<td>$2 \times 151552 \times 5120$</td>
+<td>1.55 B</td>
+<td>0.31 %</td>
+</tr>
+<tr>
+<td>50 层的注意力（⚠️ 下面推算）</td>
+<td>$50 \times 80.0\,\text{M}$</td>
+<td>4.00 B</td>
+<td>0.79 %</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>504.36 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ 报告写的总参数</strong></td>
+<td></td>
+<td><strong>505 B</strong></td>
+<td>差 <strong>0.13 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>注意力那一行是推算，不是报告直接给的。</strong> 报告只给了各个 rank，没有逐个矩阵列参数量。按 MLA（Multi-head Latent Attention，多头潜在注意力，见 <a href="07-MHA到MLA.html">07 章</a>）的标准参数化拆开是这样：<br />
+```<br />
+W_DQ   Q 降维      5120 x 1536                      =  7.86 M<br />
+W_UQ   Q 升维      1536 x 64 x (128 + 64)           = 18.87 M<br />
+W_DKV  KV 降维     5120 x 512                       =  2.62 M<br />
+W_KR   RoPE 那支   5120 x 64                        =  0.33 M<br />
+W_UK   K 升维      512  x 64 x 128                  =  4.19 M<br />
+W_UV   V 升维      512  x 64 x 128                  =  4.19 M<br />
+W_O    输出投影    64 x 128 x 5120                  = 41.94 M</p>
+<hr />
+<p>每层合计                                             = 80.02 M<br />
+```<br />
+<strong>推算值加起来离报告值只差 0.13%，说明这个拆法基本对。</strong> 剩下那 0.6 B 是各层 RMSNorm 权重、mHC 的门控系数、PAS（Parametric Attention Sink，参数化注意力汇）的 128 对可学习 KV 等零碎项——⚠️ 报告没有逐项披露，这里不做进一步拆分。另外 ✅ 报告的 3 个 MTP（Multi-Token Prediction，多 token 预测）层看起来<strong>没有</strong>被计入这 505B，否则总数会明显超出。</p>
+<p>🔑 <strong>这张表最该带走的一句话</strong>：<strong>505B 里有 98.7% 是专家。</strong> 注意力只占 0.79%，Embedding 加 LM Head 只占 0.31%。所以"大模型很大"这件事，在 MoE 时代基本等价于"<strong>专家很多</strong>"。<a href="10-MoE.html">10 章 MoE</a> 讲的就是这 98.7% 怎么花。</p>
+</blockquote>
+<h3 id="143">1.4.3 激活参数：同一张表换个问法</h3>
+<p><strong>总参数决定显存，激活参数决定算力和速度。</strong> 同样的配置，换成"一个 token 实际用到多少参数"：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>算式</th>
+<th>数值</th>
+<th>占 18B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>50 层注意力（<strong>每层都参与</strong>）</td>
+<td>$50 \times 80.0\,\text{M}$</td>
+<td>4.00 B</td>
+<td>22.3 %</td>
+</tr>
+<tr>
+<td>47 个 MoE 层，每层只激活 8+1 个专家</td>
+<td>$47 \times 9 \times 27.53\,\text{M}$</td>
+<td>11.64 B</td>
+<td>64.9 %</td>
+</tr>
+<tr>
+<td>3 个稠密层的 FFN</td>
+<td>同上表</td>
+<td>0.74 B</td>
+<td>4.1 %</td>
+</tr>
+<tr>
+<td>LM Head</td>
+<td>$151552 \times 5120$</td>
+<td>0.78 B</td>
+<td>4.3 %</td>
+</tr>
+<tr>
+<td>Embedding（<strong>只查表，不做乘法</strong>）</td>
+<td>$151552 \times 5120$</td>
+<td>0.78 B</td>
+<td>4.3 %</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>17.94 B</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>✅ 报告写的激活参数</strong></td>
+<td></td>
+<td><strong>18 B</strong></td>
+<td>差 0.3 %</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📌 <strong>一个漂亮的巧合，值得停下来看一眼</strong>：稠密层的 FFN 中间维是 <strong>16128</strong>，而 MoE 层激活的 9 个专家合起来是 $9 \times 1792 = \mathbf{16128}$——<strong>一模一样</strong>。</p>
+<p>也就是说：<strong>MoE 层和稠密层，一个 token 走过去的计算量完全相等</strong>。MoE 没有让单个 token 变贵，它只是把"同一份预算"从"1 个固定的 FFN"换成了"385 个里挑 9 个"。⚠️ 这个等式是我从 Table 8 的两个数字里看出来的，报告没有明说它是刻意设计；但 <code>16128 = 9 × 1792</code> 这么整齐，很难是巧合。</p>
+</blockquote>
+<h3 id="144-48">1.4.4 ⚠️ "稀疏度 48 倍"这个说法要小心</h3>
+<div class="codehilite"><pre><span></span><code>❌ 常见的错误说法：&quot;384 选 8，所以这个模型稀疏 48 倍 / 省了 48 倍&quot;
+
+✅ 三个数字，三个不同的问题，不能混用：
+   384 / 8   = 48.0 倍   &lt;- 只是【路由专家】的选择比
+   385 / 9   = 42.8 倍   &lt;- 算上那 1 个【共享专家】后的 FFN 稀疏比
+   505 / 18  = 28.1 倍   &lt;- ★ 全模型 总参数 / 激活参数
+                            这才是&quot;显存账 vs 算力账差多少&quot;的正确口径
+</code></pre></div>
+
+<p><strong>为什么会从 48 掉到 28</strong>：因为注意力、稠密层、Embedding、LM Head 这些部分<strong>一点都不稀疏</strong>，每个 token 都要全量走一遍。它们在总参数里只占 1.3%，在激活参数里却占了 35%。<strong>稀疏只发生在专家那一块。</strong></p>
+<div class="codehilite"><pre><span></span><code>总参数   = Embedding + LM Head + N x 注意力 + 稠密层 FFN + 47 x 【385 个专家】
+激活参数 = Embedding + LM Head + N x 注意力 + 稠密层 FFN + 47 x 【被选中的 9 个】
+                      \___________ 这一整段不稀疏 ___________/
+
+openPangu-2.0-Pro:  505B 总参数  /  18B 激活参数
+                    ^ 决定显存        ^ 决定算力和单 token 成本
 </code></pre></div>
 
 <blockquote>
-<p>详细的 MoE 参数账见 <a href="10-MoE.html">10 MoE</a>。</p>
+<p>详细的 MoE 参数账、路由怎么选、为什么要有共享专家，见 <a href="10-MoE.html">10 MoE</a>。</p>
 </blockquote>
 <hr />
 <h2 id="15">1.5 计算量：训练和推理是两笔完全不同的账</h2>
 <p>这一节先埋个伏笔，<a href="06-KV-cache.html">06 KV cache</a> 会展开。</p>
 <p><strong>一次前向的 FLOPs</strong>（每 token 每层）：</p>
 <p>$$\underbrace{8d^2}<em ff="ff">{\text{Attention 的四个投影}} + \underbrace{6d\,d</em>}<em _text_注意力矩阵="\text{注意力矩阵">{\text{FFN}} + \underbrace{4Ld}</em>$$}</p>
+<blockquote>
+<p>📌 <strong>这三项的 2 倍系数是哪来的</strong>：一次乘加 = 1 次乘 + 1 次加 = <strong>2 FLOP</strong>。所以"$W_Q$ 有 $d^2$ 个参数"对应"$2d^2$ FLOP"，四个投影就是 $8d^2$；FFN 的三个矩阵有 $3d\,d_{ff}$ 个参数，对应 $6d\,d_{ff}$。<strong>一句话记法：前向 FLOPs ≈ 2 × 参与计算的参数量。</strong></p>
+</blockquote>
 <p>前两项和序列长度<strong>无关</strong>，第三项<strong>随 L 线性增长</strong>（对整条序列就是 $L^2$）。</p>
-<div class="codehilite"><pre><span></span><code>L = 4K 时：    4Ld = 4×4096×5120 ≈ 8.4e7      vs   8d²+6d·d_ff ≈ 6.4e8
-              → 注意力矩阵只占 ~12%，可以忽略
+<div class="codehilite"><pre><span></span><code>L = 4K 时：    4Ld = 4 x 4096 x 5120     ≈ 8.4e7    vs   8d²+6d·d_ff ≈ 6.3e8
+               -&gt; 注意力矩阵只占 8.4 / (8.4 + 63) ≈ 12%，可以忽略
 
-L = 1M 时：    4Ld = 4×1048576×5120 ≈ 2.1e10  vs   6.4e8
-              → 注意力矩阵占 97%，【完全主导】
+L = 1M 时：    4Ld = 4 x 1048576 x 5120  ≈ 2.1e10   vs   6.3e8
+               -&gt; 注意力矩阵占 97%，【完全主导】
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>这就是"长上下文"的全部困难所在</strong>：<br />
-<strong>短序列时注意力不是瓶颈，长序列时它是唯一的瓶颈。</strong> 而且它是平方增长的——长度从 128K 到 1M 是 8 倍，这一项涨 <strong>64 倍</strong>。</p>
+<strong>短序列时注意力不是瓶颈，长序列时它是唯一的瓶颈。</strong> 而且它是平方增长的——长度从 128K 到 1M 是 8 倍，<strong>整条序列</strong>的这一项涨 <strong>64 倍</strong>（按单个 token 算是 8 倍；平方来自"每个 token 都要多看 8 倍的历史，而 token 数本身也多了 8 倍"）。</p>
 </blockquote>
 <p><strong>推理还要再分两个阶段</strong>（<a href="06-KV-cache.html">06 章</a>详解）：</p>
-<div class="codehilite"><pre><span></span><code>Prefill（处理你输入的提示词）：一次并行处理 L 个 token   →  算力受限（compute-bound）
-Decode （一个一个吐字）      ：一次处理 1 个 token       →  访存受限（memory-bound）
-                                                           ↑ 这个非常反直觉，是第 06 章的核心
+<div class="codehilite"><pre><span></span><code>Prefill（处理你输入的提示词）：一次并行处理 L 个 token   -&gt;  算力受限（compute-bound）
+Decode （一个一个吐字）      ：一次处理 1 个 token       -&gt;  访存受限（memory-bound）
+                                                             ^ 这个非常反直觉，是第 06 章的核心
 </code></pre></div>
 
+<h3 id="151">1.5.1 真机推演：各组件的计算量占多少</h3>
+<p>延续 §1.4.3 的 openPangu-2.0-Pro 激活参数账，<strong>前向 FLOPs ≈ 2 × 激活参数</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>算式</th>
+<th>GFLOP / token</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注意力的各个投影</td>
+<td>$2 \times 4.00\,\text{B}$</td>
+<td>8.00</td>
+<td>23.3 %</td>
+</tr>
+<tr>
+<td>FFN（47 层各 9 个专家 + 3 个稠密层）</td>
+<td>$2 \times 12.39\,\text{B}$</td>
+<td>24.77</td>
+<td>72.2 %</td>
+</tr>
+<tr>
+<td>LM Head</td>
+<td>$2 \times 0.78\,\text{B}$</td>
+<td>1.55</td>
+<td>4.5 %</td>
+</tr>
+<tr>
+<td>Embedding</td>
+<td>查表，无乘法</td>
+<td>0</td>
+<td>0 %</td>
+</tr>
+<tr>
+<td><strong>小计（与 L 无关的部分）</strong></td>
+<td>$2 \times 17.16\,\text{B}$</td>
+<td><strong>34.33</strong></td>
+<td><strong>100 %</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>再把随 L 变化的注意力矩阵那一项加进来。</strong> openPangu 每层 64 个头、QK 维 128+64=192、V 维 128，所以每 token 每层是 $2L \times 64 \times 192 + 2L \times 64 \times 128 = 40960\,L$ FLOP，50 层就是 $2.05\times 10^{6} \times L$：</p>
+<table>
+<thead>
+<tr>
+<th>序列长度 L</th>
+<th>若用<strong>全注意力</strong></th>
+<th>占总量</th>
+<th>⚠️ 实际的 <strong>DSA-SWA</strong> 架构</th>
+<th>省了多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4 K</td>
+<td>8.4 GFLOP</td>
+<td>20 %</td>
+<td>2.1 GFLOP</td>
+<td>4 倍</td>
+</tr>
+<tr>
+<td>128 K</td>
+<td>268 GFLOP</td>
+<td>89 %</td>
+<td>2.1 GFLOP</td>
+<td><strong>127 倍</strong></td>
+</tr>
+<tr>
+<td>512 K</td>
+<td>1074 GFLOP</td>
+<td>97 %</td>
+<td>2.1 GFLOP</td>
+<td><strong>507 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>右边两列是推算，不是报告给的数。</strong> 推算依据：✅ 报告写 <code>DSA:SWA = 1:2</code>、<code>SWA Window Size = 512</code>，DSA 每个 token 只挑固定 <code>K</code> 个历史 token 参与注意力、报告举的例子是 <code>K = 2048</code>（原文写的是 "e.g., 2,048"，⚠️ 所以未必是最终配置）。按 1:2 推 50 层里约 17 层 DSA、33 层 SWA，代入得 $17 \times 40960 \times 2048 + 33 \times 40960 \times 512 \approx 2.1$ GFLOP，<strong>与 L 无关</strong>。</p>
+<p>⚠️ <strong>但不能说"L² 项消失了"。</strong> ✅ 报告 Table 1 明确列出 DSA-SWA 的 prefill FLOPs 仍有一个 $S^2$ 系数，来自 <strong>Lightning Indexer</strong>（轻量索引器，负责挑出那 K 个 token）——只是它作用在一个便宜得多的低维索引表示上。报告没给索引器的头数和维度，⚠️ 无法定量，所以上表右列是<strong>下界</strong>。</p>
+<p>🔑 <strong>这张表就是这一代五份报告的共同动机</strong>：全注意力在 512K 下要多烧 <strong>30 倍</strong>的算力（1074 vs 34.3），而这 1074 里绝大部分是在看不相关的历史。<a href="08-高效注意力.html">08 高效注意力</a> 讲的就是五家各自怎么把这一项砍掉。</p>
+</blockquote>
+<h3 id="152-6n">1.5.2 训练那笔账：为什么是 <code>6N</code></h3>
+<p>推理只有前向，训练还要反向。<strong>反向传播要算两种梯度</strong>，各自的代价都和前向一样：</p>
+<table>
+<thead>
+<tr>
+<th>这一趟在算什么</th>
+<th>每个参数的 FLOP</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前向</td>
+<td>$2N$</td>
+<td>算出每一层的输出</td>
+</tr>
+<tr>
+<td>反向 · 对<strong>输入</strong>求梯度</td>
+<td>$2N$</td>
+<td>把梯度继续往前一层传</td>
+</tr>
+<tr>
+<td>反向 · 对<strong>权重</strong>求梯度</td>
+<td>$2N$</td>
+<td>这一层的参数该怎么改</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td>$\mathbf{6N}$</td>
+<td>⚠️ <strong>不含优化器更新，也不含激活重计算</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>训练总 FLOPs ≈ 6 x N x D        N = 参与计算的参数量，D = 训练 token 总数
+                                ⚠️ MoE 模型这里的 N 要用【激活参数】，不是总参数
+</code></pre></div>
+
+<p>代入 openPangu-2.0-Pro（✅ 报告：语料约 <strong>34 万亿</strong> token，激活参数 18B）：</p>
+<div class="codehilite"><pre><span></span><code>6 x 18e9 x 34e12 = 3.67e24 FLOP
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong><code>6N</code> 漏掉了注意力矩阵那一项。</strong> 补全式是 $6N + 12 \cdot L_{\text{layers}} \cdot s \cdot h$（$s$ 为序列长，$h$ 为 hidden dim）。以 Llama-3-70B（80 层、$h$=8192、$N$=70B）为例：<br />
+<code>s = 4096：12 x 80 x 4096 x 8192 = 3.22e10   vs  6N = 4.2e11   -&gt;  +7.7%
+s = 8192：12 x 80 x 8192 x 8192 = 6.44e10   vs  6N = 4.2e11   -&gt;  +15.3%</code><br />
+<strong>序列越长这个补正越不能省。</strong> ⚠️ 但它假设的是<strong>全注意力</strong>；对 openPangu 这种 DSA-SWA 架构，注意力矩阵是常数级的（见 §1.5.1），这个补正项不适用。</p>
+</blockquote>
+<p><strong>换算成机时</strong>（⚠️ openPangu 实际训在昇腾 NPU 上，下面只是"如果换成 H100"的等效换算，用来建立量级感）：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>数值</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>H100 SXM5 稠密 BF16 峰值</td>
+<td><strong>989 TFLOPS</strong></td>
+<td>⚠️ 常被写成 1979 TFLOPS，<strong>那是 2:4 结构化稀疏值</strong>，当稠密用会把屋脊点从 295 算成 591 FLOP/Byte</td>
+</tr>
+<tr>
+<td>假设 MFU（模型算力利用率）</td>
+<td><strong>35 %</strong>（⚠️ 在 <strong>H100 + 千卡级 MoE 训练</strong>上的常见区间，⚠️ 无一手来源）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>有效算力</td>
+<td>989 × 0.35 = 346 TFLOPS</td>
+<td>—</td>
+</tr>
+<tr>
+<td>总机时</td>
+<td>3.67e24 ÷ 3.46e14 = 1.06e10 GPU·秒 ≈ <strong>295 万 GPU·小时</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>4096 张卡要跑多久</td>
+<td>295 万 ÷ 4096 ≈ 720 小时 ≈ <strong>30 天</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="153-16">1.5.3 训练的显存账：为什么是"每个参数 16 字节"</h3>
+<p>混合精度 + AdamW 的标准配方，<strong>每个参数要存五份东西</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>存的是什么</th>
+<th>精度</th>
+<th>字节 / 参数</th>
+<th>AdamW</th>
+<th>Muon</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>权重（前向反向用的那份）</td>
+<td>BF16</td>
+<td>2</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>梯度</td>
+<td>BF16</td>
+<td>2</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>FP32 主权重（更新在它身上做）</td>
+<td>FP32</td>
+<td>4</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>一阶动量 $m$</td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>二阶动量 $v$</td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>✅</td>
+<td>❌ Muon 不需要</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td></td>
+<td><strong>16 字节 / 参数</strong></td>
+<td><strong>12 字节 / 参数</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>最容易记错的一点</strong>：$m$ 和 $v$ 是<strong>各</strong> 4 字节，不是加起来 4 字节。少算这一份，整个显存预算会小 25%。</p>
+</blockquote>
+<p>代入 505B：</p>
+<div class="codehilite"><pre><span></span><code>AdamW： 505e9 x 16 = 8.08e12 字节 = 8080 GB = 7525 GiB = 7.35 TiB
+        ÷ H100 的 80 GB  -&gt;  ★ 光是静态状态就要 101 张卡
+
+Muon ： 505e9 x 12 = 6.06e12 字节 = 6060 GB = 5644 GiB = 5.51 TiB
+        ÷ 80 GB          -&gt;  76 张卡，比 AdamW 少 25 张
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>GB 和 GiB 不是一回事</strong>：1 GB = 10⁹ 字节，1 GiB = 2³⁰ ≈ 1.074×10⁹ 字节，差 7.4%。H100 标称的"80 GB"是十进制口径。本教程凡是写 GB 的地方都是十进制，写 GiB 的地方都是二进制。</p>
+<p>⚠️ <strong>上面这两个数只是"静态状态"</strong>，不含激活值、不含通信缓冲、不含 KV cache。真实训练还要再加一大块，所以实际卡数远不止 101 张。</p>
+<p>📌 ✅ 报告原文说 Muon "只跟踪一阶动量，<strong>把优化器状态显存减半</strong>"——对照上表就是 $m + v = 8$ 字节降到 $m = 4$ 字节，确实是减半。但要注意<strong>减半的是"优化器状态"那一项，不是总显存</strong>：总显存从 16 降到 12，是减少 25%。⚠️ <strong>"某项减半"≠"总量减半"，这类偷换在读报告时非常常见。</strong> Muon 的原理见 <a href="13-优化器与Muon.html">13 章</a>。</p>
+</blockquote>
 <hr />
 <h2 id="16">1.6 五家的宏观配置对照</h2>
 <p>现在你可以看懂这张表了。<strong>每一列对应本教程的一章</strong>：</p>
@@ -478,7 +1040,7 @@ Decode （一个一个吐字）      ：一次处理 1 个 token       →  访�
 <td>1.6T / 49B</td>
 <td>2.78T / 104B</td>
 <td>—</td>
-<td>230B / 10B</td>
+<td>428B / 23B</td>
 <td><strong>505B / 18B</strong></td>
 </tr>
 <tr>
@@ -513,67 +1075,96 @@ Decode （一个一个吐字）      ：一次处理 1 个 token       →  访�
 <td>GQA + MSA</td>
 <td>MLA + DSA-SWA 1:2</td>
 </tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>M3 那一格此前写的是 230B / 10B，那是上一代 MiniMax-M2 的规格。</strong> M3 是 <strong>428B / 23B</strong>（层数 60、hidden 6144 两项本来就对得上 M3，只有参数量串了型号）。交叉佐证见 <a href="../模型技术对比.html">../模型技术对比.md</a>（引 HuggingFace <code>config.json</code>）与 <a href="../openPangu-2.0-Pro.html">../openPangu-2.0-Pro.md</a>。</p>
+<p>⚠️ <strong>稀疏度别用「专家数 / 激活专家数」</strong>：那只是路由选择比。真正对应「显存账 vs 算力账」的是<strong>总参数 / 激活参数</strong>——M3 是 428/23 = <strong>18.6×</strong> 而不是路由比的 32×，openPangu 是 505/18 = <strong>28.1×</strong> 而不是 384/8 = 48×。差别来自注意力和 Embedding 那部分<strong>完全不稀疏</strong>（占总参数约 1.3%，却占激活约 35%）。<br />
+| <strong>位置编码</strong>（<a href="11-位置编码RoPE.html">11</a>） | Partial RoPE | <strong>NoPE</strong> | Partial RoPE | Partial RoPE | Partial RoPE，base 阶梯 |<br />
+| <strong>残差</strong>（<a href="03-残差流.html">03</a>） | <strong>mHC</strong> | <strong>AttnRes</strong> | 不改 | 不改 | <strong>mHC</strong> |<br />
+| <strong>MoE</strong>（<a href="10-MoE.html">10</a>） | 384 选 6 | 896 选 16 | 256 选 8 | 128 选 4 | 384 选 8 |<br />
+| <strong>激活函数</strong>（<a href="09-FFN与激活函数.html">09</a>） | SwiGLU + clamp | <strong>SiTU-GLU</strong> | SwiGLU | SwiGLU + clamp 7.0 | ❓ 报告未提 |<br />
+| <strong>优化器</strong>（<a href="13-优化器与Muon.html">13</a>） | Muon | <strong>Per-Head Muon</strong> | <strong>Muon Split</strong> | — | Muon（4 组 head） |<br />
+| <strong>量化</strong>（<a href="14-量化.html">14</a>） | FP4 QAT | MXFP4 QAT | INT4 QAT | MXFP8 | <strong>W8A8（疑似 PTQ）</strong> |</p>
+</blockquote>
+<p><strong>把上面几行换算成同一口径</strong>，五家的取向就一目了然了：</p>
+<table>
+<thead>
 <tr>
-<td><strong>位置编码</strong>（<a href="11-位置编码RoPE.html">11</a>）</td>
-<td>Partial RoPE</td>
-<td><strong>NoPE</strong></td>
-<td>Partial RoPE</td>
-<td>Partial RoPE</td>
-<td>Partial RoPE，base 阶梯</td>
+<th>派生指标</th>
+<th>怎么算</th>
+<th>DeepSeek-V4-Pro</th>
+<th>Kimi K3</th>
+<th>MiniMax M3</th>
+<th>openPangu-2.0-Pro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>稀疏度</strong>（总 ÷ 激活）</td>
+<td>1.6T ÷ 49B 等</td>
+<td>32.7 ×</td>
+<td>26.7 ×</td>
+<td><strong>18.6 ×</strong></td>
+<td><strong>28.1 ×</strong></td>
 </tr>
 <tr>
-<td><strong>残差</strong>（<a href="03-残差流.html">03</a>）</td>
-<td><strong>mHC</strong></td>
-<td><strong>AttnRes</strong></td>
-<td>不改</td>
-<td>不改</td>
-<td><strong>mHC</strong></td>
+<td><strong>激活参数</strong>（≈ 单 token 成本）</td>
+<td>报告直接给</td>
+<td>49 B</td>
+<td><strong>104 B（最贵）</strong></td>
+<td>23 B</td>
+<td><strong>18 B（最便宜）</strong></td>
 </tr>
 <tr>
-<td><strong>MoE</strong>（<a href="10-MoE.html">10</a>）</td>
-<td>384 选 6</td>
-<td>896 选 16</td>
-<td>256 选 8</td>
-<td>128 选 4</td>
-<td>384 选 8</td>
+<td><strong>前向 FLOPs / token</strong></td>
+<td>≈ 2 × 激活参数</td>
+<td>≈ 98 GFLOP</td>
+<td>≈ 208 GFLOP</td>
+<td>≈ 46 GFLOP</td>
+<td>≈ 36 GFLOP</td>
 </tr>
 <tr>
-<td><strong>激活函数</strong>（<a href="09-FFN与激活函数.html">09</a>）</td>
-<td>SwiGLU + clamp</td>
-<td><strong>SiTU-GLU</strong></td>
-<td>SwiGLU</td>
-<td>SwiGLU + clamp 7.0</td>
-<td>❓ 报告未提</td>
-</tr>
-<tr>
-<td><strong>优化器</strong>（<a href="13-优化器与Muon.html">13</a>）</td>
-<td>Muon</td>
-<td><strong>Per-Head Muon</strong></td>
-<td><strong>Muon Split</strong></td>
-<td>—</td>
-<td>Muon（4 组 head）</td>
-</tr>
-<tr>
-<td><strong>量化</strong>（<a href="14-量化.html">14</a>）</td>
-<td>FP4 QAT</td>
-<td>MXFP4 QAT</td>
-<td>INT4 QAT</td>
-<td>MXFP8</td>
-<td><strong>W8A8（疑似 PTQ）</strong></td>
+<td><strong>深宽比</strong> $N / d$</td>
+<td>层数 ÷ hidden dim</td>
+<td>61/7168 = 0.0085</td>
+<td><strong>93/7168 = 0.0130（最深）</strong></td>
+<td>60/6144 = 0.0098</td>
+<td><strong>50/5120 = 0.0098</strong></td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>📌 <strong>注意 openPangu 那一列的四个"最"</strong>：<strong>最浅（50 层）+ 最窄（d=5120）+ 多专家 + 小专家</strong>。四个方向同时压，把激活参数做到了五家最低的 18B。这是一个非常明确的"推理成本优先"的取向。见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.3。</p>
+<p>⚠️ <strong>这张派生表的 M3 三格此前跟着主表的错值算</strong>（稀疏度 23.0×、激活 10 B、FLOPs ≈20 GFLOP 都是按 M2 的 10B 激活推的）。按 M3 真实的 23 B 激活，正确值是 <strong>18.6× / 23 B / ≈46 GFLOP</strong>，且「最便宜」这个标记应该归 openPangu 的 18 B 而不是 M3。</p>
+<p>⚠️ 第三行是我按"前向 ≈ 2 × 激活参数"推的<strong>粗估</strong>，用来做横向量级比较；它忽略了注意力矩阵项，也忽略了各家 Embedding 是否绑定。别拿它当各家报告的披露值。</p>
+<p>📌 <strong>注意 openPangu 那一列的四个"最"</strong>：<strong>最浅（50 层）+ 最窄（d=5120）+ 多专家（384）+ 小专家（中间维 1792）</strong>。四个方向同时压，把激活参数做到了五家最低档的 18B。这是一个非常明确的"推理成本优先"的取向。见 <a href="../模型技术对比.html">../模型技术对比.md</a> §3.3。</p>
+<p><strong>四个杠杆各自的效力</strong>（回忆 §1.4 的公式）：<br />
+<code>窄（d 5120 而不是 7168）  -&gt;  注意力参数 ~ d²，每层只有 (5120/7168)² = 51%
+浅（50 层而不是 93 层）    -&gt;  参数和 FLOPs 都 ~ N，线性省下 46%
+多专家（384 个）           -&gt;  不增加激活参数，只增加【总】参数和显存
+小专家（中间维 1792）      -&gt;  ★ 这个才是直接压激活参数的：选 8 个也只有 8 x 1792 = 14336 的等效宽度</code></p>
 </blockquote>
 <hr />
 <h2 id="17">1.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① 模型 = Embedding → [Attention + FFN] × N → LM Head
-② 只有两种积木：Attention 横向混合，FFN 纵向变换
-③ N 层是 N 套独立参数，不是循环
-④ 参数量：FFN 占 2/3，Attention 占 1/3；随 d 平方、随 N 线性
-⑤ 短序列时注意力不是瓶颈，长序列时它是唯一瓶颈（L² 项）
-⑥ 所有架构创新只发生在三个位置：改 Attention / 改 FFN / 改残差
+<div class="codehilite"><pre><span></span><code>(1) 模型 = Embedding -&gt; [Attention + FFN] x N -&gt; LM Head
+    中间 N 层不改变形状，全程都是 [L, d]
+
+(2) 只有两种积木：Attention 横向混合，FFN 纵向变换
+    所有架构创新只发生在三个位置：改 Attention / 改 FFN / 改残差
+
+(3) N 层是 N 套独立参数，不是循环
+
+(4) 参数量（稠密）：FFN 占 2/3，Attention 占 1/3；随 d 平方、随 N 线性
+    参数量（MoE）：openPangu-2.0-Pro 的 505B 里 98.7% 是专家
+                    激活 18B 里 65% 是专家、22% 是注意力
+
+(5) 前向 FLOPs ≈ 2 x 激活参数；训练 FLOPs ≈ 6 x 激活参数 x token 数
+    ⚠️ 6N 不含优化器；显存 16 字节/参数（Adam 的 m、v 各 4）
+
+(6) 短序列时注意力不是瓶颈，长序列时它是唯一瓶颈
+    512K 下全注意力要多烧 30 倍算力，这就是五家全在改注意力的原因
+
+(7) &quot;384 选 8&quot; 不等于&quot;省 48 倍&quot;。全模型口径是 505/18 = 28 倍
 </code></pre></div>
 
 <p><strong>下一章</strong>开始从最底下的那块积木讲起：怎么把"今天"变成一个向量。</p>

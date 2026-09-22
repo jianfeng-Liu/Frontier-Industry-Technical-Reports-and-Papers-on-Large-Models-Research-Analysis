@@ -253,6 +253,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一章的目标</strong>：讲清这一代<strong>最重要的训练侧变化</strong>。五家里至少四家换了优化器，这在过去八年里是没有发生过的事（AdamW 从 2017 年统治到 2025 年）。<br />
 读完你应该能回答：Adam 的三行公式各自在治什么病？AdamW 的那个 "W" 为什么重要？<strong>Muon 到底在做什么——不是"把奇异值拉平"这种表面描述，而是它作为"谱范数下的最速下降"的真正含义</strong>？为什么 embedding 不能用它？五家在正交化粒度上的分歧说明了什么？</p>
+<p>📌 <strong>本章只讲"优化器在数学上做什么"。</strong> 优化器状态在多卡之间怎么切分（ZeRO / FSDP）、混合精度训练的完整显存账本，属于训练框架侧，写在 <a href="../../训练框架/分布式训练入门/02-显存去哪了.html">训练框架 · 分布式训练入门 · 02 显存去哪了</a> 和 <a href="../../训练框架/分布式训练入门/05-ZeRO与FSDP.html">05 ZeRO 与 FSDP</a> 里，本章只在 §13.5 借用它的口径算一笔账。</p>
 </blockquote>
 <hr />
 <h2 id="131">13.1 训练目标：就是一个多分类</h2>
@@ -434,6 +435,64 @@ $$\frac{m}{\sqrt{v}} \approx \frac{g}{|g|} = \text{sign}(g)$$<br />
     → 表达力被完整利用
 </code></pre></div>
 
+<h3 id="22-uvtop">⭐ 用一个 2×2 矩阵把 $UV^\top$ 亲手走一遍</h3>
+<p><strong>上面全是公式，这一小节用一个能拿笔算完的例子，把"正交化到底把梯度改成了什么"看清楚。</strong></p>
+<p><strong>设梯度矩阵</strong>（故意选一个对称的，这样特征向量能直接猜出来）：</p>
+<p>$$G = \begin{pmatrix} 3 &amp; 1 \ 1 &amp; 3 \end{pmatrix}$$</p>
+<p><strong>第 1 步：找出它的两个"奇异方向"和对应的拉伸倍数。</strong> 因为 $G$ 对称，试两个最明显的方向就中了：</p>
+<div class="codehilite"><pre><span></span><code>方向 v1 = (1, 1)/√2      G·v1 = (3+1, 1+3)/√2 = (4, 4)/√2 = 4 · v1
+                         ⟹ 这个方向被拉 4 倍，σ1 = 4，而且方向没变（u1 = v1）
+
+方向 v2 = (1, −1)/√2     G·v2 = (3−1, 1−3)/√2 = (2, −2)/√2 = 2 · v2
+                         ⟹ 这个方向被拉 2 倍，σ2 = 2，方向也没变（u2 = v2）
+</code></pre></div>
+
+<p><strong>第 2 步：写出 SVD 并算 $UV^\top$。</strong> 因为 $u_i = v_i$，所以 $U = V$，于是</p>
+<p>$$UV^\top = VV^\top = I = \begin{pmatrix} 1 &amp; 0 \ 0 &amp; 1 \end{pmatrix}$$</p>
+<p>（$V$ 的两列是互相垂直的单位向量，所以 $VV^\top$ 就是单位矩阵——这是正交矩阵的定义。）</p>
+<p><strong>第 3 步：看这一步到底改了什么、又保留了什么。</strong></p>
+<div class="codehilite"><pre><span></span><code>G 干的事：      把 v1 方向拉 4 倍，把 v2 方向拉 2 倍
+UVᵀ 干的事：    把 v1 方向拉 1 倍，把 v2 方向拉 1 倍
+
+  ✅ 保留：&quot;哪个输入方向打到哪个输出方向&quot;  —— 一点没改
+  ✅ 抹平：&quot;每个方向被拉多少倍&quot;            —— 全部变成 1
+</code></pre></div>
+
+<p><strong>第 4 步：把三个优化器在这一步给出的更新方向摆在一起比。</strong>（都省掉前面的 $-\eta$）</p>
+<table>
+<thead>
+<tr>
+<th>优化器</th>
+<th>更新方向 $\Delta$</th>
+<th>它自己的两个奇异值</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SGD</strong></td>
+<td>$G=\begin{pmatrix}3&amp;1\1&amp;3\end{pmatrix}$</td>
+<td>4, 2</td>
+<td>$v_1$ 方向被推的力度是 $v_2$ 的 <strong>2 倍</strong></td>
+</tr>
+<tr>
+<td><strong>Adam</strong>（≈ $\mathrm{sign}(G)$）</td>
+<td>$\begin{pmatrix}1&amp;1\1&amp;1\end{pmatrix}$</td>
+<td><strong>2, 0</strong></td>
+<td>⚠️ <strong>秩掉到 1！</strong> $v_2$ 方向<strong>一点都没动</strong></td>
+</tr>
+<tr>
+<td>⭐ <strong>Muon</strong>（$UV^\top$）</td>
+<td>$\begin{pmatrix}1&amp;0\0&amp;1\end{pmatrix}$</td>
+<td><strong>1, 1</strong></td>
+<td>两个方向力度<strong>完全相同</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>中间那一行值得盯一会儿</strong>：$\mathrm{sign}(G)$ 是全 1 矩阵，而全 1 矩阵的秩是 <strong>1</strong>（每一行都一样）。<strong>Adam 的逐元素操作完全有可能把一个满秩的梯度压成一个秩 1 的更新</strong>，而它自己毫不知情——因为它眼里根本没有"矩阵"这个概念（§13.3）。<br />
+<strong>Muon 给出的 $UV^\top$ 永远是正交矩阵，奇异值恒等于 1，所以它【在数学上不可能】掉秩。</strong> 这就是 §13.3 那个"有效秩塌缩"问题被根治的地方。</p>
+</blockquote>
 <hr />
 <h2 id="135-newton-schulz-gpu-uvtop">13.5 Newton-Schulz：怎么在 GPU 上算 $UV^\top$</h2>
 <p><strong>真做 SVD 太贵</strong>（$O(n^3)$，而且 GPU 上极不友好，涉及大量串行的迭代和分支）。</p>
@@ -470,7 +529,87 @@ $$\frac{m}{\sqrt{v}} \approx \frac{g}{|g|} = \text{sign}(g)$$<br />
        5 次迭代通常就足够了
 </code></pre></div>
 
+<h3 id="5-33">⭐ 把这 5 步真的跑一遍：一个 3×3 的数值走查</h3>
+<p><strong>光看多项式没感觉，直接拿一个奇异值差 20 倍的矩阵跑一遍。</strong> 取</p>
+<p>$$G = \mathrm{diag}(10,\ 3,\ 0.5)\qquad \sigma = 10,\ 3,\ 0.5\quad\text{（最大和最小差 20 倍）}$$</p>
+<p><strong>第 0 步先归一化</strong>：$|G|_F = \sqrt{100+9+0.25} = 10.45$，所以 $X_0 = G/10.45$，它的三个奇异值变成 $0.957,\ 0.287,\ 0.0478$——<strong>全部落进 $(0,1]$，这是迭代能收敛的前提。</strong></p>
+<p><strong>然后逐步迭代 $\sigma \leftarrow p(\sigma) = 3.4445\sigma - 4.7750\sigma^3 + 2.0315\sigma^5$</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>迭代步</th>
+<th>σ₁</th>
+<th>σ₂</th>
+<th>σ₃</th>
+<th>最大/最小之比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>X₀（归一化后）</strong></td>
+<td>0.957</td>
+<td>0.287</td>
+<td>0.048</td>
+<td><strong>20.0×</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td>0.880</td>
+<td>0.742</td>
+<td>0.164</td>
+<td>5.4×</td>
+</tr>
+<tr>
+<td>2</td>
+<td>1.062</td>
+<td>0.850</td>
+<td>0.545</td>
+<td>1.95×</td>
+</tr>
+<tr>
+<td>3</td>
+<td>1.202</td>
+<td>0.897</td>
+<td>0.683</td>
+<td>1.76×</td>
+</tr>
+<tr>
+<td>4</td>
+<td>1.133</td>
+<td>0.945</td>
+<td>0.823</td>
+<td>1.38×</td>
+</tr>
+<tr>
+<td><strong>5（Muon 默认停在这）</strong></td>
+<td><strong>0.940</strong></td>
+<td><strong>0.757</strong></td>
+<td><strong>0.751</strong></td>
+<td><strong>1.25×</strong></td>
+</tr>
+<tr>
+<td>精确的 $UV^\top$</td>
+<td>1</td>
+<td>1</td>
+<td>1</td>
+<td>1.00×</td>
+</tr>
+</tbody>
+</table>
+<p><strong>读这张表要看三件事</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 那个 0.048 是最戏剧性的：5 步之内从 0.048 爬到 0.751，涨了 15 倍
+   ★ 这就是 p&#39;(0) = a = 3.4445 很大的作用 —— 专门抢救快要消失的那些方向
+
+② 三个奇异值从&quot;相差 20 倍&quot;变成&quot;相差 1.25 倍&quot;
+   ★ 这才是 Muon 要的效果：不是&quot;精确等于 1&quot;，而是&quot;彼此不再差几个数量级&quot;
+
+③ σ₁ 在 0.94 ~ 1.20 之间来回跳，没有单调收敛
+   ★ 因为 p(1) = 3.4445 − 4.7750 + 2.0315 = 0.701 ≠ 1 —— 这组系数【故意】不把 1 当不动点
+     它换来的是 ① 那个极快的抢救速度。对优化器来说，② 才是目标，③ 只是代价
+</code></pre></div>
+
 <blockquote>
+<p>⚠️ <strong>所以别把 Newton-Schulz 的输出当成"精确的 $UV^\top$"。</strong> 它是一个<strong>近似正交化</strong>：奇异值被压进 $[0.7,\ 1.2]$ 这个带里，而不是精确的 1。<strong>Muon 的更新幅度靠 §13.5 ② 的缩放系数统一校准，正好不依赖这个带的确切位置。</strong></p>
 <p>📌 <strong>这是一个很典型的"为 GPU 重新设计算法"的例子</strong>，和 <a href="05-注意力机制.html">05 章</a> 的 FlashAttention、<a href="08-高效注意力.html">08 章</a> MiniMax 按块选 top-k 是同一种思维：<strong>放弃精确解，换来只用矩阵乘法就能算完。</strong></p>
 </blockquote>
 <h3 id="_7">两个必须知道的工程细节</h3>
@@ -489,12 +628,125 @@ $$\frac{m}{\sqrt{v}} \approx \frac{g}{|g|} = \text{sign}(g)$$<br />
     ✅ openPangu 报告给出的缩放系数 γ = 0.2
 </code></pre></div>
 
-<p><strong>③ 一个白赚的好处：省显存</strong></p>
-<div class="codehilite"><pre><span></span><code>    AdamW：每个参数要存 m 和 v 两份状态  →  2× 参数量的优化器显存
-    Muon ：只需要动量 m 一份            →  1× ★
+<p><strong>③ 一个白赚的好处：省显存——把这笔账逐项算出来</strong></p>
+<p><strong>先把"训练一个模型到底要存哪些东西"摆全。</strong> 下面是 BF16 混合精度训练的标准配置，单位是<strong>每个参数占多少字节</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要存的东西</th>
+<th>精度</th>
+<th>AdamW</th>
+<th>⭐ Muon</th>
+<th>为什么需要它</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>计算用权重</td>
+<td>BF16</td>
+<td><strong>2</strong></td>
+<td><strong>2</strong></td>
+<td>前向和反向的矩阵乘用这一份</td>
+</tr>
+<tr>
+<td>②</td>
+<td>梯度</td>
+<td>BF16</td>
+<td><strong>2</strong></td>
+<td><strong>2</strong></td>
+<td>反向传播算出来的</td>
+</tr>
+<tr>
+<td>③</td>
+<td>FP32 主权重（master weights）</td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td><strong>4</strong></td>
+<td>BF16 只有 7 位尾数，一个很小的更新加到大权重上会被直接舍掉；必须在 FP32 上累加</td>
+</tr>
+<tr>
+<td>④</td>
+<td>一阶动量 <strong>m</strong></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td><strong>4</strong></td>
+<td>两者都要（Muon 是先做动量再正交化，见上面 ①）</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>二阶动量 <strong>v</strong></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td><strong>0</strong> ⭐</td>
+<td>Muon <strong>不需要</strong>逐元素的自适应学习率——它靠正交化统一了所有方向的步长</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>16 字节/参数</strong></td>
+<td><strong>12 字节/参数</strong></td>
+<td>Muon 省下的就是第 ⑤ 行那 4 字节</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️⚠️ <strong>第 ④ ⑤ 行是【两项，各 4 字节】，不能合并成一项。</strong> 这是这笔账上最高频的错误：把 m、v 当成一份（或者干脆忘掉优化器状态），就会把每参数 16 字节写成 8 字节。</p>
+<p>💡 <strong>顺便解释一个常被问的问题：为什么 ④⑤ 必须是 FP32？</strong> 因为 $v$ 存的是<strong>梯度的平方</strong>。梯度本身量级常在 $10^{-4}$ 附近，平方就到了 $10^{-8}$——<strong>BF16 能表示这个数量级，但只有 7 位尾数，两个 $10^{-8}$ 量级的数相加会严重丢精度</strong>，而 $\sqrt{v}$ 又直接出现在分母上。$m$ 同理：它是要被反复累加几十万步的量。</p>
+</blockquote>
+<p><strong>代进不同的模型规模</strong>（单位统一用十进制 <strong>GB</strong>，$1\ \text{GB} = 10^9$ 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>模型参数量</th>
+<th>AdamW（16 字节/参数）</th>
+<th>⭐ Muon（12 字节/参数）</th>
+<th>Muon 省下</th>
+<th>装下 AdamW 那一列要几张 80 GB 卡</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>7B</strong></td>
+<td>112 GB</td>
+<td>84 GB</td>
+<td>28 GB</td>
+<td>2</td>
+</tr>
+<tr>
+<td><strong>70B</strong></td>
+<td>⚠️ <strong>1120 GB</strong></td>
+<td><strong>840 GB</strong></td>
+<td><strong>280 GB</strong></td>
+<td><strong>14</strong></td>
+</tr>
+<tr>
+<td><strong>505B</strong>（openPangu 规模）</td>
+<td><strong>8080 GB</strong></td>
+<td><strong>6060 GB</strong></td>
+<td><strong>2020 GB</strong></td>
+<td>101</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>那个 70B = 1120 GB 值得记住，它是这条账最容易被写错一半的地方。</strong> 如果漏掉 ④⑤ 里的一项、或者把优化器状态整个漏掉，就会算成 8 字节/参数 = <strong>560 GB</strong>，进而得出"7 张卡够了"——<strong>实际要 14 张。</strong> 完整账本（还包括激活值那一大项）在 <a href="../../训练框架/分布式训练入门/02-显存去哪了.html">训练框架 §2.2</a>。</p>
+<p>⚠️ <strong>单位</strong>：上表是<strong>十进制 GB</strong>。厂商标的"80 GB 显存"实际是 80 GiB ≈ 85.9 GB，所以按 80 GB 算卡数是<strong>偏保守</strong>的，真机只会更宽裕。容量用 GiB、带宽用 GB，两套差 7%，混着用是这类账最常见的错源。</p>
+</blockquote>
+<p><strong>三点必须补充的限定，否则这张表会被用过头</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 真实训练里 ③④⑤ 会被 ZeRO / FSDP 按数据并行度切开
+   ★ 上表算的是【全局总量】，不是单卡占用
+   → 64 路数据并行时，单卡看到的 ③④⑤ 只有 1/64（见 训练框架 §5）
 
-    对一个 505B 的模型，这是几百 GB 的差别（虽然实际用的是混合：
-    矩阵参数用 Muon，其余用 AdamW）
+② 五家都是【混合】用法，不是纯 Muon
+   矩阵参数走 Muon（省 4 字节），embedding / LM head / norm 权重 / bias 走 AdamW（§13.6）
+   → 实际省下的比&quot;4 字节 × 全部参数&quot;少
+   ★ 但矩阵参数占了总参数量的绝大部分，所以省下的仍接近上表
+
+③ Muon 自己有额外开销：Newton-Schulz 的 5 步迭代要几个临时矩阵
+   → 这是【瞬时】显存，用完就还，和 ①②③④⑤ 那种【常驻】显存不是一回事
 </code></pre></div>
 
 <hr />
@@ -585,7 +837,8 @@ $$\frac{m}{\sqrt{v}} \approx \frac{g}{|g|} = \text{sign}(g)$$<br />
       都把这两个矩阵【物理上拼成一个】：
 
           W_fused = [W_gate ; W_up]     形状 [d, 2·d_ff]
-                     └── 一次矩阵乘算出两半，再 chunk 开 ──┘
+                     |
+                     +-- 一次矩阵乘算出两半，再在输出上 chunk(2) 拆开
 </code></pre></div>
 
 <blockquote>
@@ -760,11 +1013,19 @@ $$\frac{m}{\sqrt{v}} \approx \frac{g}{|g|} = \text{sign}(g)$$<br />
    → 约束谱范数 = 约束【这一层的函数行为改变多少】
    → 而这才是我们真正在乎的，参数改了多少只是代理指标
    一句话：Adam 在&quot;参数改多少&quot;里最速下降，Muon 在&quot;函数改多少&quot;里最速下降
+④b 一个 2×2 的算例（§13.4 末）：G = [[3,1],[1,3]]，σ = 4 和 2
+   SGD 给 G 本身（σ 4:2，力度差 2 倍）
+   Adam 给 sign(G) = 全 1 矩阵（σ 2:0 —— ⚠️ 秩掉到 1，一个方向完全没动）
+   Muon 给 UVᵀ = I（σ 1:1 —— 方向全保留、强度全拉平，数学上不可能掉秩）
 ⑤ Newton-Schulz：X ← aX + b(XXᵀ)X + c(XXᵀ)²X
    等价于对每个奇异值作用多项式 p(σ)=aσ+bσ³+cσ⁵
    系数 (3.4445, −4.7750, 2.0315) 的设计意图：p&#39;(0) 极大 → 快速拉起极小奇异值
-   代价是在 1 附近振荡而非精确收敛 —— 够用
-   工程上：作用在动量上、需要缩放对齐 AdamW、只存 1 份状态（省显存）
+   代价是 p(1)=0.701≠1，在 [0.7, 1.2] 这个带里振荡而非精确收敛 —— 够用
+   ★ diag(10,3,0.5) 跑 5 步的实测（§13.5）：σ 之比从 20× 收到 1.25×
+   工程上：作用在动量上、需要缩放对齐 AdamW
+⑤b 显存账：AdamW 16 字节/参数（BF16 权重 2 + 梯度 2 + FP32 主权重 4 + m 4 + v 4）
+   Muon 12 字节/参数（不要 v）
+   ⚠️ m 和 v 各 4 字节，不能合并 —— 70B 是 1120 GB / 14 张卡，不是 560 GB / 7 张
 ⑥ 判据：这个参数是不是在做一次真正的线性变换？
    是 → Muon；否（embedding / LM head / norm 权重 / bias）→ AdamW
 ⑦ 五家唯一的真分歧是【正交化粒度】：

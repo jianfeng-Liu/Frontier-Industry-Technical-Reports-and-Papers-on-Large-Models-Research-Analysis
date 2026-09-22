@@ -251,34 +251,113 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="02-embedding">02 · Embedding 与词表：怎么把"今天"变成向量</h1>
 <blockquote>
-<p><strong>这一章的目标</strong>：讲清模型的入口和出口。读完你应该能回答：token 是怎么切出来的？为什么词表是 15 万？"hidden dim 5120 是五家最窄"这句话意味着什么？</p>
+<p><strong>这一章的目标</strong>：讲清模型的入口和出口。读完你应该能回答：token 是怎么切出来的？为什么词表是 15 万？"hidden dim 5120 是五家最窄"这句话意味着什么？为什么 151,552 这个数看着这么奇怪？</p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>token</strong>（词元）—— 模型处理的最小单位，通常是<strong>子词</strong>（subword）而不是字或词。<br />
+<strong>Tokenizer</strong>（分词器）—— 把文本切成 token、再换成整数编号的程序。<br />
+<strong>BPE</strong>（Byte Pair Encoding，字节对编码）—— 目前最主流的子词切分算法，本质是贪心压缩。<br />
+<strong>OOV</strong>（Out-Of-Vocabulary，词表外）—— 遇到词表里没有的词；字节级 BPE 从根本上消灭了这个问题。<br />
+<strong>V</strong>（vocabulary size，词表大小）—— 词表里有多少个不同的 token。<br />
+<strong>Embedding</strong>（词嵌入）—— <code>[V, d]</code> 的查找表，把编号换成向量。<br />
+<strong>LM Head</strong>（Language Model Head，语言模型输出头）—— <code>[d, V]</code> 的矩阵，把向量换回"每个词得几分"。<br />
+<strong>weight tying</strong>（权重绑定）—— 让 LM Head 直接复用 Embedding 的转置，省一份 <code>V × d</code>。<br />
+<strong>TP</strong>（Tensor Parallel，张量并行）—— 把一个矩阵切到多张卡上、每张卡算一部分的并行方式。<br />
+<strong>词表并行</strong>（vocabulary parallelism）—— 专指把 Embedding / LM Head 按<strong>词表维</strong>切开的那种 TP。<br />
+<strong>压缩率 / fertility</strong>（生育率）—— 平均一个 token 覆盖多少个字符 / 一个词平均切成几个 token，互为倒数。  </p>
 <hr />
 <h2 id="21-tokenizer-token">2.1 第一步：Tokenizer，把文本切成 token</h2>
 <p>计算机不认识"天气"，只认识数字。所以第一步是<strong>查表</strong>。但在查表之前，得先决定<strong>怎么切</strong>。</p>
 <h3 id="_1">三种切法，各有致命问题</h3>
-<div class="codehilite"><pre><span></span><code>① 按字符切     &quot;今天天气&quot; → [&quot;今&quot;,&quot;天&quot;,&quot;天&quot;,&quot;气&quot;]
-   ✅ 词表极小（几千个字）
-   ❌ 序列变得极长 → 回忆 01 章：L² 的代价。而且单个汉字信息量太低
+<div class="codehilite"><pre><span></span><code>(1) 按字符切     &quot;今天天气&quot; -&gt; [&quot;今&quot;,&quot;天&quot;,&quot;天&quot;,&quot;气&quot;]
+    ✅ 词表极小（几千个字）
+    ❌ 序列变得极长 -&gt; 回忆 01 章：注意力的 L² 代价。而且单个汉字信息量太低
 
-② 按词切       &quot;今天天气&quot; → [&quot;今天&quot;,&quot;天气&quot;]
-   ✅ 序列短、语义完整
-   ❌ 词表爆炸（中文词组几百万），而且永远会遇到没见过的词（OOV）
+(2) 按词切       &quot;今天天气&quot; -&gt; [&quot;今天&quot;,&quot;天气&quot;]
+    ✅ 序列短、语义完整
+    ❌ 词表爆炸（中文词组几百万），而且永远会遇到没见过的词（OOV）
 
-③ 按【子词】切  ← 现在所有模型的选择
-   常见词整个是一个 token，罕见词拆成几块
-   &quot;今天&quot; → 1 个 token        &quot;反刍动物学&quot; → 可能拆成 3~4 个
+(3) 按【子词】切  &lt;- 现在所有模型的选择
+    常见词整个是一个 token，罕见词拆成几块
+    &quot;今天&quot; -&gt; 1 个 token        &quot;反刍动物学&quot; -&gt; 可能拆成 3~4 个
 </code></pre></div>
 
 <h3 id="bpe">BPE：子词是怎么"学"出来的</h3>
-<p><strong>BPE（Byte Pair Encoding）本质是一个贪心的压缩算法</strong>，你有算法基础的话看一遍就懂：</p>
+<p><strong>BPE（Byte Pair Encoding，字节对编码）本质是一个贪心的压缩算法</strong>，你有算法基础的话看一遍就懂：</p>
 <div class="codehilite"><pre><span></span><code>初始：把所有文本拆成最小单位（UTF-8 字节），词表 = 256 个字节
 
 循环（直到词表达到目标大小，比如 15 万）：
-    ① 统计当前语料里【相邻两个 token 的组合】出现次数
-    ② 找出出现最多的那一对，比如 (&quot;t&quot;, &quot;h&quot;) 出现了 100 万次
-    ③ 把 &quot;th&quot; 作为一个【新 token】加入词表
-    ④ 语料里所有 &quot;t&quot;,&quot;h&quot; 相邻的地方，合并成 &quot;th&quot;
+    (1) 统计当前语料里【相邻两个 token 的组合】出现次数
+    (2) 找出出现最多的那一对，比如 (&quot;t&quot;, &quot;h&quot;) 出现了 100 万次
+    (3) 把 &quot;th&quot; 作为一个【新 token】加入词表
+    (4) 语料里所有 &quot;t&quot;,&quot;h&quot; 相邻的地方，合并成 &quot;th&quot;
+</code></pre></div>
+
+<p><strong>光看伪代码没感觉，拿一个 4 个词的小语料手推 5 轮。</strong> 语料（括号里是这个词在语料里出现的次数）：</p>
+<div class="codehilite"><pre><span></span><code>low     x 5          初始按字符拆开：  l o w
+lowest  x 2                          l o w e s t
+newer   x 6                          n e w e r
+wider   x 3                          w i d e r
+
+初始词表 = {l, o, w, e, s, t, n, r, i, d}  共 10 个
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>轮次</th>
+<th>统计出的最高频相邻对</th>
+<th>次数</th>
+<th>加入词表的新 token</th>
+<th>合并后的语料长这样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>("e","r")</code></td>
+<td>6+3 = <strong>9</strong></td>
+<td><code>er</code></td>
+<td><code>l o w</code> ／ <code>l o w e s t</code> ／ <code>n e w</code> <strong><code>er</code></strong> ／ <code>w i d</code> <strong><code>er</code></strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>("l","o")</code></td>
+<td>5+2 = <strong>7</strong></td>
+<td><code>lo</code></td>
+<td><strong><code>lo</code></strong> <code>w</code> ／ <strong><code>lo</code></strong> <code>w e s t</code> ／ <code>n e w er</code> ／ <code>w i d er</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>("lo","w")</code></td>
+<td>5+2 = <strong>7</strong></td>
+<td><code>low</code></td>
+<td><strong><code>low</code></strong> ／ <strong><code>low</code></strong> <code>e s t</code> ／ <code>n e w er</code> ／ <code>w i d er</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>("n","e")</code></td>
+<td><strong>6</strong></td>
+<td><code>ne</code></td>
+<td><code>low</code> ／ <code>low e s t</code> ／ <strong><code>ne</code></strong> <code>w er</code> ／ <code>w i d er</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>("ne","w")</code></td>
+<td><strong>6</strong></td>
+<td><code>new</code></td>
+<td><code>low</code> ／ <code>low e s t</code> ／ <strong><code>new</code></strong> <code>er</code> ／ <code>w i d er</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>5 轮之后的成果</strong>：</p>
+<div class="codehilite"><pre><span></span><code>词表     = 10 个初始字符 + {er, lo, low, ne, new} = 15 个
+合并规则 = [(&quot;e&quot;,&quot;r&quot;), (&quot;l&quot;,&quot;o&quot;), (&quot;lo&quot;,&quot;w&quot;), (&quot;n&quot;,&quot;e&quot;), (&quot;ne&quot;,&quot;w&quot;)]   ★ 有序！
+
+切分效果：  &quot;low&quot;   从 3 个 token 变成 1 个      -&gt; 序列缩短 67%
+            &quot;newer&quot; 从 5 个 token 变成 2 个      -&gt; 缩短 60%   (new + er)
+            &quot;wider&quot; 从 5 个 token 变成 4 个      -&gt; 缩短 20%   (w + i + d + er)
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bpe_train</span><span class="p">(</span><span class="n">corpus_tokens</span><span class="p">,</span> <span class="n">vocab_size</span><span class="p">):</span>
@@ -295,34 +374,132 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     <span class="k">return</span> <span class="n">vocab</span><span class="p">,</span> <span class="n">merges</span>                          <span class="c1"># merges 是有序的，推理时按序重放</span>
 </code></pre></div>
 
-<p><strong>推理时</strong>：把 <code>merges</code> 这个有序列表按顺序重放一遍，就得到确定的切分。<strong>同一段文本永远切出同一个结果。</strong></p>
+<p><strong>推理时</strong>：把 <code>merges</code> 这个有序列表<strong>按训练时的顺序</strong>重放一遍，就得到确定的切分。<strong>同一段文本永远切出同一个结果。</strong></p>
 <blockquote>
-<p>🔑 <strong>一个非常实际的结论</strong>：<strong>token 数 ≠ 字数</strong>。<br />
+<p>🔑 <strong>"有序"这两个字是 BPE 最容易被忽略的一点。</strong> 上面的例子里，必须先合 <code>lo</code> 再合 <code>low</code>——顺序反过来 <code>low</code> 这条规则就永远匹配不上。所以 tokenizer 文件里存的不是一个集合，是一个<strong>有先后的规则列表</strong>。</p>
+<p>📌 <strong>没见过的词怎么办？</strong> 比如 <code>"lowing"</code>：按规则重放得到 <code>low</code> + <code>i</code> + <code>n</code> + <code>g</code>，但 <code>g</code> 不在词表里。现代模型用的是<strong>字节级 BPE</strong>：初始单位不是"字符"而是 <strong>256 个 UTF-8 字节</strong>，任何输入——中文、emoji、乱码、二进制——都一定能被表示。<strong>OOV 这个概念在字节级 BPE 下被彻底消灭了。</strong> 细节见 <a href="../../数据格式和数据处理/09-Tokenizer与词表.html">数据教程 §9.3</a>。</p>
+</blockquote>
+<h3 id="token">同一句话，中英文各切成几个 token</h3>
+<p><strong>这是全章最该有量级感的一件事</strong>，因为它直接换算成上下文长度和 API 账单。拿一句意思相同的中英文对照：</p>
+<div class="codehilite"><pre><span></span><code>中文： 今天天气不错，我们出去散步吧。                       15 个字符（含标点）
+英文： The weather is nice today, let&#39;s go out for a walk.   51 个字符 / 11 个单词
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th>字符数</th>
+<th>按什么口径换算</th>
+<th>大约几个 token</th>
+<th>每 token 覆盖</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>中文</td>
+<td>15</td>
+<td>⚠️ 业界经验值 1.5~2 汉字 / token</td>
+<td><strong>8 ~ 10</strong></td>
+<td>1.5~2 个汉字</td>
+</tr>
+<tr>
+<td>中文</td>
+<td>15</td>
+<td>✅ openPangu 报告 Table 4：3.82 字符 / token</td>
+<td><strong>约 4</strong></td>
+<td>3.82 个字符</td>
+</tr>
+<tr>
+<td>英文</td>
+<td>51</td>
+<td>⚠️ 业界经验值 1 token ≈ 4 字符 ≈ 0.75 单词</td>
+<td><strong>13 ~ 15</strong></td>
+<td>4 个字符</td>
+</tr>
+<tr>
+<td>英文</td>
+<td>51</td>
+<td>✅ openPangu 报告 Table 4：4.15 字符 / token</td>
+<td><strong>约 12</strong></td>
+<td>4.15 个字符</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>中文那两行差了一倍多，这个矛盾我没有替你合成一个数，理由如下。</strong><br />
 ```<br />
-英文：平均 1 个 token ≈ 4 个字符 ≈ 0.75 个单词<br />
-中文：平均 1 个 token ≈ 1~1.5 个汉字（好的中文 tokenizer 能到 1.5~2）</p>
-<p>所以 "512K 上下文" 对中文大约是 60~100 万字，对英文大约是 200 万单词<br />
+✅ 报告原文：openPangu-2.0 技术报告 §2.6 明确写<br />
+   "We evaluate tokenizer efficiency using the average number of<br />
+    characters covered per token"，Table 4 里 Chinese 一列是 3.82 / 4.04</p>
+<p>⚠️ 但 3.82 个【汉字】一个 token，对 15 万词表来说高得不寻常<br />
+   （公开的中文友好 tokenizer 普遍在 1.5~2 汉字/token 这个区间）</p>
+<p>⚠️ 报告【没有披露】它的 "Chinese" 测试集是怎么构成的。<br />
+   合理的可能：这份语料里混了大量 ASCII 标点、数字、英文和标记；<br />
+   或者"character"在它的统计脚本里实际是按字节算的<br />
+   （一个汉字 = 3 个 UTF-8 字节，3.82 字节 ≈ 1.27 个汉字，恰好落回经验区间）</p>
+<p>★ 我的处理：Table 4 的数字按【✅ 报告原样】记录，跨语言的横向比较用它没问题<br />
+             （3digit 比 single-digit 压缩率高，这个【相对】结论是可靠的）；<br />
+             但凡是要换算成"多少字"的【绝对】估计，一律用经验值并给区间。<br />
 ```<br />
-<strong>这也是国产模型都很在意 tokenizer 中文效率的原因</strong>——同样的 1M 上下文，中文 token 效率高 30%，就等于上下文长了 30%，而且推理成本降 30%。</p>
+完整的压缩率对照表和 openPangu 为什么故意选了压缩率更差的那个变体，见 <a href="../../数据格式和数据处理/09-Tokenizer与词表.html">数据教程 §9.5 / §9.6</a>。</p>
+</blockquote>
+<p><strong>换算成上下文长度</strong>（openPangu-2.0-Pro 的 512K = 524,288 个 token）：</p>
+<table>
+<thead>
+<tr>
+<th>语言</th>
+<th>换算口径</th>
+<th>512K 上下文大约能装</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>中文</td>
+<td>⚠️ 1.5~2 汉字 / token</td>
+<td><strong>79 万 ~ 105 万字</strong></td>
+</tr>
+<tr>
+<td>英文</td>
+<td>⚠️ 0.75 单词 / token</td>
+<td><strong>约 39 万单词</strong></td>
+</tr>
+<tr>
+<td>英文</td>
+<td>⚠️ 4 字符 / token</td>
+<td>约 210 万字符</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这里纠一个很容易出错的换算</strong>：512K token 对英文是 <strong>39 万单词</strong>，不是 200 万单词。200 万是<strong>字符</strong>数量级（约 210 万），单词和字符差了 5 倍多。<strong>看到"多少万字"这种说法，先问清楚是字符还是单词。</strong></p>
+<p>🔑 <strong>这也是国产模型都很在意 tokenizer 中文效率的原因</strong>——同样的 1M 上下文，中文 token 效率高 30%，就等于<strong>上下文实际长了 30%</strong>，而且<strong>推理成本降 30%</strong>（因为收费和算力都按 token 算）。这是一个一次性的、不用改架构就能拿到的 30%。</p>
 </blockquote>
 <h3 id="tokenizer">一个必须知道的坑：tokenizer 决定了模型的某些"愚蠢"</h3>
 <div class="codehilite"><pre><span></span><code>&quot;strawberry 里有几个 r？&quot;    模型答错，因为它看到的是 [&quot;str&quot;,&quot;aw&quot;,&quot;berry&quot;]，
                              根本没有&quot;字符&quot;这个概念
 
-数字 &quot;12345&quot;                 可能被切成 [&quot;123&quot;,&quot;45&quot;]，所以算术能力天生受损
-                             → 现在的做法是【强制数字逐位切分】
+数字 &quot;12345&quot;                 常规 BPE 可能切成 [&quot;123&quot;,&quot;45&quot;]，而 &quot;2024&quot; 因为常见
+                             被合成一个 token、&quot;2025&quot; 却被切成 [&quot;202&quot;,&quot;5&quot;]
+                             -&gt; ★ 同一个位置上的数字切法【不一致】，
+                                模型学不到&quot;个位、十位、百位&quot;这种稳定结构
+                             -&gt; 现在的做法是【强制数字逐位切分】
 </code></pre></div>
 
+<blockquote>
+<p>✅ <strong>openPangu-2.0 就是这么做的，而且把理由写进了报告</strong>：它训了 3-digit 和 single-digit 两个变体，<strong>3-digit 的压缩率在几乎所有语料上都更好</strong>（平均 2.71 vs 2.59），但最终<strong>采用了压缩率更差的 single-digit</strong>——理由是数值推理、多模态坐标定位、工具调用这三类场景都需要规整的数字表示。<strong>用 4% 的压缩率换数字表示的一致性。</strong></p>
+<p>📌 <strong>这个取舍推翻了一个很自然的直觉</strong>：tokenizer 的目标不是"压缩率最高"，而是"<strong>让模型好学</strong>"。详见 <a href="../../数据格式和数据处理/09-Tokenizer与词表.html">数据教程 §9.6</a>。</p>
+</blockquote>
 <p><strong>这不是模型笨，是输入表示层的信息就已经丢了。</strong></p>
 <hr />
 <h2 id="22-embedding">2.2 第二步：Embedding，查表</h2>
 <div class="codehilite"><pre><span></span><code>词表（vocabulary）：一个固定的、训练前就定好的清单
     ...
-    1234 → &quot;今天&quot;
-    567  → &quot;天气&quot;
+    1234 -&gt; &quot;今天&quot;
+    567  -&gt; &quot;天气&quot;
     ...
 
-Embedding 矩阵 E：形状 [V, d]，比如 [153600, 5120]
+Embedding 矩阵 E：形状 [V, d]，比如 [151552, 5120]
     第 1234 行就是 &quot;今天&quot; 这个词的 5120 维向量
 </code></pre></div>
 
@@ -333,11 +510,14 @@ Embedding 矩阵 E：形状 [V, d]，比如 [153600, 5120]
 <div class="codehilite"><pre><span></span><code><span class="n">x</span> <span class="o">=</span> <span class="n">E</span><span class="p">[</span><span class="n">token_ids</span><span class="p">]</span>          <span class="c1"># [L] → [L, d]，就是一次查表，O(L·d)</span>
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>算一下真做矩阵乘要浪费多少</strong>：一次 $e_t^\top E$ 是 $2 \times 151552 \times 5120 = 1.55$ GFLOP，而里面只有 <strong>5120 次</strong>乘法的操作数不是 0——<strong>99.9997% 的浮点运算在乘 0</strong>。这也是为什么 <a href="01-鸟瞰全景.html">01 章 §1.4.3</a> 的激活参数表里，Embedding 那一行的 FLOPs 记为 0。</p>
+</blockquote>
 <h3 id="_3">这些向量长什么样</h3>
 <p><strong>Embedding 是可学习的参数，训练开始时是随机的</strong>，训练结束后会自发形成几何结构：</p>
 <div class="codehilite"><pre><span></span><code>    语义相近的词，向量方向也相近（余弦相似度高）
 
-    &quot;国王&quot; − &quot;男人&quot; + &quot;女人&quot;  ≈  &quot;女王&quot;      ← 经典的类比结构
+    &quot;国王&quot; − &quot;男人&quot; + &quot;女人&quot;  ≈  &quot;女王&quot;      &lt;- 经典的类比结构
     &quot;北京&quot; − &quot;中国&quot; + &quot;法国&quot;  ≈  &quot;巴黎&quot;
 
     ⚠️ 注意：这在 word2vec 时代是显式性质，在大模型里没那么干净
@@ -349,27 +529,149 @@ Embedding 矩阵 E：形状 [V, d]，比如 [153600, 5120]
 <h2 id="23-lm-head">2.3 第三步（跳到最后）：LM Head，从向量回到词</h2>
 <p>模型最后一层输出 $x_L \in \mathbb{R}^{L\times d}$，要变回"下一个词是什么"：</p>
 <p>$$\text{logits} = x_L\,W_{\text{out}},\qquad W_{\text{out}} \in \mathbb{R}^{d\times V}$$</p>
-<div class="codehilite"><pre><span></span><code>    [L, 5120] × [5120, 153600] → [L, 153600]
-                                      ↑ 每个位置对每个候选词的【打分】
+<div class="codehilite"><pre><span></span><code>    [L, 5120] x [5120, 151552] -&gt; [L, 151552]
+                                      ^ 每个位置对每个候选词的【打分】
 </code></pre></div>
 
 <p><strong>然后 softmax 变成概率</strong>：</p>
 <p>$$P(\text{word}_i) = \frac{\exp(\text{logit}_i / T)}{\sum_j \exp(\text{logit}_j / T)}$$</p>
 <p>$T$ 是<strong>温度</strong>（temperature）：</p>
-<div class="codehilite"><pre><span></span><code>T → 0    退化成 argmax，永远取最高分的词（贪心，输出确定但呆板）
+<div class="codehilite"><pre><span></span><code>T -&gt; 0   退化成 argmax，永远取最高分的词（贪心，输出确定但呆板）
 T = 1    按模型的原始概率采样
 T &gt; 1    分布被拉平，输出更随机、更有创造性
 </code></pre></div>
 
+<blockquote>
+<p>📌 三种温度下同一组 logits 会变成什么样的概率，有一张四个词的手算对照表在 <a href="../大模型架构入门-小白向.html">小白向入口 §0.2</a>；完整的一次前向走查在 <a href="16-最小数值走查.html">16 章</a>。</p>
+</blockquote>
 <h3 id="weight-tying">权重绑定（weight tying）</h3>
 <p><strong>很多模型让 $W_{\text{out}} = E^\top$</strong>，即输入和输出共享同一份矩阵。</p>
-<div class="codehilite"><pre><span></span><code>✅ 省一份 V×d 的参数（7.9 亿）
-✅ 直觉合理：进和出用同一套&quot;词 ↔ 向量&quot;的对应关系
+<div class="codehilite"><pre><span></span><code>✅ 省一份 V x d 的参数
+✅ 直觉合理：进和出用同一套&quot;词 &lt;-&gt; 向量&quot;的对应关系
+❌ 这是一个【约束】：输入表示和输出表示被迫用同一套几何，各自没法单独优化
 ❌ 在超大模型上这个约束可能过强，所以前沿模型不一定绑定
 </code></pre></div>
 
+<p><strong>"省一份"到底值不值，要看模型多大。</strong> 用 openPangu 报告 Table 8 给的三个尺寸算一遍（词表都是 151,552）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th><code>d</code></th>
+<th>一份 <code>V × d</code></th>
+<th>占<strong>总</strong>参数</th>
+<th>占<strong>激活</strong>参数</th>
+<th>绑定值不值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE15B-A2B（报告的消融模型）</td>
+<td>1536</td>
+<td><strong>232.8 M</strong></td>
+<td>15B 的 1.55 %</td>
+<td>2B 的 <strong>11.6 %</strong></td>
+<td>✅ 很值</td>
+</tr>
+<tr>
+<td>openPangu-2.0-Flash</td>
+<td>2560</td>
+<td><strong>388.0 M</strong></td>
+<td>92B 的 0.42 %</td>
+<td>6B 的 <strong>6.5 %</strong></td>
+<td>还行</td>
+</tr>
+<tr>
+<td>openPangu-2.0-Pro</td>
+<td>5120</td>
+<td><strong>775.9 M</strong></td>
+<td>505B 的 <strong>0.15 %</strong></td>
+<td>18B 的 <strong>4.3 %</strong></td>
+<td>⚠️ 收益已经很小</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>📌 五家的报告里这一格大多没明说。<strong>但注意 <a href="16-最小数值走查.html">16 数值走查</a> 里我用的是绑定版本</strong>，因为它让例子更短。</p>
+<p>🔑 <strong>一条清晰的规律</strong>：<strong>模型越大，权重绑定越不划算。</strong> 省下的那 0.15% 总参数根本不值一提，但"输入和输出必须共用一套几何"这个约束是<strong>不随规模缩小的</strong>。这解释了为什么小模型（几亿到几十亿）几乎都绑定，而前沿模型越来越倾向不绑定。</p>
+<p>⚠️ <strong>五家的报告里这一格大多没明说绑不绑</strong>，上表只是在算"如果绑定能省多少"。<strong>注意 <a href="16-最小数值走查.html">16 数值走查</a> 里我用的是绑定版本</strong>，因为它让例子更短。</p>
+</blockquote>
+<h3 id="151552">词表并行：为什么 151,552 这个数长得这么怪</h3>
+<p><strong>LM Head 是全模型唯一一个输出维度是 <code>V</code> 的地方</strong>，而 <code>V</code> 比 <code>d</code> 大 30 倍。这带来一个具体的工程麻烦：</p>
+<div class="codehilite"><pre><span></span><code>训练时一条 4K 长的序列，完整 logits 有多大？
+
+  4096 x 151552 x 2 字节(BF16) = 1,241,513,984 字节 = 1.24 GB
+
+★ 一条序列的 logits 就 1.24 GB —— 比模型某些层的参数还大
+</code></pre></div>
+
+<p><strong>解决办法是把 Embedding 和 LM Head 按【词表维】切开</strong>，这就是<strong>词表并行</strong>（vocabulary parallelism），它是 TP（Tensor Parallel，张量并行）的一种特例：</p>
+<div class="codehilite"><pre><span></span><code>TP = 8 时，把 151552 行平均分给 8 张卡，每张卡拿 18944 行
+
+  Embedding 侧：每张卡只查自己那 18944 行；编号不在自己范围内就输出全 0，
+                最后八张卡 all-reduce 相加 -&gt; 正好等于完整的查表结果
+
+  LM Head 侧：  每张卡算出 [4096, 18944] 的局部 logits，只占 155 MB
+                ★ 关键在 softmax：分母需要【全局】的 sum(exp)
+</code></pre></div>
+
+<p><strong>这里有一个非常值得看的通信账</strong>——softmax 的全局分母有两种拿法：</p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>要在卡之间传多少</th>
+<th>走 NVLink（⚠️ 单向 450 GB/s）</th>
+<th>走 InfiniBand（⚠️ 50 GB/s）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>❌ 笨办法：all-gather 拼出完整 logits 再算 softmax</td>
+<td>每卡收 7/8 × 1.24 GB = <strong>1.09 GB</strong></td>
+<td>2.4 ms</td>
+<td>21.7 ms</td>
+</tr>
+<tr>
+<td>✅ 词表并行交叉熵：每行只 all-reduce <code>max</code> 和 <code>sum(exp)</code> 两个 FP32 标量</td>
+<td>4096 × 2 × 4 字节 = <strong>32 KB</strong></td>
+<td>0.073 µs</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>通信量之比</strong></td>
+<td><strong>约 3.3 万倍</strong></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>上表里两个带宽数字是最容易被引错的</strong>：<br />
+```<br />
+NVLink 标称 900 GB/s 是【双向聚合】带宽。算单向要用 450 GB/s<br />
+InfiniBand 400 Gb/s 是【比特】，÷ 8 = 50 GB/s 才是字节口径</p>
+<p>★ 所以同口径下 NVLink : IB = 450 : 50 = 【9 倍】，不是 18 倍<br />
+  —— 拿 900 去比 50 是拿双向比单向、常见的一处双倍错误<br />
+```</p>
+</blockquote>
+<p><strong>现在回答标题那个问题：为什么词表要补齐到 151,552。</strong></p>
+<div class="codehilite"><pre><span></span><code>151552 = 2^12 x 37 = 4096 x 37
+
+  TP = 8   -&gt; 每卡 18944 行  ✅
+  TP = 16  -&gt; 每卡  9472 行  ✅
+  TP = 32  -&gt; 每卡  4736 行  ✅
+  TP = 64  -&gt; 每卡  2368 行  ✅
+  ... 一直到 TP = 4096 都能整除
+
+而 tokenizer 真正训出来的 149,600 = 2^5 x 5^2 x 11 x 17
+
+  TP = 32  -&gt; 每卡  4675 行  ✅
+  TP = 64  -&gt; 4675 / 2 = 2337.5   ❌ 除不尽，切不动
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>所以 149,600 -&gt; 151,552 补了 1,952 行</strong>，这 1,952 行是<strong>永远不会被查到的占位行</strong>（tokenizer 根本产不出这些编号）。代价是 1952 × 5120 = 999 万个白白占显存的参数（占 505B 的 0.002%），换来的是<strong>任意 2 的幂次的 TP 都能整除</strong>。这笔买卖非常划算，也是几乎所有模型都会做的一件事。</p>
+<p>⚠️ 补齐的行如果初始化成非零值、又没有被掩码掉，训练时它们会拿到梯度并可能被采样出来（生成出一个不存在的 token）。实现上要么把它们的 logits 置 <code>-inf</code>，要么保证它们永远学不出高分。这是一个真实会踩的坑。</p>
 </blockquote>
 <hr />
 <h2 id="24">2.4 三个你需要有量级感的数字</h2>
@@ -398,7 +700,7 @@ T &gt; 1    分布被拉平，输出更随机、更有创造性
 <tr>
 <td><strong>Embedding 参数</strong></td>
 <td><code>V × d</code></td>
-<td>15 万 × 5120 ≈ <strong>7.9 亿</strong></td>
+<td>151,552 × 5120 = <strong>7.76 亿</strong></td>
 <td>显存；且它不适合用 Muon（<a href="13-优化器与Muon.html">13 章</a>）</td>
 </tr>
 </tbody>
@@ -406,45 +708,159 @@ T &gt; 1    分布被拉平，输出更随机、更有创造性
 <blockquote>
 <p>⚠️ <strong>openPangu 那一格要解释一下，因为它的报告里【同时存在两个数】</strong>（我逐页核对过）：<br />
 ```<br />
-✅ §2.6 Table 4（tokenizer 那一节）：openPangu-2.0-single-digit = 149,600<br />
+✅ 报告 §2.6 Table 4（tokenizer 那一节）：openPangu-2.0-single-digit = 149,600<br />
    ——这是【真正训出来的 BPE 词表大小】，报告正文写明 2.0 采用的就是这个变体<br />
-✅ 附录超参表（架构配置）：Vocabulary Size = 151,552（三个尺寸都一样）<br />
+✅ 报告附录 Table 8（架构超参表）：Vocabulary Size = 151,552（三个尺寸都一样）<br />
    ——这是【Embedding 矩阵的宽度】，为了张量并行切分而【补齐】过</p>
 <p>★ 两个数都是报告原文，不矛盾，只是【问的问题不同】：<br />
-   "tokenizer 认识多少个 token" → 149,600<br />
-   "Embedding 矩阵有多宽"       → 151,552（多出来的 1,952 行是永远不会被查到的占位）<br />
+   "tokenizer 认识多少个 token" -&gt; 149,600<br />
+   "Embedding 矩阵有多宽"       -&gt; 151,552（多出来的 1,952 行是永远不会被查到的占位）<br />
 ⚠️ 顺带纠一个容易抄错的数：153,376 是 openPangu-【1.0】的词表，不是 2.0 的。<br />
 ```<br />
-★ 这个"补齐"的机制本身见 §2.4；数据侧的完整对照表在<br />
-<a href="../../数据格式和数据处理/09-Tokenizer与词表.html">数据教程 9.4 / 9.6</a>。</p>
-<p>🔑 <strong><code>d</code> 是整个模型最重要的一个超参</strong>。回忆 <a href="01-鸟瞰全景.html">01 章</a> 的参数量公式：<br />
+★ 这个"补齐"为什么必须做、按 2 的幂次切有什么好处，见本章 <strong>§2.3 的「词表并行」</strong>；数据侧的完整对照表在 <a href="../../数据格式和数据处理/09-Tokenizer与词表.html">数据教程 §9.4 / §9.6</a>。</p>
+</blockquote>
+<h3 id="embedding">Embedding 占全模型几成：一张表算完</h3>
+<p><code>V × d</code> 这个乘法本身很简单，<strong>有意思的是它占全模型的比例随规模怎么变</strong>。用 openPangu 报告 Table 8 的三个尺寸（词表统一 151,552）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th><code>d</code></th>
+<th><code>V × d</code></th>
+<th><strong>总参数</strong></th>
+<th>Emb 占总参数</th>
+<th><strong>激活参数</strong></th>
+<th>Emb + LM Head 占激活</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MoE15B-A2B</td>
+<td>1536</td>
+<td>232.8 M</td>
+<td>15 B</td>
+<td>1.55 %</td>
+<td>2 B</td>
+<td><strong>23.3 %</strong></td>
+</tr>
+<tr>
+<td>openPangu-2.0-Flash</td>
+<td>2560</td>
+<td>388.0 M</td>
+<td>92 B</td>
+<td>0.42 %</td>
+<td>6 B</td>
+<td><strong>12.9 %</strong></td>
+</tr>
+<tr>
+<td>openPangu-2.0-Pro</td>
+<td>5120</td>
+<td>775.9 M</td>
+<td>505 B</td>
+<td><strong>0.15 %</strong></td>
+<td>18 B</td>
+<td><strong>8.6 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这张表把两件事讲清楚了</strong>：<br />
+```<br />
+(1) 从【总参数】看，Embedding 在大 MoE 模型里几乎不存在（0.15%）<br />
+    —— 对照 01 章 §1.4.2：505B 里 98.7% 是专家</p>
+<p>(2) 从【激活参数】看，它一点也不小：Pro 上是 8.6%，在 2B 激活的<br />
+    小模型上更是 23.3% —— 因为 Embedding 和 LM Head 【不稀疏】，<br />
+    每个 token 都要完整走一遍</p>
+<p>★ "Embedding 重不重要"这个问题，问的是总参数还是激活参数，答案完全相反。<br />
+  这正是 01 章 §1.4.4 说的"稀疏只发生在专家那一块"。<br />
+```</p>
+<p>🔑 <strong><code>d</code> 是整个模型最重要的一个超参</strong>。回忆 <a href="01-鸟瞰全景.html">01 章 §1.4</a> 的参数量公式：<br />
 <code>每层参数 = 4d² + 3d·d_ff  ——  随 d 是【平方】增长的</code><br />
-<strong>所以 openPangu 把 d 定在 5120（五家最窄），是一个杠杆极大的决定</strong>：相比 K3 的 7168，同样层数下每层参数只有 $(5120/7168)^2 = 51\%$。</p>
-<p>这就是 <a href="../模型技术对比.html">../模型技术对比.md</a> §二里"Hidden dim 5120（五家最窄）"那一格的分量——它是 openPangu 把激活参数压到 18B 的<strong>第一个</strong>手段（另外三个是浅层数、多专家、小专家，见 <a href="10-MoE.html">10 MoE</a>）。</p>
+<strong>所以 openPangu 把 d 定在 5120（五家最窄），是一个杠杆极大的决定</strong>：相比 K3 的 7168，同样层数下每层注意力参数只有 $(5120/7168)^2 = 51\%$。</p>
+<p>这就是 <a href="../模型技术对比.html">../模型技术对比.md</a> §二里"Hidden dim 5120（五家最窄）"那一格的分量——它是 openPangu 把激活参数压到 18B 的<strong>第一个</strong>手段（另外三个是浅层数、多专家、小专家，见 <a href="01-鸟瞰全景.html">01 章 §1.6</a> 的四杠杆对照和 <a href="10-MoE.html">10 MoE</a>）。</p>
 </blockquote>
 <hr />
 <h2 id="25">2.5 挂回五家</h2>
 <p><strong>Embedding 这一块，五家的架构改动几乎为零。</strong> 但有两处值得记：</p>
 <h3 id="1-embedding-muon">① Embedding 不用 Muon</h3>
 <p>五家高度一致地把 embedding、LM head、所有 norm 权重、所有 bias <strong>排除在 Muon 之外，继续用 AdamW</strong>。</p>
+<p>✅ openPangu 报告原文写得很直白：Muon 作用于所有二维及以上的权重张量，而 AdamW 负责 <strong>word embeddings、prediction head、PAS 参数，以及所有一维参数</strong>（RMSNorm 权重、mHC 门控系数）。</p>
 <p><strong>原因</strong>（<a href="13-优化器与Muon.html">13 章</a>详解）：Muon 的整个逻辑建立在"这是一个<strong>矩阵</strong>、它的奇异值谱有意义"之上。而 embedding 矩阵<strong>不是一个作用于向量空间的线性映射</strong>，它只是 15 万个彼此独立的行向量堆在一起。<strong>对它做 SVD 正交化没有任何意义。</strong></p>
+<blockquote>
+<p>📌 <strong>顺带一个显存上的推论</strong>（回忆 <a href="01-鸟瞰全景.html">01 章 §1.5.3</a> 那张 16 字节 / 12 字节的表）：既然 Embedding 和 LM Head 留在 AdamW 手里，它们仍然要存 <code>v</code>，是 <strong>16 字节/参数</strong>；只有走 Muon 的那部分是 12 字节。所以"Muon 省 25% 显存"这句话对全模型来说也是<strong>打了折的</strong>——不过 Embedding 只占 0.15%，这个折扣可以忽略。</p>
+</blockquote>
 <h3 id="2">② 词表大小的取舍</h3>
-<div class="codehilite"><pre><span></span><code>词表大  →  同样文本 token 数少  →  上下文更长、推理更便宜
-        →  但 Embedding 和 LM Head 更大，且 softmax 更贵
-        →  且罕见 token 训练不充分
+<div class="codehilite"><pre><span></span><code>词表大  -&gt;  同样文本 token 数少  -&gt;  上下文更长、推理更便宜
+        -&gt;  但 Embedding 和 LM Head 更大，且 softmax 更贵
+        -&gt;  且罕见 token 训练不充分（每个 token 分到的训练样本变少）
 
 五家都收敛在 15 万左右，说明这大概是当前的甜点区
 </code></pre></div>
 
+<p><strong>为什么甜点区在 15 万而不是 100 万</strong>，用上面的数字就能估：</p>
+<table>
+<thead>
+<tr>
+<th>词表</th>
+<th><code>V × d</code>（d=5120）</th>
+<th>占 505B</th>
+<th>4K 序列的 logits（BF16）</th>
+<th>罕见 token 的训练充分度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3.2 万（早期模型）</td>
+<td>164 M</td>
+<td>0.03 %</td>
+<td>0.26 GB</td>
+<td>很充分，但中文切得碎</td>
+</tr>
+<tr>
+<td><strong>15 万（现在）</strong></td>
+<td><strong>776 M</strong></td>
+<td><strong>0.15 %</strong></td>
+<td><strong>1.24 GB</strong></td>
+<td>够用</td>
+</tr>
+<tr>
+<td>100 万（假想）</td>
+<td>5.12 B</td>
+<td>1.01 %</td>
+<td>8.19 GB</td>
+<td>⚠️ 长尾 token 见不到几次</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>注意这里真正的约束不是参数量</strong>（100 万词表也才占 1%），而是 <strong>logits 张量的显存</strong>和<strong>长尾 token 的训练充分度</strong>。前者在长序列训练时是硬约束（8.19 GB 只是一条 4K 序列），后者是质量约束。<strong>"为什么不把词表开到 100 万"这个问题，答案在显存和数据里，不在参数量里。</strong></p>
+</blockquote>
 <hr />
 <h2 id="26">2.6 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① Tokenizer 用 BPE（贪心合并最高频的相邻对）把文本切成子词
-   → token 数 ≠ 字数；中文 tokenizer 效率直接换算成上下文长度和成本
-② Embedding = 一次查表，把整数 ID 变成 d 维向量
-③ LM Head = 反向的一次投影，回到词表维度，再 softmax + 温度采样
-④ d 是最重要的超参，参数量随它平方增长
-   → openPangu 的 d=5120 是它压低激活参数的第一个杠杆
-⑤ 这一层五家不改；唯一值得记的是它不用 Muon
+<div class="codehilite"><pre><span></span><code>(1) Tokenizer 用 BPE（贪心合并最高频的相邻对）把文本切成子词
+    合并规则是【有序】的，推理时按序重放，同一段文本永远切出同一结果
+    字节级 BPE 让 OOV 这个概念彻底消失
+
+(2) token 数 ≠ 字数。⚠️ 512K 上下文 ≈ 中文 79~105 万字 ≈ 英文 39 万单词
+    （不是 200 万单词 —— 单词和字符差 5 倍多）
+    中文 token 效率高 30% = 上下文长 30% + 成本降 30%
+
+(3) Embedding = 一次查表，把整数 ID 变成 d 维向量，零乘法
+    LM Head = 反向的一次投影，回到词表维度，再 softmax + 温度采样
+
+(4) 权重绑定省一份 V x d。模型越大越不划算：
+    2B 激活的模型上是 11.6%，18B 上只有 4.3%
+
+(5) 词表要补齐到 2 的幂次的倍数（149,600 -&gt; 151,552 = 4096 x 37），
+    为的是词表并行能整除。词表并行的交叉熵比 all-gather 省约 3.3 万倍通信量
+
+(6) d 是最重要的超参，参数量随它平方增长
+    -&gt; openPangu 的 d=5120 是它压低激活参数的第一个杠杆
+
+(7) Embedding 占总参数 0.15%，却占激活参数 8.6%
+    -&gt; 问&quot;重不重要&quot;之前，先问是哪个口径
+
+(8) 这一层五家不改；唯一值得记的是它不用 Muon
 </code></pre></div>
 
 <p><strong>下一章是全教程最重要的一章</strong>：残差流。理解了它，后面所有"改残差"的设计（mHC、AttnRes）就都是自然的。</p>

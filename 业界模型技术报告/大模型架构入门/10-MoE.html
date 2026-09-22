@@ -252,7 +252,30 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="10-moe-ffn">10 · MoE：把一个 FFN 拆成很多个专家</h1>
 <blockquote>
 <p><strong>这一章的目标</strong>：讲清"505B / 18B"这两个数字的由来，以及它背后一整套没那么显然的工程问题。<br />
-读完你应该能回答：MoE 为什么能"参数多但算得少"？路由器怎么选专家、为什么它会不平衡、怎么治？为什么 top-k 的不可微不是问题？五家的专家配置差异说明了什么？</p>
+读完你应该能回答：MoE 为什么能"参数多但算得少"？一个 token 从打分到出结果<strong>每一步的数字</strong>长什么样？稠密和 MoE 的<strong>参数量、计算量到底差几倍</strong>（⚠️ 不是你以为的那个倍数）？路由器怎么选专家、为什么它会不平衡、怎么治？为什么 top-k 的不可微不是问题？五家的专家配置差异说明了什么？</p>
+<p>📌 <strong>先说清楚本章的边界，免得和别的教程重复读</strong>：<strong>本章是【模型架构视角】——结构怎么设计、为什么这么设计。</strong> MoE 落到系统上的那三笔账（算子形状、训练并行、推理部署）已经各有一份完整的笔记，本章只在需要时<strong>链接过去</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>你想问的</th>
+<th>去哪一份</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Grouped GEMM 为什么形状参差不齐、All-to-All 怎么算</td>
+<td><a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a></td>
+</tr>
+<tr>
+<td>训练时专家怎么切到多张卡上、EP（Expert Parallelism，专家并行）从哪来</td>
+<td><a href="../../训练框架/分布式训练入门/09-专家并行EP.html">../../训练框架/分布式训练入门/09-专家并行EP.md</a></td>
+</tr>
+<tr>
+<td>推理时的负载不均、EPLB（Expert Parallelism Load Balancer，专家并行负载均衡器）、冗余专家</td>
+<td><a href="../../推理框架/推理优化入门/11-MoE推理与专家并行.html">../../推理框架/推理优化入门/11-MoE推理与专家并行.md</a></td>
+</tr>
+</tbody>
+</table>
 </blockquote>
 <hr />
 <h2 id="101">10.1 出发点：一个反常识的观察</h2>
@@ -263,41 +286,42 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <p><strong>MoE 的全部价值，就是把这两者【解绑】。</strong></p>
-<div class="codehilite"><pre><span></span><code>┌───────────────────────────────────────────────────────────┐
-│  观察：一个 token 真的需要用到【全部】参数吗？                │
-│                                                            │
-│    处理 &quot;def&quot; 这个 token 时，                                │
-│    模型里那些负责&quot;唐诗格律&quot;的参数，真的有用吗？               │
-│                                                            │
-│  → 不如把 FFN 拆成很多份，每次【只用相关的那几份】            │
-└───────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<blockquote>
+<p><strong>观察：一个 token 真的需要用到【全部】参数吗？</strong></p>
+<p>处理 <code>def</code> 这个 token 时，模型里那些负责"唐诗格律"的参数，真的有用吗？</p>
+<p><strong>→ 不如把 FFN 拆成很多份，每次【只用相关的那几份】。</strong></p>
+<p>📌 <strong>为什么拆的是 FFN、不是注意力</strong>：见 <a href="09-FFN与激活函数.html">09 章 §9.1</a> 那张参数占比表——<strong>FFN 占每层参数的 67%（MHA 时代）到 82%（GQA 时代）</strong>。要省，只能从这里省。</p>
+</blockquote>
 <hr />
 <h2 id="102">10.2 结构</h2>
-<div class="codehilite"><pre><span></span><code>    普通 FFN：                        MoE：
+<p><strong>普通 FFN</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    x --&gt; [ 一个大 FFN ] --&gt; y
+</code></pre></div>
 
-    x ──→ [ 一个大 FFN ] ──→ y        x ──→ [路由器 Router] 打分
-                                       │        │
-                                       │        ▼
-                                       │    选出 top-8（从 384 个里）
-                                       │        │
-                                       │   ┌────┼────┬────┐
-                                       │   ▼    ▼    ▼    ▼
-                                       │  E_17  E_92 E_203 E_311  ← 只算这 8 个
-                                       │   │    │    │    │
-                                       │   └────┴────┴────┘
-                                       │        │ 按门控权重加权求和
-                                       └────────┴──→ y
+<p><strong>MoE</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    x
+    |
+    +--&gt; Router -----&gt; 打分 -----&gt; 选 Top-K
+    |                                 |
+    |    +----------------------------+
+    |    |
+    |    v
+    |  只算被选中的 K 个专家（其余 N-K 个一次乘法都不做）
+    |    |
+    +----+
+         |
+         v  按门控权重加权求和
+         y
+</code></pre></div>
 
-                                      E_1 ... E_384 全部存在显存里，
-                                      但这一步只有 8 个被计算 ★
+<div class="codehilite"><pre><span></span><code>    ★ N 个专家全部躺在显存里，这一步只有 K 个被【计算】
+      显存 ∝ N，计算 ∝ K   —— MoE 的全部内容就是这一行
 </code></pre></div>
 
 <p>$$y = \sum_{i\in\text{TopK}} \frac{s_i}{\sum_{j\in\text{TopK}}s_j}\cdot E_i(x),\qquad s = \text{路由分数}$$</p>
 <p><strong>路由器就是一个很小的线性层</strong>：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moe_forward</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">router_W</span><span class="p">,</span> <span class="n">experts</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">8</span><span class="p">):</span>
-    <span class="n">logits</span> <span class="o">=</span> <span class="n">x</span> <span class="o">@</span> <span class="n">router_W</span>                       <span class="c1"># [n_experts]，n=384</span>
+    <span class="n">logits</span> <span class="o">=</span> <span class="n">x</span> <span class="o">@</span> <span class="n">router_W</span>                       <span class="c1"># [n_experts]，n = 256 / 384 / ...</span>
     <span class="n">scores</span> <span class="o">=</span> <span class="n">softmax</span><span class="p">(</span><span class="n">logits</span><span class="p">)</span>                    <span class="c1"># 或 sigmoid，见 §10.6</span>
     <span class="n">topk_idx</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">argsort</span><span class="p">(</span><span class="n">scores</span><span class="p">)[</span><span class="o">-</span><span class="n">k</span><span class="p">:]</span>          <span class="c1"># 选分数最高的 k 个</span>
     <span class="n">w</span> <span class="o">=</span> <span class="n">scores</span><span class="p">[</span><span class="n">topk_idx</span><span class="p">]</span> <span class="o">/</span> <span class="n">scores</span><span class="p">[</span><span class="n">topk_idx</span><span class="p">]</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>   <span class="c1"># 重新归一化</span>
@@ -307,6 +331,261 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>🔑 <strong>注意路由是【逐 token】的</strong>。同一句话里，"def" 和 "唐诗" 会被路由到完全不同的专家。</p>
 </blockquote>
+<h3 id="token-top-k">★★ 跟着一个 token 走完全程：打分 → Top-K → 加权合并</h3>
+<p><strong>上面那段代码只有 5 行，但每一行都有一个容易想错的地方。把数字灌进去走一遍，所有疑问会自己消失。</strong></p>
+<p><strong>设定</strong>（故意缩小到能手算）：<strong>8 个专家，Top-2</strong>。一个 token 的隐状态 $x$ 进来：</p>
+<p><strong>第 ① 步 —— 打分。</strong></p>
+<div class="codehilite"><pre><span></span><code>      logits = x · W_router          W_router 形状 [d, 8]
+      ★ 这是整个 MoE 里【唯一】一个所有 token 都会碰的小矩阵
+        d=7168、N=256 时它只有 1.8 M 参数 —— 相对专家可以忽略
+
+      logit:  E0    E1    E2    E3    E4    E5    E6    E7
+              2.1  -0.4   3.3   0.8  -1.2   1.5   0.2  -0.7
+</code></pre></div>
+
+<p><strong>第 ② 步 —— 把 logit 变成分数。</strong> 两种做法，这里两种都算出来，因为它们的差别正是 §10.6 的主题：</p>
+<table>
+<thead>
+<tr>
+<th>专家</th>
+<th>logit</th>
+<th><strong>softmax 分数</strong>（和为 1，互相竞争）</th>
+<th><strong>sigmoid 分数</strong>（各自独立，和不为 1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>E0</td>
+<td>2.1</td>
+<td>0.1828</td>
+<td>0.8909</td>
+</tr>
+<tr>
+<td>E1</td>
+<td>−0.4</td>
+<td>0.0150</td>
+<td>0.4013</td>
+</tr>
+<tr>
+<td><strong>E2</strong></td>
+<td><strong>3.3</strong></td>
+<td>★ <strong>0.6069</strong></td>
+<td>★ <strong>0.9644</strong></td>
+</tr>
+<tr>
+<td>E3</td>
+<td>0.8</td>
+<td>0.0498</td>
+<td>0.6900</td>
+</tr>
+<tr>
+<td>E4</td>
+<td>−1.2</td>
+<td>0.0067</td>
+<td>0.2315</td>
+</tr>
+<tr>
+<td>E5</td>
+<td>1.5</td>
+<td>0.1003</td>
+<td>0.8176</td>
+</tr>
+<tr>
+<td>E6</td>
+<td>0.2</td>
+<td>0.0273</td>
+<td>0.5498</td>
+</tr>
+<tr>
+<td>E7</td>
+<td>−0.7</td>
+<td>0.0111</td>
+<td>0.3318</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>合计 1.0000</strong></td>
+<td>合计 4.8773（无意义）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第 ③ 步 —— Top-2。</strong> 按分数排序取前两名：<strong>E2 和 E0</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 注意一个容易被忽略的事实：
+      softmax 和 sigmoid 【选出的是同一对专家】。
+
+      因为两者都是 logit 的【严格单调递增】函数，
+      单调变换不改变排序 ⟹ 不改变 Top-K 的【选择】
+      ⟹ 它们只改变【选中之后的权重】—— 这才是真正的分歧点
+</code></pre></div>
+
+<p><strong>第 ④ 步 —— 重新归一化。</strong> 只在被选中的 2 个里归一，其余 6 个的分数<strong>直接丢弃</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>E2 的权重</th>
+<th>E0 的权重</th>
+<th>两者之比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>softmax</strong></td>
+<td>$\dfrac{0.6069}{0.6069+0.1828}=\mathbf{0.7685}$</td>
+<td>$\dfrac{0.1828}{0.7897}=\mathbf{0.2315}$</td>
+<td><strong>3.3 : 1</strong></td>
+</tr>
+<tr>
+<td><strong>sigmoid</strong></td>
+<td>$\dfrac{0.9644}{0.9644+0.8909}=\mathbf{0.5199}$</td>
+<td>$\dfrac{0.8909}{1.8553}=\mathbf{0.4801}$</td>
+<td><strong>1.08 : 1</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 这就是 softmax 和 sigmoid 的真正区别，在这一格上暴露无遗：
+
+      softmax：E2 的 logit 只比 E0 高 1.2，权重却高出【3.3 倍】
+               —— 指数放大 + 竞争归一，赢家通吃
+      sigmoid：同样的 logit 差，权重几乎【对半分】
+               —— 因为 sigmoid 在 2~3 这一段已经快饱和了
+
+    ⟹ softmax 天然助长 §10.4 的【马太效应】，sigmoid 温和得多
+       这就是这一代普遍从 softmax 换走的原因（§10.6）
+</code></pre></div>
+
+<p><strong>第 ⑤ 步 —— 只算被选中的专家，然后加权合并</strong>（以 softmax 那一列为例）：</p>
+<div class="codehilite"><pre><span></span><code>    E2(x) 算一遍         [d]      ← 真正的 FFN 前向，SwiGLU 三个矩阵
+    E0(x) 算一遍         [d]
+    E1, E3..E7           ★ 【一次乘法都不做】，它们的权重躺在显存里没被读
+
+    y = 0.7685 · E2(x) + 0.2315 · E0(x)
+
+    ⟹ 这一层的【计算量】= 2 个专家，【显存】= 8 个专家
+       ★ MoE 的全部内容就是这一行的落差
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>第 ④ 步那个"其余 6 个分数直接丢弃"是有代价的</strong>：被丢掉的 6 个专家，这一步<strong>拿不到任何梯度</strong>。这就是 §10.4 马太效应的源头，也是 §10.5 整整一节要治的病。</p>
+</blockquote>
+<h3 id="vs-moe">★ 稠密 vs MoE：参数量和计算量，两笔账要分开记</h3>
+<p><strong>这是全章最该记住的一张表。</strong> 三列分别是稠密 FFN、<strong>粗粒度</strong> MoE（专家和原来的 FFN 一样大）、<strong>细粒度</strong> MoE（专家被切小、Top-K 调大）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>稠密 FFN</strong></th>
+<th><strong>粗粒度 MoE</strong>（Mixtral 8×7B）</th>
+<th><strong>细粒度 MoE</strong>（DeepSeek-V3）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型宽度 $d$</td>
+<td>—</td>
+<td>4096</td>
+<td><strong>7168</strong></td>
+</tr>
+<tr>
+<td>路由专家个数 $N_r$</td>
+<td>1（就是那个 FFN）</td>
+<td>8</td>
+<td>✅ <strong>256</strong></td>
+</tr>
+<tr>
+<td>共享专家个数 $N_s$</td>
+<td>—</td>
+<td>0</td>
+<td>✅ <strong>1</strong>（每个 token 必走）</td>
+</tr>
+<tr>
+<td><strong>每个专家的中间维</strong></td>
+<td>14336</td>
+<td>14336（<strong>和稠密一样大</strong>）</td>
+<td>✅ <strong>2048</strong>（只有 V3 稠密层 18432 的 <strong>1/9</strong>）</td>
+</tr>
+<tr>
+<td>每 token 激活几个</td>
+<td>1</td>
+<td><strong>Top-2</strong></td>
+<td>✅ <strong>Top-8</strong> + 1 个共享 = <strong>9 个</strong></td>
+</tr>
+<tr>
+<td>每 token 激活的<strong>总中间维</strong></td>
+<td>14336</td>
+<td>$2\times14336=28672$</td>
+<td>$9\times 2048=\mathbf{18432}$</td>
+</tr>
+<tr>
+<td><strong>FFN 参数量 / 稠密</strong></td>
+<td>1×</td>
+<td><strong>8×</strong></td>
+<td>⚠️ <strong>约 28.6×</strong></td>
+</tr>
+<tr>
+<td><strong>FFN 激活计算量 / 稠密</strong></td>
+<td>1×</td>
+<td><strong>2×</strong></td>
+<td>⚠️ <strong>约 1.0×</strong></td>
+</tr>
+<tr>
+<td>专家组合数</td>
+<td>1</td>
+<td>$\binom{8}{2}=\mathbf{28}$</td>
+<td>$\binom{256}{8}\approx\mathbf{4.1\times10^{14}}$</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 最后两行是本章最容易被写错的地方，逐格算给你看：
+
+    ① 参数量比：MoE 层的 FFN 参数 ÷ 稠密层的 FFN 参数
+       （GLU 系三个矩阵，3 这个因子上下抵消，只剩中间维之比）
+
+         (256 + 1) 个专家 × 2048   =  526336
+         ─────────────────────────────────  =  28.56  ≈  ★ 28.6×
+                     18432
+
+    ② 计算量比：每 token 实际过的中间维之比
+
+         (8 + 1) 个激活专家 × 2048 = 18432
+         ──────────────────────────────── =  1.00   ≈  ★ 1.0×
+                     18432
+         ★★ 正好相等，不是巧合 —— V3 就是照着&quot;和稠密层等计算量&quot;设计的
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>所以这句话是错的</strong>：<em>"256 个专家 = 参数涨 256 倍、计算涨 8 倍。"</em><br />
+<strong>它只在"每个专家都和原来那个 FFN 一样大"时才成立</strong>（也就是 Mixtral 那一列：8 个专家 → 参数 8×、Top-2 → 计算 2×）。<strong>细粒度 MoE 把专家切小了，两个倍数都要重算</strong>：DeepSeek-V3 的真实答案是<strong>参数 ×28.6、计算 ×1.0</strong>。<br />
+📌 这张表的<strong>系统侧后果</strong>（通信、显存、切分）在 <a href="../../训练框架/分布式训练入门/09-专家并行EP.html">../../训练框架/分布式训练入门/09-专家并行EP.md</a> <strong>§9.1</strong> 展开，本章不重复。</p>
+</blockquote>
+<h3 id="_1">⚠️ 四个流行但已经不成立的说法</h3>
+<table>
+<thead>
+<tr>
+<th>流行说法</th>
+<th>实际情况</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"MoE 一定会<strong>丢 token</strong>"</td>
+<td>❌ <strong>这是 2021 年 Switch Transformer 时代的说法</strong>。那一代用"容量因子 + 超出就丢弃"来保证每个专家的 buffer 定长。<strong>现在主流是 dropless（不丢）</strong>：✅ DeepSeek-V3 报告明确说明<strong>训练和推理都不丢 token</strong>。见 <a href="../../训练框架/分布式训练入门/09-专家并行EP.html">../../训练框架/分布式训练入门/09-专家并行EP.md</a> §9.4「对策二：dropless MoE」</td>
+</tr>
+<tr>
+<td>"专家数 ×N ⟹ 参数 ×N、计算 ×K"</td>
+<td>❌ 只对<strong>粗粒度</strong> MoE 成立，见上表</td>
+</tr>
+<tr>
+<td>"505B 的 MoE ≈ 505B 的稠密模型"</td>
+<td>❌ 不等价，见 §10.3 末尾那条 ⚠️</td>
+</tr>
+<tr>
+<td>"路由器很大，要专门优化"</td>
+<td>❌ 路由器是 $[d, N]$ 的一个小矩阵。$d=7168$、$N=256$ 时只有 <strong>1.8 M 参数</strong>，相对每层几百 M 的专家可以忽略</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="103">10.3 那两个数字</h2>
 <p>$$\begin{aligned}\text{总参数} &amp;= \text{Embedding} + N\times\big(\text{Attention} + \textbf{全部 384 个专家}\big)\ \text{激活参数} &amp;= \text{Embedding} + N\times\big(\text{Attention} + \textbf{被选中的 8 个专家}\big)\end{aligned}$$</p>
@@ -314,9 +593,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                           ↑              ↑
                      决定【显存】      决定【计算量和延迟】
 
-    稀疏度 = 384 / 8 = 48×
+    路由选择比 = 384 / 8 = 48×      ← ⚠️ 这【不是】稀疏度
+    真稀疏度   = 505B / 18B = 28.1×  ← ✅ 显存账 vs 算力账的正确口径
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>这两个数别混。</strong> <code>384 / 8</code> 只说了「路由专家里选了几分之一」，而注意力、Embedding、LM Head、共享专家这些<strong>完全不稀疏</strong>的部分它一个字都没算——那部分只占总参数约 1.3%，却占激活参数约 <strong>35%</strong>，正是被漏掉的分母。所以真正对应「显存要多少 / 算力要多少」的是 <strong>总参数 ÷ 激活参数 = 28.1×</strong>，比路由比小了快一倍。推导见 <a href="01-鸟瞰全景.html">01 章 §1.4.4</a>。</p>
+</blockquote>
 <table>
 <thead>
 <tr>
@@ -329,7 +612,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>显存占用</td>
 <td><strong>总参数</strong></td>
-<td>505B × 2 字节 = <strong>1009 GB</strong>（报告实测 ✅）</td>
+<td>BF16 权重 ≈ <strong>1009 GB</strong>（✅ 报告口径；⚠️ 这是<strong>十进制 GB</strong>，换成 GiB 是 <strong>940 GiB</strong>）</td>
 </tr>
 <tr>
 <td>每 token 计算量</td>
@@ -344,6 +627,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
+<p>⚠️ <strong>1009 而不是 1010 的原因</strong>：505B 是四舍五入后的说法，逐层数出来是 <strong>≈ 504.4B</strong>，×2 字节 = 1008.8 GB。<strong>报告披露的是 1009，自洽。</strong> 另外 HF 侧栏标的 <strong>541B</strong> 是<strong>含 3 个 MTP 层</strong>的口径，505B 不含 —— 见 <a href="../openPangu-2.0-Pro.html">../openPangu-2.0-Pro.md</a>。</p>
 <p>🔑 <strong>一句话</strong>：<strong>MoE 用"显存"换"计算"。</strong> 显存是可以靠堆卡解决的（虽然贵），而计算量直接决定用户体验（延迟）。<strong>这个交易在推理为主的场景下非常划算。</strong></p>
 </blockquote>
 <h3 id="moe">⚠️ 但 MoE 不是免费的</h3>
@@ -358,6 +642,48 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <blockquote>
 <p>✅ <strong>Kimi K3 专门做了 MoonEP</strong>（专家并行通信库），<strong>openPangu 开源了训练算子</strong> —— <strong>两家都在这个 ② 上花了大力气，说明通信确实是主要矛盾。</strong></p>
+<p>📌 <strong>② 这一条本教程只点到为止，它在另外三份笔记里被完整算过账，按你关心的视角挑一份读</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>视角</th>
+<th>去哪里</th>
+<th>那边讲什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>算子</strong></td>
+<td><a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a></td>
+<td>§8.2 Grouped GEMM（分组矩阵乘；GEMM = GEneral Matrix Multiply，通用矩阵乘）为什么形状参差不齐；§8.3 All-to-All 的逐卡例子和通信量公式</td>
+</tr>
+<tr>
+<td><strong>训练</strong></td>
+<td><a href="../../训练框架/分布式训练入门/09-专家并行EP.html">../../训练框架/分布式训练入门/09-专家并行EP.md</a></td>
+<td>§9.2.1 四卡八 token 的逐卡推演；§9.5 EP 是从 DP 里"借"卡</td>
+</tr>
+<tr>
+<td><strong>推理</strong></td>
+<td><a href="../../推理框架/推理优化入门/11-MoE推理与专家并行.html">../../推理框架/推理优化入门/11-MoE推理与专家并行.md</a></td>
+<td>§11.3 通信量；§11.4 负载不均；§11.5 EPLB</td>
+</tr>
+</tbody>
+</table>
+<p>```<br />
+    ⚠️ 只记一个公式的话，记这个（单向 All-to-All 的字节数）：</p>
+<div class="codehilite"><pre><span></span><code>  bytes = tokens × Top-K × H × 每元素字节数 × (1 − 1/EP)
+          H = 模型宽度；EP = Expert Parallelism（专家并行）的卡数；
+          (1 − 1/EP) 是【要跨卡发出去的比例】—— 平均有 1/EP 的副本
+          本来就落在自己这张卡上，不用上网
+                    ↑↑↑↑↑
+       ★ 最常被漏掉的一项：每个 token 要发给 K 个专家，不是 1 个
+
+⚠️ 带宽单位也最常错：
+  NVLink 标称 900 GB/s 是【双向聚合】，单向只有 450 GB/s
+  InfiniBand 400 Gb/s ÷ 8 = 50 GB/s（小写 b 是 bit，大写 B 是 byte）
+</code></pre></div>
+
+<p>```</p>
 </blockquote>
 <hr />
 <h2 id="104-top-k">10.4 top-k 不可微，为什么不是问题</h2>
@@ -389,7 +715,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="105-moe">10.5 负载均衡：MoE 最大的工程问题</h2>
-<h3 id="_1">有多严重</h3>
+<h3 id="_2">有多严重</h3>
 <div class="codehilite"><pre><span></span><code>    理想：384 个专家，每个承担 1/384 的 token
 
     实际（不做任何处理）：
@@ -421,7 +747,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    → 调 α 是个非常痛苦的活
 </code></pre></div>
 
-<h3 id="_2">解法二：无辅助损失的偏置调整 ⭐</h3>
+<h3 id="_3">解法二：无辅助损失的偏置调整 ⭐</h3>
 <p><strong>这是这一代的主流做法，思路非常漂亮：不动梯度，只动路由分数上的一个偏置。</strong></p>
 <p>$$\text{路由分数}_i \leftarrow s_i + b_i,\qquad b_i\ \text{不参与梯度，由一条独立规则更新}$$</p>
 <blockquote>
@@ -445,6 +771,48 @@ $$b_i \leftarrow b_i - \gamma\cdot\frac{F_i - Q_i}{\text{RMS}(F - Q)}$$<br />
 <strong>均衡是一个"分配"问题，不是一个"学习"问题。用一个反馈控制器去解，比用梯度去解干净得多。</strong><br />
 这本质上是一个<strong>积分控制器</strong>（I 控制器）：误差累积驱动偏置调整。</p>
 </blockquote>
+<h4 id="_4">⚠️ 四个关于这个方法的常见口径错误</h4>
+<p><strong>这套偏置法是 DeepSeek-V3 带火的，也因此被转述得最乱。本仓库核对过的口径如下</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>说法</th>
+<th>对不对</th>
+<th>正确口径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"偏置 $b$ 是学出来的参数"</td>
+<td>❌</td>
+<td><strong>$b$ 完全不参与梯度</strong>，由那条独立规则更新</td>
+</tr>
+<tr>
+<td>"偏置在推理时也在动"</td>
+<td>❌</td>
+<td>✅ <strong>训练时每个 step 更新一次，推理时【固定】</strong>（训完就冻住，跟着权重一起发布）</td>
+</tr>
+<tr>
+<td>"V3 完全不用辅助损失"</td>
+<td>❌</td>
+<td>⚠️ <strong>V3 仍保留了一项极小的【序列级】辅助损失</strong>，防止单条序列内部极端不均。"auxiliary-loss-free" 指的是<strong>去掉了那个会和主损失打架的全局 aux loss</strong>，不是一点都没有</td>
+</tr>
+<tr>
+<td>"偏置会改变专家的输出权重"</td>
+<td>❌</td>
+<td>★ <strong>$b$ 只进入"选谁"的比较，不进入 $w_i$</strong>。选完之后用的还是原始分数 $s_i$ 归一化</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>顺便把 V3 的结构数字钉死</strong>（它是本章所有细粒度 MoE 例子的来源）：<br />
+<code>61 层：★ 前 3 层是【稠密 FFN】，后 58 层才是 MoE
+         （★ 浅层不做 MoE 是个普遍做法 —— 浅层路由还没学会分工就先乱了）
+  每个 MoE 层：256 个路由专家 + 1 个共享专家，每 token Top-8
+  专家中间维 2048，稠密层中间维 18432，模型宽度 d = 7168
+  ✅ 训练和推理【都不丢 token】</code><br />
+<strong>更完整的训练/推理配置（EP 怎么排、丢不丢 token、冗余专家）见 <a href="../../训练框架/分布式训练入门/09-专家并行EP.html">../../训练框架/分布式训练入门/09-专家并行EP.md</a> §9.5。</strong></p>
+</blockquote>
 <h3 id="kimi-k3-quantile-balancingqb">✅ Kimi K3 的 Quantile Balancing（QB）——把超参直接解掉</h3>
 <blockquote>
 <p>⚠️ <strong>记号提醒</strong>：下面沿用报告的记号，其中 $\alpha_i$ 是<strong>门槛</strong>，和本节前面辅助损失里那个系数 $\alpha$ <strong>毫无关系</strong>。<br />
@@ -463,7 +831,7 @@ q = mk/n = 目标负载（每个专家"应该"收到多少 token）</code></p>
     ② ★ 有些专家【始终训练不足】—— 不只是慢，是这部分参数根本没长好
 </code></pre></div>
 
-<h4 id="_3">★★ 关键转折：均衡其实是个「指派问题」，有精确解</h4>
+<h4 id="_5">★★ 关键转折：均衡其实是个「指派问题」，有精确解</h4>
 <p><strong>QB 最值得理解的一点是：它不是一个更聪明的启发式，而是把均衡写成了一个有闭式解的最优化问题。</strong></p>
 <p>✅ <strong>报告附录 C，式 (20)</strong>——「<strong>最大得分的均衡指派</strong>」：</p>
 <p>$$\max_{x_{i,j}\in{0,1}}\ \sum_{i,j}x_{i,j}\,s_{i,j}\qquad\text{s.t.}\quad \underbrace{\sum_j x_{i,j}=k}<em i_j="i,j">{\text{每个 token 恰好选 }k\text{ 个专家}},\quad \underbrace{\sum_i x</em>$$}=\tfrac{mk}{n}}_{\text{每个专家恰好收 }q\text{ 个 token}</p>
@@ -508,7 +876,7 @@ q = mk/n = 目标负载（每个专家"应该"收到多少 token）</code></p>
      β ：沿【每一列】（一个专家对所有 token 的分数）取分位数
      ★ 一横一竖，交替做 —— 这就是 Quantile Balancing</code></p>
 </blockquote>
-<h4 id="_4">训练时怎么用：不跑交替求解器，只做一次前向</h4>
+<h4 id="_6">训练时怎么用：不跑交替求解器，只做一次前向</h4>
 <p><strong>上面那个交替算法每步要迭代 T 次，训练里跑不起。K3 的做法是把它压成【一次前向】。</strong></p>
 <p>✅ <strong>报告式 (13)(14)，逐步拆开</strong>：</p>
 <div class="codehilite"><pre><span></span><code>① 路由时把 Top-k 换成 Top-(k+1)，作用在【加过偏置的分数】 s_i + b 上
@@ -623,7 +991,7 @@ QB          ：★ 直接解出【闭式最优】 → 什么都不用调</code><
          压掉 batch 之间的采样噪声，均衡还能更好
 </code></pre></div>
 
-<h4 id="_5">⚠️ 报告自己给的一个负面结果</h4>
+<h4 id="_7">⚠️ 报告自己给的一个负面结果</h4>
 <p><strong>同一个指派问题，把等式约束换成不等式约束（$\sum_j x_{i,j}\le k$、$\sum_i x_{i,j}\le mk/n$，即 BIP 的做法）会怎样？</strong></p>
 <div class="codehilite"><pre><span></span><code>    不等式约束 → 诱导出 α、β 的非负约束 → 两个更新都要多套一层 max(0, ·) 截断
 
@@ -683,20 +1051,162 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <p>🔑 <strong>这是一个很好的例子，说明"知道模型分层专精"这件事能直接换成架构收益。</strong></p>
 </blockquote>
 <hr />
-<h2 id="107">10.7 共享专家</h2>
+<h2 id="107">10.7 两个"看起来很像调参、其实有硬论证"的设计</h2>
+<p><strong>这一节讲 DeepSeek 带起来、现在几乎人人照抄的两个动作：【共享专家】和【细粒度专家】。它们常被当成经验调参，但两个都有可以算出来的理由。</strong></p>
+<h3 id="1071">10.7.1 共享专家：把冗余的那一份抽出来</h3>
 <p><strong>很多 MoE 里有 1~2 个"共享专家"，它对【所有】token 都激活，不参与路由。</strong></p>
 <div class="codehilite"><pre><span></span><code>    y = E_shared(x) + Σ_{i∈TopK} w_i · E_i(x)
-        ↑ 永远激活
+        ↑ 永远激活，不打分、不排序、不被淘汰
 </code></pre></div>
 
 <p><strong>为什么</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    有些知识是【所有 token 都需要的】（基本语法、通用语义）
-    如果没有共享专家，这些知识必须在【每一个】路由专家里重复存一份
-        → 384 份冗余，极大浪费
+<div class="codehilite"><pre><span></span><code>    有些知识是【所有 token 都需要的】（基本语法、通用语义、标点怎么处理）
 
-    有了共享专家 → 通用知识存一份，路由专家专注于【差异化】的部分
+    没有共享专家时：
+      这类知识必须在【每一个】路由专家里重复存一份
+      → 256 份冗余，极大浪费
+
+    有了共享专家：
+      通用知识存【一份】，路由专家专注于【差异化】的部分
 </code></pre></div>
 
+<p><strong>★ 冗余有多大，可以粗估一下</strong>（⚠️ 这是数量级估算，不是实测）：</p>
+<div class="codehilite"><pre><span></span><code>    假设路由专家里有比例 ρ 的容量被&quot;人人都要的通用知识&quot;占掉了。
+    N_r 个专家，这部分被重复存了 N_r 遍，其中 N_r − 1 遍是纯浪费。
+
+    抽成 1 个共享专家后，省下的参数 ≈ ρ × (N_r − 1) / (N_r + 1) 的专家总容量
+
+    N_r = 256、哪怕 ρ 只有 5%：
+        省下 ≈ 0.05 × 255/257 ≈ 【5%】的专家参数
+        ⚠️ 5% 听着不多，但 V3 的 MoE 层有 5000 亿级参数 —— 这是几百亿参数
+
+    ★ 而共享专家的【代价】只有：每 token 多算 1 个专家（2048 中间维）
+      占 V3 每 token 总激活的 2048/18432 = 11%
+</code></pre></div>
+
+<blockquote>
+<p>⭐ <strong>它还顺手送了系统层一个礼物</strong>：共享专家对所有 token 都激活，<strong>它的输入不需要经过 all-to-all</strong>，所以它的计算可以填进 dispatch 通信的等待窗口里，等于<strong>白算</strong>。✅ 这条在 <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> <strong>§8.7.1</strong> 里被算成了具体毫秒数，这里不重复。</p>
+</blockquote>
+<h3 id="1072">10.7.2 ★★ 细粒度专家：动机是【组合数】</h3>
+<p><strong>"把专家切小、把 K 调大"这个动作，最容易被当成玄学。它的论证其实只有一句话：能表达的分工组合，是组合数级别地变多。</strong></p>
+<p><strong>先把"等计算量"这个前提摆出来</strong>——不然比较没有意义：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 约束：每 token 激活的总中间维保持不变（= 计算量不变）
+
+      方案 A（粗粒度）：  8 个专家，每个 14336，Top-2
+                        激活中间维 = 2 × 14336 = 28672
+
+      方案 B（细粒度）：256 个专家，每个 2048，Top-8
+                        激活中间维 = 8 × 2048  = 16384
+                        ★ 反而【更省】，还没算共享专家那一个
+</code></pre></div>
+
+<p><strong>在这个前提下，看"模型能表达多少种不同的分工"</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>专家数 $N$</th>
+<th>Top-$K$</th>
+<th>组合数 $\binom{N}{K}$</th>
+<th>相对粗粒度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mixtral 8×7B</td>
+<td>8</td>
+<td>2</td>
+<td><strong>28</strong></td>
+<td>1×</td>
+</tr>
+<tr>
+<td>MiniMax M3</td>
+<td>128</td>
+<td>4</td>
+<td>$1.07\times10^{7}$</td>
+<td>$3.8\times10^{5}$×</td>
+</tr>
+<tr>
+<td>DeepSeek-V3</td>
+<td>256</td>
+<td>8</td>
+<td>$\mathbf{4.1\times10^{14}}$</td>
+<td>$1.5\times10^{13}$×</td>
+</tr>
+<tr>
+<td>openPangu / V4</td>
+<td>384</td>
+<td>8 / 6</td>
+<td>$1.1\times10^{16}$（384 选 8）</td>
+<td>$3.9\times10^{14}$×</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>896</strong></td>
+<td><strong>16</strong></td>
+<td>$\mathbf{7.2\times10^{33}}$</td>
+<td>天文数字</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 为什么&quot;组合数&quot;是对的度量，而不是&quot;专家个数&quot;：
+
+      一个 token 的处理方式，不是由【某一个】专家决定的，
+      而是由【被选中的那一组专家 + 它们的权重】共同决定的
+          ↓
+      ⟹ 模型能表达的&quot;处理方式&quot;的数量，看的是【选法的数量】
+      ⟹ 从 28 种涨到 4.1×10^14 种，这不是量变
+
+    ⚠️ 但别把组合数当成能力指标：
+       它是【表达空间的上界】，不是模型真的用满了这么多组合。
+       它能说明的只是&quot;粗粒度 MoE 的分工余地小得离谱&quot;这一件事。
+</code></pre></div>
+
+<p><strong>★ 代价也要摆出来，不然就是在推销</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>切细之后</th>
+<th>往哪个方向走</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>All-to-All 通信量</td>
+<td>∝ Top-K，<strong>K 从 2 涨到 8 ⟹ 通信量 ×4</strong></td>
+<td>★ 通信常常变成真正的瓶颈</td>
+</tr>
+<tr>
+<td>每个专家分到的 token 数</td>
+<td>∝ K/N，而 <strong>N 涨得比 K 快</strong> ⟹ 变少</td>
+<td>专家的 GEMM 变成又瘦又小的矩阵，<strong>从计算密集掉进访存密集</strong></td>
+</tr>
+<tr>
+<td>负载均衡难度</td>
+<td>专家越多越难均衡</td>
+<td>需要 §10.5 那整套机制；K3 到 896 个专家时，旧的偏置法<strong>直接失效</strong></td>
+</tr>
+<tr>
+<td>路由器</td>
+<td>$[d, N]$ 变宽</td>
+<td>可忽略（$N=256$ 时 1.8 M 参数）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>一句话</strong>：<strong>细粒度专家是"用通信换模型质量"。</strong> 敢这么做的前提是通信优化做扎实了——<strong>照抄架构不照抄通信优化，会得到一个通信占大头的模型。</strong><br />
+📌 <strong>这三条代价的量化账</strong>分别在：通信 → <a href="../../大模型算子开发/08-MoE算子与通信.html">../../大模型算子开发/08-MoE算子与通信.md</a> §8.3；小矩阵掉进访存密集 → 同一份 §8.2.4；均衡 → 本章 §10.5 + <a href="../../推理框架/推理优化入门/11-MoE推理与专家并行.html">../../推理框架/推理优化入门/11-MoE推理与专家并行.md</a> §11.4。</p>
+<p>⭐ <strong>这两个设计其实是【配套】的，不是两件事</strong>：<br />
+```<br />
+  把专家切小 → 每个专家的容量变小<br />
+             → 它更装不下"人人都要的通用知识"了<br />
+             → ★ 所以更需要一个共享专家来兜住这部分</p>
+<p>反过来：有了共享专家兜底<br />
+             → 路由专家可以放心地做得又小又专</p>
+<p>⟹ DeepSeek 同时提出这两个，不是巧合<br />
+```</p>
+</blockquote>
 <hr />
 <h2 id="108">10.8 挂回五家：专家配置的分歧</h2>
 <table>
@@ -717,7 +1227,7 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <td><strong>6</strong></td>
 <td>64×</td>
 <td>1.6T / 49B</td>
-<td>大</td>
+<td><strong>32.7×</strong></td>
 </tr>
 <tr>
 <td><strong>Kimi K3</strong></td>
@@ -725,14 +1235,14 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <td><strong>16</strong></td>
 <td>56×</td>
 <td>2.78T / 104B</td>
-<td>中（<strong>latent 3584</strong>）</td>
+<td><strong>26.7×</strong></td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
 <td>256</td>
 <td>8</td>
 <td>32×</td>
-<td>—</td>
+<td>⚠️ 见下</td>
 <td>—</td>
 </tr>
 <tr>
@@ -740,8 +1250,8 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <td>128</td>
 <td>4</td>
 <td>32×</td>
-<td>230B / 10B</td>
-<td>小</td>
+<td><strong>428B / 23B</strong></td>
+<td><strong>18.6×</strong></td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
@@ -749,14 +1259,24 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <td>8</td>
 <td>48×</td>
 <td><strong>505B / 18B</strong></td>
-<td><strong>小</strong></td>
+<td><strong>28.1×</strong></td>
 </tr>
 </tbody>
 </table>
-<h3 id="_6">三个可以下手的旋钮</h3>
+<blockquote>
+<p>⚠️ <strong>第 3 列（路由比）和第 5 列（真稀疏度）是两回事</strong>，见本节开头那段说明。M3 的路由比 32× 但真稀疏度只有 18.6×，虚高 1.4 倍。</p>
+<p>⚠️ <strong>M3 那一格此前写的是 230B / 10B，那是上一代 MiniMax-M2 的规格</strong>（M2 是 229.9B / 9.8B，见 <a href="../MiniMax-M3.html">../MiniMax-M3.md</a> 里的 M2/M3 对照表）。M3 是 <strong>428B / 23B</strong>，HuggingFace <code>config.json</code> 可复核。层数 60、hidden 6144、128 选 4 这几项本来就对得上 M3，只有参数量串了型号。</p>
+<p>⚠️ <strong>GLM-5.2 的总参/激活本表留空</strong>：<a href="../模型技术对比.html">../模型技术对比.md</a> 给的是 744B / 40B（HF 口径 753B），但那是 GLM-5.3 世代的跟进数字，与本教程 GLM-5.2 的框可能不同代，暂不填。</p>
+</blockquote>
+<h3 id="_8">三个可以下手的旋钮</h3>
 <div class="codehilite"><pre><span></span><code>① 专家【数量】多  →  更细的分工，但通信和均衡更难
 ② 每个专家【多大】 →  小专家 = 更细粒度的知识划分
 ③ 选【几个】     →  选得多，激活参数就多
+
+★ 这三个旋钮不是独立的，它们被&quot;每 token 的激活参数预算&quot;绑在一起：
+     激活参数 ≈ ③ × ② —— 想多选就得切小，想用大专家就只能少选
+  ⟹ 所以真正的设计问题是：★【同样的预算，摊成几份？】
+     ②③ 背后的组合数论证见 §10.7.2，①的均衡代价见 §10.5
 </code></pre></div>
 
 <blockquote>
@@ -773,7 +1293,7 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <blockquote>
 <p>✅ <strong>K3 的配置</strong>：<strong>896 个路由专家、每 token 选 16</strong>（稀疏度 896/16 = <strong>56×</strong>，报告明写）、<strong>外加 2 个全宽共享专家</strong>，路由专家的工作宽度 $\ell = 3584$，<strong>正好是模型宽度 $d = 7168$ 的一半</strong>。</p>
 </blockquote>
-<h4 id="_7">先纠正一个直觉：省的不是参数量，是【流量】</h4>
+<h4 id="_9">先纠正一个直觉：省的不是参数量，是【流量】</h4>
 <p><strong>这里很容易想当然地以为"专家太多、参数放不下"。报告说的不是这件事。</strong></p>
 <div class="codehilite"><pre><span></span><code>    普通 MoE：每选中一个专家，就要把【完整的 d = 7168 维 token】发给它
               K3 每个 token 选 16 个
@@ -787,7 +1307,7 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
        —— 回到 [06 章](06-KV-cache.md) 那条主线：这一代的瓶颈普遍在访存
 </code></pre></div>
 
-<h4 id="_8">做法：把「模型宽度」和「路由专家宽度」解耦</h4>
+<h4 id="_10">做法：把「模型宽度」和「路由专家宽度」解耦</h4>
 <div class="codehilite"><pre><span></span><code>    共享专家：吃【全宽 d = 7168】的 x        ← 人人都要的通用变换，不能省
     路由专家：先降到【latent ℓ = 3584】再分发  ← 专门化，在窄空间里干活
 </code></pre></div>
@@ -844,7 +1364,7 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <tr>
 <td>② 均衡失灵</td>
 <td><strong>Quantile Balancing</strong></td>
-<td>⬆️ <a href="#105-负载均衡moe-最大的工程问题">§10.5</a></td>
+<td>⬆️ 本章 §10.5</td>
 </tr>
 </tbody>
 </table>
@@ -882,6 +1402,22 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
 <div class="codehilite"><pre><span></span><code>① MoE 把&quot;能力 ∝ 参数量&quot;和&quot;成本 ∝ 参数量&quot;【解绑】
    总参数决定显存和能力上限，激活参数决定计算量和延迟
 ② y = Σ_{i∈TopK} (s_i/Σs)·E_i(x)，路由器是一个小线性层，逐 token 决策
+   ✅ 一个 token 走完全程（§10.2，8 专家 Top-2 手算）：
+      打分 → 分数 → 排序取 Top-2（E2, E0）→ 只在这 2 个里重新归一 → 加权求和
+      ★ softmax 和 sigmoid 【选出同一对专家】（单调变换不改排序），
+        只是权重差很多：softmax 给 0.77/0.23，sigmoid 给 0.52/0.48
+        ⟹ 这就是为什么换路由函数能抑制马太效应（§10.6）
+      ★ 被淘汰的 6 个专家这一步【拿不到任何梯度】 → ③ 的病根
+   ★★ 稠密 vs MoE，两笔账必须分开记（§10.2 那张表）：
+      粗粒度（Mixtral 8×7B，专家和稠密 FFN 一样大 14336，Top-2）
+              → 参数 ×8、计算 ×2
+      细粒度（DeepSeek-V3，专家中间维 2048，256 路由 + 1 共享，Top-8）
+              → ⚠️ 参数 ×28.6 = 257×2048/18432
+              → ⚠️ 计算 ×1.0  = 9×2048/18432   ★ 9 个激活专家 × 2048 = 18432，
+                                                 正好等于它自己稠密层的中间维
+      ⚠️ &quot;256 个专家 = 参数 ×256、计算 ×8&quot; 是【只对粗粒度成立】的粗算
+   ⚠️ &quot;MoE 一定丢 token&quot; 是 2021 年 Switch 时代的说法，现在不成立：
+      ✅ DeepSeek-V3 训练和推理【都不丢】
 ③ top-k 不可微不是问题（梯度走 w_i），但它导致【马太效应】：
    分数高 → 选得多 → 训得好 → 分数更高 → 大量专家从未被训练
 ④ ★ 负载均衡是 MoE 最大的工程问题，三个台阶越来越贴近同一个问题：
@@ -900,8 +1436,22 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
    且避开 softmax 强加的&quot;竞争&quot;约束
 ⑥ V4 浅层用【哈希路由】：零参数、完美均衡
    理由直接来自&quot;浅层做的事简单且和 token 强相关&quot;这个分层观察
-⑦ 共享专家：通用知识存一份，避免在 384 个专家里重复
-⑧ openPangu 的&quot;最浅+最窄+多专家+小专家&quot;四连压，把激活参数做到 18B
+⑦ ★ 共享专家 + 细粒度专家是【配套】的一对，两个都有硬论证（§10.7）：
+   共享专家：通用知识存一份，避免在 256 个路由专家里各存一遍；
+             且它不进 all-to-all，计算可以塞进通信窗口里白算
+   细粒度专家：论证是【组合数】—— 在【等计算量】的前提下，
+             8 选 2 只有 C(8,2)=28 种分工，256 选 8 有 C(256,8)≈4.1e14 种
+             K3 的 896 选 16 更是 7.2e33 种
+             ⚠️ 组合数是表达空间的【上界】，不是能力指标
+   代价：通信量 ∝ Top-K（K 从 2 到 8 ⟹ ×4）、每专家的 GEMM 变小掉进访存密集、
+         专家越多越难均衡
+   ⟹ 切小 ⟹ 更装不下通用知识 ⟹ 更需要共享专家兜底，所以两者同时被提出
+⑧ ⚠️ 无辅助损失偏置法的四个常错口径（§10.5）：
+   b 不参与梯度；★ 训练时每 step 更新、推理时【固定】；
+   V3 并非完全不用辅助损失（保留了极小的【序列级】aux loss）；
+   b 只进&quot;选谁&quot;的比较，不进权重 w_i
+   ✅ V3 结构钉死：61 层（★ 前 3 层稠密 + 58 层 MoE）、256 路由 + 1 共享、Top-8
+⑨ openPangu 的&quot;最浅+最窄+多专家+小专家&quot;四连压，把激活参数做到 18B
    ★ K3 的 Stable LatentMoE：卡住扩专家数的是【带宽】不是显存 ——
      普通 MoE 每选中一个专家就要发完整的 d=7168 维 token，选 16 个 → 流量 ×16
      解法是【解耦宽度】：共享专家保持全宽 d，路由专家只在 latent ℓ=d/2 里干活
@@ -913,8 +1463,12 @@ $$s_i = \sqrt{\text{softplus}(\text{logit}_i)},\qquad \text{softplus}(z)=\log(1+
               → 补丁 b：SiTU-GLU（见 09 章）
         失效② 近 10³ 专家超出 aux-loss-free 偏置更新的适用范围
               → 补丁 c：QB（见上面 ④）
-⑨ ⚠️ MoE 不是免费的：显存、all-to-all 通信、均衡、以及
-   505B MoE ≠ 505B 稠密（经验上约等于 √(总×激活) 量级）
+⑩ ⚠️ MoE 不是免费的：显存、all-to-all 通信、均衡、以及
+   505B MoE ≠ 505B 稠密（⚠️ 经验上约等于 √(总×激活) 量级，粗糙经验式）
+   ⚠️ All-to-All 单向字节数 = tokens × Top-K × H × 字节数 × (1 − 1/EP)
+      ★ 最常被漏掉的是 × Top-K
+   本章只讲【结构怎么设计】；通信/训练/推理三侧的账分别在
+   大模型算子开发 §8.2-8.3、训练框架 §9.2-9.5、推理框架 §11.3-11.5
 </code></pre></div>
 
 <p><strong>下一章</strong>讲最后一块基础积木：模型怎么知道"第 1 个词"和"第 100 万个词"的区别。</p>

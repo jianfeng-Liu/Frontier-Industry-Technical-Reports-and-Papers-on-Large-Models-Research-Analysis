@@ -256,73 +256,171 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="151">15.1 完整的一层，标注了五家动过的位置</h2>
-<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────────────────────┐
-│                      一层 Transformer 的完整结构                          │
-│                    （标注了五家各自动了哪个位置）                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
-   x ───────────────────────────────────────────────┐  ← ⑦ 残差流本身
-   │                                                │     V4/华为：mHC（4 条车道 + 双随机）
-   │                                                │     K3：AttnRes（跨层注意力检索）
-   ▼                                                │     GLM/M3：不改
- [Norm] ← ① RMSNorm                                 │
-   │       华为：sandwich + block post-norm          │
-   ▼                                                │
-┌────────────────────────────────────────────┐      │
-│  Attention                                  │      │
-│   ├─ ② Q/K/V 投影                            │      │
-│   │     MLA：GLM（MLA-256）/ 华为 / K3（仅 1/4 层）│      │
-│   │     GQA：M3（64q / 4kv）                 │      │
-│   │     ★ V4 两者都不是：CSA/HCA 内核是共享 KV 的 MQA │
-│   ├─ ③ 位置编码                              │      │
-│   │     partial RoPE：V4 / GLM / M3 / 华为   │      │
-│   │     NoPE：K3                             │      │
-│   │     base 阶梯：华为 10K→6.4M             │      │
-│   ├─ ④ 要看哪些 token          ★ 主战场      │      │
-│   │     全部看          ：（基线）            │      │
-│   │     压缩后看        ：V4（CSA 4:1 / HCA 128:1）  │
-│   │     稀疏挑 2048     ：GLM（DSA+IndexShare）/ M3（MSA 块级）│
-│   │     滑窗 512        ：华为的 2/3 层      │      │
-│   │     换成线性状态    ：K3 的 3/4 层（KDA） │      │
-│   ├─ ⑤ sink / 兜底通道                       │      │
-│   │     V4：per-head sink logit              │      │
-│   │     华为：PAS（128 个可学习 KV）          │      │
-│   └─ ⑥ 输出投影 W_O                          │      │
-└──────────────────┬─────────────────────────┘      │
-                   │                                │
-                  (+)◀──────────────────────────────┤
-                   │                                │
-                   ▼                                │
-                [Norm]                              │
-                   │                                │
-                   ▼                                │
-┌────────────────────────────────────────────┐      │
-│  MoE                                        │      │
-│   ├─ ⑧ 路由 + 负载均衡                       │      │
-│   │     aux-loss-free bias：五家全部         │      │
-│   │     K3：Quantile Balancing               │      │
-│   │     华为：RMS 归一化更新 + EP-group aux   │      │
-│   │     V4：Sqrt(Softplus) + 浅层哈希路由     │      │
-│   ├─ ⑨ 专家配置                              │      │
-│   │     384选6 / 896选16 / 256选8 / 128选4 / 384选8 │
-│   │     K3：Stable LatentMoE（latent 3584）  │      │
-│   └─ ⑩ 激活函数                              │      │
-│         V4：clamp[−10,10] / K3：SiTU-GLU     │      │
-│         M3：clamp 7.0 / GLM：不改 / 华为：❓  │      │
-└──────────────────┬─────────────────────────┘      │
-                   │                                │
-                  (+)◀──────────────────────────────┘
-                   │
-                   ▼
-                下一层
-
-═══════════════ 不在这张图里、但同样重要的三处 ═══════════════
-
-⑪ 优化器（[13 章]）  ：Muon 的正交化粒度 —— 整体 / 逐 head / 分 4 组
-⑫ MTP 头（[12 章]）  ：深度 1 / 3 层共享 / 7 module / 深度 3 + 内部 SWA-2048
-⑬ 量化（[14 章]）    ：FP4 / MXFP4 / INT4 / MXFP8 / W8A8
+<p><strong>先看骨架。</strong> 一层 Transformer 的全部结构就是下面这张图，<strong>五家没有一家改过它的形状</strong>——所有的改动都发生在图上那 10 个编号的槽位里。</p>
+<div class="codehilite"><pre><span></span><code>         x
+         |
+         +---------------------------+     &lt;- 残差旁路（位置 7）
+         v                           |
+      [ Norm ]                       |     &lt;- 位置 1
+         |                           |
+         v                           |
+      [ Attention ]                  |     &lt;- 位置 2 3 4 5 6
+         |                           |
+         v                           |
+        (+) &lt;----------------------- +
+         |
+         +---------------------------+     &lt;- 残差旁路（位置 7）
+         v                           |
+      [ Norm ]                       |
+         |                           |
+         v                           |
+      [ MoE ]                        |     &lt;- 位置 8 9 10
+         |                           |
+         v                           |
+        (+) &lt;----------------------- +
+         |
+         v
+     下一层
 </code></pre></div>
 
+<p>📌 <strong>这张图为什么只有两个"箱子"和两个加号</strong>：因为 Transformer 只有两种积木（横向混合的 Attention、纵向变换的 FFN/MoE），外加一条把它们串起来的总线（残差流）。这是 <a href="01-鸟瞰全景.html">01 章</a> 和 <a href="03-残差流.html">03 章</a> 的结论，这里只是再确认一次：<strong>五家的全部创新，都挤在这三样东西上。</strong></p>
+<h3 id="1511-10">15.1.1 层内的 10 个槽位：谁动了哪一个</h3>
+<p><strong>表格里的每一行，就是上面那张图里的一个编号。</strong></p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>它在图里的哪里</th>
+<th>它干什么</th>
+<th>五家各选了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>①</strong></td>
+<td>第一个 <code>[ Norm ]</code></td>
+<td>把每个 token 的向量长度拉回可控范围</td>
+<td>全部 RMSNorm + Pre-Norm；<strong>华为</strong>额外加 sandwich + 块级后归一化；V4 / M3 在 Q、K 上另加 QK-Norm（<a href="04-归一化.html">04 章 §4.5</a>）</td>
+</tr>
+<tr>
+<td><strong>②</strong></td>
+<td><code>[ Attention ]</code> 入口</td>
+<td>把 <code>x</code> 投成 Q、K、V，<strong>决定 KV cache 存多少</strong></td>
+<td><strong>MLA</strong>：GLM（latent 256）／华为（512+64=576）／K3（只有 1/4 的层）。<strong>GQA</strong>：M3（64 q 头 / 4 kv 头）。⚠️ <strong>V4 两者都不是</strong>：CSA/HCA 的内核是<strong>共享 KV 的 MQA</strong></td>
+</tr>
+<tr>
+<td><strong>③</strong></td>
+<td><code>[ Attention ]</code> 内</td>
+<td>告诉模型 token 的先后顺序</td>
+<td><strong>Partial RoPE</strong>：V4 / GLM / M3 / 华为。<strong>NoPE</strong>（干脆不要）：K3。华为另加 base 五级阶梯 10K→6.4M</td>
+</tr>
+<tr>
+<td><strong>④</strong></td>
+<td><code>[ Attention ]</code> 内</td>
+<td><strong>决定每个 token 去看哪些 token</strong> ← ★ 主战场</td>
+<td>见下面 §15.1.2 单独一张表</td>
+</tr>
+<tr>
+<td><strong>⑤</strong></td>
+<td><code>[ Attention ]</code> 内</td>
+<td>给"我什么都不想看"留一个出口</td>
+<td><strong>V4</strong>：每个头一个可学习的 sink logit。<strong>华为</strong>：PAS（Parametric Attention Sink，参数化注意力汇），每层 128 对可学习 KV</td>
+</tr>
+<tr>
+<td><strong>⑥</strong></td>
+<td><code>[ Attention ]</code> 出口</td>
+<td>输出投影 <code>W_O</code>，把结果写回残差流</td>
+<td>✅ <strong>没有一家动它</strong></td>
+</tr>
+<tr>
+<td><strong>⑦</strong></td>
+<td>两条残差旁路本身</td>
+<td>那个加号</td>
+<td><strong>mHC</strong>（manifold-constrained Hyper-Connections）：V4 / 华为，4 条车道 + 双随机约束。<strong>AttnRes</strong>（跨层注意力检索）：K3。<strong>不改</strong>：GLM / M3</td>
+</tr>
+<tr>
+<td><strong>⑧</strong></td>
+<td><code>[ MoE ]</code> 入口</td>
+<td>路由：这个 token 该交给哪几个专家</td>
+<td>aux-loss-free 偏置调整：<strong>五家全部</strong>。<strong>K3</strong> 另加 Quantile Balancing；<strong>华为</strong>把偏置更新的 sign 换成 RMS 归一化 + EP-group 辅助损失；<strong>V4</strong> 用 Sqrt(Softplus) 打分 + 浅层哈希路由</td>
+</tr>
+<tr>
+<td><strong>⑨</strong></td>
+<td><code>[ MoE ]</code> 内</td>
+<td>专家本身长什么样、有几个、选几个</td>
+<td>384 选 6（V4）／896 选 16（K3）／256 选 8（GLM）／128 选 4（M3）／384 选 8（华为）。<strong>K3</strong> 的 Stable LatentMoE 是唯一改了专家<strong>结构</strong>的（工作宽度 latent 3584 = 模型宽度的一半）</td>
+</tr>
+<tr>
+<td><strong>⑩</strong></td>
+<td><code>[ MoE ]</code> 内</td>
+<td>激活函数</td>
+<td><strong>V4</strong>：SwiGLU + clamp[−10, 10]。<strong>K3</strong>：SiTU-GLU（软饱和）。<strong>M3</strong>：SwiGLU + clamp 7.0。<strong>GLM</strong>：不改。<strong>华为</strong>：❓ 报告没写（<a href="09-FFN与激活函数.html">09 章 §9.5</a> 有对这个空格的推断）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>⑥ 那一行的"没有一家动它"不是我漏查了</strong>，它是一个真实的空白，§15.2 的第三个结论会专门解释它为什么空着。</p>
+</blockquote>
+<h3 id="1512-4">15.1.2 位置 ④ 单独拉出来：五家投入最大的地方</h3>
+<p><strong>"去看哪些 token"这一格，五家全部动了，而且每一家都是拿它当主要卖点的。</strong> 四条路的原理见 <a href="08-高效注意力.html">08 章</a>，这里只并排放结果：</p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>一句话</th>
+<th>谁在用</th>
+<th>具体配置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>全部看</strong></td>
+<td>基线，$O(L^2)$</td>
+<td><strong>没有一家</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>压缩后看</strong></td>
+<td>远处的 token 打包成摘要</td>
+<td><strong>DeepSeek-V4</strong></td>
+<td>CSA 4:1 重叠压缩 + HCA 128:1 稠密摘要，两种注意力并用</td>
+</tr>
+<tr>
+<td><strong>稀疏挑一小撮</strong></td>
+<td>只看最相关的约 2048 个</td>
+<td><strong>GLM-5.2</strong></td>
+<td>DSA top-2048 + IndexShare（每 4 层才重算一次索引）</td>
+</tr>
+<tr>
+<td><strong>稀疏挑一小撮（块级）</strong></td>
+<td>以 128 个 token 为一块来挑</td>
+<td><strong>MiniMax M3</strong></td>
+<td>MSA：块大小 128，选 16 块 = 2048 个 token</td>
+</tr>
+<tr>
+<td><strong>滑窗只看邻居</strong></td>
+<td>只看最近 512 个</td>
+<td><strong>openPangu</strong>（2/3 的层）</td>
+<td>DSA : SWA = 1 : 2，窗口 512，再加 PAS 兜底</td>
+</tr>
+<tr>
+<td><strong>换成线性状态</strong></td>
+<td>不存 KV，存一个固定大小的状态</td>
+<td><strong>Kimi K3</strong>（3/4 的层）</td>
+<td>KDA（delta rule）: MLA = 3 : 1，即 69 层线性 + 24 层全注意力</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>五家在这一格上撞到了同一个数：2048。</strong> GLM 的 DSA top-2048、MiniMax 的 MSA 16×128=2048——不同底座、不同粒度、不同团队，收敛到同一个数字。⚠️ 这只能算"当前长上下文的一个经验甜点"，<strong>不是什么定律</strong>（<a href="08-高效注意力.html">08 章 §8.7</a>）。</p>
+</blockquote>
+<h3 id="1513">15.1.3 不在这张图里、但同样重要的三处</h3>
+<div class="codehilite"><pre><span></span><code>位置 11  优化器     矩阵参数改用 Muon，正交化粒度分三档：整体 / 逐 head / 分 4 组
+位置 12  MTP 头     一次多猜几个 token：深度 1 / 3 层共享 / 7 个 module / 深度 3
+位置 13  量化       FP4 / MXFP4 / INT4 / MXFP8 / W8A8
+</code></pre></div>
+
+<p>📌 <strong>为什么把它们单独列出来</strong>：位置 ⑪⑬ 根本不在"一层"这个尺度上（优化器管的是怎么训、量化管的是用什么精度存和算），位置 ⑫ 是挂在整个模型末尾的额外几层，不在主干的 N 层循环里。<strong>但它们各自都是一整章</strong>，分别是 <a href="13-优化器与Muon.html">13 章</a>、<a href="12-MTP与投机解码.html">12 章</a>、<a href="14-量化.html">14 章</a>。</p>
 <hr />
 <h2 id="152">15.2 ★ 数一数：创新集中在哪里</h2>
 <p><strong>把上面 13 个位置按"有几家动了"排个序，会看到一个非常清晰的分布：</strong></p>
@@ -341,14 +439,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>⭐⭐ <strong>绝对的主战场，没有一家用原版全注意力</strong></td>
 </tr>
 <tr>
-<td>⑬ 量化</td>
-<td>5 / 5</td>
-<td>全部有明确方案，分成 4-bit 和 8-bit 两个阵营</td>
+<td><strong>② Q/K/V 投影</strong></td>
+<td><strong>5 / 5</strong></td>
+<td>⭐ <strong>也没有一家用原版 MHA。</strong>⚠️ 但"都不是 MHA"≠"都是 MLA"：严格用 MLA 的只有 3 家（GLM / 华为 / K3 的 1/4 层），V4 是 CSA/HCA（MQA 内核），M3 是 GQA</td>
 </tr>
 <tr>
 <td>⑧ 负载均衡</td>
 <td>5 / 5</td>
-<td>全部用 aux-loss-free，但细则各不同</td>
+<td>全部用 aux-loss-free 偏置调整，但细则各不同</td>
 </tr>
 <tr>
 <td>⑫ MTP</td>
@@ -356,70 +454,76 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>全部有，分歧在深度和参数共享</td>
 </tr>
 <tr>
+<td>⑬ 量化</td>
+<td>5 / 5</td>
+<td>全部有明确方案，分成 4-bit 和 8-bit 两个阵营</td>
+</tr>
+<tr>
 <td>⑪ 优化器</td>
 <td><strong>4 / 5</strong></td>
-<td>Muon，八年来第一次换优化器</td>
-</tr>
-<tr>
-<td>⑩ 激活函数</td>
-<td>3 / 5</td>
-<td>加界的，都是为了 4-bit</td>
-</tr>
-<tr>
-<td>② Q/K/V 投影</td>
-<td>4 / 5（MLA）</td>
-<td>MLA 基本成为标配</td>
+<td>Muon，八年来第一次换优化器（M3 报告未明确）</td>
 </tr>
 <tr>
 <td><strong>⑦ 残差流</strong></td>
 <td><strong>3 / 5</strong></td>
-<td>⭐ <strong>这一代的新战场，2025 年之前几乎没人动</strong></td>
+<td>⭐ <strong>这一代的新战场，2025 年之前几乎没人动</strong>（V4 / 华为 mHC、K3 AttnRes）</td>
+</tr>
+<tr>
+<td>⑩ 激活函数</td>
+<td>3 / 5</td>
+<td>加界的三家（V4 / K3 / M3），都是为了 4-bit</td>
 </tr>
 <tr>
 <td>⑤ sink 机制</td>
 <td>2 / 5</td>
-<td>新出现，且都是配合稀疏化</td>
+<td>新出现，且都是配合稀疏化（V4 sink logit、华为 PAS）</td>
+</tr>
+<tr>
+<td>① 归一化（布局）</td>
+<td>1 / 5</td>
+<td>只有华为改了<strong>放法</strong>；QK-Norm 那种局部补丁另有 2 家</td>
 </tr>
 <tr>
 <td>③ 位置编码</td>
 <td>1 / 5 有大改</td>
-<td>只有 K3 的 NoPE 是结构性的</td>
+<td>只有 K3 的 NoPE 是结构性的，其余四家都是 Partial RoPE</td>
 </tr>
 <tr>
-<td>① 归一化</td>
+<td>⑨ 专家结构</td>
 <td>1 / 5</td>
-<td>只有华为改了布局</td>
+<td>只有 K3 的 LatentMoE 改了结构；其余四家只是把"几个 / 多大 / 选几个"这三个旋钮拧到不同刻度</td>
 </tr>
 <tr>
 <td>⑥ W_O</td>
 <td><strong>0 / 5</strong></td>
 <td>✅ <strong>没有一家动它</strong></td>
 </tr>
-<tr>
-<td>⑨ 专家结构</td>
-<td>1 / 5</td>
-<td>只有 K3 的 LatentMoE 是结构性的</td>
-</tr>
 </tbody>
 </table>
 <h3 id="_1">三个可以直接读出来的结论</h3>
 <div class="codehilite"><pre><span></span><code>① ★★ 长上下文是这一代的唯一主题
-   ④ 位置五家全改，且是每一家投入最大的地方
-   → 而这直接来自 [06 章] 的 roofline：decode 访存受限，KV cache 就是瓶颈
+   位置 4 五家全改，且是每一家投入最大的地方
+   -&gt; 而这直接来自 06 章的 roofline：decode 访存受限，KV cache 就是瓶颈
 
 ② ★ 残差流从&quot;不能碰的东西&quot;变成了&quot;可以设计的东西&quot;
-   2017–2024：残差就是一根 y = x + F(x) 的加号，八年没人动
-   2025–2026：三家同时开始在上面做文章（mHC / AttnRes）
-   → [03 章 §3.7] 的&quot;三改两不改&quot;就是这个新战场的地图
+   2017-2024：残差就是一根 y = x + F(x) 的加号，八年没人动
+   2025-2026：三家同时开始在上面做文章（mHC / AttnRes）
+   -&gt; 03 章 3.7 节的&quot;三家改、两家不改&quot;就是这个新战场的地图
 
-③ ⑥ W_O 零改动，是一个信息量很大的空白
-   ⚠️ 我的解读：W_O 是纯粹的&quot;写回残差流&quot;的通道（[03 章]），
-      它既不涉及 token 之间的交互（那是 ④），也不涉及信息该往哪读（那是 ②），
-      → 它没有可以下手的结构性约束，改它只是改参数量
+③ 位置 6 的 W_O 零改动，是一个信息量很大的空白
+   ⚠️ 我的解读：W_O 是纯粹的&quot;写回残差流&quot;的通道（03 章），
+      它既不涉及 token 之间的交互（那是位置 4），
+      也不涉及信息该往哪读（那是位置 2），
+      -&gt; 它没有可以下手的结构性约束，改它只是改参数量
 </code></pre></div>
 
+<blockquote>
+<p>📌 <strong>顺手澄清一个数</strong>：上面说"13 个位置"，其中 <strong>10 个在一层之内</strong>（①–⑩，就是 §15.1 那张图上的槽位），<strong>3 个在一层之外</strong>（⑪ 优化器 / ⑫ MTP / ⑬ 量化）。</p>
+</blockquote>
+<p><strong>这三条链接分别指向</strong>：<a href="06-KV-cache.html">06 章 §6.4</a>、<a href="03-残差流.html">03 章 §3.7</a>、<a href="03-残差流.html">03 章</a>。</p>
 <hr />
-<h2 id="153">15.3 一句话版的五家</h2>
+<h2 id="153">15.3 五家放在同一组坐标上</h2>
+<h3 id="1531">15.3.1 一句话版的五家</h3>
 <table>
 <thead>
 <tr>
@@ -456,51 +560,239 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<h3 id="1532">15.3.2 ★ 六个维度、同一组坐标：每家各选了什么</h3>
+<p><strong>上面那五句话太短。下面这张表是全书最该被打印出来贴在墙上的一张</strong>——六个维度，每一列是一家，每一格是"它在这个维度上选了什么"。</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>DeepSeek-V4</th>
+<th>Kimi K3</th>
+<th>GLM-5.2</th>
+<th>MiniMax M3</th>
+<th>openPangu-2.0-Pro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 注意力怎么省 KV</strong>（<a href="07-MHA到MLA.html">07</a>/<a href="08-高效注意力.html">08</a>）</td>
+<td>CSA 4:1 重叠压缩 + HCA 128:1 稠密；⚠️ 内核是共享 KV 的 <strong>MQA</strong>，<strong>不是 MLA</strong></td>
+<td><strong>KDA 线性注意力 : MLA = 3 : 1</strong>（69 层 + 24 层）</td>
+<td><strong>MLA-256</strong> + DSA top-2048 + IndexShare（每 4 层算一次索引）</td>
+<td><strong>GQA-16</strong>（64 q / 4 kv）+ MSA 块级（128 × 16 块）</td>
+<td><strong>MLA 576</strong>（512+64，相对 MHA 压 <strong>17.8×</strong>）+ <strong>DSA : SWA = 1 : 2</strong>（窗口 512）+ PAS 128</td>
+</tr>
+<tr>
+<td><strong>② FFN 怎么稀疏</strong>（<a href="10-MoE.html">10</a>）</td>
+<td>384 选 6 + 1 共享，全宽 7168，专家中间维 2304；<strong>总/激活 1.6T / 49B</strong></td>
+<td><strong>896 选 16</strong> + 2 个全宽共享，工作宽度 latent <strong>3584</strong>；<strong>2.78T / 104B</strong></td>
+<td>256 选 8 + 1 共享，全宽 6144；总/激活<strong>未披露</strong></td>
+<td>128 选 4 + 1 共享，全宽 6144，专家中间维 3072；<strong>428B / ~23B</strong></td>
+<td>384 选 8 + 1 共享，全宽 5120，专家中间维 <strong>1792（五家最小）</strong>；<strong>505B / 18B</strong></td>
+</tr>
+<tr>
+<td><strong>③ 位置编码</strong>（<a href="11-位置编码RoPE.html">11</a>）</td>
+<td>Partial RoPE（只转最后 64 维）+ ⭐ 给输出补一次位置 −t 的 RoPE</td>
+<td>⭐ <strong>NoPE</strong>（完全不要位置编码）</td>
+<td>Partial RoPE</td>
+<td>Partial RoPE</td>
+<td>Partial RoPE + ⭐ <strong>base 五级阶梯</strong> 10K→100K→400K→1.6M→6.4M</td>
+</tr>
+<tr>
+<td><strong>④ 归一化</strong>（<a href="04-归一化.html">04</a>）</td>
+<td>RMSNorm / Pre-Norm + <strong>QK-RMSNorm</strong></td>
+<td>RMSNorm / Pre-Norm；AttnRes 内部对 $k_i$ 用 RMSNorm；up-projection 前再插一层</td>
+<td>RMSNorm / Pre-Norm，<strong>不改</strong></td>
+<td>RMSNorm（Gemma 写法）/ Pre-Norm + <strong>per-head QK-Norm</strong></td>
+<td>RMSNorm / <strong>Pre + Sandwich</strong> + ⭐ 块级后归一化（第 1 层后 + 每 5 层，50 层共 11 次）</td>
+</tr>
+<tr>
+<td><strong>⑤ 优化器</strong>（<a href="13-优化器与Muon.html">13</a>）</td>
+<td><strong>Muon</strong>，粒度未细分</td>
+<td><strong>Per-Head Muon</strong>（粒度最细）</td>
+<td><strong>Muon Split</strong>（逐 head，⭐ 最早，2026-02）</td>
+<td>报告<strong>未明确</strong></td>
+<td><strong>Muon，分 4 组 head</strong>，缩放 γ = 0.2；⚠️ 唯一用 <strong>FP16 + 动态 loss scaling</strong></td>
+</tr>
+<tr>
+<td><strong>⑥ 精度 / 量化</strong>（<a href="14-量化.html">14</a>）</td>
+<td><strong>FP4 QAT</strong> 存专家 + FP8 计算；⭐ 主 KV cache 也上 FP4，SWA 的 KV 留 FP8</td>
+<td><strong>MXFP4</strong> 专家 + <strong>MXFP8</strong> 激活，<strong>SFT→RL 全程 QAT</strong></td>
+<td><strong>INT4 QAT</strong>（SFT 阶段）+ 量化 kernel 训推 <strong>bitwise 一致</strong></td>
+<td>发布 <strong>MXFP8</strong> 量化版；是否 QAT <strong>未披露</strong></td>
+<td><strong>W8A8 纯整数</strong>（五家最保守，无 4-bit）；权重 1009 GB → <strong>517 GB</strong>（1.95×）；⚠️ 报告未提 QAT，看起来是 PTQ</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️⚠️ <strong>② 那一行的稀疏度，口径一定要看清楚。</strong> 这是本教程最容易被写错的一个数：<br />
+```<br />
+openPangu 举例，同一个模型有三个都叫"稀疏度"的数：<br />
+    384 / 8   = 48.0 倍   &lt;- 只是【路由专家】的选择比<br />
+    385 / 9   = 42.8 倍   &lt;- 算上那 1 个共享专家后的 FFN 稀疏比<br />
+    505 / 18  = 28.1 倍   &lt;- ★ 全模型口径：总参数 / 激活参数</p>
+<p>上面表格第二行给的是最后那个（全模型口径），因为只有它能回答<br />
+"这个模型每吐一个字要花多少算力"。<br />
+⚠️ 48 倍那个数会把省下来的量夸大 1.7 倍。<br />
+```<br />
+<strong>为什么会从 48 掉到 28</strong>：因为注意力、稠密层、Embedding、LM Head 这些部分<strong>一点都不稀疏</strong>，每个 token 都要全量走一遍。它们在总参数里只占 1.3%，在激活参数里却占了 35%。<strong>稀疏只发生在专家那一块。</strong> 完整推演见 <a href="01-鸟瞰全景.html">01 章 §1.4.4</a>。</p>
+</blockquote>
+<p><strong>换成同一口径的稀疏度</strong>（总参数 ÷ 激活参数；V4 / K3 / 华为三列的数据同 <a href="01-鸟瞰全景.html">01 章 §1.6</a>，M3 那一列按下面的 ⚠️ 修正过）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>DeepSeek-V4</th>
+<th>Kimi K3</th>
+<th>GLM-5.2</th>
+<th>MiniMax M3</th>
+<th>openPangu-2.0-Pro</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>总参数</td>
+<td>1.6 T</td>
+<td>2.78 T</td>
+<td>未披露</td>
+<td>428 B</td>
+<td>505 B</td>
+</tr>
+<tr>
+<td><strong>激活参数</strong>（≈ 单 token 成本）</td>
+<td>49 B</td>
+<td><strong>104 B（五家最贵）</strong></td>
+<td>未披露</td>
+<td>~23 B</td>
+<td><strong>18 B（已披露里最便宜）</strong></td>
+</tr>
+<tr>
+<td><strong>稀疏度（总 ÷ 激活）</strong></td>
+<td><strong>32.7 ×</strong>（最稀疏）</td>
+<td>26.7 ×</td>
+<td>未披露</td>
+<td>18.6 ×（最不稀疏）</td>
+<td>28.1 ×</td>
+</tr>
+<tr>
+<td>前向 FLOPs / token（≈ 2 × 激活参数）</td>
+<td>≈ 98 GFLOP</td>
+<td>≈ 208 GFLOP</td>
+<td>未披露</td>
+<td>≈ 46 GFLOP</td>
+<td>≈ 36 GFLOP</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 最后一行是按"前向 ≈ 2 × 激活参数"推的<strong>粗估</strong>，只用来做横向量级比较：它忽略了注意力矩阵项，也忽略了各家 Embedding 是否权重绑定。<strong>别拿它当各家报告的披露值。</strong></p>
+<p>⚠️⚠️ <strong>MiniMax M3 这一列要注意一个很容易踩的坑</strong>：<strong>428B / ~23B 是 M3，229.9B / 9.8B 是上一代 M2。</strong> 两者的层数（60 / 62）、hidden dim（6144 / 3072）、专家配置（128 选 4 / 256 选 8）全都不同——⚠️ <strong>专家数和 top-k 都减半了，激活参数反而涨了 2.3 倍</strong>（省下来的注意力算力被换成了 FFN 容量与多模态容量；M3 没有技术报告，这是推测）。M3 的一手配置来自 HF <code>config.json</code>，见 <a href="../MiniMax-M3.html">../MiniMax-M3.md</a> §三。</p>
+<p>⚠️ <strong>GLM-5.2 的总参数 / 激活参数在本教程覆盖的那一版报告里没有披露。</strong> 更新后的 <a href="../模型技术对比.html">../模型技术对比.md</a> §二 给了下一版 GLM-5.3 的数字（744B / 40B），⚠️ <strong>那不是 GLM-5.2 的数</strong>，不要混用。</p>
+<p>📌 <strong>⑦ 残差和 ⑫ MTP 没有进上面这张六维表</strong>，不是因为它们不重要——恰恰相反，⑦ 是这一代最新的战场。它们在 §15.2 那张"数一数"的表里，那张表的口径是"有几家动了"，比"各自选了什么"更适合它们（因为有两家的选择就是<strong>不动</strong>）。</p>
+</blockquote>
+<h3 id="1533">15.3.3 ★ 每个维度的代价：天下没有白拿的</h3>
+<p><strong>上面那张表只写了"选了什么"，没写"付了什么"。而架构设计里真正难的部分全在代价这一侧。</strong></p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>这一格能换到什么</th>
+<th>⚠️ 代价付在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 省 KV</strong></td>
+<td>decode 是访存受限的，<strong>省下的 KV 字节数几乎等比例变成吞吐</strong>（<a href="06-KV-cache.html">06 章 §6.4</a>）</td>
+<td><strong>每条路都有一个致命弱点，所以没有一家纯用一条路</strong>：压缩 → 摘要有损，且<strong>阶还是平方</strong>，到约 4M 会被线性追上；线性 → <strong>必然遗忘</strong>，长程召回弱（M3 在 M2 上试过后退回来了）；稀疏 → 要付"<strong>挑</strong>"的开销，而且<strong>只省算力不省显存</strong>（KV 还得全存着）；滑窗 → 看不见远处。★ 另外<strong>所有稀疏方案都必须单独给 sink 打补丁</strong>（位置 ⑤），这是 <a href="05-注意力机制.html">05 章 §5.5</a> 那条约束的下游后果</td>
+</tr>
+<tr>
+<td><strong>② FFN 稀疏</strong></td>
+<td>总参数涨（换来容量），激活参数不涨（<strong>算力和延迟不变</strong>）</td>
+<td><strong>显存</strong>照总参数算，一分不少；<strong>all-to-all 通信</strong>常常成为真正的瓶颈（<a href="10-MoE.html">10 章 §10.3</a>）；<strong>负载均衡</strong>是最大的工程问题——不管它，少数专家会被打爆、其余闲置</td>
+</tr>
+<tr>
+<td><strong>③ 位置编码</strong></td>
+<td>NoPE 是<strong>白赚</strong>的：省掉一整套旋转计算，而且没有"训练长度"这个上限</td>
+<td>NoPE 只在<strong>有线性递推层</strong>时才成立（K3 靠 KDA 的递归 + 因果掩码提供位置），纯 softmax 的四家用不了；base 阶梯的代价是<strong>要多训 5 个阶段</strong>，不是一个推理期的开关</td>
+</tr>
+<tr>
+<td><strong>④ 归一化</strong></td>
+<td>稳定性。它是<strong>唯一一个"不改也完全能跑"的维度</strong></td>
+<td>⭐ <strong>归一化不是创新点，它是稳定器。谁在这里做了额外动作，说明谁在别处冒了额外的险</strong>——华为的 sandwich + 块级后归一化是为了修 mHC 的门控塌陷（<a href="04-归一化.html">04 章 §4.4</a>），V4 / M3 的 QK-Norm 是为了压 softmax 饱和，K3 的额外 RMSNorm 是因为 AttnRes 要做纯方向匹配</td>
+</tr>
+<tr>
+<td><strong>⑤ 优化器</strong></td>
+<td>Muon 在<strong>谱范数</strong>下做最速下降，更新方向各向同性；八年来第一次真正换掉 AdamW</td>
+<td>Newton–Schulz 那 5 步正交化是<strong>严格串行</strong>的，小矩阵打不满 GPU，是纯延迟；<strong>Embedding / LM Head / 一维参数不能用 Muon</strong>（<a href="13-优化器与Muon.html">13 章 §13.6</a>），所以实际是混合优化器；粒度越细越稳，但实现越碎</td>
+</tr>
+<tr>
+<td><strong>⑥ 精度</strong></td>
+<td>直接的显存倍数：8-bit 省一半，4-bit 省四分之三</td>
+<td>★ <strong>这是一条长长的连锁</strong>：想要 4-bit → PTQ 掉点太多 → <strong>必须做 QAT</strong> → QAT 时低精度前向会被激活离群值搞失稳 → <strong>必须给激活加界</strong> → 于是逼出了位置 ⑩ 的 clamp / SiTU-GLU。⚠️ 停在 8-bit 的那一家（华为）<strong>因此没有加界的动力</strong>，这正好解释了它报告里那个空格。另外 ⚠️ INT4 在 Hopper 上还会<strong>静默掉速</strong>（<a href="14-量化.html">14 章 §14.9</a>）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>把这张表竖着读一遍，你会发现一个规律</strong>：<strong>六个维度里只有 ④ 归一化是"纯赚"的</strong>（代价只是几个 RMSNorm 的访存），其余五个每一个都是明确的取舍。<strong>而五家在 ④ 上几乎完全一致——这不是巧合：没有取舍的地方，大家自然会收敛到同一个答案。</strong></p>
+<p><strong>反过来说：凡是五家分歧最大的地方（① 和 ⑦），一定是因为那里的取舍还没有定论。</strong></p>
+</blockquote>
 <hr />
 <h2 id="154">15.4 ★ 三条贯穿全书的因果链，最后过一遍</h2>
 <p><strong>如果这份教程你只带走三样东西，请带走这三条。</strong></p>
 <h3 id="1softmax">链条 ①：softmax → 离群值 → 量化困难</h3>
-<div class="codehilite"><pre><span></span><code>softmax 每一行的和【必须】为 1              （[05 章 §5.5]）
-      ↓  模型缺一个&quot;我什么都不想看&quot;的出口
+<div class="codehilite"><pre><span></span><code>softmax 每一行的和【必须】为 1
+      |   模型缺一个&quot;我什么都不想看&quot;的出口
+      v
 自发在几个固定维度上造出【巨大激活】当泄压阀
-= attention sink 现象                      （[08 章 §8.6]）
-      ↓  这些巨大激活【就是】离群值
-量化的 scale 被最大值绑架                   （[14 章 §14.3]）
-      ↓
-★ 低比特量化困难                            （[14 章 §14.6]）
+= attention sink 现象
+      |   这些巨大激活【就是】离群值
+      v
+量化的 scale 被最大值绑架
+      v
+★ 低比特量化困难
 
-────── 这条链解释了三件表面无关的事 ──────
-① 为什么这一代普遍出现【显式 sink 机制】（V4 的 sink logit、华为的 PAS）
-② 为什么稀疏化注意力必须【单独给 sink 打补丁】
-③ 为什么 4-bit 量化这么难
+------ 这条链解释了三件表面无关的事 ------
+1. 为什么这一代普遍出现【显式 sink 机制】（V4 的 sink logit、华为的 PAS）
+2. 为什么稀疏化注意力必须【单独给 sink 打补丁】
+3. 为什么 4-bit 量化这么难
 </code></pre></div>
 
+<p><strong>这条链每一步的出处</strong>：<a href="05-注意力机制.html">05 章 §5.5</a> → <a href="08-高效注意力.html">08 章 §8.6</a> → <a href="14-量化.html">14 章 §14.6</a> → <a href="14-量化.html">14 章 §14.3</a>。</p>
 <h3 id="2-4-bit">链条 ②：想要 4-bit → 必须给激活加界</h3>
-<div class="codehilite"><pre><span></span><code>想压到 4-bit                                （[14 章 §14.1] 的显存账）
-      ↓  PTQ 在 4-bit 上掉点太多
-必须做 QAT                                  （[14 章 §14.8]）
-      ↓  QAT 时低精度前向会因激活离群值失稳
+<div class="codehilite"><pre><span></span><code>想压到 4-bit
+      |   PTQ 在 4-bit 上掉点太多
+      v
+必须做 QAT（量化感知训练）
+      |   QAT 时低精度前向会因激活离群值失稳
+      v
 必须处理激活离群值
-      ↓  SwiGLU 两个乘数都无界，是主要产地   （[09 章 §9.4]）
+      |   SwiGLU 两个乘数都无界，是主要产地
+      v
 ★ 必须给激活函数加界（clamp / softcap）
 
-────── 反过来 ──────
-停在 8-bit → PTQ 够用 → 不需要 QAT → 离群值压力小 16 倍
-→ 没有加界的动力 → ⚠️ 这解释了 openPangu 报告里那个空格
+------ 反过来 ------
+停在 8-bit -&gt; PTQ 够用 -&gt; 不需要 QAT -&gt; 离群值压力小得多
+           -&gt; 没有加界的动力
+           -&gt; ⚠️ 这解释了 openPangu 报告里那个空格
 </code></pre></div>
 
+<p><strong>出处</strong>：<a href="14-量化.html">14 章 §14.1</a> 的显存账 → <a href="14-量化.html">14 章 §14.8</a> 的 PTQ vs QAT → <a href="09-FFN与激活函数.html">09 章 §9.4</a> 的"SwiGLU 无界" → <a href="09-FFN与激活函数.html">09 章 §9.5</a> 那个空格的推断。</p>
 <h3 id="3decode-kv-cache">链条 ③：decode 访存受限 → 省 KV cache = 提吞吐</h3>
-<div class="codehilite"><pre><span></span><code>decode 每步只处理 1 个 token，但要把全部权重和 KV cache 搬一遍
-      ↓
-算术强度 ≈ batch size ≪ H100 的 ridge point (≈295)   （[06 章 §6.4]）
-      ↓
+<div class="codehilite"><pre><span></span><code>decode 每步只处理 1 个 token，但要把全部激活权重和 KV cache 搬一遍
+      v
+算术强度 ~= batch size，远小于 H100 的屋脊点 295
+      |   295 = BF16 稠密算力 989 TFLOP/s / HBM3 带宽 3.35 TB/s
+      |   ⚠️ 别用 1979 TFLOPS，那是 2:4 结构化稀疏值，会把屋脊点算成 591
+      v
 ★ decode 是【访存受限】的，算力大量空转
-      ↓
+      v
 两个直接推论：
-  ① 省 KV cache 的字节数 ≈ 直接提吞吐  → 解释了五家在 ④ 上的全部投入
-  ② 免费的算力可以拿来&quot;猜&quot;            → 解释了 MTP / 投机解码（[12 章]）
+  1. 省 KV cache 的字节数 ~= 直接提吞吐  -&gt; 解释了五家在位置 4 上的全部投入
+  2. 免费的算力可以拿来&quot;猜&quot;            -&gt; 解释了 MTP / 投机解码
 </code></pre></div>
 
+<p><strong>出处</strong>：<a href="06-KV-cache.html">06 章 §6.4</a> 的 roofline → <a href="12-MTP与投机解码.html">12 章</a> 的投机解码。</p>
 <blockquote>
 <p>🔑 <strong>注意这三条链的形状是一样的</strong>：<br />
 <strong>一个看似无害的数学性质（softmax 归一化 / 4 bit 只有 16 档 / 搬运比计算慢），在被放大到 500B 参数和 1M 上下文的尺度后，逼出了一整套架构层面的对策。</strong></p>
@@ -510,46 +802,62 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="155">15.5 一张选择树：如果让你来设计</h2>
 <p><strong>把五家的分歧整理成一棵决策树，你会发现它其实没那么多自由度：</strong></p>
 <div class="codehilite"><pre><span></span><code>你的主要目标是什么？
-│
-├─ 极致的长上下文（1M+）
-│  │
-│  ├─ 愿意冒结构风险 ────▶ 线性注意力混合（K3 的 KDA 3:1）
-│  │                        白赚：可以 NoPE、状态恒定
-│  │                        风险：召回能力弱，M3 试过后退回来了
-│  │
-│  └─ 要稳 ──────────────▶ 动态稀疏（GLM 的 DSA / M3 的 MSA）
-│                           保留完整 softmax 语义
-│                           代价：要付&quot;挑选&quot;的开销 → IndexShare / 块级
-│
-├─ 极致的推理成本（每 token 最便宜）
-│  └──────────────────────▶ 压激活参数（openPangu：最浅 + 最窄 + 多而小的专家）
-│                            + 硬件亲和的量化（W8A8 纯整数）
-│                            + 层级分工（1/3 全局 + 2/3 滑窗）
-│
-└─ 极致的能力上限
-   └───────────────────────▶ 保住 softmax，只压 KV（V4 的 CSA/HCA 压缩）
-                              + 在残差流上加容量（mHC）
-                              + 最激进的量化换更大的模型（FP4 存 1.6T）
+|
++- 极致的长上下文（1M+）
+|  |
+|  +- 愿意冒结构风险 ----&gt; 线性注意力混合（K3 的 KDA 3:1）
+|  |                       白赚：可以 NoPE、状态大小恒定
+|  |                       风险：长程召回弱，M3 在 M2 上试过后退回来了
+|  |
+|  +- 要稳 -------------&gt; 动态稀疏（GLM 的 DSA / M3 的 MSA）
+|                         保留完整 softmax 语义
+|                         代价：要付&quot;挑选&quot;的开销 -&gt; IndexShare / 块级
+|
++- 极致的推理成本（每 token 最便宜）
+|  +--------------------&gt; 压激活参数（openPangu：最浅 50 层 + 最窄 d=5120
+|                         + 多而小的专家 384 个 x 中间维 1792）
+|                         + 硬件亲和的量化（W8A8 纯整数）
+|                         + 层级分工（1/3 全局 DSA + 2/3 滑窗 SWA）
+|
++- 极致的能力上限
+   +--------------------&gt; 保住 softmax，只压 KV（V4 的 CSA/HCA 压缩）
+                          + 在残差流上加容量（mHC 4 条车道）
+                          + 最激进的量化换更大的模型（FP4 存 1.6T 总参数）
 
-────────────────────────────────────────────
+--------------------------------------------
 不管选哪条，下面这些是【五家共识】，可以直接抄：
-   ✅ Pre-Norm + RMSNorm          ✅ SwiGLU 系
-   ✅ MoE + aux-loss-free 均衡     ✅ MTP
-   ✅ MLA 或 GQA（不要 MHA）       ✅ Muon（矩阵参数）
+   ✅ Pre-Norm + RMSNorm            ✅ SwiGLU 系
+   ✅ MoE + aux-loss-free 均衡      ✅ MTP
+   ✅ 不用 MHA（MLA 或 GQA 或 MQA） ✅ Muon（矩阵参数）
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>最后一行原来写的是"MLA 或 GQA（不要 MHA）"，这里改准一点</strong>：五家的共识是<strong>"不用 MHA"</strong>，而不是"都用 MLA"。严格用 MLA 的是 3 家，V4 用的是共享 KV 的 MQA，M3 用的是 GQA。<strong>共识在"结论"上，不在"手段"上</strong>——这个区别在判断一项技术成熟度时很要紧（<a href="07-MHA到MLA.html">07 章 §7.6</a>）。</p>
+</blockquote>
 <hr />
 <h2 id="156">15.6 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>① 一层 Transformer 有 13 个可以动手的位置，五家动的位置高度集中：
-   ④ 看哪些 token —— 5/5，绝对主战场
-   ⑦ 残差流      —— 3/5，这一代的【新】战场
-   ⑥ W_O         —— 0/5，唯一没人碰的地方
-② 五家的一句话：压缩 / 换线性 / 稀疏挑选 / 块级选择 / 层级分工
-③ ★ 三条因果链是全书的骨架：
-   softmax 归一化 → 离群值 → 量化难
-   要 4-bit → 要 QAT → 要给激活加界
-   decode 访存受限 → 省 KV = 提速 + 有免费算力可以拿来猜
-④ 读报告的正确姿势：不问&quot;用了什么技术&quot;，问&quot;什么约束逼他们必须这么做&quot;
+<div class="codehilite"><pre><span></span><code>(1) 一层 Transformer 有 10 个可以动手的槽位（位置 1-10），
+    再加 3 个层外的（优化器 / MTP / 量化），一共 13 个。
+    五家动的位置高度集中：
+       位置 4  看哪些 token  -- 5/5，绝对主战场
+       位置 2  Q/K/V 投影    -- 5/5 都不是 MHA，但只有 3 家是严格的 MLA
+       位置 7  残差流        -- 3/5，这一代的【新】战场
+       位置 6  W_O           -- 0/5，唯一没人碰的地方
+
+(2) 五家的一句话：压缩 / 换线性 / 稀疏挑选 / 块级选择 / 层级分工
+
+(3) 六个维度并排看（15.3.2），只有【归一化】是纯赚的，
+    其余五个每一个都是明确的取舍 —— 分歧最大的地方，就是取舍还没有定论的地方
+
+(4) ⚠️ 稀疏度要用【总参数 / 激活参数】口径：
+    openPangu 是 505/18 = 28.1 倍，不是 384/8 = 48 倍
+
+(5) ★ 三条因果链是全书的骨架：
+       softmax 归一化 -&gt; 离群值 -&gt; 量化难
+       要 4-bit -&gt; 要 QAT -&gt; 要给激活加界
+       decode 访存受限 -&gt; 省 KV = 提速 + 有免费算力可以拿来猜
+
+(6) 读报告的正确姿势：不问&quot;用了什么技术&quot;，问&quot;什么约束逼他们必须这么做&quot;
 </code></pre></div>
 
 <p><strong>下一章</strong>用一个你可以拿笔算完的例子，把整条前向路径走一遍。</p>

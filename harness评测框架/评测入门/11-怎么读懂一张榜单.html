@@ -250,241 +250,1006 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>★ 这一章不引入新概念，是把前十章的教训压成【一套可执行的动作】。<br />
 ⟹ 🔑 目标：★★★ 让你看到任何一个分数，都知道下一句该问什么。</p>
+<p>★★ 本章有两处请拿纸笔跟着算，算过一遍才会变成直觉：<br />
+- §11.6 ① 的【标准误推演】—— 一行乘除，决定你会不会把噪声当成差距<br />
+- §11.6 ① 末尾那张【采样 k 次到底消掉了哪一种噪声】对照表</p>
+<p>★ 本章的记号沿用全书：✅ = 论文/报告原文或可核对的一手事实；⚠️ = 我的判断或推算；★ = 重要程度。</p>
 </blockquote>
 <hr />
 <h2 id="111">11.1 先建立一个心态：分数不是测量，是【一次实验的结果】</h2>
-<div class="codehilite"><pre><span></span><code>   ★★ 类比：体温计量出 37.2℃，你会认为这是&quot;人的属性&quot;。
-      ⟹ 因为体温计的口径是全球统一的：单位、位置（腋下/口腔）、时长。
-
-   ⚠️ 但 LLM 评测【没有这样的统一】：
-   ┌──────────────────────────────────────────────────────┐
-   │  同一个&quot;MMLU 87 分&quot;，可能是                           │
-   │   ① 判别式、5-shot、无对话模板                        │
-   │   ② 生成式、0-shot、套了对话模板、正则抽 A/B/C/D      │
-   │  ⟹ ★★★ 两者【不是同一个测量】                       │
-   └──────────────────────────────────────────────────────┘
-
-   ⟹ 🔑🔑 所以正确的读法是：
-      ★★★ &quot;在【某套具体设置】下，这个模型得了 87 分&quot;。
+<p>★★ 先做一个类比。体温计量出 37.2℃，你会毫不犹豫地认为这是「人的属性」——因为体温计的口径是全球统一的。而 LLM 评测的每一项口径都【不统一】，所以同一个模型能得出好几个不同的分数。</p>
+<table>
+<thead>
+<tr>
+<th>口径的哪一项</th>
+<th>体温计</th>
+<th>LLM 评测</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>单位</strong></td>
+<td>✅ 全球统一，℃ 和 ℉ 可精确换算</td>
+<td>⚠️「准确率」听着统一，但算法可以不同（见 §11.6 ① 和 pass@1 那个坑）</td>
+</tr>
+<tr>
+<td><strong>测量位置</strong></td>
+<td>✅ 明文规定：腋下 / 口腔 / 耳道，且给了换算</td>
+<td>⚠️ 同一个 MMLU，可以判别式测也可以生成式测，<strong>没有换算公式</strong></td>
+</tr>
+<tr>
+<td><strong>测量时长</strong></td>
+<td>✅ 规定了要夹几分钟</td>
+<td>⚠️ <code>max_tokens</code> 各家各设，✅ DeepSeek-V3 全场 8192、R1 全场 32768</td>
+</tr>
+<tr>
+<td><strong>谁来读数</strong></td>
+<td>✅ 刻度客观，谁看都一样</td>
+<td>⚠️ 正则抽取规则 / LLM 裁判模型，<strong>读数方式本身就是变量</strong></td>
+</tr>
+<tr>
+<td><strong>结论</strong></td>
+<td>37.2℃ 是【这个人】的属性</td>
+<td>★★★ 87 分是【这个模型 + 这套设置】的属性</td>
+</tr>
+</tbody>
+</table>
+<p>★★★ 所以「同一个 MMLU 87 分」可能是两个根本不同的东西：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>口径 A</th>
+<th>口径 B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>范式</strong></td>
+<td>① 判别式：比四个选项句子的对数似然</td>
+<td>② 生成式：让它写出来，再正则抽 A/B/C/D</td>
+</tr>
+<tr>
+<td><strong>shot 数</strong></td>
+<td>5-shot</td>
+<td>0-shot</td>
+</tr>
+<tr>
+<td><strong>对话模板</strong></td>
+<td>不套（当基座模型用）</td>
+<td>套了（当对话模型用）</td>
+</tr>
+<tr>
+<td><strong>抽取失败怎么算</strong></td>
+<td>★ 没有「抽取」这一步，不存在这个问题</td>
+<td>⚠️ 抽不到 = 判错，⚠️ 而失败率几乎没人报</td>
+</tr>
+<tr>
+<td><strong>这个 87 的字面含义</strong></td>
+<td>「四个候选句里，模型最偏向正确那句的题目占比」</td>
+<td>「模型写出来的那个字母正好对的题目占比」</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 上面两列连【被测量的那个量】都不是同一个。
+      ★★★ 所以正确的读法永远是：
+         &quot;在【某套具体设置】下，这个模型得了 87 分&quot;。
       ⚠️ 而不是 &quot;这个模型的 MMLU 水平是 87&quot;。
 </code></pre></div>
 
-<p>★★ 10 章已经给了这个说法最硬的证据：DeepSeek 自己承认框架改了几个月，<br />
-自家旧模型的分数就和上次公布的对不上了（✅ §4.4.2）。</p>
+<p>★★ 10 章已经给了这个说法最硬的证据：✅ DeepSeek 自己在 V3 报告 §4.4.2 里承认，评测框架改了几个月，自家旧模型（DeepSeek-V2-Base）的分数就和上次公布的对不上了——模型一个权重都没动。详见 <a href="10-DeepSeek的评测口径.html">10 章 §10.2</a>。</p>
 <hr />
 <h2 id="112">11.2 三步法</h2>
-<p>★★★ 遇到任何一个分数，按这个顺序走。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 第 1 步：这是【哪一类】评测？──────────────────────┐
-   │  ① 判别式（选择题、比对数似然）                     │
-   │  ② 生成式（让它写出来，再抽答案）                   │
-   │  ③ agentic（真跑环境、执行验证）                    │
-   │  ⟹ ★★ 三类的坑完全不同，问的问题也不同。           │
-   └────────────────────────────────────────────────────┘
-                          ↓
-   ┌─ 第 2 步：按类别，问对应的问题（§11.3-11.5）───────┐
-   └────────────────────────────────────────────────────┘
-                          ↓
-   ┌─ 第 3 步：问三个【共通】的问题（§11.6）────────────┐
-   └────────────────────────────────────────────────────┘
+<p>★★★ 遇到任何一个分数，按这个顺序走。三步走完，你要么拿到一个可信的结论，要么知道自己缺哪块信息。</p>
+<div class="codehilite"><pre><span></span><code>   第 1 步   这是【哪一类】评测？
+     ├── ① 判别式   选择题，比几个选项的对数似然，不让模型说话
+     ├── ② 生成式   让它写出来，再从输出里抽答案
+     ├── ③ agentic  给一个真环境，让它动手做，跑测试验收
+     └── ④ LLM 裁判 让另一个模型来打分或投票
+                 ↓
+   第 2 步   按类别，问该类别专属的问题
+     ├── ① → §11.3 的四件事
+     ├── ② → §11.4 的五件事
+     ├── ③ → §11.5 的六件事
+     └── ④ → 09 章那三个偏差（位置 / 冗长 / 自我偏好）
+                 ↓
+   第 3 步   问三个【共通】的问题（§11.6）
+     ├── 这个差距超过噪声了吗？
+     ├── 对比数字是自己跑的还是抄来的？
+     └── 这个基准饱和了吗？可能被污染了吗？
 </code></pre></div>
 
-<p>★ 怎么判断是哪一类？看基准名字就够了：</p>
-<div class="codehilite"><pre><span></span><code>   ┌──────────────────────────────┬──────────────────────┐
-   │ MMLU / HellaSwag / ARC /     │ ★ 通常是 ①判别式     │
-   │ CMMLU / C-Eval / WinoGrande  │ ⚠️ 但 chat 模型上    │
-   │                              │   常改成 ②           │
-   ├──────────────────────────────┼──────────────────────┤
-   │ GSM8K / MATH / AIME /        │ ★ ②生成式           │
-   │ HumanEval / MBPP / IFEval    │                      │
-   ├──────────────────────────────┼──────────────────────┤
-   │ SWE-bench / Terminal-Bench / │ ★ ③agentic          │
-   │ Aider / OSWorld              │                      │
-   ├──────────────────────────────┼──────────────────────┤
-   │ MT-Bench / Arena / AlpacaEval│ ★★ 特例：LLM 裁判    │
-   │ / Arena-Hard                 │ ⟹ 走 09 章那套问题   │
-   └──────────────────────────────┴──────────────────────┘
+<p>★ 第 1 步怎么判断？多数时候看基准名字就够了：</p>
+<table>
+<thead>
+<tr>
+<th>基准名字</th>
+<th>通常是哪一类</th>
+<th>⚠️ 例外与陷阱</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MMLU / MMLU-Pro / HellaSwag / ARC / WinoGrande / CMMLU / C-Eval / PIQA</td>
+<td>① 判别式</td>
+<td>⚠️ <strong>chat 模型上常改成 ② 生成式</strong>。✅ DeepSeek-V3 就是这么干的：base 用判别式、chat 用 simple-evals 的生成式提示词（<a href="10-DeepSeek的评测口径.html">10 章 §10.5</a>）</td>
+</tr>
+<tr>
+<td>GSM8K / MATH / MATH-500 / AIME / GPQA / HumanEval / MBPP / IFEval / LiveCodeBench</td>
+<td>② 生成式</td>
+<td>⚠️ 代码题的「判分」是<strong>真跑测试</strong>，比正则可靠得多（05 章 §5.5）</td>
+</tr>
+<tr>
+<td>SWE-bench / Terminal-Bench / Aider / OSWorld / WebArena</td>
+<td>③ agentic</td>
+<td>⚠️ 分数强烈依赖<strong>脚手架</strong>，脚手架不同就不是同一个实验（08 章 §8.3）</td>
+</tr>
+<tr>
+<td>MT-Bench / Chatbot Arena / AlpacaEval / Arena-Hard</td>
+<td>④ LLM 裁判 / 人类投票</td>
+<td>⚠️ Arena 是<strong>人</strong>投票，MT-Bench / AlpacaEval 是<strong>模型</strong>当裁判，两者不是一回事</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 一个立刻能用的反向技巧：
+       ★★ 看到一张榜单把【闭源模型和开源模型混在一起排 MMLU】，
+          那闭源那几行【一定不是判别式测的】——
+          ⟹ ✅ 因为主流闭源 API 不返回 logprobs（03 章 §3.3）。
+       ⟹ ⚠️ 这一列和开源那几列的可比性天然存疑。
 </code></pre></div>
 
 <hr />
 <h2 id="113">11.3 如果是【判别式】：问四件事</h2>
-<div class="codehilite"><pre><span></span><code>   ┌───┬──────────────────┬──────────────────────────────────┐
-   │ ① │ ★★ shot 数是多少 │ 0 / 5 / 25 差别巨大（10 章 §10.4）│
-   │ ② │ ★★ 提示词模板     │ 是哪套？自己写的还是照抄的？      │
-   │ ③ │ ★★★ 有没有套对话  │ chat 模型不套模板 ⟹ 分数虚低     │
-   │   │ 模板              │ ⚠️ 这是最常见的隐性错误           │
-   │ ④ │ ★ 选项归一化方式  │ 按长度归一？按字节？还是不归一？  │
-   └───┴──────────────────┴──────────────────────────────────┘
+<p>★★ 判别式的坑集中在「模型收到的输入长什么样」。下面每一行都给了【查不到会怎样】——这一列才是这张表的重点，因为现实中你多半查不到。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要问什么</th>
+<th>为什么重要</th>
+<th>⚠️ 查不到会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★ <strong>shot 数是多少</strong></td>
+<td>✅ DeepSeek-V3 的 shot 数从 0 到 25 不等（<a href="10-DeepSeek的评测口径.html">10 章 §10.4</a>）</td>
+<td>⚠️ 这个分数<strong>不能和任何别家的同名分数比</strong>。MMLU 的领域惯例是 5-shot，别人默认按 5-shot 理解你的数，差一档就是几分的系统性偏移</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★ <strong>提示词模板是哪套</strong></td>
+<td>自己写的？抄 simple-evals 的？用数据集原始协议？</td>
+<td>⚠️ 无法复现。你自己跑一遍大概率对不上，然后会误以为是模型版本问题</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★★ <strong>有没有套对话模板（chat template）</strong></td>
+<td>chat 模型不套模板 ⟹ 收到从没见过的格式 ⟹ 分数虚低（<a href="04-few-shot与提示词.html">04 章 §4.4</a>）</td>
+<td>⚠️ 这是<strong>最常见的隐性错误</strong>。榜单上只会显示「这个模型不行」，看不出是测法不匹配</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★ <strong>选项的归一化方式</strong></td>
+<td>按 token 长度归一？按字节归一？完全不归一？</td>
+<td>⚠️ 长选项和短选项之间产生系统性偏好，几分量级</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：对话模板（chat template）
+      ★★ 对话模型被训练成只认一种输入格式，形如
+         &lt;|im_start|&gt;user ... &lt;|im_end|&gt;&lt;|im_start|&gt;assistant
+      ⟹ 不套它，等于用外语跟它说话。
+
+    ★ 名词：归一化（normalization）
+      ★★ 四个选项句子长短不一，对数似然天然偏向短句
+         （概率连乘，越长越小）。
+      ⟹ 除以 token 数或字节数，就是在纠正这个偏向。
+      ⚠️ 除以什么、除不除，都会改变分数。
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑 一个即刻可用的判别技巧：
        ★★★ 如果榜单上【闭源模型和开源模型混在一起排】，
-          那闭源那几个【一定不是判别式测的】（03 章：API 不给 logprobs）。
+          那闭源那几个【一定不是判别式测的】（03 章 §3.3：API 不给 logprobs）。
        ⟹ ⚠️ 这一列的可比性天然存疑。
 </code></pre></div>
 
 <hr />
 <h2 id="114">11.4 如果是【生成式】：问五件事</h2>
-<div class="codehilite"><pre><span></span><code>   ┌───┬─────────────────────┬───────────────────────────────┐
-   │ ① │ ★★ 答案怎么抽出来的 │ 正则？宽松还是严格？          │
-   │ ② │ ★★★ 抽取失败率多少  │ ⚠️ 几乎没人报，但它藏在分数里 │
-   │ ③ │ ★★★ max_tokens 多少 │ 推理模型被截断 = 白跑         │
-   │   │                     │ ✅ DeepSeek 全场 8192          │
-   │ ④ │ ★★ 温度 / 跑几遍    │ greedy 可复现；多次平均更稳    │
-   │ ⑤ │ ★ 用没用 CoT        │ 同一个基准，CoT 和非 CoT      │
-   │   │                     │ ✅ DeepSeek 分两行报          │
-   └───┴─────────────────────┴───────────────────────────────┘
-</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要问什么</th>
+<th>为什么重要</th>
+<th>⚠️ 查不到会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★ <strong>答案怎么抽出来的</strong></td>
+<td>正则？取最后一个数字？取 <code>\boxed{}</code> 里的内容？宽松还是严格</td>
+<td>⚠️ ★★★ 量级比你想的大：✅ <a href="05-答案抽取与打分.html">05 章 §5.2</a> 里，<strong>同一个官方 YAML 里并列的两条流水线</strong>在同一批输出上差 <strong>41.7 个百分点</strong>（<code>strict-match</code> 33.3% vs <code>flexible-extract</code> 75.0%）。⚠️ 而「宽松抽取」会把模型说对但格式不对的情况救回来，<strong>看起来像模型变强了</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★★ <strong>抽取失败率多少</strong></td>
+<td>抽不到 = 判错，这部分损失完全藏在分数里</td>
+<td>⚠️ 几乎没有报告披露这一项。⟹ 你无法区分「模型不会」和「正则没抠到」</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★★ <strong><code>max_tokens</code> 多少</strong></td>
+<td>推理模型被截断 = 白跑。✅ V3 全场 8192、✅ R1 全场 32768</td>
+<td>⚠️ 爱长篇推理的模型被截断，分数看起来像它答错了（<a href="10-DeepSeek的评测口径.html">10 章 §10.5</a> ③）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★★★ <strong>温度是多少、跑了几遍、怎么汇总</strong></td>
+<td>greedy 逐次可复现；多次采样取平均更稳。✅ V3：AIME 用 T=0.7 跑 16 次取平均，MATH-500 用 greedy</td>
+<td>⚠️ <strong>这是本章最大的暗坑</strong>：同样写 pass@1，可能是 greedy 跑一次，也可能是采 64 次取平均，两个数不能比（§11.6 ①）</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>★ <strong>用没用 CoT（chain-of-thought，思维链）</strong></td>
+<td>让模型先写推理过程再给答案，多数题上会涨分</td>
+<td>⚠️ CoT 和非 CoT 混在一张表里排名，是苹果比橘子</td>
+</tr>
+</tbody>
+</table>
+<p>★★ 第 ⑤ 条有现成的、同一份报告里的例子。✅ DeepSeek-V3 报告 Table 6 把 LiveCodeBench 分成两行报：</p>
+<table>
+<thead>
+<tr>
+<th>口径</th>
+<th>分数</th>
+<th>差距</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LiveCodeBench (Pass@1-COT)</td>
+<td>✅ 40.5</td>
+<td>—</td>
+</tr>
+<tr>
+<td>LiveCodeBench (Pass@1)</td>
+<td>✅ 37.6</td>
+<td>★ 相差 <strong>2.9 个百分点</strong>（⚠️ 换成相对量是 2.9 ÷ 37.6 ≈ <strong>7.7%</strong>）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 同一个模型、同一个基准、同一次实验，差别只在有没有 CoT。
+    ⟹ ★★ 他们把两行【都列出来】，这是负责任的做法。
 
-<div class="codehilite"><pre><span></span><code>    ★★ 第 ⑤ 条有现成例子。✅ DeepSeek-V3 报告 Table 6：
-       LiveCodeBench (Pass@1-COT)  40.5
-       LiveCodeBench (Pass@1)      37.6
-    ⟹ 🔑 同一个模型、同一个基准，★★ 差 2.9 分，差别只在有没有 CoT。
-       ⟹ 他们把两行【都列出来】，这是负责任的做法。
+    ⚠️ 顺手纠一个到处都在犯的语病：
+       ★★★ 40.5 比 37.6 高的是【2.9 个百分点】，不是「高 2.9%」。
+       ⟹ 「高 2.9%」在字面上是 37.6 × 1.029 = 38.7，完全是另一个数。
+       🔑 百分比（%）是比例，百分点（pp）是两个百分数相减的差。
+          ⟹ 看到「提升了 X%」而分母没写清楚，先当它是可疑表述。
 </code></pre></div>
 
 <hr />
 <h2 id="115-agentic-08">11.5 如果是【agentic】：问 08 章那六件事</h2>
-<p>★★ 直接复用，因为这是变量最多的一类。</p>
-<div class="codehilite"><pre><span></span><code>   ┌───┬──────────────────────┬────────────────────────────────┐
-   │ ① │ 哪个子集？            │ full / Lite / Verified          │
-   │ ② │ ★★★ 什么脚手架？     │ ✅ 例：DeepSeek 用 Agentless    │
-   │ ③ │ ★★★ 几次尝试？       │ pass@1 还是 N 选 1              │
-   │ ④ │ ★★★ 挑选时看没看     │ 看了 = 拿答案挑答案             │
-   │   │ f2p 测试？            │                                 │
-   │ ⑤ │ ★★ 预算多少？        │ 轮数 / token / 墙钟时间         │
-   │ ⑥ │ ★ 模型版本和日期？    │ 同名模型不同快照分数会变        │
-   └───┴──────────────────────┴────────────────────────────────┘
-</code></pre></div>
-
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 10 章已经演示过 ② 的威力：
-       ★★★ 同一张表里 Claude-3.5-Sonnet 在 Agentless 下是 50.8，
-       而各家用自家 agent 报出来的数是另一回事。
-       ⟹ 两个数都真，但【回答的是不同问题】。
+<p>★★ 直接复用 08 章 §8.7，因为这是变量最多、最容易被宣传材料利用的一类。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要问什么</th>
+<th>举例</th>
+<th>⚠️ 查不到会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>哪个子集</strong></td>
+<td>SWE-bench full（2294 题）/ Lite（300 题）/ Verified（500 题）</td>
+<td>⚠️ 三个子集难度不同，数值差一大截，混着比毫无意义</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★★ <strong>什么脚手架（scaffold）</strong></td>
+<td>✅ DeepSeek-V3 / R1 都用 Agentless；SWE-agent 是另一套</td>
+<td>⚠️ <strong>量级差异</strong>。✅ 同一个 GPT-4 Turbo 在 SWE-bench Lite 上，RAG 脚手架 2.67%、裸 shell 11.00%、完整 SWE-agent ACI 18.00%——权重一个字节没改（<a href="08-ClaudeCode与Codex怎么被评.html">08 章 §8.4</a>）</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★★ <strong>几次尝试、怎么汇总</strong></td>
+<td>pass@1？N 次里挑一个报？多数投票？</td>
+<td>⚠️ 「N 选 1」比 pass@1 天然高，混报就是虚高</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★★★ <strong>挑选答案时看没看 f2p 测试</strong></td>
+<td>f2p = fail-to-pass，那道题的验收测试</td>
+<td>⚠️ 看了 = 拿答案挑答案，<strong>这是泄题</strong>，分数作废</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>★★ <strong>预算是多少</strong></td>
+<td>最多几轮交互 / 几个 token / 多少墙钟时间 / 多少钱</td>
+<td>⚠️ 预算是分数的一部分。✅ SWE-agent 论文自己写明：相比 RAG「8-13x more costly」换来「6.7-fold improved % Resolved」</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>★ <strong>模型版本与日期</strong></td>
+<td><code>claude-3-5-sonnet-20241022</code> 这种带日期的标识</td>
+<td>⚠️ 同名模型会静默升级，半年后复现不出来，且你不知道是哪边变了</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 10 章已经演示过第 ② 条的威力：
+       ✅ 同一张表（V3 报告 Table 6）里，Claude-3.5-Sonnet-1022 在 Agentless 下是 50.8，
+       ⚠️ 而 Anthropic 自家用 Claude Code 那套脚手架报出来的数是另一回事。
+       ⟹ ★★★ 两个数都真，但【回答的是不同问题】：
+          一个问「这个模型有多强」，一个问「这套产品有多好用」。
 </code></pre></div>
 
 <hr />
 <h2 id="116">11.6 三个共通问题（不分类别，都要问）</h2>
 <h3 id="1">① ★★★ 这个差距超过噪声了吗？</h3>
-<div class="codehilite"><pre><span></span><code>    ✅ DeepSeek-V3 报告 Table 3 表注：
-       &quot;Scores with a gap not exceeding 0.3 are considered to be at the same level.&quot;
+<p>✅ DeepSeek-V3 报告 Table 3 的表注给了一条明文的线：</p>
+<blockquote>
+<p>"<strong>Scores with a gap not exceeding 0.3 are considered to be at the same level.</strong>"</p>
+</blockquote>
+<p>★★ 「差 0.3 分以内算平手」这条线是怎么来的？论文没说。但它的量级可以自己算出来——而且算出来的结果和 0.3 惊人地接近。下面这一段请拿纸笔跟着做，它是本章唯一需要动笔的地方。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 推演的模型：★★ 把「答对一道题」看成抛一次硬币，正面概率 p。
+      n 道题的准确率，就是 n 次抛硬币的正面比例。
 
-    ✅ 09 章：Arena 类榜单用 bootstrap 算置信区间。
+    ⟹ 这是最基础的二项分布（binomial distribution），标准误有闭式解：
 
-    ⟹ 🔑 操作：
-      ┌──────────────────────────────────────────────┐
-      │ 看到 &quot;A 87.3 vs B 87.1&quot;                       │
-      │ ⟹ ★★★ 这是平手，不是&quot;A 更强&quot;。              │
-      │ 看到 &quot;Elo 1247 vs 1244，区间都是 ±10&quot;         │
-      │ ⟹ ★★★ 这是平手。                            │
-      └──────────────────────────────────────────────┘
+        ★★★ SE = √( p × (1 − p) ÷ n )
+
+      ★ SE = standard error（标准误），指&quot;同一套设置重跑一遍，
+        分数大概会晃动多少&quot;。
+      ⟹ 🔑 约 95% 的重跑结果会落在 【真值 ± 1.96 × SE】 之内。
+
+    ⚠️ 两条使用须知，都很重要：
+    ① ★★ 这只算了【题目抽样】这一种噪声，
+       没算温度采样、few-shot 抽哪几条、浮点非确定性。
+       ⟹ 所以它是一个【下限】：真实抖动只会更大，不会更小。
+    ② ★★ p 越靠近 0.5，p(1−p) 越大，SE 越大。
+       ⟹ 🔑 所以下表在拿不准 p 时一律取 0.5 —— 这是【最保守】的取法。
+       ⚠️ 真实 p 是 0.9 时，SE 只有 p=0.5 时的 0.6 倍（√(0.09 ÷ 0.25) = 0.6）。
+</code></pre></div>
+
+<p>★★★ 代进真实基准的题数，逐列算一遍（⚠️ p 是我假定的典型水平，不是某个模型的实测值）：</p>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>题数 n</th>
+<th>假设准确率 p</th>
+<th>p(1−p)</th>
+<th>÷ n</th>
+<th>开平方 = <strong>SE</strong></th>
+<th>95% 区间 ≈ ±1.96·SE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AIME 2024</td>
+<td><strong>30</strong></td>
+<td>0.50</td>
+<td>0.2500</td>
+<td>0.008333</td>
+<td>⚠️ <strong>9.1 个百分点</strong></td>
+<td><strong>±17.9 pp</strong></td>
+</tr>
+<tr>
+<td>HumanEval</td>
+<td>164</td>
+<td>0.90</td>
+<td>0.0900</td>
+<td>0.000549</td>
+<td>⚠️ <strong>2.3 pp</strong></td>
+<td>±4.6 pp</td>
+</tr>
+<tr>
+<td>GPQA Diamond</td>
+<td>198</td>
+<td>0.50</td>
+<td>0.2500</td>
+<td>0.001263</td>
+<td>⚠️ <strong>3.6 pp</strong></td>
+<td>±7.0 pp</td>
+</tr>
+<tr>
+<td>MATH-500</td>
+<td>500</td>
+<td>0.50</td>
+<td>0.2500</td>
+<td>0.000500</td>
+<td>⚠️ <strong>2.2 pp</strong></td>
+<td>±4.4 pp</td>
+</tr>
+<tr>
+<td>SWE-bench Verified</td>
+<td>500</td>
+<td>0.50</td>
+<td>0.2500</td>
+<td>0.000500</td>
+<td>⚠️ <strong>2.2 pp</strong></td>
+<td>±4.4 pp</td>
+</tr>
+<tr>
+<td>MMLU</td>
+<td><strong>14042</strong></td>
+<td>0.87</td>
+<td>0.1131</td>
+<td>0.00000806</td>
+<td>⚠️ <strong>0.28 pp</strong></td>
+<td>±0.56 pp</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 看最后一行：★★★ MMLU 上一个分数的标准误约 0.28 个百分点。
+      ⚠️ 而 DeepSeek 划的平手线是 0.3。
+      ⟹ 这两个数几乎重合。★★ 他们那条线不是拍脑袋，是【一个标准误的量级】。
+
+   ⟹ ★★★ 反过来看第一行：AIME 只有 30 道题。
+      🔑 30 题里【多对 1 道 = 3.33 个百分点】。
+      ⚠️ 所以 &quot;我们 AIME 90.0，对手 86.7&quot; 翻译过来是：
+         ★★★【三十道题里我们多对了一道。】
+      ⟹ 这在 ±17.9 pp 的区间里，连零头都算不上。
+</code></pre></div>
+
+<p>★★ 再往前走一步：比较【两个模型的差】，噪声还要更大一点。</p>
+<div class="codehilite"><pre><span></span><code>   ★ 若两个分数互相独立：
+        SE(差) = √( SE_A² + SE_B² ) ≈ √2 × SE ≈ 1.41 × SE
+
+     ⟹ MMLU：0.28 × 1.41 ≈ ⚠️ 0.40 pp，95% 区间 ±0.79 pp
+     ⟹ MATH-500：2.2 × 1.41 ≈ ⚠️ 3.2 pp，95% 区间 ±6.2 pp
+     ⟹ AIME：9.1 × 1.41 ≈ ⚠️ 12.9 pp，95% 区间 ±25 pp
+
+   ⚠️★★ 但这是【上界】。实际上两个模型跑的是【同一套题】，
+      这叫【配对比较】（paired comparison）。
+      ⟹ 配对能消掉&quot;这套题本来就偏难/偏易&quot;这个两边共有的方差。
+
+   ★★★ 配对的算法（McNemar 检验的思路）只看【分歧的题】：
+        SE(差) = √( n₀₁ + n₁₀ ) ÷ n
+        其中 n₀₁ = A 对 B 错的题数，n₁₀ = A 错 B 对的题数。
+
+   ⟹ 代一个例子（⚠️ 分歧题数是我假设的）：
+      MMLU 14042 题，两个模型在其中 500 道上对错不同（250 : 250）
+        ⟹ √500 ÷ 14042 = 22.36 ÷ 14042 = ⚠️ 0.159 pp
+        ⟹ 95% 区间 ≈ ±0.31 pp
+      🔑🔑 ★★★ 又一次落在 0.3 附近。
+      ⚠️ 这是我的推算，且依赖&quot;只在 500 道题上分歧&quot;这个假设；
+         但它至少说明 DeepSeek 那条 0.3 是一条【站得住的线】。
+</code></pre></div>
+
+<p>★★★ 最后一个必须讲清的点：<strong>采样 k 次取平均，到底消掉了哪一种噪声？</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 把分数写成两层随机性（⚠️ 这是标准的方差分解，不是我编的）：
+
+     Var(分数) = [ σ²_题间  +  E(pᵢ(1−pᵢ)) ÷ k ] ÷ n
+                   ↑第一项        ↑第二项
+                   题目抽样        同一道题反复采样的抖动
+                   （换一套题会变）（同一道题多采几次就能摊薄）
+
+   ⟹ 🔑 k 只出现在【第二项】的分母里。★★★ 第一项和 k 完全无关。
+</code></pre></div>
+
+<p>⚠️ 用 AIME 的 n = 30 代两种极端情形，看 k 从 1 涨到 64 发生了什么（⚠️ 全部是我的推算，用于说明机理）：</p>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>σ²_题间</th>
+<th>E(pᵢ(1−pᵢ))</th>
+<th>k=1</th>
+<th>k=4</th>
+<th>k=16</th>
+<th>k=64</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong> 每题要么必对要么必错（30 题里稳过 15 道）</td>
+<td>0.25</td>
+<td>0</td>
+<td>9.1 pp</td>
+<td>9.1 pp</td>
+<td>9.1 pp</td>
+<td>⚠️ <strong>9.1 pp（一点没降）</strong></td>
+</tr>
+<tr>
+<td><strong>B</strong> 每题都恰好 50% 概率做对</td>
+<td>0</td>
+<td>0.25</td>
+<td>9.1 pp</td>
+<td>4.6 pp</td>
+<td>2.3 pp</td>
+<td>⚠️ <strong>1.1 pp（降了 8 倍）</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 真实情况在 A 和 B 之间，所以结论是：
+      ★★★ ✅ R1 在 AIME 上采样 k=64 取平均，
+         消掉的是【同一道题的运气】，
+         ⚠️ 消不掉【AIME 只有 30 道题】这件事。
+
+   ⟹ ★★ 换句话说：多采样让【这一次实验的分数】变稳了，
+      但【换一套 30 道新题】仍然会让分数大跳。
+      ⟹ 🔑 这就是为什么 AIME 这类小基准上，
+         ★★★ 年份一换（AIME 2024 → 2025）名次就可能重排。
+</code></pre></div>
+
+<p>★★ 把上面所有推演压成一张可以直接照着用的判断表：</p>
+<table>
+<thead>
+<tr>
+<th>你看到的对比</th>
+<th>题数</th>
+<th>差距</th>
+<th>⚠️ 该下的结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MMLU：A 87.3 vs B 87.1</td>
+<td>14042</td>
+<td>0.2 pp</td>
+<td>✅ <strong>平手</strong>。按 DeepSeek 自己的 0.3 线就是同一水平</td>
+</tr>
+<tr>
+<td>MMLU：A 88.5 vs B 87.1</td>
+<td>14042</td>
+<td>1.4 pp</td>
+<td>⚠️ 超过 0.8 pp 的 95% 门槛 ⟹ 差距<strong>是真的</strong>（但两边口径必须相同才成立）</td>
+</tr>
+<tr>
+<td>AIME：A 90.0 vs B 86.7</td>
+<td>30</td>
+<td>3.3 pp</td>
+<td>⚠️ <strong>等于没差别</strong>。翻译过来是「30 题里多对 1 道」</td>
+</tr>
+<tr>
+<td>MATH-500：A 90.2 vs B 87.0</td>
+<td>500</td>
+<td>3.2 pp</td>
+<td>⚠️ 约等于 1 个 SE(差) ⟹ <strong>不够，只能算"看起来略高"</strong></td>
+</tr>
+<tr>
+<td>SWE-bench Verified：42.0 vs 38.8</td>
+<td>500</td>
+<td>3.2 pp</td>
+<td>⚠️ 约 1 个 SE(差) ⟹ <strong>不够结实</strong>，只能说「看起来略高」</td>
+</tr>
+<tr>
+<td>SWE-bench Verified：42.0 vs 50.8</td>
+<td>500</td>
+<td>8.8 pp</td>
+<td>✅ 超过差值的 95% 门槛 ±6.2 pp（= 1.96 × 3.2）⟹ 差距<strong>是真的</strong>（⚠️ 但只在同一套 Agentless 脚手架下成立）</td>
+</tr>
+<tr>
+<td>Arena：Elo 1247 vs 1244，两边区间都是 ±10</td>
+<td>—</td>
+<td>3 分</td>
+<td>✅ 区间重叠 ⟹ <strong>平手</strong>（<a href="09-LLM当裁判.html">09 章 §9.5</a> ③ 的 bootstrap 置信区间）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    🔑 给你的一句口诀：
+       ★★★ 看到任何两个分数比大小，先问【这个基准有多少道题】。
+       ⟹ 题数 &lt; 100 的基准（AIME、CNMO、GPQA Diamond……），
+          ⚠️ 差几个百分点基本都是噪声。
+       ⟹ ✅ 这也正是 DeepSeek 报告里那条总纲的由来：
+          &gt; &quot;Benchmarks containing fewer than 1000 samples are tested
+          &gt; multiple times using varying temperature settings to derive
+          &gt; robust final results.&quot;
 </code></pre></div>
 
 <h3 id="2">② ★★★ 对比数字是【自己跑的】还是【抄来的】？</h3>
-<div class="codehilite"><pre><span></span><code>    ✅ DeepSeek 的做法：&quot;We evaluate all these models with our internal
-       evaluation framework, and ensure that they share the same evaluation setting.&quot;
+<p>✅ DeepSeek 的做法（V3 报告 §4.4.2 原文）：</p>
+<blockquote>
+<p>"We evaluate all these models with <strong>our internal evaluation framework</strong>, and<br />
+ensure that they share the <strong>same evaluation setting</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 这一句是【整份报告可信度的分水岭】。
+</code></pre></div>
 
-    ⟹ 🔑🔑 这一句是【整份报告可信度的分水岭】。
+<table>
+<thead>
+<tr>
+<th></th>
+<th>自己用同一套框架跑所有模型</th>
+<th>抄各家自己公布的数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>口径</strong></td>
+<td>★★ 一致，差距可信</td>
+<td>⚠️ 每家的 shot 数、提示词、脚手架、max_tokens 全都不同</td>
+</tr>
+<tr>
+<td><strong>可比性</strong></td>
+<td>★★ 横向比大小是有意义的</td>
+<td>⚠️ ★★★ 放进同一张表就是【苹果比橘子】</td>
+</tr>
+<tr>
+<td><strong>系统性偏差</strong></td>
+<td>★ 无（或至少对所有模型同向）</td>
+<td>⚠️ ★★ 每家报自己的数时都是<strong>调到最优</strong>的 ⟹ 抄来的数<strong>天然偏高</strong></td>
+</tr>
+<tr>
+<td><strong>代价</strong></td>
+<td>⚠️ 贵，要算力，闭源模型还要买 API</td>
+<td>★ 免费</td>
+</tr>
+<tr>
+<td><strong>怎么识别</strong></td>
+<td>报告会明说 "we evaluate all these models with…"</td>
+<td>★★★ 表格脚注写着 <code>†results taken from [X]</code>、「引自官方报告」</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ✅ 一个正面例子：★★ R1 报告里 o1-1217 这一列，
+       论文明写了【因中国大陆无法访问 API，采用官方公布的数字】。
+       ⟹ 🔑 这是【好披露】的样子：数字抄来的，但抄这件事写在明处。
+    ⟹ ⚠️ 读者的义务是记住：那一列和其他列【不是同一次实验的产物】。
 
-    ┌─ 自己统一跑 ────────────────────────────────────────┐
-    │ ★★ 口径一致，差距可信。★ 代价：贵，且要有算力。    │
-    ├─ 抄各家自己公布的 ─────────────────────────────────┤
-    │ ⚠️ 每家用的 shot 数、提示词、脚手架全都不同。       │
-    │ ⟹ ★★★ 放进同一张表就是【苹果比橘子】。            │
-    │ ⚠️ 而且有个系统性偏差：★★ 每家报自己的数时          │
-    │    都是【调到最优】的，抄来的数天然偏高。           │
-    └────────────────────────────────────────────────────┘
-
-    ⟹ 🔑 看到表格里有脚注写 &quot;†results taken from [X]&quot;，
-       ★★★ 那一行就不能和自测行直接比。
+    🔑 操作规则：★★★ 看到脚注写 &quot;results taken from&quot;，
+       那一行就【不能和自测行直接比大小】，只能当背景参考。
 </code></pre></div>
 
 <h3 id="3">③ ★★★ 这个基准是不是已经过期了？</h3>
-<div class="codehilite"><pre><span></span><code>    ⟹ 回到 06 章的古德哈特定律：★★ 评测集【被用过就会失效】。
-
-    ┌─ 过期的三个信号 ────────────────────────────────────┐
-    │ ① ★★ 榜首挤成一团（比如都在 89-91 之间）           │
-    │    ⟹ 已经饱和，★★★ 区分不出能力了                 │
-    │ ② ★★ 基准发布时间早于模型训练截止时间               │
-    │    ⟹ 06 章：污染的必要条件已满足                    │
-    │ ③ ★ 新模型的提升幅度突然变得很小                    │
-    │    ⟹ 可能是模型没进步，也可能是尺子到头了          │
-    └────────────────────────────────────────────────────┘
-
-    ⟹ 🔑🔑 HumanEval 是最典型的例子：
-       ★★ 2021 年发布时是硬骨头，现在基本只当【最低门槛】看。
-    ⟹ ★★★ 对抗手段：看 LiveCodeBench 这类【只用训练截止后的新题】的基准。
+<p>★★ 回到 06 章的古德哈特定律（Goodhart's law，「当一个指标变成目标，它就不再是好指标」）：评测集被反复优化之后就会失效。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>过期信号</th>
+<th>为什么是信号</th>
+<th>怎么确认</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★ <strong>榜首挤成一团</strong></td>
+<td>比如前五名都在 89–91 之间，⚠️ 而 MMLU 上一个分数的 SE 只有 0.28 pp ⟹ 差距虽然「统计显著」，但<strong>剩余空间已经不够再区分能力</strong></td>
+<td>看榜单前十名的极差（最大减最小）是不是只有几个百分点</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★ <strong>基准发布时间早于模型训练截止时间</strong></td>
+<td>⟹ 06 章：污染的<strong>必要条件</strong>已经满足</td>
+<td>查基准论文的发布日 vs 模型报告写的 knowledge cutoff。✅ 例：DeepSeek-V3-Base 截止 2024-07</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★ <strong>新模型的提升幅度突然变小</strong></td>
+<td>可能是模型没进步，⚠️ 也可能是<strong>尺子到头了</strong></td>
+<td>和一个新基准（如 LiveCodeBench）对照看趋势是否一致</td>
+</tr>
+<tr>
+<td>④</td>
+<td>⚠️ <strong>基准自己出了「修正版」</strong></td>
+<td>说明原版的标注错误多到影响读数</td>
+<td>✅ 例：MMLU 有 MMLU-Redux（修标注错误）和 MMLU-Pro（加难度），V3 报告三个都报</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 HumanEval 是最典型的例子：
+       ★★ 2021 年发布（✅ Codex 论文 arXiv:2107.03374）时是硬骨头，
+       ⟹ 现在基本只当【最低门槛】看：过不了说明有问题，过了不说明什么。
+    ⟹ ★★★ 对抗手段：看 LiveCodeBench 这类【只用训练截止后新题】的基准。
+       ✅ R1 报告就明确写了它用的 LiveCodeBench 数据窗口是 2024-08 ~ 2025-01。
 </code></pre></div>
 
 <hr />
-<h2 id="117">11.7 三个常见的误读，逐个拆</h2>
+<h2 id="117">11.7 五个常见的误读，逐个拆</h2>
 <h3 id="a-x-mmlu-88-y-87-x">误读 A：「模型 X 在 MMLU 上 88，模型 Y 87，所以 X 更强」</h3>
 <div class="codehilite"><pre><span></span><code>    ⚠️ 三重问题：
-      ① 88 和 87 可能在噪声内（§11.6①）
-      ② ★★ 两个数可能来自不同 harness（判别式 vs 生成式）
-      ③ ★★★ MMLU 只测【选择题知识】，
+      ① 88 和 87 差 1 个百分点 —— ⚠️ 超过了 §11.6 ① 算出的 0.8 pp 门槛，
+         ★ 所以【如果两边口径完全相同】，这个差距勉强算真的。
+         ⚠️ 但下面第 ② 条会把这个前提直接打掉。
+      ② ★★ 两个数很可能来自不同 harness：
+         判别式 vs 生成式、5-shot vs 0-shot、套模板 vs 不套模板。
+         ⟹ 🔑 口径不同时，【差 1 个百分点】这个量根本不成立 ——
+            ★★★ 口径差异的量级是【十几个百分点】，比噪声大一个数量级。
+      ③ ★★★ 退一步说，MMLU 只测【选择题知识】：
          ✅ MT-Bench 论文原话：MMLU 和 HELM &quot;cannot effectively tell the
             difference between these aligned models and the base models&quot;
          ⟹ 🔑 它【测不出好不好用】。
 
-    ⟹ ★★★ 正确读法：两者在这一项上是同级；
-       至于谁&quot;更强&quot;，★★ MMLU 回答不了这个问题。
+    ⟹ ★★★ 正确读法：在口径相同的前提下，X 略高；
+       ⚠️ 口径不同就什么也说明不了；
+       ★★ 至于谁&quot;更强&quot;，MMLU 回答不了这个问题。
 </code></pre></div>
 
 <h3 id="b-swe-bench-70-70">误读 B：「这个模型 SWE-bench 70%，那我的仓库它也能修好 70%」</h3>
 <div class="codehilite"><pre><span></span><code>    ⚠️ 四重问题：
-      ① ★★ SWE-bench 是 12 个【热门开源 Python 库】，
-         你的仓库大概率是私有代码 + 不同语言 + 更混乱
-      ② ★★★ 那 70% 背后有一整套脚手架（08 章），你的环境没有
+      ① ★★ SWE-bench 的题来自 12 个【热门开源 Python 库】，
+         你的仓库大概率是私有代码 + 不同语言 + 更混乱的历史
+      ② ★★★ 那 70% 背后有一整套脚手架（08 章），你的环境没有 ——
+         ✅ 量级参考：同一个 GPT-4 Turbo，换脚手架 2.67% → 18.00%（08 章 §8.4）
       ③ ★★ 题目自带【真人写好的验收测试】，你的需求没有
       ④ ★★★ Verified 是【人工筛掉过表述不清的题】的子集（07 章 §7.8），
-         而你的真实工单里，表述不清的占比很高
+         而你真实工单里表述不清的占比很高
 
     ⟹ 🔑🔑 结论：★★★ 榜单分数是【能力上界的一个指示】，
        不是【你的场景的预期成功率】。
+    ⟹ ★★ 想知道后者，只有 12 章那条路。
 </code></pre></div>
 
 <h3 id="carena">误读 C：「Arena 排名第一，所以它最好」</h3>
 <div class="codehilite"><pre><span></span><code>    ⚠️ Arena 类榜单测的是【人类投票偏好】。
       ① ★★ 受 09 章冗长偏差影响：长而工整的回答天然占便宜
-      ② ★★★ 投票的是【随机网友的随机问题】，
-         不是你的业务问题
-      ③ ★ 排名第一和第三的 Elo 差可能在置信区间内
+      ② ★★★ 投票的是【随机网友的随机问题】，不是你的业务问题
+      ③ ★ 排名第一和第三的 Elo 差可能在置信区间内（§11.6 ① 最后一行）
 
     ⟹ 🔑 它很有价值——★★ 它是唯一大规模测&quot;人喜不喜欢&quot;的东西。
        ⚠️ 但&quot;人喜欢&quot;和&quot;能干成你的活&quot;是两件事。
 </code></pre></div>
 
+<h3 id="d-pass1">误读 D：⚠️⚠️ 「两张榜都写 pass@1，所以可以直接比」</h3>
+<p>★★★ 这是全章最隐蔽、也最值钱的一个坑。<strong>pass@1 / pass@k 至少有两种互不相同的算法，数值不同、语义不同。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>算法 ① 无偏估计量（Codex / HumanEval 那一系）</th>
+<th>算法 ② 多次采样取平均（DeepSeek-R1 那一系）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>公式</strong></td>
+<td>✅ pass@k = 1 − C(n−c, k) / C(n, k)<br>其中 n = 一题共采样几个、c = 其中对了几个</td>
+<td>✅ pass@1 = (1/k) · Σᵢ pᵢ<br>其中 pᵢ = 第 i 个回答的对错（0 或 1）</td>
+</tr>
+<tr>
+<td><strong>语义</strong></td>
+<td>★★「采 k 个里<strong>至少有一个</strong>对」的概率</td>
+<td>★★「随便采<strong>一个</strong>」的期望正确率</td>
+</tr>
+<tr>
+<td><strong>k 变大会怎样</strong></td>
+<td>⟹ ★★★ 分数<strong>单调变高</strong>（k=1 → k=10 常涨十几个百分点）</td>
+<td>⟹ ★★★ 分数<strong>不变高，只变稳</strong></td>
+</tr>
+<tr>
+<td><strong>为什么要 n &gt; k</strong></td>
+<td>✅ 直接「采 k 次看有没有对」其实是<strong>无偏的</strong>，问题是<strong>方差极大</strong>（论文原话 "can have <strong>high variance</strong>"）⟹ 先采 n ≥ k 个再用组合数换算，无偏且方差小。⚠️ 真正<strong>有偏</strong>的是插值法 1 − (1 − c/n)^k，✅ 论文 Appendix A 证了它<strong>系统性偏低</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>谁在用</strong></td>
+<td>✅ Codex 论文 arXiv:2107.03374 提出，HumanEval / MBPP 生态沿用</td>
+<td>✅ DeepSeek-R1 报告：AIME/GPQA 用 k=64，MATH/Codeforces k=16，LiveCodeBench k=8</td>
+</tr>
+<tr>
+<td><strong>同一个模型上的关系</strong></td>
+<td>⟹ ⚠️ 算法 ① 在 k=1 时<strong>恰好等于</strong> c/n，也就等于算法 ② —— 🔑 <strong>只有 k=1 时两者才一致</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>完整推演在哪</strong></td>
+<td>✅ 三种算法的对照、n=10/c=3 的逐格验算、一个 n=2 的最小反例，全在 <a href="07-agentic编码评测与SWE-bench.html">07 章 §7.7b</a></td>
+<td>✅ DeepSeek 侧的口径见 <a href="10-DeepSeek的评测口径.html">10 章 §10.7b</a></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 所以最危险的组合是：
+      ★★★ 一张榜的 pass@1 是【greedy 跑一次】，
+           另一张榜的 pass@1 是【T=0.6 采 64 次取平均】。
+      ⚠️ 两者都叫 pass@1，都没写清楚，而且【数值会不一样】：
+         ⟹ greedy 那次的运气好坏全部留在分数里；
+         ⟹ 采 64 次取平均的那个，是同一模型的【期望值】。
+
+   ⚠️ 更危险的是看到 &quot;pass@10 = 92&quot; 和 &quot;pass@1 = 71&quot; 放一起排名 ——
+      ★★★ 这不是&quot;高 21 个百分点&quot;，这是【两个不同的问题】：
+         pass@10 问&quot;给它十次机会能不能蒙对&quot;，
+         pass@1  问&quot;一次就要对的概率&quot;。
+      ⟹ 🔑 产品里用户通常只给一次机会，所以 pass@1 才是你该看的那个。
+</code></pre></div>
+
+<h3 id="e-40-40">误读 E：⚠️ 「耗时减少 40%，所以快了 40%」</h3>
+<p>★★ 榜单越来越爱报延迟和成本，这两句话的换算几乎所有宣传材料都写错。</p>
+<table>
+<thead>
+<tr>
+<th>「耗时减少」</th>
+<th>耗时变成原来的</th>
+<th><strong>加速比</strong></th>
+<th>说成「加速 X%」应该是</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10%</td>
+<td>0.90 倍</td>
+<td>1.11×</td>
+<td>11%</td>
+</tr>
+<tr>
+<td>20%</td>
+<td>0.80 倍</td>
+<td>1.25×</td>
+<td>25%</td>
+</tr>
+<tr>
+<td>40%</td>
+<td>0.60 倍</td>
+<td><strong>1.67×</strong></td>
+<td><strong>67%</strong>（不是 40%）</td>
+</tr>
+<tr>
+<td>50%</td>
+<td>0.50 倍</td>
+<td>2.00×</td>
+<td>100%</td>
+</tr>
+<tr>
+<td>80%</td>
+<td>0.20 倍</td>
+<td>5.00×</td>
+<td>400%</td>
+</tr>
+<tr>
+<td>90%</td>
+<td>0.10 倍</td>
+<td>10.0×</td>
+<td>900%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 换算公式只有一条：★★★ 加速比 = 1 ÷ (1 − 耗时减少的比例)。
+   ⚠️ 注意它是【非线性】的：耗时减少 90% 和 95% 听起来差 5 个百分点，
+      ⟹ 实际是 10× 和 20×，★★ 差了一倍。
+   ⟹ ★★ 所以看到&quot;减少 X%&quot;这种说法，先自己换成【倍数】再判断值不值钱。
+</code></pre></div>
+
 <hr />
 <h2 id="118">11.8 一张速用卡</h2>
-<p>★★★ 建议截图存下来。</p>
-<div class="codehilite"><pre><span></span><code>   ╔══════════════════════════════════════════════════════════╗
-   ║           看到一个分数，依次问这七句                      ║
-   ╠══════════════════════════════════════════════════════════╣
-   ║ 1. ★★ 判别式 / 生成式 / agentic / LLM 裁判？             ║
-   ║ 2. ★★ shot 数、提示词模板、对话模板？                    ║
-   ║ 3. ★★★ 答案怎么抽的？max_tokens 多少？                   ║
-   ║ 4. ★★★ agentic 的话：脚手架是什么？几次尝试？            ║
-   ║ 5. ★★★ 这个差距超过噪声了吗？（DeepSeek 划线 0.3）       ║
-   ║ 6. ★★★ 对比数字是自己跑的还是抄的？                      ║
-   ║ 7. ★★ 这个基准饱和了吗？可能被污染了吗？                 ║
-   ╠══════════════════════════════════════════════════════════╣
-   ║ ⟹ 🔑 七问里有三问答不上来 ⟹ 这个分数【只能当参考】。    ║
-   ║ ⟹ 🔑🔑 全都答得上来 ⟹ 恭喜，你遇到了一份好报告。        ║
-   ╚══════════════════════════════════════════════════════════╝
+<p>★★★ 建议截图存下来。先是压缩版的七问（和 <a href="附-速查表.html">附-速查表 C 节</a> 完全一致），后面是展开版的十问核对清单。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>看到一个分数，依次问这七句</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>★★ 这是哪种范式？判别式 / 生成式 / agentic / LLM 裁判？</td>
+</tr>
+<tr>
+<td>2</td>
+<td>★★ 几 shot？用了什么提示词模板？套没套对话模板？</td>
+</tr>
+<tr>
+<td>3</td>
+<td>★★★ 生成式的话：抽取规则是什么？<code>max_tokens</code> 多少？抽取失败算什么？</td>
+</tr>
+<tr>
+<td>4</td>
+<td>★★★ agentic 的话：脚手架是什么？跑了几次？怎么挑的？</td>
+</tr>
+<tr>
+<td>5</td>
+<td>★★ 温度多少？采样几次？pass@1 是哪种算法（§11.7 误读 D）？</td>
+</tr>
+<tr>
+<td>6</td>
+<td>★★ 这个数是自己跑的，还是从别人报告里抄的？</td>
+</tr>
+<tr>
+<td>7</td>
+<td>★★★ 这个基准发布于该模型训练截止日之前吗？（污染）</td>
+</tr>
+</tbody>
+</table>
+<p>★★ 展开版。<strong>第三列才是这张表的重点</strong>——因为现实中你多半查不到，而「查不到」本身就是一个可以行动的结论。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>依次问什么</th>
+<th>在哪查</th>
+<th>⚠️ 查不到会怎样 / 你该怎么处置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>谁测的？</strong> 自测 / 官方自报 / 第三方复现</td>
+<td>报告正文的 "we evaluate…"；表格脚注的 <code>†taken from</code></td>
+<td>⚠️ 默认按【官方自报】处理 ⟹ ★★ 抄来的数天然偏高（每家都调到最优）。⟹ 处置：<strong>只和同来源的数比</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>什么时候测的？</strong></td>
+<td>报告日期；闭源模型要看 API 快照日期</td>
+<td>⚠️ 无法复现。★★ 同名闭源模型会静默升级 ⟹ 处置：<strong>把这个分数当历史快照，不当当前水平</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>哪个模型版本？</strong> base 还是 chat、有没有量化、完整标识符</td>
+<td>模型卡 / <code>claude-3-5-sonnet-20241022</code> 这类带日期的名字</td>
+<td>⚠️ base 和 chat 的分数<strong>天然不可比</strong>（<a href="10-DeepSeek的评测口径.html">10 章 §10.5</a>）。⟹ 处置：<strong>base 行和 chat 行分开读</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>哪个数据集版本 / 子集？</strong></td>
+<td>基准官网的版本号；SWE-bench 要看 full / Lite / Verified</td>
+<td>⚠️ 子集难度差一大截。⟹ 处置：<strong>子集名字对不上就不比</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>几 shot？提示词哪来的？套没套对话模板？</strong></td>
+<td>✅ 好报告会有 "# Shots" 列（V3 报告 Table 3）</td>
+<td>⚠️ ★★★ 差一档就是几到十几个百分点，<strong>比噪声大一个数量级</strong>。⟹ 处置：<strong>当这个分数不可比</strong></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong>温度多少、采样几次、怎么汇总？</strong> 取最好 / 取平均 / 多数投票</td>
+<td>✅ V3：AIME T=0.7×16 取平均、MATH-500 greedy；✅ R1：T=0.6 / top-p 0.95</td>
+<td>⚠️ 「取最好」比「取平均」天然高。⟹ 处置：<strong>没写汇总方式的，按「可能取了最好」来打折</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td><strong>抽取规则 + 判分器是什么？</strong> 精确匹配 / 正则 / 跑测试 / LLM 裁判</td>
+<td>报告的评测设置章节；harness 的任务配置文件</td>
+<td>⚠️ 抽取失败 = 判错，而失败率几乎没人报（05 章）。⟹ 处置：<strong>自己跑一遍，先看抽取失败率</strong></td>
+</tr>
+<tr>
+<td>⑧</td>
+<td><strong>有没有用工具？</strong> 计算器 / 代码执行 / 检索 / 联网</td>
+<td>报告里的 "with tool use" / "code interpreter" 字样</td>
+<td>⚠️ ★★★ 用工具的数学分数和纯模型推理<strong>不是一个量</strong>。⟹ 处置：<strong>带工具的行单独成组</strong></td>
+</tr>
+<tr>
+<td>⑨</td>
+<td><strong>agentic 的话：脚手架 / 尝试次数 / 预算？</strong></td>
+<td>✅ V3、R1 都写了用 Agentless</td>
+<td>⚠️ <strong>量级差异</strong>（2.67% → 18.00%）。⟹ 处置：<strong>没写脚手架的 agentic 分数直接作废</strong></td>
+</tr>
+<tr>
+<td>⑩</td>
+<td><strong>污染怎么排除的？</strong> 基准发布日 vs 训练截止日；做了什么去污染</td>
+<td>✅ R1 报告：cutoff 2024-07 + 10-gram 过滤 + 只用 2023 前竞赛题</td>
+<td>⚠️ 必要条件已满足就得怀疑。⟹ 处置：<strong>换一个训练截止后才发布的基准交叉验证</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 怎么用这张表打分：
+      ★★ 十问里答不上 3 个以上 ⟹ 这个分数【只能当非常粗的参考】。
+      ⚠️ 第 ⑤ ⑨ 两问任意一个答不上 ⟹ ★★★ 直接【不要拿它和别的数比大小】，
+         因为这两项的影响量级比噪声大一个数量级。
+      ⟹ 🔑🔑 全都答得上来 ⟹ 恭喜，你遇到了一份好报告。
+         ✅ 本书里符合这个标准的样本就是 [10 章](10-DeepSeek的评测口径.md) 那两份。
 </code></pre></div>
 
 <hr />
 <h2 id="119">11.9 本章总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 五条带走：
+<div class="codehilite"><pre><span></span><code>    🔑 七条带走：
 
     ① ★★★ 分数不是模型的属性，是【一次实验的结果】
        ⟹ 读法永远是&quot;在某套设置下得了多少分&quot;
     ② ★★ 三步法：先分类 → 问该类的问题 → 问三个共通问题
     ③ ★★★ 三个共通问题最值钱：
        超过噪声吗 / 自己跑的还是抄的 / 这基准过期了吗
-    ④ ★★ 三大误读：把噪声当差距、把榜单当业务预期、
-       把偏好当能力
-    ⑤ 🔑🔑 ★★★ 榜单的作用是【排除明显不行的】，
+    ④ ★★★ 噪声可以自己算：SE = √(p(1−p)/n)
+       ⟹ MMLU（14042 题）约 0.28 pp，✅ 正好解释了 DeepSeek 那条 0.3 的线
+       ⟹ ⚠️ AIME（30 题）约 9.1 pp，★★★ 差 3 个百分点 = 多对一道题 = 没差别
+       ⟹ 🔑 一句口诀：先问【这个基准有多少道题】
+    ⑤ ⚠️⚠️ 采样 k 次取平均只消掉【同一道题的运气】，
+       ★★★ 消不掉【题目只有 30 道】这件事
+    ⑥ ⚠️⚠️ pass@1 有两种算法（无偏估计量 vs 多次采样取平均），
+       ★★★ 只在 k=1 时一致；两张榜都写 pass@1 也不代表能比
+    ⑦ ★★ 三大误读：把噪声当差距、把榜单当业务预期、把偏好当能力
+       ⟹ 外加两个换算错误：★★★ 百分比 ≠ 百分点，耗时减少 X% ≠ 加速 X%
+
+    ⟹ 🔑🔑 ★★★ 榜单的作用是【排除明显不行的】，
        不是【选出最适合你的】。
        ⟹ 后者只有一个办法，就是下一章。
 </code></pre></div>

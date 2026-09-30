@@ -255,12 +255,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="61">6.1 问题本身</h2>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：数据污染（data contamination），也叫【测试集泄漏】
 
-    ┌────────────────────────────────────────────────┐
-    │  ① 评测集是公开的（挂在 GitHub / HuggingFace）  │
-    │  ② 训练大模型要抓【尽可能多的网页】              │
-    │  ③ ⟹ ★★ 评测题和标准答案进了训练数据           │
-    │  ④ ⟹ 模型不是在解题，是在【回忆】               │
-    └────────────────────────────────────────────────┘
+    ┌─ 污染是怎么自然发生的 ─────────────────────
+    │  ① 评测集是公开的（挂在 GitHub / HuggingFace）
+    │  ② 训练大模型要抓【尽可能多的网页】
+    │  ③ ⟹ ★★ 评测题和标准答案进了训练数据
+    │  ④ ⟹ 模型不是在解题，是在【回忆】
+    └──────────────────────────────────────────
 
     ⟹ 🔑 结果：分数虚高，★★★ 且【无法从分数本身察觉】。
 </code></pre></div>
@@ -303,11 +303,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="63">6.3 ★ 怎么检测</h2>
-<p><strong>没有可靠方法，只有几类信号（⚠️ 都只能提示嫌疑，不能证明）</strong>：</p>
+<p><strong>没有可靠方法，只有几类信号（⚠️ 都只能提示嫌疑，不能证明）</strong>。</p>
+<h3 id="631">6.3.1 四类常用信号</h3>
 <div class="codehilite"><pre><span></span><code>    ① ★ 字符串匹配 / n-gram 重叠
        ⟹ 在训练数据里搜评测题的原文
        ⟹ ✅ 直接、可靠
        ⟹ ⚠️ 但前提是【你能拿到训练数据】——闭源模型完全没戏
+       ⟹ ★★ 具体怎么算，§6.3.2 走一遍
 
     ② ★★ 看模型对题目的&quot;熟悉度&quot;异常
        ⟹ 让模型【续写题目本身】，看它能不能背出后半句
@@ -319,18 +321,285 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        ⟹ ★★★ 真会做的模型：分数基本不变
              背答案的模型：★ 分数显著下降
        ⟹ 🔑 这一招简单又有效，值得记住
+       ⟹ ★ 它最大的好处：★★★ 只需要能调用模型，【闭源模型也能做】
 
     ④ ★ 新旧对比
        ⟹ 拿【训练截止日之后】才发布的新题去测
        ⟹ 新题分数远低于老题 ⟹ ★★ 强烈提示污染
+       ⟹ 🔑 §6.5b 会看到一篇论文用这一招把污染抓了个正着
 </code></pre></div>
 
+<h3 id="632-n-gram">6.3.2 ★★★ n-gram 重叠率到底怎么算：走一遍具体例子</h3>
+<p><strong>先把名词拆开</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ n-gram（n 元组）= 连续 n 个 token 组成的一小段。
+      ⟹ 这里的 token 是【按空白切出来的词】，不是模型分词器的 token。
+      ⟹ ★★ 框架用的是 13-gram，即【连续 13 个词】。
+
+    ✅ 两处一手依据：
+      ① lm_eval/decontamination/decontaminate.py:21 的注释原文：
+         &quot;In the standard use case, an overlap occurs when any of the 13-grams ...&quot;
+      ② lm_eval/decontamination/janitor.py:113 的默认参数：ngram_n: int = 13
+      ⟹ ★ 这个 13 沿用的是 GPT-3 论文的去污染做法。
+</code></pre></div>
+
+<p>✅ 切词之前先做归一化，源码只做两件事（<code>janitor.py:130-134</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/decontamination/janitor.py:130-134</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">translation_table</span> <span class="o">=</span> <span class="nb">str</span><span class="o">.</span><span class="n">maketrans</span><span class="p">(</span>
+    <span class="n">string</span><span class="o">.</span><span class="n">ascii_lowercase</span> <span class="o">+</span> <span class="n">string</span><span class="o">.</span><span class="n">ascii_uppercase</span><span class="p">,</span>  <span class="c1"># 这些字符</span>
+    <span class="n">string</span><span class="o">.</span><span class="n">ascii_lowercase</span> <span class="o">*</span> <span class="mi">2</span><span class="p">,</span>                        <span class="c1"># 变成这些（= 全转小写）</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">delete_chars</span><span class="p">,</span>                                 <span class="c1"># 这些删掉（= string.punctuation）</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ★ 就两件事：① 英文全转小写 ② 删掉 ASCII 标点
+    ⟹ ⚠️ 注意 string.punctuation 只含 ASCII 标点，
+       ★★ 中文全角标点「，。？」【一个都不删】。这一点后面会要命。
+</code></pre></div>
+
+<p><strong>现在走一遍。测试题</strong>（⚠️ 这句题面在很多材料里被当成 GSM8K 的第一条样例引用，<strong>但我没在本仓库的一手 PDF 或数据集文件里核对过</strong>；★ 这一节的算术和它是不是原题无关，换任何一句 20 词的英文都能按同样的步骤走）：</p>
+<div class="codehilite"><pre><span></span><code>    Natalia sold clips to 48 of her friends in April, and then she
+    sold half as many clips in May.
+</code></pre></div>
+
+<p><strong>第 1 步：归一化 + 切词</strong> ⟹ 得到 20 个词：</p>
+<div class="codehilite"><pre><span></span><code>     1 natalia    2 sold      3 clips     4 to        5 48
+     6 of         7 her       8 friends   9 in       10 april
+    11 and       12 then     13 she      14 sold     15 half
+    16 as        17 many     18 clips    19 in       20 may
+</code></pre></div>
+
+<p><strong>第 2 步：滑出所有 13-gram 窗口</strong> ⟹ 窗口数 = 20 − 13 + 1 = <strong>8 个</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>窗口</th>
+<th>覆盖第几到第几个词</th>
+<th>内容（首 … 尾）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>W1</td>
+<td>1 – 13</td>
+<td>natalia sold clips … then she</td>
+</tr>
+<tr>
+<td>W2</td>
+<td>2 – 14</td>
+<td>sold clips to … she sold</td>
+</tr>
+<tr>
+<td>W3</td>
+<td>3 – 15</td>
+<td>clips to 48 … sold half</td>
+</tr>
+<tr>
+<td>W4</td>
+<td>4 – 16</td>
+<td>to 48 of … half as</td>
+</tr>
+<tr>
+<td>W5</td>
+<td>5 – 17</td>
+<td>48 of her … as many</td>
+</tr>
+<tr>
+<td>W6</td>
+<td>6 – 18</td>
+<td>of her friends … many clips</td>
+</tr>
+<tr>
+<td>W7</td>
+<td>7 – 19</td>
+<td>her friends in … clips in</td>
+</tr>
+<tr>
+<td>W8</td>
+<td>8 – 20</td>
+<td>friends in april … clips in may</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第 3 步：拿这 8 个窗口去训练语料里搜。命中一个就算这道题被污染。</strong></p>
+<p>★★ 下面用同一段"博客转载"当训练语料，逐步改动它，看重叠率怎么变（✅ 每一行我都跑过一遍）：</p>
+<table>
+<thead>
+<tr>
+<th>训练语料长什么样</th>
+<th>断掉的窗口</th>
+<th>还命中</th>
+<th>重叠率</th>
+<th>n-gram 判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>原文照抄</strong>："In one popular example, <strong>Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May</strong>, which makes 72 in total."</td>
+<td>无</td>
+<td><strong>8</strong></td>
+<td><strong>8/8 = 100%</strong></td>
+<td>判为<strong>污染</strong></td>
+</tr>
+<tr>
+<td>把第 <strong>1</strong> 个词 <code>Natalia</code> 换成 <code>Maria</code></td>
+<td>只有 W1 含第 1 词 ⟹ 断 1 个</td>
+<td><strong>7</strong></td>
+<td><strong>7/8 = 87.5%</strong></td>
+<td>判为污染</td>
+</tr>
+<tr>
+<td>把第 <strong>3</strong> 个词 <code>clips</code> 换成 <code>stickers</code></td>
+<td>W1、W2、W3 含第 3 词 ⟹ 断 3 个</td>
+<td><strong>5</strong></td>
+<td><strong>5/8 = 62.5%</strong></td>
+<td>判为污染</td>
+</tr>
+<tr>
+<td>在第 <strong>10</strong> 个词 <code>April</code> 后<strong>插入两个词</strong> <code>last year</code></td>
+<td>⚠️ <strong>全部 8 个</strong>（见下）</td>
+<td><strong>0</strong></td>
+<td><strong>0/8 = 0%</strong></td>
+<td>⚠️ 判为<strong>"干净"</strong></td>
+</tr>
+<tr>
+<td><strong>整句改写</strong>："A well known word problem has Natalia selling 48 clips to friends during April, then only half that number the next month, giving 72 altogether."</td>
+<td>全部 8 个</td>
+<td><strong>0</strong></td>
+<td><strong>0/8 = 0%</strong></td>
+<td>⚠️ 判为<strong>"干净"</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>为什么改第 10 个词就全断了</strong>：题干只有 20 个词，窗口长 13，所以<strong>每一个窗口都必然覆盖第 8 到第 13 个词</strong>（W1 覆盖 1–13，W8 覆盖 8–20，交集是 8–13）。⟹ 🔑 <strong>第 10 个词落在这段"公共核心"里，动它等于同时打断所有 8 个窗口。</strong> 而第 1 个词只被 W1 覆盖，动它只断 1 个。</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 ★★★ 这张表就是 n-gram 去污染的全部真相：
+
+      ★ 对【原文照抄】的泄漏：命中率 100%，查得又快又准。
+      ⚠️ 对【改写过】的泄漏：命中率 0%，★★★ 一个都查不出来。
+
+    ⟹ ★★ 而改写一道题，对拿着训练数据的人来说是几乎零成本的操作。
+    ⟹ 🔑 §6.5b 引的 LiveCodeBench 论文原话就是这个意思：
+       &quot;can be evaded using simple strategies like rephrasing&quot;。
+</code></pre></div>
+
+<h3 id="632b-n-gram">6.3.2b ⚠️ n-gram 还有三个"结构性盲区"</h3>
+<p>★★ 上面那张表说的是"能被绕过"。下面三条更糟：<strong>有些题它根本没法参与检测。</strong></p>
+<table>
+<thead>
+<tr>
+<th>盲区</th>
+<th>为什么</th>
+<th>✅ 实测结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>题面比 n 短</strong></td>
+<td>窗口数 = 词数 − 13 + 1，词数 &lt; 13 时算出来 ≤ 0</td>
+<td><code>"What is the capital of France?"</code> 归一化后 6 个词 ⟹ <strong>0 个 13-gram</strong> ⟹ ⚠️ 这道题永远检测不出污染</td>
+</tr>
+<tr>
+<td><strong>中文题</strong></td>
+<td>归一化只删 ASCII 标点，切词靠 <code>s.split()</code>（按空白切）。中文不打空格</td>
+<td><code>"中国的首都是哪里？"</code> ⟹ <code>split()</code> 只得到 <strong>1 个 token</strong> ⟹ <strong>0 个 13-gram</strong><br><code>"小明有 12 盒饼干，每盒 6 块，一共几块？"</code> ⟹ 5 个 token ⟹ <strong>0 个 13-gram</strong></td>
+</tr>
+<tr>
+<td><strong>n 取多少全靠拍</strong></td>
+<td>n 小 ⟹ 常见套话到处都是，假阳性爆炸；n 大 ⟹ 改一个词就断，假阴性爆炸</td>
+<td>同一道 20 词的题：n=5 ⟹ 16 个窗口；n=8 ⟹ 13 个；n=13 ⟹ 8 个；n=20 ⟹ 1 个；<strong>n=21 ⟹ 0 个</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ⚠️⚠️⚠️ ★★★ 请把中文那一行读两遍：
+
+      【lm-eval 自带的 n-gram 去污染，对中文评测集是完全失效的。】
+
+      ⟹ 它不是&quot;效果差&quot;，是【一个窗口都产生不了】，
+         ⟹ 于是对每一道中文题都返回&quot;干净&quot;。
+      ⟹ 🔑 所以看到&quot;我们做了 n-gram 去污染&quot;这句话，
+         ★★ 对 C-Eval / CMMLU / CMath 这类中文集，它等于什么都没做。
+      ⟹ ★ 要对中文做，必须先自己换一套切分（按字符、或者先分词），
+         ⚠️ 而&quot;按 13 个汉字&quot;和&quot;按 13 个中文词&quot;是两个完全不同的口径，
+         同一份语料能得出 100% 和 0% 两种结论。
+</code></pre></div>
+
+<h3 id="633">6.3.3 ★★ 五种检测方法：能查出什么、查不出什么、假阳假阴</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>怎么做</th>
+<th>★ 前提条件</th>
+<th>★ 能查出</th>
+<th>⚠️ 查不出</th>
+<th>⚠️ 假阳（误报污染）</th>
+<th>⚠️ 假阴（漏掉污染）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① n-gram / 字符串重叠</strong></td>
+<td>在训练语料里搜测试题的连续 13 词窗口（§6.3.2）</td>
+<td>★★ <strong>必须拿到训练语料</strong>。闭源模型完全没戏</td>
+<td>原文照抄式的泄漏</td>
+<td>改写、翻译、换数字后的泄漏</td>
+<td>n 取太小时，常见套话会命中</td>
+<td>⚠️ <strong>极高</strong>：改一个词就归零；中文题和短题面直接 0 个窗口</td>
+</tr>
+<tr>
+<td><strong>② 困惑度对比</strong><br>（perplexity gap，困惑度 = 模型对一段文本有多"意外"，越低越熟悉）</td>
+<td>比较模型对"测试集原文"和"同分布新文本"的困惑度；背过的文本困惑度异常低</td>
+<td>★ 要能拿到 logprob（对数概率）。⚠️ 很多闭源 API 不给</td>
+<td>逐字背下来的文本</td>
+<td>只见过一两次、没背下来的</td>
+<td>题面本身就很模板化、很好预测时</td>
+<td>⚠️ 高：模型做过大量同类数据时整体困惑度都低，没有对比基线</td>
+</tr>
+<tr>
+<td><strong>③ canary（金丝雀串）</strong></td>
+<td>数据集发布时就在文件里埋一段随机字符串；事后问模型能不能复述它</td>
+<td>★★★ <strong>必须在数据集发布时就埋好</strong>，事后补不了</td>
+<td>"这个文件整体被爬过"这件事</td>
+<td>题目被人转述、只抓到题不抓到 canary 的情况</td>
+<td>★ 很低（随机串不会被碰巧生成）</td>
+<td>⚠️ <strong>很高</strong>：数据清洗流程常把这种怪行删掉，题却留下了</td>
+</tr>
+<tr>
+<td><strong>④ 成员推断</strong><br>（MIA = Membership Inference Attack，成员推断攻击）</td>
+<td>用打分函数或判别器，判断"这一条样本在不在训练集里"</td>
+<td>★ 要一批<strong>确定不在</strong>训练集里的同分布对照样本</td>
+<td>统计上的整体倾向</td>
+<td>⚠️ 单条样本的归属</td>
+<td>对照样本分布没对齐时整体偏高</td>
+<td>⚠️ 高</td>
+</tr>
+<tr>
+<td><strong>⑤ 黑盒行为测试</strong><br>（扰动 + 时间切分，即 §6.3.1 的 ③ 和 ④）</td>
+<td>打乱选项、改写题面；或只用训练截止日之后的新题</td>
+<td>★★★ <strong>只要能调用模型</strong>。闭源也能做</td>
+<td>"分数依赖题目的表面形式"这件事；污染的<strong>整体规模</strong></td>
+<td>⚠️ 不能定位是<strong>哪一条</strong>题泄漏的</td>
+<td>改写顺手改变了难度</td>
+<td>模型泛化好时掉分不明显</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★ 框架里有对应的模块：<br />
-<code>✅ lm_eval/decontamination/     ← 顶层去污染模块
-    ✅ lm_eval/filters/decontamination.py ← 过滤器形式的实现</code><br />
-⚠️ 但要清楚：<strong>它做的是 ① 那种字符串匹配</strong>，<br />
-只有当你<strong>手里有训练数据</strong>时才用得上。★ 对评估别人家的模型，帮不上忙。</p>
+<p>⚠️ <strong>④ 那一行要说清一句话</strong>：近年有工作报告<strong>单条样本</strong>的成员推断在大语言模型上接近随机猜（代表性的一篇是 Duan et al., 2024, <em>Do Membership Inference Attacks Work on Large Language Models?</em>）。⚠️ <strong>这条我没有在本仓库的一手 PDF 里核对过</strong>，引用前请自己查证；★ 我在这里只用它支撑一个较弱的结论：<strong>MIA 目前不适合用来给单道题下"这题泄漏了"的判断。</strong></p>
+<p>🔑 <strong>★★★ 把整张表压成一句可操作的话</strong>：<br />
+```<br />
+    ★ ① ② ③ ④ 都需要【你有训练数据或模型内部信息】<br />
+    ⟹ ⚠️ 也就是说：★★★ 评估【别人家的闭源模型】时，它们全都用不上。</p>
+<div class="codehilite"><pre><span></span><code>★★ 只有 ⑤ 黑盒行为测试是你一定能做的。
+⟹ 🔑 这就是为什么 §6.4 的【时间切分】最后成了行业主流答案——
+   不是因为它最精确，★★ 是因为它是唯一【谁都能做】的那一个。
+</code></pre></div>
+
+<p>```</p>
+<p>★★ 框架里的对应模块，以及一个必须说清的坑：<br />
+<code>✅ lm_eval/decontamination/      ← 顶层去污染模块，13-gram 那一套在这里
+    ⚠️ lm_eval/filters/decontamination.py ← ★★★ 这个是【空壳】</code><br />
+⚠️ <strong>后者值得单独点出来</strong>：那个文件里写着 <code>@register_filter("decontaminate")</code>，看上去是"过滤器形式的实现"，✅ 但 <code>lm_eval/filters/__init__.py</code> 的 import 行是 <code>from . import custom, extraction, selection, transformation</code>——<strong>没有 <code>decontamination</code></strong>，全仓库也没有别处 import 它。⟹ ★★ 装饰器从不执行，过滤器<strong>没被注册</strong>；而且它的 <code>apply()</code> 函数体就是一句 <code>pass</code>。🔑 <strong>别按文件名推断功能。</strong><br />
+⚠️ 至于能用的那个顶层模块：<strong>它做的是 ① 那种字符串匹配</strong>，要求你<strong>先把自己训练语料的全部 13-gram 预先建好索引</strong>（源码注释里写了要跑 <code>scripts/clean_training_data</code> 生成 <code>info.json</code> 和一堆排序好的 ngram 文件）。★ 对评估别人家的模型，帮不上忙。</p>
 </blockquote>
 <hr />
 <h2 id="64">6.4 ★★ 缓解手段（都有代价）</h2>
@@ -340,6 +609,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <th>手段</th>
 <th>做法</th>
 <th>代价</th>
+<th>★ 谁能做</th>
 </tr>
 </thead>
 <tbody>
@@ -347,26 +617,31 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><strong>私有测试集</strong></td>
 <td>★ 只公布分数，不公布题目</td>
 <td>⚠️ 无法独立复现，要信任测试方</td>
+<td>只有测试方</td>
 </tr>
 <tr>
 <td><strong>动态生成</strong></td>
 <td>★ 每次考的题现场生成</td>
 <td>⚠️ 题目质量难保证；难度不稳定</td>
+<td>任何人</td>
 </tr>
 <tr>
 <td><strong>时间切分</strong></td>
 <td>★★ 只用模型训练截止日之后的新题</td>
 <td>⚠️ 题量少；每隔几个月就要重做</td>
+<td>任何人</td>
 </tr>
 <tr>
 <td><strong>扰动重排</strong></td>
 <td>打乱选项、改写题面</td>
 <td>⚠️ 改写可能改变难度</td>
+<td>任何人</td>
 </tr>
 <tr>
 <td><strong>人工新题</strong></td>
 <td>请专家现出题</td>
 <td>⚠️★ 极贵，量小</td>
+<td>有预算的人</td>
 </tr>
 </tbody>
 </table>
@@ -380,7 +655,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ⟹ ⚠️ 代价是评测集要一直维护，且旧模型和新模型的可比区间会不断变化。
 </code></pre></div>
 
-<p>```</p>
+<p>```<br />
+⚠️ <strong>它也有一个容易被忽略的前提</strong>：你得知道模型的<strong>训练截止日</strong>（cutoff date），而这个日期是厂商自己声明的，★ 既不可验证，也常常只精确到月。⟹ 🔑 所以严格说，时间切分保证的是"很可能没被污染"，不是"证明没被污染"。</p>
 </blockquote>
 <hr />
 <h2 id="65">6.5 ★★★ 一个必须理解的结构性问题</h2>
@@ -416,9 +692,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="65b">6.5b ⭐⭐ ✅ 一份论文把污染【当场抓了个正着】</h2>
-<p>★★ 前面 6.1–6.5 讲的是"污染在原理上会怎样"。<br />
-这一节换成实证：<strong>LiveCodeBench 论文</strong>（arXiv:2403.07974，46 页，已校验）<br />
-用一个极干净的实验设计，把污染【画成了一条曲线】。</p>
+<p>★★ 前面 6.1–6.5 讲的是"污染在原理上会怎样"，这一节换成实证：<strong>LiveCodeBench 论文</strong>（arXiv:2403.07974，46 页，✅ 本仓库 <code>papers/</code> 下有原文，下面每一段引文我都回溯核对过页码）用一个极干净的实验设计，把污染【画成了一条曲线】。</p>
 <h3 id="_1">它的设计：给每道题打上"发布日期"</h3>
 <p>✅ 论文原文（摘要）：</p>
 <blockquote>
@@ -440,47 +714,68 @@ between <strong>May 2023 and May 2024</strong>."</p>
 <p>"While previous works have attempted decontamination using both exact and fuzzy matches,<br />
 it can be a non-trivial task and <strong>can be evaded using simple strategies like rephrasing</strong>."</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 这正是 6.3 那一节的核心难点，也是 10.7b.3 里 DeepSeek 自己承认的
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 这正是 §6.3.2 那张表最后两行算出来的东西：
+      ★ 改一个词，13-gram 重叠率就从 100% 掉到 0%。
+   ⟹ ★ 也是 10.7b.3 里 DeepSeek 自己承认的
       &quot;n-gram 挡不住换句话说的题&quot;。
    ⟹ 🔑 LiveCodeBench 的答案是：★★★ 不去检测污染，而是【让污染在物理上不可能发生】
       —— 用模型训练截止日之后才出现的题。
 </code></pre></div>
 
 <h3 id="_2">✅ 抓到的结果：分数在截止日那天"掉下悬崖"</h3>
-<p>✅ 论文原文（Figure 1 说明 + 正文）：</p>
+<p>✅ 论文原文（p2，Figure 1 说明）：</p>
 <blockquote>
 <p>"Notice that <strong>DeepSeek-Instruct and GPT-4-O perform considerably worse on problems<br />
 released since September and November 2023 (their release and cutoff dates respectively!)</strong><br />
 – indicating potential contamination for the earlier problems."</p>
+</blockquote>
+<p>✅ 论文原文（p4，Empirical Findings 第 1 条）：</p>
+<blockquote>
 <p>"We observe a <strong>stark drop</strong> in the performance of DeepSeek, GPT-4-O, and Codestral on<br />
 LeetCode problems released <strong>after Aug 2023, Oct 2023, and Jan 2024</strong> (Figure 1)."</p>
+<p>⚠️ <strong>这两段给的月份不一样，别混用</strong>：前一段的「9 月 / 11 月」是<strong>模型自己的发布日 / 训练截止日</strong>，后一段的「8 月 / 10 月 / 1 月」是<strong>实际观察到断崖的月份</strong>。✅ 论文 p11 解释了这个错位：断崖出现在 "after Aug. 2023 (<strong>right before its release date</strong>)"——★★ 掉点比官方声明的截止日<strong>早了一点</strong>，这本身就是个有意思的细节（训练数据的实际截止通常早于模型发布）。⟹ 🔑 引用时必须说清你报的是哪一个口径。</p>
 </blockquote>
-<p>✅ 最刺眼的一个数字（正文 §5.1）：</p>
+<p>✅ 最刺眼的一个数字（p11，§5.1）：</p>
 <blockquote>
 <p>"we find that even the <strong>DS-Base-33B</strong> model also suffers from contamination dropping from<br />
 <strong>Pass@1 ~60 in May problems to Pass@1 ~0 in September LeetCode problems</strong>."</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>   ⚠️⚠️⚠️ ★★★ 请把这个数字读三遍：
 
-   ┌───────────────────────────────────────────────────────────┐
-   │  同一个模型、同一个平台（LeetCode）、同一种题型、          │
-   │  同一套评测代码，唯一的差别是【题目的发布月份】：          │
-   │                                                            │
-   │      5 月发布的题  →  Pass@1 ≈ 60                          │
-   │      9 月发布的题  →  Pass@1 ≈ 0                           │
-   └───────────────────────────────────────────────────────────┘
+   ┌─ 唯一的差别是【题目的发布月份】────────────────
+   │  同一个模型（DS-Base-33B，权重一个字没动）
+   │  同一个平台（LeetCode）
+   │  同一种题型、同一套评测代码、同一个 Pass@1 指标
+   │
+   │      5 月发布的题  →  Pass@1 ≈ 60
+   │      9 月发布的题  →  Pass@1 ≈ 0
+   └───────────────────────────────────────────
 
-   ⟹ 🔑🔑🔑 这不是&quot;能力下降&quot;，能力不会在一个月内从 60 掉到 0。
-      ★★★ 这是【记忆的边界被看见了】。
+   ⟹ 🔑🔑🔑 ★★★ 这【不是模型能力在退化】——
+      模型是同一份权重，它根本没有&quot;随时间变化&quot;这回事。
+      变的只有【出题的月份】。
+   ⟹ ★★★ 这是【记忆的边界被看见了】。
       ⚠️ 5 月那 60 分里，有相当大一部分不是&quot;会做&quot;，是&quot;见过&quot;。
 </code></pre></div>
 
-<p>✅ 另一条同样干净的对照（Codestral）：</p>
+<blockquote>
+<p>⚠️ <strong>口径备注</strong>：★ 论文写的是 "~60" 和 "~0"（约数，从 Figure 1 的曲线上读的），不是精确到小数的表格值。⟹ 🔑 引用时要带上这个"约"字，别写成 "60.0 → 0.0"。</p>
+</blockquote>
+<p>✅ 另一条同样干净的对照（Codestral，p11）：</p>
 <blockquote>
 <p>"Codestral achieves <strong>Pass@1 36.5</strong> on problems released between May'23 and Jan'24 and<br />
 <strong>Pass@1 28.3</strong> on problems since Feb'24."</p>
 </blockquote>
-<p>✅ 而且论文给出了一个非常重要的<strong>阴性对照</strong>（negative control）：</p>
+<div class="codehilite"><pre><span></span><code>   ★ 这一跳该怎么说（⚠️ 这是本章最容易说错的地方）：
+
+     36.5 − 28.3 = 8.2   ⟹ ✅ 掉了【8.2 个百分点】（8.2 pp）
+     8.2 ÷ 36.5 ≈ 22.5%  ⟹ ✅ 【相对】掉了约 22.5%
+
+   ⟹ ⚠️ 说&quot;掉了 8.2%&quot;是错的：读者会理解成相对幅度，
+      而相对 8.2% 只对应掉 3.0 个百分点。
+</code></pre></div>
+
+<p>✅ 而且论文给出了一个非常重要的<strong>阴性对照</strong>（negative control，p11）：</p>
 <blockquote>
 <p>"Irrespective of the release or cutoff dates, we <strong>do not find any drastic performance<br />
 variations across the months</strong> [for GPT-4-Turbo, Gemini-Pro, Mistral-L, Claude-3s],<br />
@@ -501,27 +796,73 @@ other platforms</strong>."</p>
       🔑 这个交叉模式，指向的唯一合理解释就是：★★★ LeetCode 老题进了训练集。
 </code></pre></div>
 
-<h3 id="_3">✅ 顺带抓到的第二件事：过拟合到基准上</h3>
-<p>★★ 论文还做了一个 6.5 节"Goodhart 定律"的直接证据。</p>
-<p>✅ 原文：</p>
 <blockquote>
-<p>"<strong>DS-Ins-1.3B</strong> which achieves <strong>59.8% Pass@1 on HumanEval+</strong> but only <strong>26.3% on LCB-Easy</strong>."</p>
+<p>★★ <strong>把这个实验设计抽象出来，你自己也能用</strong>：<br />
+<code>★ 怀疑某个分数虚高时，找一个【只有污染能解释、别的解释都解释不通】的切法。
+    ⟹ 本例的切法是【时间 × 平台】两个维度交叉。
+    ⟹ 🔑 单看一个维度（只看时间、或只看平台）都会留下替代解释；
+       ★★★ 两个维度一交叉，替代解释就全被排除了。</code></p>
+</blockquote>
+<h3 id="_3">✅ 顺带抓到的第二件事：过拟合到基准上</h3>
+<p>★★ 论文还给了 §6.5 那条"古德哈特定律"的直接证据。</p>
+<p>✅ 原文（p12）：</p>
+<blockquote>
+<p>"This potential overfitting is particularly exemplified by <strong>DS-Ins-1.3B</strong> which achieves<br />
+<strong>59.8% Pass@1 on HumanEval+</strong> but only <strong>26.3% on LCB-Easy</strong>."</p>
+</blockquote>
+<p>✅ 原文（p13）：</p>
+<blockquote>
 <p>"<strong>DS-Ins-33B</strong> is merely <strong>4.3 point behind GPT-4-Turbo on HumanEval+</strong> but <strong>16.2 points<br />
 (69%)</strong> [behind] on LCB code generation scenario."</p>
-<p>"the green-shaded cluster contains <strong>base models or closed-access models</strong>, while the<br />
-<strong>red-shaded cluster primarily comprises fine-tuned variants of open-access models</strong>.<br />
-The well-separated clusters suggest that many models that perform well on HumanEval<br />
+</blockquote>
+<p>✅ 原文（p12，散点图那一段）：</p>
+<blockquote>
+<p>"We find only a <strong>moderate correlation of 0.72</strong>, with much larger performance variations<br />
+on LCB-Easy. … the <strong>green-shaded</strong> cluster contains <strong>base models or closed-access models</strong>,<br />
+while the <strong>red-shaded</strong> cluster primarily comprises <strong>fine-tuned variants of open-access<br />
+models</strong>. The well-separated clusters suggest that many models that perform well on HumanEval<br />
 might be <strong>overfitting on the benchmark</strong>."</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 这张散点图（论文 Figure 5）说的是：
+<p>★★ 把这三段数字排成一张表，口径一次说清（⚠️ 两列都是 Pass@1，但<strong>评测集不同、难度不同</strong>，所以<strong>只能比"同一个模型在两列之间的落差"，不能把两列的绝对值当同一个尺子</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>HumanEval+ Pass@1</th>
+<th>LCB-Easy / LCB 代码生成 Pass@1</th>
+<th>落差</th>
+<th>★ 说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DS-Ins-1.3B</strong></td>
+<td><strong>59.8%</strong></td>
+<td><strong>26.3%</strong>（LCB-Easy）</td>
+<td><strong>33.5 个百分点</strong>（相对低 56%）</td>
+<td>★★★ 过拟合的典型：一个 1.3B 的模型在 HumanEval+ 上接近 60 分</td>
+</tr>
+<tr>
+<td><strong>DS-Ins-33B</strong> vs <strong>GPT-4-Turbo</strong></td>
+<td>落后 <strong>4.3 个百分点</strong></td>
+<td>落后 <strong>16.2 个百分点</strong>（论文同时给了相对值 <strong>69%</strong>）</td>
+<td>同一对模型，两个基准上的差距<strong>相差近 4 倍</strong></td>
+<td>⚠️ <strong>注意</strong>：<code>16.2 points</code> 是绝对差（百分点），<code>69%</code> 是相对差，✅ 都是论文自己给的，<strong>但不能互换写</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这张表最容易写错的一处</strong>：论文那句 "16.2 points (69%)" 里，<strong>两个数说的是同一个差距的两种口径</strong>。★★ 如果你在自己的报告里写"落后 69 分"，就是把相对差当成了百分点——<strong>错了 4 倍</strong>。🔑 规矩还是那条：<strong>两个百分比相减用"百分点"，要讲相对幅度就把分母写出来。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 论文 Figure 5 那张散点图说的是：
 
-   ★ 横轴 = HumanEval+ 分数，纵轴 = LiveCodeBench-Easy 分数。
-   ★★ 如果两个基准测的是同一种能力，所有点该落在对角线附近。
-   ⚠️ 实际却分成两团：
-      ● 绿色团（落在对角线上）= base 模型 + 闭源模型
-      ● 红色团（HumanEval+ 高但 LCB 低）= 开源模型的微调版本
+   ★ 横轴 = HumanEval+ 的 Pass@1，纵轴 = LiveCodeBench-Easy 的 Pass@1。
+   ★★ 如果两个基准测的是同一种能力，所有点该落在 x = y 这条对角线附近。
+   ✅ 实际的相关系数只有 0.72（论文原话 &quot;moderate correlation&quot;），点分成两团：
+      ● 绿团（贴着对角线）      = base 模型 + 闭源模型
+      ● 红团（HumanEval+ 高、LCB 低）= 开源模型的微调版本
 
-   ⟹ 🔑🔑 ★★★ 这就是 Goodhart 定律的可视化：
+   ⟹ 🔑🔑 ★★★ 这就是古德哈特定律的可视化：
       ⚠️ 【一个指标一旦成为优化目标，它就不再是一个好指标。】
       ★★ 微调时刻意往 HumanEval 这类基准上使劲，
       ⟹ 分数上去了，但【上去的那部分没有迁移到别的题上】。
@@ -538,10 +879,11 @@ might be <strong>overfitting on the benchmark</strong>."</p>
 
    ② ★★★ 判断污染最有力的证据不是绝对分数，是【时间切片曲线】。
       ⟹ 🔑 单点分数永远说不清；分数在截止日附近的断崖说得清。
+      ⟹ ★★ 而且要配阴性对照：别的模型、别的平台掉不掉。
 
    ③ ★★ 一个模型在两个&quot;测同种能力&quot;的基准上分数背离，
       ⟹ ⚠️ 大概率其中一个被过拟合了。
-      ⟹ 🔑 所以 11 章会说：★★★ 永远不要只看一个基准。
+      ⟹ 🔑 所以 [11 章](11-怎么读懂一张榜单.md) 会说：★★★ 永远不要只看一个基准。
 </code></pre></div>
 
 <hr />
@@ -552,19 +894,24 @@ might be <strong>overfitting on the benchmark</strong>."</p>
        ⟹ ★ 单个评测集虚高的可能性远大于全部一起虚高
 
     ② ★★ 关注【新旧题目的分数差】
-       ⟹ 老题 85 分、新题 55 分 ⟹ ★★★ 高度可疑
+       ⟹ ⚠️ 老题 85 分、新题 55 分（差 30 个百分点）⟹ ★★★ 高度可疑
+       ⟹ ★ 前提：两批题的【难度分布要可比】，
+          否则你测的是&quot;新题更难&quot;，不是污染（§6.5b 的阴性对照就是在解决这个）
 
     ③ ★ 一定要用【你自己的真实任务】测一遍
        ⟹ 🔑 这是唯一不可能被污染的评测集
        ⟹ ★★ 哪怕只有 50 条人工标注的样本，也比榜单可信
 
-    ④ ★ 用扰动测试做交叉验证（§6.3 的第 ③ 招）
+    ④ ★ 用扰动测试做交叉验证（§6.3.1 的第 ③ 招）
        ⟹ 打乱选项顺序，看分数稳不稳
+       ⟹ ★★★ 这一招【闭源模型也能做】，是你手里最实用的工具
 
     ⚠️ 别做的事：
        ✗ 看到某模型某榜单第一就下结论
        ✗ 比较【不同时期】发布的模型在【老评测集】上的分数
          （⟹ ★ 新模型的训练数据更可能包含它）
+       ✗ ★★ 相信&quot;我们做了 n-gram 去污染&quot;这句话就以为干净了
+         （⟹ ⚠️ §6.3.2 / §6.3.2b：改写能绕过，中文题它一个窗口都产生不了）
 </code></pre></div>
 
 <blockquote>
@@ -574,19 +921,35 @@ might be <strong>overfitting on the benchmark</strong>."</p>
 </blockquote>
 <hr />
 <h2 id="67">6.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>    ★★ 七句话：
+<div class="codehilite"><pre><span></span><code>    ★★ 八句话：
 
     ① 污染 = 评测题进了训练数据 ⟹ ★ 分数虚高且看不出来
     ② ⚠️ 分不清&quot;该学的知识&quot;和&quot;不该见的题目&quot;，★★★ 所以没有干净解法
-    ③ ★ 检测靠信号不靠证明：字符串匹配 / 背诵测试 / ★★ 选项扰动 / 新旧对比
-    ④ ★★ 最硬的缓解手段是【时间切分】：训练之后诞生的题，物理上不可能污染
-    ⑤ 🔑 古德哈特定律：★★★ 评测集【被用过就会失效】，必须持续换代
+    ③ ★ 检测靠信号不靠证明：n-gram / 困惑度 / canary / 成员推断 / ★★ 黑盒行为测试
+       ⟹ 🔑 前四种都要求你【有训练数据或模型内部信息】，
+          ★★★ 评估别人家的闭源模型时全都用不上；只有黑盒行为测试谁都能做（§6.3.3）
 
-    ⑥ ✅ 实证（LiveCodeBench 论文，§6.5b）：同一模型在 LeetCode 上，
-       5 月的题 Pass@1 ≈ 60，9 月的题 Pass@1 ≈ 0 ——
-       ★★★ 断崖恰好落在它的训练截止日上。
-    ⑦ ✅ 同篇论文的过拟合证据：DS-Ins-1.3B 在 HumanEval+ 拿 59.8，
-       在 LiveCodeBench-Easy 只有 26.3 ⟹ ★★★ 古德哈特定律的可视化。
+    ④ ✅ n-gram 走一遍就知道它有多脆（§6.3.2）：
+       20 词的题 ⟹ 8 个 13-gram 窗口
+       原文照抄 100% ⟹ 改第 1 个词 87.5% ⟹ 改第 3 个词 62.5%
+       ⟹ 在中间插两个词 或 整句改写 ⟹ ★★★ 直接 0%
+    ⑤ ⚠️⚠️ 而且它有结构性盲区：短题面（&lt; 13 词）和【所有中文题】
+       ⟹ ✅ 实测中文题按 s.split() 切只得到 1~5 个 token ⟹ 0 个 13-gram
+       ⟹ 🔑 对 C-Eval / CMMLU 这类集，&quot;做了 n-gram 去污染&quot;等于什么都没做
+    ⑥ ⚠️ 别按文件名推断功能：lm_eval/filters/decontamination.py 没被注册、
+       apply() 就一句 pass ⟹ ★★ 它是空壳（§6.3.3）
+
+    ⑦ ★★ 最硬的缓解手段是【时间切分】：训练之后诞生的题，物理上不可能污染
+       ⟹ ⚠️ 但它依赖厂商自己声明的训练截止日，★ 那个日期不可验证
+    ⑧ 🔑 古德哈特定律：★★★ 评测集【被用过就会失效】，必须持续换代
+
+    ✅ 实证（LiveCodeBench 论文，§6.5b）：
+       ★ 同一份权重的 DS-Base-33B 在 LeetCode 上，
+         5 月的题 Pass@1 ≈ 60，9 月的题 Pass@1 ≈ 0 ——
+         ★★★ 断崖恰好落在它的训练截止日附近（⚠️ 论文说实际掉点比官宣截止日早一点）。
+       ★ 过拟合证据：DS-Ins-1.3B 在 HumanEval+ 拿 59.8%，
+         在 LiveCodeBench-Easy 只有 26.3% ⟹ 差 33.5 个百分点
+         ⟹ ★★★ 古德哈特定律的可视化（两个基准的相关系数只有 0.72）。
 
     ⟹ 🔑🔑 给你的行动项：★★★ 攒一套自己业务的小评测集。
 </code></pre></div>

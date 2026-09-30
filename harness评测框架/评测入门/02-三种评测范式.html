@@ -252,28 +252,47 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="21">2.1 一张总图</h2>
-<div class="codehilite"><pre><span></span><code>    ┌─────────────────────────────────────────────────────────────┐
-    │                                                             │
-    │  ① 判别式评测（选择题）                                       │
-    │     ★ 不让模型说话，直接看它【觉得哪个选项更可能】             │
-    │     代表：MMLU、HellaSwag、ARC                               │
-    │     ⟹ 便宜、稳定、好复现                                     │
-    │                                                             │
-    │  ② 生成式评测（问答题）                                       │
-    │     ★ 让模型自由生成，然后从输出里【抠答案】比对              │
-    │     代表：GSM8K、HumanEval、MATH                             │
-    │     ⟹ 更接近真实使用，★ 但要处理抽取，脏                      │
-    │                                                             │
-    │  ③ ★★ 交互式 / agentic 评测（实操题）                        │
-    │     ★ 给一个环境和一个任务，让模型【真的动手做】               │
-    │     代表：SWE-bench、Terminal-Bench、WebArena                │
-    │     ⟹ ★★★ 最真实，也最贵、最难复现                           │
-    │                                                             │
-    └─────────────────────────────────────────────────────────────┘
+<table>
+<thead>
+<tr>
+<th></th>
+<th>① <strong>判别式评测</strong>（选择题）</th>
+<th>② <strong>生成式评测</strong>（问答题）</th>
+<th>③ ★★ <strong>交互式 / agentic 评测</strong>（实操题）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>模型要干什么</strong></td>
+<td>★ 不让它说话，直接看它【觉得哪个选项更可能】</td>
+<td>★ 让它自由生成，然后从输出里【抠答案】比对</td>
+<td>★ 给它一个环境和一个任务，让它【真的动手做】</td>
+</tr>
+<tr>
+<td><strong>代表评测集</strong></td>
+<td>MMLU、HellaSwag、ARC</td>
+<td>GSM8K、HumanEval、MATH</td>
+<td>SWE-bench、Terminal-Bench、WebArena</td>
+</tr>
+<tr>
+<td><strong>一句话评价</strong></td>
+<td>⟹ 便宜、稳定、好复现</td>
+<td>⟹ 更接近真实使用，★ 但要处理抽取，脏</td>
+<td>⟹ ★★★ 最真实，也最贵、最难复现</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ①判别式  --&gt;  ②生成式  --&gt;  ③agentic
+    ---------------------------------------&gt;  越来越真实
+    ---------------------------------------&gt;  越来越贵
+    ---------------------------------------&gt;  越来越难复现
 
-    ⟹ 🔑 从上到下：【越来越真实，越来越贵，越来越难复现】。
+    ⟹ 🔑 全书定律：【越真实 ⟺ 越贵 ⟺ 越难复现】。三者是一起动的。
 </code></pre></div>
 
+<blockquote>
+<p>★ 名词先给全称，后面不再解释：<strong>HellaSwag</strong>（Harder Endings, Longer contexts, and Low-shot Activities for Situations With Adversarial Generations，一个常识续写选择题集）、<strong>ARC</strong>（AI2 Reasoning Challenge，科学常识选择题）、<strong>MATH</strong>（竞赛难度数学题集）、<strong>WebArena</strong>（在真实网站环境里做任务的 agentic 基准）、<strong>Terminal-Bench</strong>（在真实终端里完成任务的 agentic 基准）。</p>
+</blockquote>
 <hr />
 <h2 id="22-1">2.2 ① 判别式评测：不让模型说话</h2>
 <p><strong>这是最反直觉、但最重要的一类。新手几乎都会误解它。</strong></p>
@@ -282,49 +301,176 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       &quot;以下哪个是哺乳动物？A.鲨鱼 B.鲸鱼 C.鳄鱼 D.企鹅&quot;
 
     模型回答：&quot;B&quot;
-    ⟹ 比对答案 B ⟹ 对 ✅
+    ⟹ 比对答案 B ⟹ 对
 
     ⚠️ 问题在哪？
       模型可能回答 &quot;B.&quot;、&quot;B、鲸鱼&quot;、&quot;我认为是B&quot;、&quot;鲸鱼&quot;、
       &quot;The answer is B&quot;、&quot;选B&quot; ……
-    ⟹ ★ 你又掉进【答案抽取】的坑了（01 章 §1.3）
+    ⟹ ★ 你又掉进【答案抽取】的坑了（01 章 §1.3、§1.3b）
 </code></pre></div>
 
 <h3 id="_1">★★ 实际的做法：比"哪个选项更可能"</h3>
 <div class="codehilite"><pre><span></span><code>    ★ 不让模型生成，而是把【四个完整句子】分别喂给模型，
       问它：这句话你觉得有多&quot;顺&quot;？
+      （⚠️ 下面四个分数是我为演示编的，量级像真的，但不是某次实测）
 
       句子 A：&quot;以下哪个是哺乳动物？…… 答案：鲨鱼&quot;   → 模型给出分数 −8.3
       句子 B：&quot;以下哪个是哺乳动物？…… 答案：鲸鱼&quot;   → 分数 −2.1  ★ 最高
       句子 C：&quot;…… 答案：鳄鱼&quot;                       → 分数 −7.9
       句子 D：&quot;…… 答案：企鹅&quot;                       → 分数 −6.5
 
-    ⟹ ★★ 选分数最高的 B ⟹ 判对 ✅
+    ⟹ ★★ 选分数最高的 B ⟹ 判对
     ⟹ ★★★ 全程模型【一个字都没生成】，不存在抽取问题。
 </code></pre></div>
 
 <blockquote>
-<p>★ 名词解释：<strong>loglikelihood（对数似然）</strong>——<br />
-模型对一段文字的"认可程度"打的分。<br />
-```<br />
-    ★ 直观理解：模型读到这段文字时有多"不意外"。<br />
-      越不意外 ⟹ 分数越高（越接近 0）<br />
-      越意外   ⟹ 分数越低（越负）</p>
-<div class="codehilite"><pre><span></span><code>⚠️ 为什么全是负数？因为它是概率取对数，
-   而概率 ≤ 1，取对数就 ≤ 0。★ 不用纠结，只要知道【越大越好】。
+<p>★ 名词解释：<strong>loglikelihood（对数似然）</strong>——模型对一段文字的"认可程度"打的分。★ 直观理解：模型读到这段文字时有多"不意外"；越不意外分数越高（越接近 0），越意外分数越低（越负）。⚠️ 为什么全是负数？因为它是概率取对数，而概率 ≤ 1，取对数就 ≤ 0。★ 不用纠结，只要知道【越大越好】。</p>
+<p>★★ <strong>一个关键机制要说清</strong>：loglikelihood 是续写部分<strong>每个 token（词元）的对数概率之和</strong>。⟹ 🔑 所以它是一个【和】，token 越多，加起来就越负。⟹ ★★★ 这意味着<strong>长选项天生吃亏</strong>，而这件事会直接改掉分数。</p>
+</blockquote>
+<h3 id="acc-acc_norm">★★★ 同一次运行，两个分数：acc 和 acc_norm</h3>
+<p><strong>上面那道题四个选项都是两个字，所以看不出问题。把选项长度拉开，麻烦立刻就来。</strong></p>
+<p>框架自己知道这件事，所以选择题任务<strong>一次运行就输出两个分数</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/task.py:1707-1720  MultipleChoiceTask.process_results（原文照抄，略去注释）</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">process_results</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">doc</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="n">results</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">bool</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="n">results</span> <span class="o">=</span> <span class="p">[</span><span class="n">res</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">res</span> <span class="ow">in</span> <span class="n">results</span><span class="p">]</span>
+    <span class="n">gold</span> <span class="o">=</span> <span class="n">doc</span><span class="p">[</span><span class="s2">&quot;gold&quot;</span><span class="p">]</span>
+
+    <span class="n">acc</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">results</span><span class="p">)</span> <span class="o">==</span> <span class="n">gold</span> <span class="k">else</span> <span class="mf">0.0</span>
+    <span class="n">completion_len</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="nb">float</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">i</span><span class="p">))</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">doc</span><span class="p">[</span><span class="s2">&quot;choices&quot;</span><span class="p">]])</span>
+    <span class="n">acc_norm</span> <span class="o">=</span> <span class="mf">1.0</span> <span class="k">if</span> <span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">results</span> <span class="o">/</span> <span class="n">completion_len</span><span class="p">)</span> <span class="o">==</span> <span class="n">gold</span> <span class="k">else</span> <span class="mf">0.0</span>
+
+    <span class="k">return</span> <span class="p">{</span>
+        <span class="s2">&quot;acc&quot;</span><span class="p">:</span> <span class="n">acc</span><span class="p">,</span>
+        <span class="s2">&quot;acc_norm&quot;</span><span class="p">:</span> <span class="n">acc_norm</span><span class="p">,</span>
+    <span class="p">}</span>
 </code></pre></div>
 
-<p>```</p>
-<p>🔑 <strong>这一类的优点，正好对应 01 章的两个难点</strong>：<br />
-<code>✅ 没有抽取问题     ⟹ 不用写正则（避开难点一）
-    ✅ 完全确定性       ⟹ 同样输入必定同样输出，★ 好复现
-    ✅ 便宜             ⟹ 每题只要前向计算，不用逐字生成</code></p>
-<p>⚠️ <strong>但它的缺点也很致命</strong>：<br />
-<code>✗ ★★ 和真实使用【完全不像】——
-      没有哪个用户会把四个选项分别念一遍看哪个顺
-    ✗ 对"会不会推理"几乎测不出来（模型只是在感觉哪个搭配眼熟）
-    ✗ ⚠️ 有些模型的对话模板（chat template）和这种用法冲突，分数会异常</code></p>
+<table>
+<thead>
+<tr>
+<th>口径名</th>
+<th>怎么算</th>
+<th>为什么有它</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>acc</strong>（原始准确率）</td>
+<td><code>argmax(loglikelihood)</code>，直接比谁的和最大</td>
+<td>★ 最朴素，但对长选项不公平</td>
+</tr>
+<tr>
+<td><strong>acc_norm</strong>（长度归一化准确率）</td>
+<td><code>argmax(loglikelihood ÷ 选项字符数)</code></td>
+<td>★★ 把"长选项天生分低"这件事拉平</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>源码里的一个细节值得记一下</strong>：<code>completion_len</code> 用的是 <code>float(len(i))</code>，<code>i</code> 是选项的<strong>字符串</strong>——所以分母是<strong>字符数</strong>，不是 token 数。⟹ ★ 中文选项一个字算一格，英文选项一个字母算一格，⚠️ 这本身就是个粗糙的近似。</p>
 </blockquote>
+<p><strong>把它算一遍</strong>（⚠️ loglikelihood 是我编的演示值；acc / acc_norm 的算法是 ✅ 上面那段源码原文，把这些数代进去必定得到同样结果）：</p>
+<table>
+<thead>
+<tr>
+<th>题</th>
+<th>正确答案</th>
+<th>四个选项（字符数 → 原始 loglikelihood → ÷ 字符数）</th>
+<th>acc 选中</th>
+<th>acc</th>
+<th>acc_norm 选中</th>
+<th>acc_norm</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1</td>
+<td>抹香鲸</td>
+<td>水（1 → −3.0 → −3.00）<br>抹香鲸（3 → −4.5 → <strong>−1.50</strong> 最高）<br>鳄（1 → −5.0 → −5.00）<br>鸟（1 → −4.0 → −4.00）</td>
+<td>水（−3.0 最高）</td>
+<td><strong>错</strong></td>
+<td>抹香鲸</td>
+<td>对</td>
+</tr>
+<tr>
+<td>Q2</td>
+<td>狗</td>
+<td>狗（1 → −1.2 → <strong>−1.20</strong> 最高）<br>石头（2 → −6.0 → −3.00）<br>钢笔（2 → −7.0 → −3.50）<br>云朵（2 → −8.0 → −4.00）</td>
+<td>狗（−1.2 最高）</td>
+<td>对</td>
+<td>狗</td>
+<td>对</td>
+</tr>
+<tr>
+<td>Q3</td>
+<td>长颈鹿</td>
+<td>牛（1 → −2.5 → −2.50）<br>铁（1 → −6.0 → −6.00）<br>水（1 → −5.0 → −5.00）<br>长颈鹿（3 → −3.6 → <strong>−1.20</strong> 最高）</td>
+<td>牛（−2.5 最高）</td>
+<td><strong>错</strong></td>
+<td>长颈鹿</td>
+<td>对</td>
+</tr>
+<tr>
+<td>Q4</td>
+<td>猫</td>
+<td>猫（1 → −1.0 → −1.00）<br>长颈鹿类（4 → −3.2 → <strong>−0.80</strong> 最高）<br>水（1 → −5.0 → −5.00）<br>铁（1 → −6.0 → −6.00）</td>
+<td>猫（−1.0 最高）</td>
+<td>对</td>
+<td>长颈鹿类</td>
+<td><strong>错</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    acc      ：Q2、Q4 对        ⟹ 2 ÷ 4 = 50.0%
+    acc_norm ：Q1、Q2、Q3 对     ⟹ 3 ÷ 4 = 75.0%
+
+    ⟹ 🔑🔑 两个数差 25.0 个百分点。
+       ★★★ 而它们来自【同一次运行、同一批 loglikelihood 调用】——
+            一次前向计算都没多花，纯粹是最后那一步除法要不要做。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>盯住 Q4</strong>：归一化把本来选对的那一题弄错了（正确答案"猫"只有 1 个字，归一化之后被 4 个字的干扰项挤掉）。⟹ ★★★ 所以 <strong>acc_norm 不是"更好"的口径，它只是"另一个"口径</strong>。⟹ ⚠️ 选项长度差得越大（HellaSwag 这类续写题尤其明显），两个数差得越多。★★ 看榜单时必须问清报的是哪一个——这是 11 章会反复回来的问题。</p>
+</blockquote>
+<h3 id="_2">这一类的优缺点</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>判别式评测</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>优点 1</strong></td>
+<td>★ 没有抽取问题 ⟹ 不用写正则，避开 01 章的难点一</td>
+</tr>
+<tr>
+<td><strong>优点 2</strong></td>
+<td>★ 完全确定性 ⟹ 同样输入必定同样输出，好复现</td>
+</tr>
+<tr>
+<td><strong>优点 3</strong></td>
+<td>★ 便宜 ⟹ 每个选项只要一次前向计算，不用逐字生成</td>
+</tr>
+<tr>
+<td><strong>缺点 1</strong></td>
+<td>★★ 和真实使用【完全不像】——没有哪个用户会把四个选项分别念一遍看哪个顺</td>
+</tr>
+<tr>
+<td><strong>缺点 2</strong></td>
+<td>对"会不会推理"几乎测不出来（模型只是在感觉哪个搭配眼熟）；⚠️ 而且四选一瞎猜也有 25% 命中率，分数的地板不是 0</td>
+</tr>
+<tr>
+<td><strong>缺点 3</strong></td>
+<td>⚠️ 有些模型的对话模板（chat template）和这种用法冲突，分数会异常（04 章 §4.4）</td>
+</tr>
+<tr>
+<td><strong>缺点 4</strong></td>
+<td>★★★ acc 和 acc_norm 两个口径会给出不同的数（见上），必须交代用了哪个</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="23-2">2.3 ② 生成式评测：让模型自由发挥</h2>
 <div class="codehilite"><pre><span></span><code>    ★ 流程：
@@ -349,9 +495,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>这一类是目前评测的主流</strong>，因为它像真实用法。<br />
-代表：GSM8K（小学数学）、MATH（竞赛数学）、HumanEval（写函数）。</p>
-<p>⚠️ <strong>代价</strong>：01 章 §1.3 讲的抽取问题，全部落在这一类头上。</p>
+<p>✅ <strong>这不是抽象说法，GSM8K 的真实配置里就写着</strong>：<code>until: ["Question:", "&lt;/s&gt;", "&lt;|im_end|&gt;"]</code>（<code>lm_eval/tasks/gsm8k/gsm8k.yaml</code>）。⟹ ★ 三个停止标记：一个防它自己出下一道题，两个是模型自己的结束符。</p>
+<p>★★ <strong>这一类是目前评测的主流</strong>，因为它像真实用法。代表：GSM8K（小学数学）、MATH（竞赛数学）、HumanEval（写函数）。⚠️ <strong>代价</strong>：01 章 §1.3 / §1.3b 讲的抽取问题，全部落在这一类头上——那 4 道题 25% / 50% / 75% 的例子就是生成式评测的日常。</p>
 </blockquote>
 <h3 id="passk">★ 一个专属于这类的重要指标：pass@k</h3>
 <div class="codehilite"><pre><span></span><code>    ★ 写代码这类题有个特点：【答案不唯一，但对错可验证】
@@ -361,49 +506,169 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     pass@10 ：给十次机会，至少一次对的比例
 
     ⚠️ 看榜单时一定要看清是 pass@1 还是 pass@10。
-    ★★ 同一个模型 pass@10 能比 pass@1 高十几个点 —— 但那不是同一件事。
 </code></pre></div>
 
 <blockquote>
-<p>✅ 这个指标出自 HumanEval 论文（<a href="../papers/HumanEval-Codex-arXiv-2107.03374.pdf">papers/HumanEval-Codex-arXiv-2107.03374.pdf</a>），<br />
-就是 OpenAI 当年发 Codex 时提出的。★ 你问的 Codex，源头在这里。</p>
+<p>✅ 这个指标出自 HumanEval 论文（<a href="../papers/HumanEval-Codex-arXiv-2107.03374.pdf">papers/HumanEval-Codex-arXiv-2107.03374.pdf</a>），就是 OpenAI 当年发 Codex 时提出的。★ 你问的 Codex，源头在这里。</p>
+<p>✅ <strong>能差多少，论文里有原始数字</strong>：Codex-12B 在 HumanEval 的 164 道题上，temperature = 0.8、<strong>每题采 1 个样本</strong>时解出 <strong>28.8%</strong>；同一个模型、同一套题、同一个温度、<strong>每题采 100 个样本并取"能通过单元测试的那一个"</strong>时解出 <strong>77.5%</strong>（论文 Figure 1 说明文字）。⟹ ★ 差 <strong>48.7 个百分点</strong>，也就是 77.5 ÷ 28.8 ≈ <strong>2.69 倍</strong>。⟹ 🔑 注意这两个数之所以能放在一起说，是因为<strong>除了 k 以外其他口径全都一样</strong>；⚠️ 拿一份 pass@1 和另一家的 pass@100 比大小，比的是采样预算，不是模型。</p>
+</blockquote>
+<h3 id="passk-k">★★★ pass@k 不能靠"采 k 次看有没有对的"</h3>
+<p><strong>这是 pass@k 最容易被写错的地方，而且写错的代价不是小数点后一位。</strong></p>
+<blockquote>
+<p>✅ 论文原文（§2.1）："computing pass@ k in this way can have high variance. Instead, to evaluate pass@k, we generate n ≥ k samples per task (in this paper, we use n = 200 and k ≤ 100), count the number of correct samples c ≤ n which pass unit tests, and calculate the unbiased estimator"</p>
+</blockquote>
+<p>✅ 论文式 (1) 给的<strong>无偏估计量</strong>（unbiased estimator，指"多次重复这个估计，平均下来不偏不倚"）：</p>
+<div class="codehilite"><pre><span></span><code>    pass@k = E       [ 1 − C(n−c, k) / C(n, k) ]
+              问题集
+
+    n = 这道题一共采样了几次
+    c = 其中通过单元测试的有几次
+    C(a, b) = 组合数，&quot;从 a 个东西里挑 b 个，有几种挑法&quot;
+</code></pre></div>
+
+<p><strong>★ 先把它读懂，它不玄</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    C(n−c, k)  = 从【错的那 n−c 个样本】里挑 k 个的挑法数
+    C(n, k)    = 从【全部 n 个样本】里挑 k 个的挑法数
+
+    ⟹ 两者相除 = 随机挑 k 个、★【一个对的都没挑到】的概率
+    ⟹ 1 减掉它 = ★★【至少挑到一个对的】的概率 = pass@k
+
+    ⟹ 🔑 所以它就是一道组合计数题，不是什么统计黑魔法。
+</code></pre></div>
+
+<p><strong>拿小数字走一遍。设这道题采了 n = 10 次，其中 c = 3 次通过</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>c（10 次里对了几次）</th>
+<th>C(10−c, 5)</th>
+<th>pass@1 = 1 − C(10−c,1) ÷ C(10,1)</th>
+<th>pass@5 = 1 − C(10−c,5) ÷ 252</th>
+<th>pass@10</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>C(10,5) = 252</td>
+<td>1 − 10 ÷ 10 = <strong>0.000</strong></td>
+<td>1 − 252 ÷ 252 = <strong>0.000</strong></td>
+<td><strong>0.000</strong></td>
+</tr>
+<tr>
+<td>1</td>
+<td>C(9,5) = 126</td>
+<td>1 − 9 ÷ 10 = <strong>0.100</strong></td>
+<td>1 − 126 ÷ 252 = <strong>0.500</strong></td>
+<td><strong>1.000</strong></td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td><strong>C(7,5) = 21</strong></td>
+<td><strong>1 − 7 ÷ 10 = 0.300</strong></td>
+<td><strong>1 − 21 ÷ 252 = 0.9167</strong></td>
+<td><strong>1.000</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>C(5,5) = 1</td>
+<td>1 − 5 ÷ 10 = <strong>0.500</strong></td>
+<td>1 − 1 ÷ 252 = <strong>0.9960</strong></td>
+<td><strong>1.000</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td>C(3,5) = 0（挑不出来）</td>
+<td>1 − 3 ÷ 10 = <strong>0.700</strong></td>
+<td>1 − 0 = <strong>1.000</strong></td>
+<td><strong>1.000</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td>C(0,5) = 0</td>
+<td>1 − 0 ÷ 10 = <strong>1.000</strong></td>
+<td><strong>1.000</strong></td>
+<td><strong>1.000</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 两条一眼就能看出来的性质：
+
+    ① pass@1 恰好等于 c / n
+       ⟹ 因为 1 − C(n−c,1)/C(n,1) = 1 − (n−c)/n = c/n。★ 代数上就是这样。
+
+    ② k 越大，pass@k 只升不降（看表里每一行从左往右）
+       ⟹ 🔑🔑 所以 ★★★【pass@1 和 pass@10 是两个不同的指标，
+          放在一起比大小毫无意义】——那等于拿&quot;考一次&quot;和&quot;考十次取最好&quot;比。
+</code></pre></div>
+
+<p><strong>为什么不能直接"采 k 次，看这 k 次里有没有对的"？三个理由</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>理由</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 方差太大</td>
+<td>✅ 论文原话就是 "can have high variance"。★ 你采 5 次看有没有对的，<strong>单题结果只能是 0 或 1</strong>；用估计量，同一道题直接给出 0.9167 这样一个连续值 ⟹ 同样的题量，报出来的分数抖动小得多</td>
+</tr>
+<tr>
+<td>② 样本不能复用</td>
+<td>★★ 你通常想同时报 pass@1 和 pass@10。用估计量，<strong>同一批 n = 10 个样本</strong>就能把 pass@1 / pass@5 / pass@10 全算出来（上面那张表就是）；用"采 k 次看看"，pass@1 要采 1 次、pass@10 要另采 10 次 ⟹ 成本翻倍，而且两个数来自不同的样本，⚠️ 连内部都不自洽</td>
+</tr>
+<tr>
+<td>③ 省事的近似式是<strong>有偏</strong>的</td>
+<td>✅ 论文明确说 <code>1 − (1 − ĉ/n)^k</code> 是有偏的（"we show that it is biased in Appendix A"）。代进 c=3、n=10、k=5：1 − 0.7⁵ = <strong>0.8319</strong>，而正确的无偏估计是 <strong>0.9167</strong> ⟹ ⚠️ 低了 <strong>8.5 个百分点</strong>。★ 原因不难懂：那个式子假设 5 次抽样<strong>可以重复抽到同一个样本</strong>，而实际上你是从 10 个不同样本里挑 5 个<strong>不重复</strong>的，碰到正确样本的机会更大</td>
+</tr>
+</tbody>
+</table>
+<p>✅ <strong>论文给的数值稳定实现</strong>（Figure 3，原文照抄，可以直接抄进代码）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pass_at_k</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">c</span><span class="p">,</span> <span class="n">k</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    :param n: total number of samples</span>
+<span class="sd">    :param c: number of correct samples</span>
+<span class="sd">    :param k: k in pass@$k$</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">n</span> <span class="o">-</span> <span class="n">c</span> <span class="o">&lt;</span> <span class="n">k</span><span class="p">:</span> <span class="k">return</span> <span class="mf">1.0</span>
+    <span class="k">return</span> <span class="mf">1.0</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">prod</span><span class="p">(</span><span class="mf">1.0</span> <span class="o">-</span> <span class="n">k</span> <span class="o">/</span> <span class="n">np</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">n</span> <span class="o">-</span> <span class="n">c</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">))</span>
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>为什么要这个版本</strong>：C(200, 100) 这种组合数直接算会大到溢出。它用的恒等式是 <code>C(n−c,k) ÷ C(n,k) = (1 − k/(n−c+1)) × … × (1 − k/n)</code>。⟹ 拿 n=10、c=3、k=5 验一下：<code>(1 − 5/8) × (1 − 5/9) × (1 − 5/10) = (3/8) × (4/9) × (1/2) = 12/144 = 1/12</code>，✅ 和表里 21 ÷ 252 = 1/12 完全一致，所以 pass@5 = 1 − 1/12 = 0.9167。</p>
+<p>⚠️⚠️ <strong>最后一个坑，也是最容易踩的</strong>：<strong>"pass@1"这个名字底下有两种完全不同的算法</strong>——HumanEval 那一系是"采 1 个看对不对"（取最大值语义），DeepSeek-R1 那一系是"采 k 个各自判对错再取平均"。⟹ ★★★ 两张榜单都写 pass@1，一个是贪心解码跑一次、一个是采样 64 次取平均，<strong>这两个数不能直接比</strong>。⟹ 细节见 <a href="10-DeepSeek的评测口径.html">10 章</a> 和 <a href="附-速查表.html">附-速查表</a> 的 D 节。</p>
 </blockquote>
 <hr />
 <h2 id="24-3-agentic">2.4 ★★★ ③ agentic 评测：让模型真的动手</h2>
 <p><strong>这一类和前两类不是"更难一点"的关系，是【完全不同的东西】。</strong></p>
-<div class="codehilite"><pre><span></span><code>    ★★ 前两类的世界观：
-        输入(文本) ──→ 模型 ──→ 输出(文本) ──→ 打分
+<div class="codehilite"><pre><span></span><code>    ★★ 前两类的世界观（一条线）：
+
+        输入(文本)  --&gt;  模型  --&gt;  输出(文本)  --&gt;  打分
+
         ⟹ ★ 一次性、无状态、无环境
+</code></pre></div>
 
-    ★★★ agentic 的世界观：
+<div class="codehilite"><pre><span></span><code>    ★★★ agentic 的世界观（一个【环】）：
 
-        ┌──────────────────────────────────────────┐
-        │           一个真实的运行环境                │
-        │  （Docker 容器：装好依赖的代码仓库）        │
-        └──────────────────────────────────────────┘
-              ↑                              │
-              │ 模型发出的命令                 │ 环境返回的结果
-              │ （改文件 / 跑测试 / 看日志）    │ （报错 / 输出 / 退出码）
-              │                              ↓
-        ┌──────────────────────────────────────────┐
-        │                 模型                       │
-        └──────────────────────────────────────────┘
+      +--&gt; 模型看到当前状态，决定下一步                  [模型侧]
+      |         |
+      |         v
+      |    发出一条命令（改文件 / 跑测试 / 看日志）        [模型侧]
+      |         |
+      |         v
+      |    Docker 容器里【真的执行】这条命令               [环境侧]
+      |         |
+      |         v
+      +--- 环境返回结果（报错 / 输出 / 退出码）            [环境侧]
 
-        ⟹ ★ 这个循环可能转几十轮
-        ⟹ ★★ 最后【不看模型说了什么】，只看【环境变成了什么样】
+    ⟹ ★ 这个循环可能转几十轮
+    ⟹ ★★ 最后【不看模型说了什么】，只看【环境变成了什么样】
 </code></pre></div>
 
 <blockquote>
-<p>🔑🔑 <strong>这是全章最重要的一句话</strong>：<br />
-```<br />
-    ★★★ agentic 评测不评"模型说得对不对"，<br />
-         评的是【它有没有把事情办成】。</p>
-<div class="codehilite"><pre><span></span><code>⟹ SWE-bench 的判定标准不是&quot;代码写得好不好看&quot;，
-   是【原本失败的测试，现在过了没有】。
-⟹ ★ 这叫【基于执行的验证】（execution-based verification）
-</code></pre></div>
-
-<p>```</p>
+<p>🔑🔑 <strong>这是全章最重要的一句话</strong>：★★★ agentic 评测不评"模型说得对不对"，评的是【它有没有把事情办成】。⟹ SWE-bench 的判定标准不是"代码写得好不好看"，是【原本失败的测试，现在过了没有】。⟹ ★ 这叫【基于执行的验证】（execution-based verification）。</p>
 </blockquote>
 <p><strong>代价有多大？</strong></p>
 <table>
@@ -417,12 +682,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tbody>
 <tr>
 <td>每题耗时</td>
-<td>⚠️ 毫秒~秒</td>
-<td>★ <strong>分钟~小时</strong></td>
+<td>⚠️ 毫秒到秒（量级估计）</td>
+<td>⚠️ ★ <strong>分钟到小时</strong>（量级估计）</td>
 </tr>
 <tr>
 <td>每题成本</td>
-<td>一次前向</td>
+<td>一次或几次前向计算</td>
 <td>★ 几十轮生成 + 容器启停</td>
 </tr>
 <tr>
@@ -432,12 +697,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td>能否完全复现</td>
-<td>✅ 基本能</td>
+<td>✅ 基本能（判别式是确定性的）</td>
 <td>⚠️ <strong>很难</strong>（见下）</td>
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>    ⚠️★★ 为什么 agentic 评测难复现？
+<div class="codehilite"><pre><span></span><code>    ⚠️★★ 为什么 agentic 评测难复现？四个原因，注意它们是【叠加】的：
 
       ① 模型是随机的（temperature &gt; 0）⟹ 每次行动路径不同
       ② 环境是活的：装依赖要联网 ⟹ ★ 上游包更新了，结果就变了
@@ -445,9 +710,102 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ④ ★ 多轮交互 ⟹ 前面一步走偏，后面全不一样（误差放大）
 
     ⟹ 🔑 所以 agentic 榜单的分数，⚠️ 波动天然比传统榜单大。
-       ★ 严肃的报告会跑多次取平均，并报告【方差】。
+       ★ 严肃的报告会跑多次取平均，并报告【方差】或【置信区间】。
+    ⟹ ⚠️ 还要注意原因 ③ 的方向性：它只会把分数【往低】带，
+       所以&quot;同一份代码在更快的机器上分更高&quot;是真实存在的现象。
 </code></pre></div>
 
+<hr />
+<h2 id="24b">2.4b ★★★ 同一道题，三种范式各跑一遍</h2>
+<p><strong>把三类摆在一起讲，不如让它们考同一道题。下面这道题小到能手算，但三种范式对它的处理方式完全不同，误判的方式也完全不同。</strong></p>
+<p><strong>题目本体</strong>：下面这个函数想算"滑动窗口求和"，但它有一个 off-by-one（差一）错误。</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">moving_sum</span><span class="p">(</span><span class="n">xs</span><span class="p">,</span> <span class="n">k</span><span class="p">):</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">xs</span><span class="p">)</span> <span class="o">-</span> <span class="n">k</span><span class="p">):</span>        <span class="c1"># ← bug 在这一行</span>
+        <span class="n">out</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">sum</span><span class="p">(</span><span class="n">xs</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="n">k</span><span class="p">]))</span>
+    <span class="k">return</span> <span class="n">out</span>
+</code></pre></div>
+
+<p><strong>先把对错算清楚，这样后面三种判法才有一个共同的参照</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 输入 xs = [1, 2, 3, 4]，k = 2
+
+    长度为 2 的窗口应该有几个？
+      [1,2]  [2,3]  [3,4]   ⟹ 3 个
+      公式：len(xs) − k + 1 = 4 − 2 + 1 = 3     ← ★ 正确答案
+      正确输出：[3, 5, 7]
+
+    这份代码实际循环了几次？
+      range(len(xs) − k) = range(2) ⟹ i = 0, 1 ⟹ 只有 2 个
+      实际输出：[3, 5]                            ← ⚠️ 少了最后一个窗口 [3,4] = 7
+
+    ⟹ 🔑 修法：把 range(len(xs) − k) 改成 range(len(xs) − k + 1)。
+       ★ 少的那个 &quot;+ 1&quot;，就是&quot;差一错误&quot;这个名字的来源。
+</code></pre></div>
+
+<p><strong>同一道题，三种范式怎么考、怎么判、怎么误判</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>① 判别式</th>
+<th>② 生成式</th>
+<th>③ agentic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>题目怎么问</strong></td>
+<td>改成四选一：「上面代码的 bug 在哪一行？A. <code>out = []</code> ／ B. <code>for i in range(len(xs) - k):</code> ／ C. <code>out.append(sum(xs[i:i+k]))</code> ／ D. 没有 bug」</td>
+<td>「上面代码有 bug，把改对的版本写出来」</td>
+<td>给一个<strong>装好依赖的代码仓库</strong>，外加一条当前<strong>跑失败</strong>的 <code>pytest</code> 命令，任务是「让它过」</td>
+</tr>
+<tr>
+<td><strong>模型输出什么</strong></td>
+<td>★ 什么都不输出</td>
+<td>一段自由文本</td>
+<td>★★ 几十轮命令与读取</td>
+</tr>
+<tr>
+<td><strong>harness 做什么</strong></td>
+<td>把 4 个选项各拼成一个完整句子，各调一次 loglikelihood，比谁分高</td>
+<td>调一次 generate_until，再从输出里抠出代码块</td>
+<td>起容器、转发命令、收集输出、最后跑测试</td>
+</tr>
+<tr>
+<td><strong>怎么判对错</strong></td>
+<td><code>argmax</code> 落在 B 上就算对</td>
+<td>抠出来的代码跑单元测试（★ 或者更脏的做法：和参考答案做字符串比对）</td>
+<td>★★ 两把尺子同时满足：<strong>FAIL_TO_PASS</strong>（原本失败的测试必须变通过）且 <strong>PASS_TO_PASS</strong>（原本通过的测试必须还通过）——见 <a href="07-agentic编码评测与SWE-bench.html">07 章</a></td>
+</tr>
+<tr>
+<td><strong>单题成本</strong></td>
+<td>4 次前向计算</td>
+<td>1 次生成</td>
+<td>★★ 几十次生成 + 容器启停</td>
+</tr>
+<tr>
+<td><strong>⚠️ 会"判错但模型其实是对的"</strong></td>
+<td>★★ B 选项字符串最长（28 个字符，A 只有 8 个），原始 <code>acc</code> 天生偏向短选项 ⟹ 可能选 A；改用 <code>acc_norm</code> 又可能倒过来（见 §2.2 的 Q4）</td>
+<td>★★ 模型答了「把 <code>range(len(xs) - k)</code> 改成 <code>range(len(xs) - k + 1)</code>」——<strong>完全正确</strong>，但<strong>没包在代码围栏里</strong> ⟹ 抽取器抠不到 ⟹ <code>[invalid]</code> ⟹ 判错</td>
+<td>★★ 上游依赖包发了新版本导致容器装不起来；或者测试跑到超时 ⟹ 判错。⚠️ 这跟模型改得对不对<strong>完全无关</strong></td>
+</tr>
+<tr>
+<td><strong>⚠️ 会"判对但模型其实不会"</strong></td>
+<td>★★★ 四选一瞎猜就有 25% 命中；而且模型可能只是"觉得 B 那行文字眼熟"，并不知道 <code>+ 1</code> 是什么</td>
+<td>★ 模型写了一堆错的推理，最后碰巧把代码抄对</td>
+<td>⚠️ 少见 —— ★ 这正是 ③ 最大的优点</td>
+</tr>
+<tr>
+<td><strong>还有一种只有 ③ 才有的失败</strong></td>
+<td>—</td>
+<td>—</td>
+<td>★★ 模型顺手把 <code>sum</code> 换成了 numpy 实现，FAIL_TO_PASS 过了，但另一个原本通过的测试挂了 ⟹ <strong>PASS_TO_PASS 不过 ⟹ 整题判错</strong>。🔑 这是对的：把别的东西搞坏，就不算修好</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑🔑 <strong>这张表最该带走的一条</strong>：★★★ 三种范式量的不是"同一件事的难易程度"，而是<strong>三件不同的事</strong>。① 问的是"它认得出 bug 长什么样吗"，② 问的是"它说得出怎么改吗"，③ 问的是"它能不能在真环境里把这事办完，而且不弄坏别的"。⟹ ⚠️ 所以 ① 分数高、③ 分数低，不代表 ③ 的题"更难"，而是它在问一个更苛刻的问题。</p>
+</blockquote>
 <hr />
 <h2 id="25">2.5 ★ 三类的归位表</h2>
 <table>
@@ -504,28 +862,59 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td><strong>主要坑</strong></td>
-<td>模板不匹配</td>
+<td>模板不匹配；★★ acc / acc_norm 两个口径</td>
 <td>★ 答案抽取</td>
 <td>★★ 环境漂移</td>
+</tr>
+<tr>
+<td><strong>瞎猜能得多少分</strong></td>
+<td>⚠️ 四选一 = 25%，★ 分数地板不是 0</td>
+<td>接近 0</td>
+<td>接近 0</td>
+</tr>
+<tr>
+<td><strong>只有对话端点的闭源 API 能不能跑</strong></td>
+<td>⚠️ <strong>做不了</strong>——拿不到提示词的逐 token 概率（源码证据见 <a href="03-三个原语.html">03 章</a> §3.3）</td>
+<td>可以</td>
+<td>可以</td>
+</tr>
+<tr>
+<td><strong>一次运行输出几个分数</strong></td>
+<td>★ 两个（acc、acc_norm）</td>
+<td>视配置而定，★★ GSM8K 默认输出两个（strict-match、flexible-extract）</td>
+<td>一个（过 / 不过），但★ 通常要跑多遍报方差</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>🔑 <strong>⚠️ 一个必须澄清的误解</strong>：<br />
-<strong>这三类不是"进化关系"，不是说 ③ 出来了 ①② 就该淘汰。</strong><br />
-```<br />
-    ★ 它们量的是不同的东西：<br />
-      ① 量【知识储备】       —— 便宜，适合训练中途频繁监控<br />
-      ② 量【推理与表达】     —— 平衡点，主流<br />
-      ③ 量【能不能干成活】   —— ★ 最终目的，但贵到没法天天跑</p>
-<div class="codehilite"><pre><span></span><code>⟹ ★★ 真实做法是【组合使用】：
-   训练中每隔几百步跑 ①（快），
-   阶段性跑 ②（中），
-   发版前跑 ③（贵）。
-</code></pre></div>
-
-<p>```</p>
+<p>🔑 <strong>⚠️ 一个必须澄清的误解</strong>：<strong>这三类不是"进化关系"，不是说 ③ 出来了 ①② 就该淘汰。</strong></p>
 </blockquote>
+<table>
+<thead>
+<tr>
+<th>范式</th>
+<th>它量的到底是什么</th>
+<th>适合什么时候跑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 判别式</td>
+<td>★ 量【知识储备】</td>
+<td>便宜 ⟹ 适合训练中途每隔几百步频繁监控</td>
+</tr>
+<tr>
+<td>② 生成式</td>
+<td>★ 量【推理与表达】</td>
+<td>平衡点 ⟹ 阶段性跑，是目前的主流</td>
+</tr>
+<tr>
+<td>③ agentic</td>
+<td>★★ 量【能不能干成活】</td>
+<td>★ 最终目的，但贵到没法天天跑 ⟹ 发版前跑</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="26">2.6 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>    ★★ 三种范式，三句话：
@@ -537,6 +926,21 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ 🔑 记住那句判定标准的差别：
        ①② 看【模型说了什么】
        ③  ★★★ 看【世界变成了什么样】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 本章三个能拿笔验算的数，都是&quot;换个口径分数就变&quot;的证据：
+
+    ① §2.2  同一批 loglikelihood，acc = 50.0%、acc_norm = 75.0%
+             ⟹ 差 25.0 个百分点，一次前向计算都没多花
+
+    ② §2.3  n=10、c=3 时，pass@1 = 0.300、pass@5 = 0.9167、pass@10 = 1.000
+             ⟹ 同一批样本、同一个模型，三个数；★★ 所以 k 必须报
+
+    ③ §2.3  ✅ Codex-12B 在 HumanEval 上 pass@1 = 28.8% → pass@100 = 77.5%
+             ⟹ 差 48.7 个百分点（2.69 倍），唯一变量是采 1 个还是采 100 个
+
+    ⟹ 🔑🔑 这三个例子合起来说的是同一件事：
+       ★★★【分数是口径的函数】。报分数不报口径，等于报了一个随机数。
 </code></pre></div>
 
 <hr />

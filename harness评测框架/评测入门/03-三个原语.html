@@ -253,22 +253,44 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="31">3.1 先看问题有多大</h2>
-<div class="codehilite"><pre><span></span><code>    ★ lm-evaluation-harness 支持的东西：
-
-      评测集：  MMLU、GSM8K、HellaSwag、ARC、TruthfulQA、
-                HumanEval、MATH、BBH …… ★ 几百个
-
-      模型后端：HuggingFace、vLLM、SGLang、OpenAI API、
-                Anthropic API、llama.cpp、NeMo …… ★ 几十种
-
-    ⟹ ★★ 如果每个评测集都要为每个后端写一遍适配，
-       那是【几百 × 几十】次工作量。★★★ 显然不可能这么干。
+<p><strong>先把"上百个""几十种"换成真实数字</strong>，这样后面算工作量才有意义。下面三个数是从本地源码目录数出来的（✅ lm-evaluation-harness <strong>v0.4.12</strong>，<code>harness评测框架/源码/lm_eval-0.4.12/</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>数出来的东西</th>
+<th>怎么数的</th>
+<th>数量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>评测集家族</strong></td>
+<td><code>lm_eval/tasks</code> 下的<strong>一级子目录</strong>个数（mmlu、gsm8k、hellaswag……各算一个）</td>
+<td><strong>213</strong> 个</td>
+</tr>
+<tr>
+<td>（展开之后的配置文件）</td>
+<td><code>lm_eval/tasks</code> 下 <code>.yaml</code> 文件总数（每种语言、每个学科子集都是一个文件）</td>
+<td><strong>13533</strong> 个</td>
+</tr>
+<tr>
+<td><strong>模型后端</strong></td>
+<td><code>@register_model(...)</code> 里的注册名，去重后</td>
+<td><strong>35</strong> 个</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>口径说明</strong>：这三个数会随版本变；引用时必须带版本号。★ 下面所有算术都用"213 个评测集家族 × 35 个后端"这一组，不用 13533 那个数——因为同一个家族的几千个 yaml 共用同一套适配代码，拿它算会把工作量夸大几十倍。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 如果每个评测集家族都要为每个后端单独写一遍适配，
+       那是【213 × 35】次工作量。★★★ 显然不可能这么干。
 </code></pre></div>
 
 <p><strong>它的解法，是软件工程里最经典的一招：找出【最小公共集合】。</strong></p>
 <hr />
 <h2 id="32">3.2 ★★★ 答案：只有三个原语</h2>
-<p>源码里有一行 <code>Literal</code>，直接把答案写死了：</p>
+<p>源码里有一行 <code>Literal</code>（"字面量类型"，把某个变量的取值范围写死成一份清单），直接把答案写死了：</p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/instance.py:5-7  （原文照抄）</span>
 <span class="n">OutputType</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span>
     <span class="s2">&quot;loglikelihood&quot;</span><span class="p">,</span> <span class="s2">&quot;loglikelihood_rolling&quot;</span><span class="p">,</span> <span class="s2">&quot;generate_until&quot;</span><span class="p">,</span> <span class="s2">&quot;multiple_choice&quot;</span>
@@ -307,11 +329,52 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        ⟹ ★★ 名字里的 until 就是 02 章讲的 stop sequence
 </code></pre></div>
 
+<p><strong>把 4 种 <code>OutputType</code>、3 个方法、02 章的 3 种范式对起来，一张表看完</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>配置里的 <code>output_type</code></th>
+<th>模型端要实现什么</th>
+<th>对应 02 章的范式</th>
+<th>典型任务</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>loglikelihood</code></td>
+<td><code>LM.loglikelihood</code>（✅ <code>model.py:40</code>）</td>
+<td>① 判别式</td>
+<td>给单个续写打分</td>
+</tr>
+<tr>
+<td><code>multiple_choice</code></td>
+<td>★ <strong>什么都不用实现</strong>——任务端拆成 N 次 <code>loglikelihood</code></td>
+<td>① 判别式</td>
+<td>MMLU、HellaSwag、ARC</td>
+</tr>
+<tr>
+<td><code>loglikelihood_rolling</code></td>
+<td><code>LM.loglikelihood_rolling</code>（✅ <code>model.py:58</code>）</td>
+<td>⚠️ 不属于三种范式，它量的是语言建模能力</td>
+<td>wikitext 困惑度</td>
+</tr>
+<tr>
+<td><code>generate_until</code></td>
+<td><code>LM.generate_until</code>（✅ <code>model.py:100</code>）</td>
+<td>② 生成式</td>
+<td>GSM8K、MATH、HumanEval</td>
+</tr>
+<tr>
+<td>★★ （清单里根本没有）</td>
+<td>—</td>
+<td>③ agentic</td>
+<td>⚠️ <strong>lm-eval-harness 做不了这一类</strong>，要另一套 harness（<a href="07-agentic编码评测与SWE-bench.html">07 章</a>）</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★ <strong>那 <code>multiple_choice</code>（多选题）为什么在 <code>OutputType</code> 里，却没有对应的模型方法？</strong><br />
-⚠️ 因为它不是一个新能力，<strong>它是 ① 的批量版</strong>：<br />
-<code>一道四选一 ⟹ ★ 拆成 4 次 loglikelihood 调用 ⟹ 比谁的分高
-    ⟹ 所以模型端不用实现它，任务端拆开就行。</code></p>
+<p>★ <strong>那 <code>multiple_choice</code>（多选题）为什么在 <code>OutputType</code> 里，却没有对应的模型方法？</strong> ⚠️ 因为它不是一个新能力，<strong>它是 ① 的批量版</strong>：一道四选一 ⟹ ★ 拆成 4 次 <code>loglikelihood</code> 调用 ⟹ 比谁的分高。⟹ 所以模型端不用实现它，任务端拆开就行。✅ 拆开这件事在源码里是 <code>MultipleChoiceTask.construct_requests</code>（<code>lm_eval/api/task.py:1694-1705</code>），它对 <code>doc["choices"]</code> 里的每个选项各造一个 <code>Instance</code>。</p>
+<p>🔑 <strong>上面那张表最后一行值得单独记住</strong>：★★★ 三个原语撑起了 02 章的 ① 和 ②，但<strong>撑不起 ③</strong>。⟹ 原因很直接：agentic 评测需要的不是"给我一段文字的概率"，而是"帮我在一个容器里执行这条命令并把输出还给我"——⚠️ 那是一个<strong>完全不同的抽象</strong>。⟹ ★ 所以你会看到 SWE-bench 有自己独立的一套 harness，不挂在 lm-eval-harness 下面。</p>
 </blockquote>
 <hr />
 <h2 id="33">3.3 ★★ 为什么这个设计这么值钱</h2>
@@ -319,32 +382,153 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
       HuggingFace 的模型？   ⟹ 前向一次拿 logits，能算 ①②；能 generate，能 ③
       vLLM / SGLang？        ⟹ 同上
-      OpenAI API？           ⟹ ⚠️ 只能 ③（见下方警告）
-      llama.cpp？            ⟹ 都能
+      llama.cpp / gguf？     ⟹ 都能
+      闭源对话 API？          ⟹ ⚠️ 只能 ③（见本节后半的源码证据）
 
-    ⟹ 于是工作量从【几百 × 几十】塌缩成【几百 + 几十】：
+    ⟹ 于是工作量从【相乘】塌缩成【相加】：
        ★ 评测集只需要说清&quot;我要调哪个原语、参数是什么&quot;
        ★ 模型后端只需要实现三个函数
        ⟹ ★★ 两边互不相识，通过这三个原语对接。
 </code></pre></div>
 
-<blockquote>
-<p>🔑 这在软件工程里叫<strong>窄腰设计</strong>（narrow waist）。<br />
-<code>★ 像沙漏：上面很多（评测集），下面很多（模型后端），
-      ★★ 中间【故意做得极窄】（三个函数）。
-    ⟹ 互联网的 IP 协议、操作系统的系统调用，都是这个套路。</code></p>
-</blockquote>
-<h3 id="_1">⚠️★★ 一个必须知道的现实约束</h3>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 闭源 API 模型（GPT、Claude 等）【拿不到 loglikelihood】。
-       ★ 因为服务商不返回逐 token 的概率。
+<h3 id="_1">★★★ 把这笔账算出来</h3>
+<p>用 §3.1 数出来的真实数字（213 个评测集家族、35 个后端）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>不用窄腰：每个评测集为每个后端单独适配</th>
+<th>★★ 用窄腰：两边只跟三个原语打交道</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一共要写多少份适配</strong></td>
+<td>213 × 35 = <strong>7455</strong> 份</td>
+<td>213 + 35 = <strong>248</strong> 份</td>
+</tr>
+<tr>
+<td><strong>新加 1 个评测集要动几处</strong></td>
+<td>35 处（每个后端都得改一遍）</td>
+<td><strong>1 处</strong>（写一个 yaml，声明用哪个原语）</td>
+</tr>
+<tr>
+<td><strong>新加 1 个后端要动几处</strong></td>
+<td>213 处（每个评测集都得改一遍）</td>
+<td><strong>1 处</strong>（实现三个函数）</td>
+</tr>
+<tr>
+<td><strong>两边要不要互相认识</strong></td>
+<td>⚠️ 要。评测集作者必须懂每个后端</td>
+<td>★ 不要。互不相识</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 7455 ÷ 248 ≈ 30.1 倍
+    ⟹ 省掉的比例 = (7455 − 248) ÷ 7455 = 7207 ÷ 7455 = 96.7%
 
-    ⟹ 后果很直接：
-       ★★ 对这些模型，判别式评测（②章的第①类）【做不了】，
+    ⟹ 🔑🔑 ★★★ 工作量从【相乘】变成【相加】——这就是窄腰值钱的地方。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一句话厘清这个 96.7% 到底是什么</strong>：它是"<strong>要写的适配份数</strong>少了 96.7%"，★ <strong>不是"代码量少了 96.7%"</strong>。⟹ 每份适配的复杂度并不相等：实现一个 <code>generate_until</code> 后端可能上千行，写一个评测集 yaml 可能二十行。⟹ 🔑 报任何"减少 X%"的数字，都要说清分母是什么。</p>
+<p>🔑 这在软件工程里叫<strong>窄腰设计</strong>（narrow waist，字面意思"窄的腰"）。★ 像沙漏：上面很多（213 个评测集），下面很多（35 个后端），★★ 中间【故意做得极窄】（3 个函数）。⟹ 互联网的 IP 协议（Internet Protocol，网际协议）、操作系统的系统调用，都是这个套路。</p>
+</blockquote>
+<h3 id="_2">⚠️★★ 一个必须知道的现实约束</h3>
+<p><strong>结论先说</strong>：★★★ 真正的分界线<strong>不在"开源还是闭源"</strong>，而在<strong>你用的那个端点会不会把提示词的逐 token 概率还给你</strong>。</p>
+<p>源码里三处证据，都是原文照抄：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/models/anthropic_llms.py:269-273</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">loglikelihood</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">requests</span><span class="p">,</span> <span class="n">disable_tqdm</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;No support for logits.&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">loglikelihood_rolling</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">requests</span><span class="p">,</span> <span class="n">disable_tqdm</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;No support for logits.&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/models/openai_completions.py:312-314（长字符串里的两个 GitHub 链接已省略）</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">loglikelihood</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">requests</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span>
+            <span class="s2">&quot;Loglikelihood (and therefore `multiple_choice`-type tasks) is not supported &quot;</span>
+            <span class="s2">&quot;for chat completions as OpenAI does not provide prompt logprobs. ...&quot;</span>
+        <span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/models/openai_completions.py:268-275（原文照抄）</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">loglikelihood</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">requests</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">assert</span> <span class="bp">self</span><span class="o">.</span><span class="n">model</span> <span class="ow">in</span> <span class="p">[</span>
+            <span class="s2">&quot;babbage-002&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;davinci-002&quot;</span><span class="p">,</span>
+        <span class="p">],</span> <span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;Prompt loglikelihoods are only supported by OpenAI&#39;s API for </span><span class="si">{</span><span class="p">[</span><span class="s1">&#39;babbage-002&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;davinci-002&#39;</span><span class="p">]</span><span class="si">}</span><span class="s2">.&quot;</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">loglikelihood</span><span class="p">(</span><span class="n">requests</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>把它整理成一张表</strong>（<code>logprobs</code> = log probabilities，逐 token 的对数概率）：</p>
+<table>
+<thead>
+<tr>
+<th>后端</th>
+<th><code>loglikelihood</code>（① 判别式）</th>
+<th><code>generate_until</code>（② 生成式）</th>
+<th>源码依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HuggingFace 本地权重</td>
+<td>能</td>
+<td>能</td>
+<td>前向一次就有 logits</td>
+</tr>
+<tr>
+<td>vLLM / SGLang 本地</td>
+<td>能</td>
+<td>能</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>llama.cpp / gguf</td>
+<td>能</td>
+<td>能</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>自己起的 OpenAI 兼容 <code>/v1/completions</code>（例如 vLLM 的 server）</td>
+<td>能 —— ★ 因为这个端点会把提示词的 logprobs 返回给你</td>
+<td>能</td>
+<td><code>LocalCompletionsAPI.parse_logprobs</code>（<code>openai_completions.py:16</code>、<code>:99</code>）</td>
+</tr>
+<tr>
+<td>OpenAI 官方 <code>/v1/completions</code></td>
+<td>⚠️ <strong>只对 <code>babbage-002</code>、<code>davinci-002</code> 两个老模型能</strong></td>
+<td>能</td>
+<td><code>openai_completions.py:268-275</code> 那句 <code>assert</code></td>
+</tr>
+<tr>
+<td>OpenAI 官方 <code>/v1/chat/completions</code></td>
+<td><strong>不能</strong></td>
+<td>能</td>
+<td><code>openai_completions.py:312-314</code> 直接抛 <code>NotImplementedError</code></td>
+</tr>
+<tr>
+<td>Anthropic API</td>
+<td><strong>不能</strong></td>
+<td>能</td>
+<td><code>anthropic_llms.py:269-273</code>，理由写着 "No support for logits."</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 后果很直接：
+       ★★ 对&quot;只有对话端点&quot;的模型，判别式评测（02 章的第 ① 类）【做不了】，
           只能改用&quot;让它直接输出 A/B/C/D&quot;的生成式做法。
+       ⟹ 而那条路要过 01 章 §1.3b 的【答案抽取】这一关。
 
     ⟹ 🔑🔑 于是出现一个非常容易踩的陷阱：
        ★★★ 榜单上开源模型和闭源模型的 MMLU 分数，
-            很可能【根本不是同一种测法测出来的】。
+            很可能【根本不是同一种测法测出来的】：
+              开源模型：比 4 个选项的 loglikelihood，★ 瞎猜也有 25% 地板
+              闭源模型：让它写出 &quot;B&quot;，再用正则抠，★ 抠不到就算错，没有地板
        ⟹ ⚠️ 严格来说不该直接比大小。
 </code></pre></div>
 
@@ -353,73 +537,189 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="34">3.4 一道题在框架里怎么流动</h2>
-<div class="codehilite"><pre><span></span><code>    ★ 以 GSM8K（小学数学应用题）一道题为例：
-
-    ┌─ ① 任务加载 ─────────────────────────────────────┐
-    │  Task 类读配置，拿到题目 doc                       │
-    │  ✅ lm_eval/api/task.py:64  class Task(abc.ABC)   │
-    └──────────────────────────────────────────────────┘
-                          ↓
-    ┌─ ② 拼提示词 ─────────────────────────────────────┐
-    │  fewshot_context() 把【描述 + N 个示例 + 本题】拼起来│
-    │  ✅ task.py:447  def fewshot_context(...)         │
-    │  ⟹ ★ 04 章专门讲这一步                            │
-    └──────────────────────────────────────────────────┘
-                          ↓
-    ┌─ ③ 造请求 ───────────────────────────────────────┐
-    │  construct_requests() 生成 Instance 对象           │
-    │  ✅ task.py:382                                   │
-    │  ✅ Instance 定义在 api/instance.py:11            │
-    │     request_type = &quot;generate_until&quot;   ★ 用哪个原语 │
-    │     arguments    = (提示词, {&quot;until&quot;: [&quot;\n\n&quot;]})   │
-    └──────────────────────────────────────────────────┘
-                          ↓
-    ┌─ ④ 调模型 ───────────────────────────────────────┐
-    │  ★ 框架把成千上万个 Instance 攒成批，一次性喂给模型 │
-    │  model.generate_until(instances)                  │
-    │  ⟹ ★★ 这里就接上了你的【推理框架】：               │
-    │     vLLM / SGLang 在这一步发挥作用                 │
-    └──────────────────────────────────────────────────┘
-                          ↓
-    ┌─ ⑤ 过滤/抽取 ────────────────────────────────────┐
-    │  apply_filters() ★ 从生成的文字里抠出答案          │
-    │  ✅ task.py:505                                   │
-    │  ⟹ ★ 05 章专门讲这一步                            │
-    └──────────────────────────────────────────────────┘
-                          ↓
-    ┌─ ⑥ 打分 ─────────────────────────────────────────┐
-    │  process_results() 单题对错   ✅ task.py:403       │
-    │  aggregation()     汇总成最终分数 ✅ task.py:416   │
-    └──────────────────────────────────────────────────┘
+<p><strong>以 GSM8K 一道题为例。六步，一条直线</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    题目 doc（一道应用题 + 标准答案）
+      |
+      |  ① Task 读 yaml 配置，取出这道题
+      v
+    提示词字符串（5 个示例 + 本题）
+      |
+      |  ② fewshot_context()
+      v
+    Instance 对象（记着&quot;用哪个原语、参数是什么&quot;）
+      |
+      |  ③ construct_requests()
+      v
+    模型生成的原始文字
+      |
+      |  ④ model.generate_until()   &lt;-- ★★ 推理框架在这一步发挥作用
+      v
+    抠出来的答案
+      |
+      |  ⑤ apply_filters()
+      v
+    单题对错  --&gt;  全集平均分
+      ⑥ process_results() / aggregation()
 </code></pre></div>
 
+<p>每一步的源码位置，以及跑 GSM8K 时这一步的<strong>真实取值</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>干什么</th>
+<th>源码位置（✅ v0.4.12）</th>
+<th>跑 GSM8K 时的真实值（✅ <code>gsm8k.yaml</code>）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 任务加载</strong></td>
+<td><code>Task</code> 类读 yaml 配置，拿到一道题 <code>doc</code></td>
+<td><code>lm_eval/api/task.py:64</code> <code>class Task(abc.ABC)</code></td>
+<td><code>dataset_path: openai/gsm8k</code>，<code>dataset_name: main</code>，<code>test_split: test</code>（1K 道题）</td>
+</tr>
+<tr>
+<td><strong>② 拼提示词</strong></td>
+<td><code>fewshot_context()</code> 把【描述 + N 个示例 + 本题】拼成一个字符串</td>
+<td><code>task.py:447</code></td>
+<td><code>num_fewshot: 5</code>；每题按 <code>doc_to_text</code> 拼成 <code>Question: …</code> 换行 <code>Answer:</code> ⟹ ★ <a href="04-few-shot与提示词.html">04 章</a> 专门讲这一步</td>
+</tr>
+<tr>
+<td><strong>③ 造请求</strong></td>
+<td><code>construct_requests()</code> 生成 <code>Instance</code> 对象</td>
+<td><code>task.py:382</code>；<code>Instance</code> 定义在 <code>api/instance.py:11</code></td>
+<td><code>request_type = "generate_until"</code>；参数里带上 <code>until</code> 三个停止标记、<code>do_sample: false</code>、<code>temperature: 0.0</code></td>
+</tr>
+<tr>
+<td><strong>④ 调模型</strong></td>
+<td>★ 框架把成千上万个 <code>Instance</code> 攒成批，一次性喂给模型</td>
+<td>抽象方法在 <code>api/model.py:100</code>，调用形式 <code>model.generate_until(instances)</code></td>
+<td>★★ 这里接上你的【推理框架】：vLLM / SGLang 在这一步发挥作用</td>
+</tr>
+<tr>
+<td><strong>⑤ 过滤/抽取</strong></td>
+<td><code>apply_filters()</code> ★ 从生成的文字里抠出答案</td>
+<td><code>task.py:505</code></td>
+<td>★★ <strong>两条流水线并行</strong>：<code>strict-match</code> 与 <code>flexible-extract</code> ⟹ ★ <a href="05-答案抽取与打分.html">05 章</a> 专门讲这一步</td>
+</tr>
+<tr>
+<td><strong>⑥ 打分</strong></td>
+<td><code>process_results()</code> 判单题对错；<code>aggregation()</code> 汇总成最终分数</td>
+<td><code>task.py:403</code> / <code>task.py:416</code></td>
+<td><code>exact_match</code> 比对（带 <code>regexes_to_ignore</code> 归一化），<code>aggregation: mean</code> ⟹ ★★ 最终输出<strong>两个</strong>分数，一个 filter 一个</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★ <strong>注意第 ④ 步</strong>：这是你手上三份文档接起来的地方。<br />
-```<br />
-    训练框架 ⟹ 把模型练出来<br />
-    推理框架 ⟹ vLLM / SGLang 把模型跑起来<br />
-    ★ 评测框架 ⟹ 站在推理框架【上面】，反复调它，然后打分</p>
-<div class="codehilite"><pre><span></span><code>⟹ 🔑 所以评测跑得快不快，很大程度上取决于你的推理后端。
-   ★ 用 HuggingFace 原生跑 MMLU 要几小时，换 vLLM 可能十几分钟。
-</code></pre></div>
-
-<p>```</p>
+<p>★★ <strong>注意第 ④ 步</strong>：这是你手上三份文档接起来的地方。训练框架 ⟹ 把模型练出来；推理框架 ⟹ vLLM / SGLang 把模型跑起来；★ 评测框架 ⟹ 站在推理框架<strong>上面</strong>，反复调它，然后打分。⟹ 🔑 所以评测跑得快不快，很大程度上取决于你的推理后端。</p>
+<p>⚠️ <strong>顺手纠一个到处被说错的算法</strong>：假设某次评测从 <strong>3 小时</strong>降到 <strong>15 分钟</strong>（⚠️ 只是量级示意，不是实测；真要报这种数字，必须带上"哪块卡、几张、batch 多大、几 shot、多少道题"）。⟹ <strong>时间减少了</strong> (180 − 15) ÷ 180 = <strong>91.7%</strong>；<strong>加速倍数是</strong> 180 ÷ 15 = <strong>12 倍</strong>。★★★ "时间减少 91.7%"和"加速 91.7%"是两回事——后者会被理解成只快了不到一倍。🔑 <strong>报性能只报一种：要么报"时间从 A 降到 B"，要么报"加速 N 倍"，别报百分比。</strong></p>
 </blockquote>
 <hr />
+<h2 id="34b">3.4b ★★★ 换掉这条流水线上的一个零件，会发生什么</h2>
+<p><strong>§3.4 那六步，每一步都是一个可替换的零件。这张表回答一个很实际的问题：换掉其中一个，那个分数还能不能叫原来的名字？</strong></p>
+<table>
+<thead>
+<tr>
+<th>换掉哪一环</th>
+<th>具体动作</th>
+<th>分数会怎么变</th>
+<th>★ 换完还能叫同一个分数吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 数据集版本</strong></td>
+<td><code>dataset_name</code> 换子集，或 yaml 里 <code>metadata.version</code> 升级</td>
+<td>题目不是同一批 ⟹ ⚠️ 方向无法预测</td>
+<td><strong>不能</strong>。必须把版本号一起报出来</td>
+</tr>
+<tr>
+<td><strong>① 题量</strong></td>
+<td>1K 道全跑 → 图快只抽 200 道</td>
+<td>⚠️ 抽样噪声上来，几个百分点的差距变得没意义</td>
+<td><strong>不能</strong>。必须报题量</td>
+</tr>
+<tr>
+<td><strong>② few-shot 数</strong></td>
+<td><code>num_fewshot: 5</code> → <code>0</code></td>
+<td>★★ 模型不知道要写成 <code>#### 66</code> ⟹ strict-match 大面积抠不到 ⟹ 分数往低走</td>
+<td><strong>不能</strong></td>
+</tr>
+<tr>
+<td><strong>② 示例的随机种子</strong></td>
+<td>换一个 <code>random.Random</code> 种子</td>
+<td>换到另外 5 道例题 ⟹ ⚠️ 小幅变动，方向不定</td>
+<td>⚠️ 勉强，但必须报种子</td>
+</tr>
+<tr>
+<td><strong>② 提问模板</strong></td>
+<td><code>doc_to_text</code> 从 <code>Question: …</code> 换成对话模板</td>
+<td>★★ 对基座模型和对话模型的影响<strong>方向相反</strong>（见 04 章 §4.4）</td>
+<td><strong>不能</strong></td>
+</tr>
+<tr>
+<td><strong>③ 停止标记</strong></td>
+<td>删掉 <code>until</code> 里的 <code>"Question:"</code></td>
+<td>模型自己编下一道题 ⟹ 抽取器抠到后面那道题的数 ⟹ 分数往低走</td>
+<td><strong>不能</strong></td>
+</tr>
+<tr>
+<td><strong>③ 采样设置</strong></td>
+<td><code>temperature: 0.0</code> → <code>0.8</code></td>
+<td>★ 每次跑都不一样 ⟹ 必须跑多遍、报均值和方差</td>
+<td><strong>不能</strong>（口径变成了"采样 N 次的均值"）</td>
+</tr>
+<tr>
+<td><strong>④ 推理后端</strong></td>
+<td><code>hf</code> → <code>vllm</code></td>
+<td>⚠️ 原则上分数不该变，实际会有小差异（批处理顺序与数值精度不同）</td>
+<td>⚠️ 勉强，但要交代后端</td>
+</tr>
+<tr>
+<td><strong>⑤ 抽取规则</strong></td>
+<td><code>strict-match</code> ↔ <code>flexible-extract</code></td>
+<td>✅ 01 章 §1.3b 那 4 道题：<strong>25.0% 对 75.0%</strong>，差 50.0 个百分点</td>
+<td>★★★ <strong>绝对不能</strong>。这是最常见的偷换</td>
+</tr>
+<tr>
+<td><strong>⑥ 判分归一化</strong></td>
+<td>从 <code>regexes_to_ignore</code> 里删掉那条去逗号的规则</td>
+<td>模型写 <code>1,000</code>、标准答案 <code>1000</code> ⟹ 判错 ⟹ 分数往低走</td>
+<td><strong>不能</strong></td>
+</tr>
+<tr>
+<td><strong>⑥ 聚合方式</strong></td>
+<td><code>aggregation: mean</code>（按题平均）→ 按科目先平均再平均（MMLU 常见做法）</td>
+<td>★★ 各科题量不相等时，两种算法给出<strong>不同的数</strong></td>
+<td><strong>不能</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 数一下：11 行里，9 行的答案是&quot;不能叫同一个分数&quot;。
+
+    ⟹ ★★★ 所以「MMLU 74.5」这个说法本身不构成一个可比的事实。
+       它必须挂在一整套口径上，否则它就只是一个装饰数字。
+    ⟹ ★ 反过来这也是好消息：这些零件都写在 yaml 里，
+       ⟹ 🔑 【报口径】这件事在工程上等于【把那个 yaml 附上】。
+</code></pre></div>
+
+<hr />
 <h2 id="35-instance">3.5 ★ Instance：贯穿全程的那个数据结构</h2>
-<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/instance.py:11-27  （原文照抄，略去部分）</span>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/instance.py:11-25  （原文照抄，省略 field(...) 的默认值细节）</span>
 <span class="nd">@dataclass</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">Instance</span><span class="p">:</span>
     <span class="n">request_type</span><span class="p">:</span> <span class="n">OutputType</span>     <span class="c1"># ★ 用哪个原语</span>
     <span class="n">doc</span><span class="p">:</span> <span class="nb">dict</span>                    <span class="c1"># 原始题目</span>
     <span class="n">arguments</span><span class="p">:</span> <span class="nb">tuple</span>             <span class="c1"># ★ 传给原语的参数</span>
     <span class="n">idx</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">metadata</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="o">...</span><span class="p">]</span> <span class="o">=</span> <span class="o">...</span>   <span class="c1"># (task_name, doc_id, repeats) 三元组</span>
     <span class="n">resps</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="o">...</span>            <span class="c1"># ★ 模型的原始回答</span>
     <span class="n">filtered_resps</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="o">...</span>   <span class="c1"># ★★ 抽取/过滤之后的答案</span>
-    <span class="n">task_name</span><span class="p">:</span> <span class="o">...</span> <span class="p">;</span> <span class="n">doc_id</span><span class="p">:</span> <span class="o">...</span> <span class="p">;</span> <span class="n">repeats</span><span class="p">:</span> <span class="o">...</span>
+    <span class="c1"># task_name / doc_id / repeats 由 __post_init__ 从 metadata 解包出来</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★★ 盯住最后两个字段，它们是一对：
+<div class="codehilite"><pre><span></span><code>    ★★ 盯住 resps 和 filtered_resps，它们是一对：
 
       resps          = 模型【原封不动】吐出来的东西
       filtered_resps = ★ 经过抽取规则处理后的东西
@@ -432,6 +732,41 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        但原因和解法完全相反。★ 12 章会讲怎么排查。
 </code></pre></div>
 
+<p><strong>用 01 章 §1.3b 的 Q4 对一遍，就知道这两个字段为什么必须都留着</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>Q4 里的值</th>
+<th>你能从它读出什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>doc</code> 里的标准答案</td>
+<td><code>8</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>resps</code>（原始回答）</td>
+<td><code>答案是 8，不过含运费就是 9。</code></td>
+<td>★★ 模型<strong>算对了</strong>：它说了 8</td>
+</tr>
+<tr>
+<td><code>filtered_resps</code>（flexible-extract 之后）</td>
+<td><code>9</code></td>
+<td>★ 抽取器取了最后一个数字，抠错了</td>
+</tr>
+<tr>
+<td>最终这道题的分</td>
+<td><code>0</code></td>
+<td>⚠️ <strong>只看这个 0，你根本分不清是模型错还是抽取错</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>所以排查分数异常的第一步永远是"打开 <code>resps</code> 看原文"</strong>，而不是去怀疑模型。⟹ ★ <code>filtered_resps</code> 是 <code>dict</code> 而不是 <code>list</code>，正是因为一次运行可能挂着多个 filter（GSM8K 就挂了两个），★★ 每个 filter 的抽取结果都要单独存一份。</p>
+</blockquote>
 <hr />
 <h2 id="36">3.6 本章小结</h2>
 <div class="codehilite"><pre><span></span><code>    ★★ 三句话：
@@ -439,16 +774,26 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ① 整个框架建立在【三个原语】上：
        loglikelihood / loglikelihood_rolling / generate_until
        ✅ lm_eval/api/model.py:40 / 58 / 100
+       ⚠️ 加上一个 multiple_choice，它不是新能力，是 loglikelihood 的批量版
 
-    ② 这是【窄腰设计】：几百个评测集 + 几十个后端，
-       ★ 靠三个函数解耦，工作量从相乘变成相加
+    ② 这是【窄腰设计】：✅ 213 个评测集家族 + 35 个后端，
+       ★ 靠三个函数解耦 ⟹ 7455 份适配塌缩成 248 份（少 96.7%）
+       ⟹ 工作量从相乘变成相加
 
-    ③ ⚠️★★ 闭源 API 拿不到 loglikelihood
+    ③ ⚠️★★ 只有对话端点的模型拿不到 loglikelihood
+       ✅ 证据：anthropic_llms.py:269 / openai_completions.py:312
        ⟹ 开源模型和闭源模型的同名分数，★★★ 可能不是一种测法
+       ⟹ ★ 真正的分界线不是&quot;开源还是闭源&quot;，
+            是&quot;那个端点会不会把提示词的逐 token 概率还给你&quot;
+</code></pre></div>
 
-    ⟹ 🔑 记住那条数据流：
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 记住那条数据流：
        题目 → 拼提示词 → 造 Instance → 调原语 → 抽取 → 打分
        ★ 后面每一章，都是在放大其中某一步。
+
+    ⟹ 🔑🔑 以及 §3.4b 那张表的结论：
+       ★★★ 这条流水线上 11 个可换的零件里，9 个换掉之后
+            那个分数就不该再叫原来的名字。
 </code></pre></div>
 
 <hr />

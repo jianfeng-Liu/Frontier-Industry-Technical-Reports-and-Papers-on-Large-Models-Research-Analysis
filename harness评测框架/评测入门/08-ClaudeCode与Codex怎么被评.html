@@ -272,101 +272,249 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="codehilite"><pre><span></span><code><span class="c1"># pred (dict): Prediction w/ model_name_or_path, model_patch, instance_id</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 也就是说，SWE-bench 的判卷器只认三个字段：
+<p>⟹ 🔑🔑 也就是说，SWE-bench 的判卷器<strong>只认三个字段</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>作用</th>
+<th>判卷器拿它干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>instance_id</code></td>
+<td>哪道题</td>
+<td>★ 去数据集里找对应的题目和测试名单</td>
+</tr>
+<tr>
+<td><code>model_patch</code></td>
+<td>★★ 你交上来的补丁文本</td>
+<td>★★★ 写进容器、尝试 <code>git apply</code></td>
+</tr>
+<tr>
+<td><code>model_name_or_path</code></td>
+<td>★ 一个【你自己随便填的字符串】</td>
+<td>⚠️ <strong>只用来拼日志目录名</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★★★ 注意最后一个。<a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:253-254</a> 里它的全部用途就是这两行（★ 逐字）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">model_name_or_path</span> <span class="o">=</span> <span class="n">pred</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;model_name_or_path&quot;</span><span class="p">,</span> <span class="s2">&quot;None&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">,</span> <span class="s2">&quot;__&quot;</span><span class="p">)</span>
+<span class="n">log_dir</span> <span class="o">=</span> <span class="n">RUN_EVALUATION_LOG_DIR</span> <span class="o">/</span> <span class="n">run_id</span> <span class="o">/</span> <span class="n">model_name_or_path</span> <span class="o">/</span> <span class="n">instance_id</span>
+</code></pre></div>
 
-    ┌────────────────────┬────────────────────────────────────┐
-    │ instance_id        │ 哪道题                              │
-    │ model_patch        │ ★★ 你交上来的补丁文本               │
-    │ model_name_or_path │ ★ 一个【你自己随便填的字符串】      │
-    └────────────────────┴────────────────────────────────────┘
-
-    ★★★ 注意最后一个：它只是【日志目录名】，
-       [run_evaluation.py:253-254] 里就是拿来拼路径的：
-         model_name_or_path = pred.get(&quot;model_name_or_path&quot;, &quot;None&quot;).replace(&quot;/&quot;, &quot;__&quot;)
-         log_dir = RUN_EVALUATION_LOG_DIR / run_id / model_name_or_path / instance_id
-
-    ⟹ 🔑🔑🔑 评测框架【完全不验证、也完全不关心】这个补丁是谁生成的、
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 评测框架【完全不验证、也完全不关心】这个补丁是谁生成的、
        花了多少钱、跑了多少轮、用了什么工具、重试了几次。
+    ⟹ ⚠️ 那个字段连&quot;是不是一个真实存在的模型名&quot;都不检查。
+       ★ 默认值是字符串 &quot;None&quot;。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ★★★ 这就是本章的全部要害：
-
-    ┌───────────────────────────────────────────────────────────┐
-    │  SWE-bench 定义的是【题目】和【判卷】。                    │
-    │  ★★ 中间&quot;怎么把补丁做出来&quot;那一段，是【完全开放】的。      │
-    │  ⟹ 而 Claude Code、Codex 的绝大部分本事，全在那一段里。   │
-    └───────────────────────────────────────────────────────────┘
+<p>★★★ 这就是本章的全部要害：</p>
+<table>
+<thead>
+<tr>
+<th>SWE-bench 定义了什么</th>
+<th>SWE-bench <strong>不定义</strong>什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★★ <strong>题目</strong>：给哪个仓库、哪个 commit、哪段 issue 文字</td>
+<td>⚠️ 怎么把上下文喂给模型（07 章 §7.9：差 2.4–3.0 倍）</td>
+</tr>
+<tr>
+<td>★★ <strong>判卷</strong>：起容器、打补丁、跑测试、F2P × P2P（07 章 §7.4）</td>
+<td>⚠️ 用什么工具、跑几轮、怎么纠错、怎么重试</td>
+</tr>
+<tr>
+<td>★ <strong>输出格式</strong>：三个字段的 JSONL</td>
+<td>⚠️ 花了多少 token、多少钱、多少墙钟时间</td>
+</tr>
+<tr>
+<td>—</td>
+<td>⚠️ ★★★ 跑了一次还是五十次、怎么从多次里挑一份交</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★★ 中间&quot;怎么把补丁做出来&quot;那一段，是【完全开放】的。
+    ⟹ 🔑 而 Claude Code、Codex 的绝大部分本事，全在那一段里。
 </code></pre></div>
 
+<blockquote>
+<p>★ 同一组源码事实的另一种讲法（逐函数、带上下文）在 <a href="../SWE-bench拆解.html">SWE-bench拆解.md</a> 第 3 节。本章不重复源码，只往下推它的后果。</p>
+</blockquote>
 <hr />
 <h2 id="82-scaffold">8.2 名词：脚手架（scaffold）</h2>
-<div class="codehilite"><pre><span></span><code>    ★ 名词：scaffold（脚手架），也叫 agent harness / agent framework
+<div class="codehilite"><pre><span></span><code>    ★ 名词：scaffold（脚手架）
+      ★ 同义词：agent harness（智能体挽具）、agent framework（智能体框架）
 
       ★★ 指【包在模型外面、让它能真的干活的那层程序】。
       盖楼时钢筋水泥是主体，脚手架是让工人上得去的架子——
       ★ 楼盖完脚手架就拆了，但没有它楼盖不起来。
 
-    ⟹ 🔑 07 章那张图里&quot;模型/agent 干活&quot;的格子，装的就是它。
+    ⚠️⚠️ 注意 &quot;harness&quot; 这个词有两个意思，本书全程区分：
+      ① 评测 harness：把模型接上题目和判分器的那套程序（01–06 章讲的那个）
+      ② agent harness / 脚手架：把模型接上工具和环境的那套程序（本章讲的这个）
+      ⟹ 🔑 它们是两个不同的东西，只是英文撞了名字。
+         ★★ 姊妹目录 [agent脚手架/](../agent脚手架/README.md) 第 01 章专门拆这个歧义。
+
+    ⟹ 🔑 07 章 §7.2b 那张流程图里&quot;模型/agent 干活&quot;的格子，装的就是它。
 </code></pre></div>
 
 <p>一个脚手架至少要做这些事（⚠️ 以下是我对公开实现的归纳，不是某篇论文的原文）：</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ ① 工具集（tools）──────────────────────────────────┐
-   │  给模型几个能调用的动作：读文件、写文件、跑 shell、  │
-   │  grep 搜索、跑测试。★★ 工具设计得好不好，直接决定  │
-   │  同一个模型能不能干成活。                            │
-   └─────────────────────────────────────────────────────┘
-   ┌─ ② 上下文管理 ──────────────────────────────────────┐
-   │  07 章说仓库平均 438K 行，装不进上下文窗口。         │
-   │  ★★ 什么时候塞什么进去、旧的怎么压缩掉，是核心技术。│
-   └─────────────────────────────────────────────────────┘
-   ┌─ ③ 循环与停止条件 ──────────────────────────────────┐
-   │  ★ 让模型跑多少轮？什么时候判定&quot;它自己觉得做完了&quot;？  │
-   │  什么时候强行掐断？                                  │
-   └─────────────────────────────────────────────────────┘
-   ┌─ ④ 错误恢复 ────────────────────────────────────────┐
-   │  测试报错了怎么把报错喂回去、要不要回滚、重试几次。  │
-   └─────────────────────────────────────────────────────┘
-   ┌─ ⑤ 采样策略 ────────────────────────────────────────┐
-   │  ★★★ 只跑一遍？还是跑 5 遍挑最好的？（见 §8.5）    │
-   └─────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>部件</th>
+<th>它要决定什么</th>
+<th>✅ 有没有实测数字</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>工具集</strong>（tools）</td>
+<td>给模型哪几个能调用的动作：读文件、写文件、跑 shell、grep 搜索、跑测试</td>
+<td>✅ 有，而且很大。§8.4.2：去掉 edit 命令掉 7.7 个百分点</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>上下文管理</strong></td>
+<td>07 章说仓库平均 438K 行，装不进上下文窗口。★★ 什么时候塞什么进去、旧的怎么压缩掉</td>
+<td>✅ 有。§8.4.2：保留全历史 vs 只留最近 5 次观察，差 3.0 个百分点</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>循环与停止条件</strong></td>
+<td>★ 让模型跑多少轮？什么时候判定"它自己觉得做完了"？什么时候强行掐断？</td>
+<td>⚠️ 本章没有直接的消融数字，但预算上限是硬约束（§8.5）</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>错误恢复</strong></td>
+<td>测试报错了怎么把报错喂回去、要不要回滚、重试几次</td>
+<td>✅ 有。§8.4.2：加 linting 护栏值 3.0 个百分点</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>采样与挑选策略</strong></td>
+<td>★★★ 只跑一遍？还是跑 6 遍挑最好的？怎么挑？</td>
+<td>✅ 有，而且是本章最大的一项。§8.5：pass@1 17.94% → pass@6 32.67%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★★ 完整的变量清单（含"哪些会被算进模型能力、哪些不会"）在 §8.4.3。上面这张表只是把部件列出来。</p>
+</blockquote>
 <p>★★ SWE-bench 自带的 <a href="../源码/swebench-5.0.2/swebench/inference/run_api.py">swebench/inference/run_api.py</a> 是最原始的一版脚手架，它的文件头注释（★ 逐字）：</p>
 <blockquote>
 <p>"This python script is designed to run inference on a dataset using either the<br />
 OpenAI or Anthropic API, depending on the model specified."</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ★ 看它的做法就知道有多简陋：
-      拼一个大 prompt → 调一次 API → 用 extract_diff() 从回复里抠出补丁 → 完。
-      ⟹ ★★ 一轮，没有工具，没有反馈，不跑测试。
-
-    ⟹ 🔑 这就是 07 章那个【1.96%】的由来。
+<p>★ 看它的做法就知道有多简陋：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>run_api.py 干什么</th>
+<th>⚠️ 它没有的东西</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>把 issue + 检索到的文件拼成一个大 prompt</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>★★ 调<strong>一次</strong> API</td>
+<td>⚠️ 没有第二轮</td>
+</tr>
+<tr>
+<td>3</td>
+<td>用 <code>extract_diff()</code> 从回复里抠出补丁</td>
+<td>⚠️ 没有工具调用</td>
+</tr>
+<tr>
+<td>4</td>
+<td>完</td>
+<td>⚠️ 没有跑测试、没有看报错、没有改了再试</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 这就是 07 章那个【1.96%】的由来。
        ⚠️ 它衡量的是&quot;模型盲写补丁&quot;的能力，
        ★★★ 而不是&quot;一个工程 agent 解决问题&quot;的能力。
+
+    ⟹ ⚠️ 顺手提醒一个容易被忽略的点：这一档连&quot;抠补丁&quot;都是
+       ★★ 用 extract_diff() 正则做的 —— 05 章那套抽取脏活在这里还在。
+       ⟹ 🔑 07 章 §7.5 的 % Apply 数字（ChatGPT-3.5 只有 26.33%）
+          就是这个环节的直接后果。
 </code></pre></div>
 
 <hr />
 <h2 id="83-claude-code-codex">8.3 所以 Claude Code / Codex 被评的是什么</h2>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：Claude Code —— Anthropic 的命令行编码工具
-      ★ 名词：Codex —— OpenAI 的编码 agent 产品线
+    ★ 名词：Codex —— OpenAI 的编码 agent 产品线
       ★★ 它们【不是模型】，是【产品】：模型 + 脚手架 + 工具 + 提示词 + 策略。
 
-    ⟹ 🔑🔑 当你看到&quot;Claude Code 在 SWE-bench Verified 上 xx%&quot;，
-       这个数字的完整含义是：
-
-    ┌──────────────────────────────────────────────────────┐
-    │  某个具体模型版本                                     │
-    │  ＋ 某个具体脚手架版本                                │
-    │  ＋ 某套工具定义                                      │
-    │  ＋ 某个上下文/轮数/超时预算                          │
-    │  ＋ 某种采样与挑选策略                                │
-    │  ＝ 在 500 道人工校验题上的 RESOLVED_FULL 百分比      │
-    └──────────────────────────────────────────────────────┘
-
-    ⟹ ★★★ 换掉其中任何一项，分数都会动，而且可能动很多。
+    ⚠️ 顺带纠一个常见混淆：Codex 这个名字在历史上指过两样东西——
+      ① 2021 年的 Codex 模型（HumanEval 论文那个，arXiv:2107.03374）
+      ② 后来的 Codex 编码 agent 产品线
+      ⟹ 🔑 看到&quot;Codex 得了多少分&quot;，★★ 先确认说的是哪一个。
 </code></pre></div>
 
-<p>⚠️ 这是我的判断，不是论文结论，但有源码支撑（§8.1）：<br />
+<p>⟹ 🔑🔑 当你看到"Claude Code 在 SWE-bench Verified 上 xx%"，这个数字的完整含义是：</p>
+<table>
+<thead>
+<tr>
+<th>这个分数其实等于……</th>
+<th>具体是什么</th>
+<th>榜单一般说不说</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>某个具体<strong>模型版本</strong></td>
+<td>带日期的快照，不是"Claude" 三个字</td>
+<td>★ 通常说</td>
+</tr>
+<tr>
+<td>＋ 某个具体<strong>脚手架版本</strong></td>
+<td>哪个 commit 的 agent 代码</td>
+<td>⚠️ 通常不说</td>
+</tr>
+<tr>
+<td>＋ 某套<strong>工具定义</strong></td>
+<td>有没有 edit 工具、搜索长什么样</td>
+<td>⚠️ 几乎不说</td>
+</tr>
+<tr>
+<td>＋ 某个<strong>上下文 / 轮数 / 超时预算</strong></td>
+<td>最多几轮、最多多少 token、多少钱</td>
+<td>⚠️ 几乎不说</td>
+</tr>
+<tr>
+<td>＋ 某种<strong>采样与挑选策略</strong></td>
+<td>跑一遍还是 N 遍、怎么挑</td>
+<td>⚠️ 几乎不说</td>
+</tr>
+<tr>
+<td>＝ 在 <strong>500 道人工校验题</strong>上的 <code>RESOLVED_FULL</code> 百分比</td>
+<td>★ 哪个子集</td>
+<td>★ 通常说</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★★ 换掉其中任何一项，分数都会动，而且可能动很多。
+    ⟹ 🔑 这张表的上下两行（模型版本、题集）是榜单会说的；
+       ★★★ 中间四行是决定性的，而它们通常不说。
+</code></pre></div>
+
+<p>⚠️ 这是我的判断，不是论文结论，但有源码支撑（§8.1）也有实测支撑（§8.4.1）：<br />
 <strong>★★ 同一个模型换一套脚手架，SWE-bench 分数的差距可以大过两代模型之间的差距。</strong></p>
 <div class="codehilite"><pre><span></span><code>    🔑 一个思想实验帮你记住：
        run_api.py 那套（一轮盲写）vs 一个能跑测试、看报错、改了再试的 agent。
@@ -374,77 +522,235 @@ OpenAI or Anthropic API, depending on the model specified."</p>
        ⟹ 差的那部分，【全部记在了模型头上】。
 </code></pre></div>
 
+<p>★ 这件事一线团队自己是知道的。✅ DeepSeek-V3 技术报告 §5.3.1 原文：</p>
+<blockquote>
+<p>"<strong>SWE-Bench verified is evaluated using the agentless framework</strong> (Xia et al., 2024)."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 一句话把脚手架披露掉了，这是正面样板。
+    ⟹ 🔑 详见 10 章 §10.6，那一节把&quot;同一张表里所有模型都跑 Agentless&quot;
+       这个设计的好处和局限都拆了。
+</code></pre></div>
+
 <hr />
 <h2 id="84-aci">8.4 名词：ACI —— 为什么"给模型的界面"本身是一项技术</h2>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：ACI = Agent-Computer Interface（智能体-计算机界面）
-      ★★ 由 SWE-agent 团队提出的说法。
+      ★★ 由 SWE-agent 团队提出的说法（arXiv:2405.15793）。
 
-      类比：UI（用户界面）是给人用的，★ ACI 是给模型用的。
+      类比：UI = User Interface（用户界面）是给人用的，
+           ★ ACI 是给模型用的。
       ⟹ 🔑 核心主张：给模型的工具，不该照搬给人用的工具。
+
+    ✅ 论文摘要原文（逐字）：
+    &gt; &quot;We show that ACIs tailored specifically for LMs **outperform existing user
+    &gt;  interfaces (UIs) designed for human users**, such as the Linux shell.&quot;
 </code></pre></div>
 
-<p>⚠️ 以下是我的解释，用来帮你理解为什么这件事重要：</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 人用的 shell ────────────────┬─ 模型需要的 ────────────────┐
-   │ cat 一个 5000 行文件          │ ★ 分页显示，带行号            │
-   │ → 一屏刷过去，人可以滚回去     │ → 模型没有&quot;滚回去&quot;这个动作     │
-   ├───────────────────────────────┼───────────────────────────────┤
-   │ vim / sed 改文件               │ ★★ 一个明确的 edit 工具，     │
-   │ → 人靠眼睛确认改对没有         │ 改完【自动回显改动结果】       │
-   ├───────────────────────────────┼───────────────────────────────┤
-   │ 报错信息几百行                 │ ★ 截断 + 只留关键行           │
-   │ → 人会跳着看                   │ → 全塞进去会挤爆上下文         │
-   └───────────────────────────────┴───────────────────────────────┘
-
-    ⟹ 🔑🔑 结论：★★★【工具设计是能力的一部分】。
+<p>⚠️ 下面这张对照表是我的解释（不是论文原文），用来帮你理解为什么这件事重要：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>人用的 shell 是怎样</th>
+<th>★ 模型需要的是怎样</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>看一个 5000 行文件</strong></td>
+<td><code>cat</code> 一下，一屏刷过去</td>
+<td>★ 分页显示，带行号</td>
+<td>⚠️ 人可以滚回去，<strong>模型没有"滚回去"这个动作</strong></td>
+</tr>
+<tr>
+<td><strong>改文件</strong></td>
+<td><code>vim</code> / <code>sed</code>，靠眼睛确认改对没有</td>
+<td>★★ 一个明确的 <code>edit</code> 工具，改完【自动回显改动结果】</td>
+<td>⚠️ 模型看不到屏幕，必须把结果写回对话里</td>
+</tr>
+<tr>
+<td><strong>看报错</strong></td>
+<td>几百行报错，人会跳着看</td>
+<td>★ 截断 + 只留关键行</td>
+<td>⚠️ 全塞进去会挤爆上下文</td>
+</tr>
+<tr>
+<td><strong>搜索</strong></td>
+<td><code>grep</code> 吐出几百个匹配，人扫一眼就跳过</td>
+<td>★★★ 汇总式结果 + 结果太多时提示"缩小查询"</td>
+<td>⚠️ ✅ 论文实测：模型会把列表<strong>一条一条走完</strong>（§8.4.2 ②）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 结论：★★★【工具设计是能力的一部分】。
        所以&quot;评 Claude Code&quot;这件事，评的相当大一块是【ACI 设计得好不好】，
        而不只是模型聪不聪明。
 </code></pre></div>
 
 <h3 id="841">8.4.1 ✅ 论文原文：脚手架换一下，分数差多少</h3>
-<p>★★★ 这不是我的推断。SWE-agent 论文（arXiv:2405.15793，118 页，已校验）<br />
-把"同一个模型、不同脚手架"的对照实验做完了，数字如下。</p>
-<p>✅ 摘要原文：</p>
-<blockquote>
-<p>"We evaluate SWE-agent on SWE-bench and HumanEvalFix, achieving<br />
-state-of-the-art performance on both with a <strong>pass@1 rate of 12.5%</strong><br />
-and 87.7%, respectively, far exceeding the previous state-of-the-art<br />
-achieved with <strong>non-interactive LMs</strong>."</p>
-</blockquote>
+<p>★★★ 这不是我的推断。SWE-agent 论文（arXiv:2405.15793，118 页，已校验）把"同一个模型、不同脚手架"的对照实验做完了，数字如下。</p>
 <p>✅ 引言原文（关键的一句）：</p>
 <blockquote>
 <p>"Using <strong>GPT-4 Turbo</strong> as a base LM, SWE-agent solves <strong>12.47%</strong> of the<br />
 2,294 SWE-bench test tasks, substantially outperforming the previous best<br />
 resolve rate of <strong>3.8%</strong> by a non-interactive, retrieval-augmented system."</p>
+</blockquote>
+<p>✅ Table 1 原文（SWE-bench 全量 2,294 + Lite 300，★ 列名照抄）：</p>
+<table>
+<thead>
+<tr>
+<th>系统 / 模型</th>
+<th>全量 % Resolved</th>
+<th>全量 $ Avg. Cost</th>
+<th><strong>Lite % Resolved</strong></th>
+<th>Lite $ Avg. Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>RAG</strong>（检索增强，非交互）w/ GPT-4 Turbo</td>
+<td>1.31</td>
+<td>$0.13</td>
+<td><strong>2.67</strong></td>
+<td>$0.13</td>
+</tr>
+<tr>
+<td>RAG w/ Claude 3 Opus</td>
+<td>3.79</td>
+<td>$0.25</td>
+<td>4.33</td>
+<td>$0.25</td>
+</tr>
+<tr>
+<td><strong>Shell-only agent</strong> w/ GPT-4 Turbo</td>
+<td>—</td>
+<td>—</td>
+<td><strong>11.00</strong></td>
+<td>$1.46</td>
+</tr>
+<tr>
+<td>Shell-only，w/o Demonstration</td>
+<td>—</td>
+<td>—</td>
+<td><strong>7.33</strong></td>
+<td>$0.79</td>
+</tr>
+<tr>
+<td><strong>SWE-agent</strong>（完整 ACI）w/ GPT-4 Turbo</td>
+<td><strong>12.47</strong></td>
+<td>$1.59</td>
+<td><strong>18.00</strong></td>
+<td>$1.67</td>
+</tr>
+<tr>
+<td>SWE-agent w/ Claude 3 Opus</td>
+<td>10.46</td>
+<td>$2.59</td>
+<td>13.00</td>
+<td>$2.18</td>
+</tr>
+</tbody>
+</table>
+<p>★★★ <strong>现在把这张表按「模型固定、只换脚手架」重排一遍</strong>，08 章的全部论点就在这一栏里。★ 全部是 GPT-4 Turbo，SWE-bench Lite（300 题）：</p>
+<table>
+<thead>
+<tr>
+<th>脚手架配置</th>
+<th>脚手架具体变了什么</th>
+<th>% Resolved</th>
+<th>Δ 相对上一行（百分点）</th>
+<th>倍数（相对 RAG）</th>
+<th>平均成本</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>RAG</strong></td>
+<td>把 BM25 检索到的文件塞进提示词，模型一次性吐补丁。★ 零轮交互</td>
+<td><strong>2.67</strong></td>
+<td>—</td>
+<td>1.0×</td>
+<td>$0.13</td>
+</tr>
+<tr>
+<td>② <strong>裸 shell，不给示范</strong></td>
+<td>★ 给一个 Linux shell，能多轮交互，但工具就是 bash 本身</td>
+<td><strong>7.33</strong></td>
+<td>↑ <strong>4.66</strong></td>
+<td>2.7×</td>
+<td>$0.79</td>
+</tr>
+<tr>
+<td>③ <strong>裸 shell + 示范</strong></td>
+<td>★ 同上，外加一段"该怎么干活"的示范轨迹</td>
+<td><strong>11.00</strong></td>
+<td>↑ <strong>3.67</strong></td>
+<td>4.1×</td>
+<td>$1.46</td>
+</tr>
+<tr>
+<td>④ <strong>SWE-agent 完整 ACI</strong></td>
+<td>★★ 换成为模型设计的工具：分页文件查看器、<code>edit</code> 命令 + 语法检查、汇总式搜索、只留最近 5 次观察</td>
+<td><strong>18.00</strong></td>
+<td>↑ <strong>7.00</strong></td>
+<td>★★★ <strong>6.7×</strong></td>
+<td>$1.67</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️ 【权重一个字节没改。】分数从 2.67 变成 18.00。
+
+   ⟹ 🔑 ⚠️ 同一件事有两种说法，★★★ 千万别混（这是本章的第一个查错要点）：
+      ★ 绝对差 = 18.00 − 2.67 = **15.33 个【百分点】**（percentage points）
+      ★ 相对差 = 18.00 ÷ 2.67 = **6.74 【倍】**，也就是&quot;高了 574%&quot;
+      ⟹ ⚠️ 说&quot;高了 15.33%&quot;是错的（那是百分点）；
+         说&quot;高了 6.7 倍&quot;和&quot;是 6.7 倍&quot;也差一倍意思，★ 严谨的写法是&quot;6.7 倍于&quot;。
+      ✅ 论文自己用的是倍数口径：&quot;a **6.7-fold** improved % Resolved rate&quot;
+         ⟹ ★★ 18.00 / 2.67 = 6.74 ✅ 对上了，说明论文这句话的对照组
+            就是 Table 1 里 RAG w/ GPT-4 Turbo 那一行（不是 Claude 3 Opus 的 4.33）。
+
+   ⟹ 🔑🔑 所以&quot;GPT-4 Turbo 在 SWE-bench 上得几分&quot;这句话，
+      ★★★ 在没说脚手架之前，是【一个没有答案的问题】。
+</code></pre></div>
+
+<p>⚠️⚠️ <strong>还有一处引用时极易出错的地方，必须点明</strong>。✅ 论文摘要里有这句：</p>
+<blockquote>
 <p>"The results show that SWE-agent solves <strong>10.7 percentage points more<br />
 instances than the baseline agent, which uses only the default Linux shell</strong>."</p>
 </blockquote>
-<p>✅ Table 1（原文表格，SWE-bench 全量 2,294 + Lite 300）：</p>
-<div class="codehilite"><pre><span></span><code>                          ── SWE-bench 全量 ──   ── SWE-bench Lite ──
-   系统 / 模型              %Resolved  平均花费     %Resolved  平均花费
-   ─────────────────────────────────────────────────────────────────
-   RAG（检索增强，非交互）
-     w/ GPT-4 Turbo           1.31      $0.13        2.67      $0.13
-     w/ Claude 3 Opus         3.79      $0.25        4.33      $0.25
-   Shell-only agent（只给裸 Linux shell）
-     w/ GPT-4 Turbo             -          -       11.00      $1.46
-     w/o Demonstration          -          -        7.33      $0.79
-   SWE-agent（完整 ACI）
-     w/ GPT-4 Turbo          12.47      $1.59       18.00      $1.67
-     w/ Claude 3 Opus        10.46      $2.59       13.00      $2.18
-</code></pre></div>
+<p>★ 但 Table 1 里"只给裸 Linux shell"有<strong>两行</strong>，于是这 10.7 对应的是哪一行？★★ 自己减一遍就知道：</p>
+<table>
+<thead>
+<tr>
+<th>拿 SWE-agent 的 18.00 减谁</th>
+<th>差值（百分点）</th>
+<th>对得上 10.7 吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>减 Shell-only <strong>w/ 示范</strong> 的 11.00</td>
+<td>7.00</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>减 Shell-only <strong>w/o 示范</strong> 的 7.33</td>
+<td>★★ <strong>10.67 ≈ 10.7</strong></td>
+<td>✅ <strong>就是这一行</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 结论：★★★ 论文摘要那个 &quot;10.7 percentage points&quot;，
+       比的是【裸 shell 且不给示范】那一档，不是&quot;裸 shell&quot;那一档。
+    ⟹ ⚠️ 如果你引用成&quot;SWE-agent 比裸 shell 高 10.7 个百分点&quot;，就错了——
+       ★ 正确说法是高 7.0 个百分点；10.7 那个数还额外包含了&quot;给不给示范&quot;的贡献。
 
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 把这张表按【模型固定】的方式重读一遍，你会看到 08 章的全部论点：
-
-   ★★★ GPT-4 Turbo 这一个模型，在 SWE-bench Lite 上可以拿到：
-        2.67%  ← 脚手架 = RAG（把检索到的文件塞进提示词，模型一次性吐补丁）
-        7.33%  ← 脚手架 = 裸 shell，且不给示范
-       11.00%  ← 脚手架 = 裸 shell + 示范
-       18.00%  ← 脚手架 = SWE-agent 的完整 ACI
-
-   ⚠️ 【权重一个字节没改。】分数从 2.67 变成 18.00，相差 6.7 倍。
-
-   ⟹ 🔑 所以&quot;GPT-4 Turbo 在 SWE-bench 上得几分&quot;这句话，
-      ★★★ 在没说脚手架之前，是【一个没有答案的问题】。
+    ⟹ ★★ 同一页论文还给了第三种说法：
+       ✅ &quot;SWE-agent&#39;s **64% relative increase** compared to Shell-only&quot;
+       ⟹ 18.00 ÷ 11.00 = 1.636 ⟹ +63.6% ≈ 64%。✅ 对上了。
+    ⟹ 🔑🔑🔑 ★★★ 所以同一组数字有三种表达：
+       「+7.0 个百分点」「+64%」「+10.7 个百分点（换了对照组）」。
+       ⚠️⚠️ 百分点和百分比混用、对照组偷换，是这一类数字最常见的两种变形。
 </code></pre></div>
 
 <p>✅ 论文自己也点破了成本这一维（正文原文）：</p>
@@ -452,61 +758,231 @@ instances than the baseline agent, which uses only the default Linux shell</stro
 <p>"compared to RAG on Lite, SWE-agent is <strong>8-13x more costly</strong> but yields a<br />
 <strong>6.7-fold improved % Resolved</strong> rate."</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 对照表里的 $ 列：$0.13 → $1.67，正好是 ~13 倍。
+<table>
+<thead>
+<tr>
+<th>对照</th>
+<th>成本</th>
+<th>分数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RAG w/ GPT-4 Turbo（Lite）</td>
+<td>$0.13</td>
+<td>2.67</td>
+</tr>
+<tr>
+<td>SWE-agent w/ GPT-4 Turbo（Lite）</td>
+<td>$1.67</td>
+<td>18.00</td>
+</tr>
+<tr>
+<td><strong>比值</strong></td>
+<td>★ <strong>12.8×</strong></td>
+<td>★ <strong>6.74×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ $0.13 → $1.67，正好落在论文说的 &quot;8-13x&quot; 区间里。
       🔑 这就是 02 章那条定律的又一次现身：
       ★★★【越真实 ⟺ 越贵 ⟺ 越难复现】。
+
+   ⚠️ 还有一个藏在方法节里的预算约束，看分数时必须知道（✅ 原文）：
+   &gt; &quot;Due to budget constraints, we set the **per-instance budget to $4**;
+   &gt;  if a run exceeded this budget, existing edits were submitted automatically.&quot;
+   ⟹ ★★★ 所以 18.00% 这个数是【每题最多花 4 美元】条件下的成绩。
+      🔑 把上限提到 $40 会怎样？★★ 论文没测，但这正是 §8.5 要讲的&quot;隐藏变量&quot;。
 </code></pre></div>
 
 <hr />
 <h3 id="842-aci">8.4.2 ✅ ACI 的每一个设计细节都值几个点</h3>
-<p>★★ 论文 Table 3 做了 ACI 的消融实验（ablation，即"拆掉某个部件看掉几分"），<br />
-全部在 SWE-bench Lite 上，基线是完整 SWE-agent 的 <strong>18.0%</strong>：</p>
-<div class="codehilite"><pre><span></span><code>   ✅ Table 3 原文数值（↓ 表示相对 18.0 掉了多少个百分点）
-
-   ┌─ 编辑器（Editor）────────────────────────────────────┐
-   │  edit 动作 + linting（语法检查）  18.0   ← 完整版      │
-   │  edit 动作、但不做 linting        15.0   ↓ 3.0        │
-   │  完全没有 edit 命令（Noedit）     10.3   ↓ 7.7  ★★★  │
-   └──────────────────────────────────────────────────────┘
-   ┌─ 搜索（Search）──────────────────────────────────────┐
-   │  汇总式（Summarized）             18.0   ← 完整版      │
-   │  逐条翻页式（Iterative）          12.0   ↓ 6.0  ⚠️    │
-   │  完全没有搜索命令（No search）    15.7   ↓ 2.3        │
-   └──────────────────────────────────────────────────────┘
-   ┌─ 文件查看器窗口大小（File Viewer）───────────────────┐
-   │  30 行                            14.3   ↓ 3.7        │
-   │  100 行                           18.0   ← 完整版      │
-   │  整个文件全塞进去（Full file）    12.7   ↓ 5.3        │
-   └──────────────────────────────────────────────────────┘
-   ┌─ 上下文管理（Context）───────────────────────────────┐
-   │  只保留最近 5 次观察（Last 5 Obs.）18.0  ← 完整版      │
-   │  保留完整历史（Full history）     15.0   ↓ 3.0        │
-   │  不给示范（w/o demo.）            16.3   ↓ 1.7        │
-   └──────────────────────────────────────────────────────┘
+<p>★★ 论文 Table 3 做了 ACI 的消融实验，全部在 SWE-bench Lite（300 题）上，基线是完整 SWE-agent 的 <strong>18.0%</strong>。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：ablation study（消融实验）
+      ★★ 把系统里某个部件拆掉或换掉，看分数掉多少。
+      ⟹ 🔑 它是唯一能回答&quot;这个部件值几分&quot;的实验设计。
 </code></pre></div>
 
+<p>✅ Table 3 原文数值（<code>↓</code> 列是论文自己标的，相对 18.0 掉了多少个<strong>百分点</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>部件</th>
+<th>配置</th>
+<th>% Resolved</th>
+<th>✅ Δ（百分点）</th>
+<th>读法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>编辑器</strong></td>
+<td><code>edit</code> 动作 + linting（语法检查）← <strong>完整版</strong></td>
+<td><strong>18.0</strong></td>
+<td>—</td>
+<td>★ 基线</td>
+</tr>
+<tr>
+<td></td>
+<td><code>edit</code> 动作，但不做 linting</td>
+<td>15.0</td>
+<td>↓ 3.0</td>
+<td>★★ 护栏值 3 个点</td>
+</tr>
+<tr>
+<td></td>
+<td>完全没有 <code>edit</code> 命令（Noedit）</td>
+<td><strong>10.3</strong></td>
+<td>↓ <strong>7.7</strong></td>
+<td>★★★ 单项最大</td>
+</tr>
+<tr>
+<td><strong>搜索</strong></td>
+<td>汇总式（Summarized）← <strong>完整版</strong></td>
+<td><strong>18.0</strong></td>
+<td>—</td>
+<td>★ 基线</td>
+</tr>
+<tr>
+<td></td>
+<td>逐条翻页式（Iterative）</td>
+<td><strong>12.0</strong></td>
+<td>↓ <strong>6.0</strong></td>
+<td>⚠️⚠️ 见下面 ②</td>
+</tr>
+<tr>
+<td></td>
+<td>完全没有搜索命令（No search）</td>
+<td>15.7</td>
+<td>↓ 2.3</td>
+<td>⚠️ 比"有个难用的搜索"还高</td>
+</tr>
+<tr>
+<td><strong>文件查看器窗口</strong></td>
+<td>30 行</td>
+<td>14.3</td>
+<td>↓ 3.7</td>
+<td>★ 太小也不行</td>
+</tr>
+<tr>
+<td></td>
+<td>100 行 ← <strong>完整版</strong></td>
+<td><strong>18.0</strong></td>
+<td>—</td>
+<td>★ 基线</td>
+</tr>
+<tr>
+<td></td>
+<td>整个文件全塞进去（Full file）</td>
+<td><strong>12.7</strong></td>
+<td>↓ <strong>5.3</strong></td>
+<td>⚠️⚠️ 见下面 ①</td>
+</tr>
+<tr>
+<td><strong>上下文管理</strong></td>
+<td>只保留最近 5 次观察 ← <strong>完整版</strong></td>
+<td><strong>18.0</strong></td>
+<td>—</td>
+<td>★ 基线</td>
+</tr>
+<tr>
+<td></td>
+<td>保留完整历史（Full history）</td>
+<td>15.0</td>
+<td>↓ 3.0</td>
+<td>⚠️ 给得多反而差</td>
+</tr>
+<tr>
+<td></td>
+<td>不给示范（w/o demo.）</td>
+<td>16.3</td>
+<td>↓ 1.7</td>
+<td>★ 示范值 1.7 个点</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑 这张表里有三个反直觉的地方，★★★ 每一个都值得记住：
 
    ① ★★★ 【给模型更多信息，反而更差】
-      &quot;整个文件全塞进去&quot; 12.7 &lt; &quot;只给 100 行窗口&quot; 18.0。
+      &quot;整个文件全塞进去&quot; 12.7 &lt; &quot;只给 100 行窗口&quot; 18.0（↓ 5.3）
+      &quot;保留完整历史&quot;     15.0 &lt; &quot;只留最近 5 次观察&quot; 18.0（↓ 3.0）
       ⚠️ 因为上下文被无关内容挤满，模型反而定位不到关键行。
       ⟹ 这直接反驳了&quot;上下文窗口越大越好&quot;的朴素想法。
+      ⟹ ★★ 而且这和 07 章 §7.9 那张表是【同一条规律的两次独立观测】：
+         ✅ SWE-bench 论文：BM25 上限 13k → 50k，召回率 29.58 → 51.06 升了，
+            Claude 2 的分数 1.96 → 1.22 掉了。
+         🔑 两篇论文、不同系统、同一个结论。这比任何单篇的说法都可信。
 
    ② ★★★ 【设计得不好的工具，比没有这个工具还差】
-      逐条翻页式搜索 12.0 &lt; 完全没有搜索命令 15.7。
+      逐条翻页式搜索 12.0 &lt; 完全没有搜索命令 15.7
       ✅ 论文原文解释：
       &gt; &quot;when given a large number of search results, agents tend to look
-      &gt; through every match exhaustively, calling next until each result
-      &gt; has been inspected. This inefficient behavior can exhaust an
-      &gt; agent&#39;s cost budget or context window&quot;
+      &gt; through **every match exhaustively**, calling next until each result
+      &gt; has been inspected. This inefficient behavior can **exhaust an
+      &gt; agent&#39;s cost budget or context window**, leading to even worse
+      &gt; performance than the not having additional search tools at all
+      &gt; (15.7% ↓ 2.3 for No search vs. 12.0% ↓ 6.0 with Iterative search).&quot;
       ⟹ 🔑 模型不像人会&quot;扫一眼觉得不对就跳过&quot;，它倾向于把列表走完。
+      ⟹ ★★ 注意它给出的机制：★★★ 不是&quot;模型看不懂&quot;，是【把预算烧光了】。
+         这条机制把 §8.4.2 和 §8.5 的预算问题连到了一起。
 
    ③ ★★ 【护栏（guardrail）值 3 个点】
-      edit 命令加上 linting（提交前先做语法检查，不通过就拒绝这次编辑）
+      `edit` 命令加上 linting（提交前先做语法检查，不通过就拒绝这次编辑）
       = 15.0 → 18.0。✅ 论文原文：
       &gt; &quot;This intervention improves performance considerably
       &gt; (without linting, 15.0% ↓ 3.0).&quot;
       ⟹ ★★ 不是让模型变聪明，而是【不让它把错误写进文件】。
+</code></pre></div>
+
+<p>✅ 补充一个很有实感的数字（论文正文「Editing remains challenging for agents」一节 + 附录 B.3「Editing Trends」，★ 逐字）：</p>
+<blockquote>
+<p>"out of 2,294 task instances, <strong>1,185 (51.7%)</strong> have at least one turn with an failed edit. ...<br />
+Of these trajectories, there is a <strong>median of 3 failed edits</strong> per trajectory, with a <strong>max of 33</strong>. ...<br />
+Any attempt at editing has a <strong>90.5% chance</strong> of eventually being successful."</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>统计</th>
+<th>数值</th>
+<th>读法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>至少写错过一次编辑的运行</td>
+<td>1,185 / 2,294 = <strong>51.7%</strong></td>
+<td>★★ 超过一半</td>
+</tr>
+<tr>
+<td>这些运行里，写错次数的中位数</td>
+<td><strong>3 次</strong></td>
+<td>★ 通常错几次就过去了</td>
+</tr>
+<tr>
+<td>最多写错多少次</td>
+<td><strong>33 次</strong></td>
+<td>⚠️ 有的题在编辑上死磕</td>
+</tr>
+<tr>
+<td>任一次编辑尝试最终能成功的概率</td>
+<td><strong>90.5%</strong></td>
+<td>★ 恢复能力其实不差</td>
+</tr>
+<tr>
+<td>⚠️ 最终解决了的那 286 条里，写错过的比例</td>
+<td><strong>113 / 286 = 31.5%</strong></td>
+<td>★★ 明显低于整体 51.7%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 超过一半的运行过程里，模型至少写错过一次编辑。
+      🔑 agentic 评测和 01-06 章的选择题最大的不同就在这里：
+      ★★★ 它允许【中途犯错然后自己纠正】，最终只看结果。
+      ⟹ 这也是为什么它贵——一道题要来回几十轮。
+   ⟹ 🔑🔑 而最后一行说明了一件更微妙的事：★★★ &quot;写错编辑&quot;这件事和&quot;最终失败&quot;
+      是强相关的（31.5% vs 51.7%）。⟹ 所以 ③ 那个 linting 护栏之所以值 3 个点，
+      ★★ 不是玄学，是在直接削掉这条失败链。
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 §8.4 的最终结论，现在有了完整的证据链：
@@ -516,122 +992,567 @@ instances than the baseline agent, which uses only the default Linux shell</stro
    ⟹ 所以 §8.7 那张检查清单，不是吹毛求疵，是【读懂这个数的必要条件】。
 </code></pre></div>
 
-<p>✅ 补充一个 08 章开头就该有的实感数字（论文正文）：</p>
-<blockquote>
-<p>"out of 2,294 task instances, <strong>1,185 (51.7%)</strong> of SWE-agent w/ GPT-4 Turbo<br />
-trajectories have 1+ failed edit"</p>
-</blockquote>
-<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 超过一半的运行过程里，模型至少写错过一次编辑。
-      🔑 agentic 评测和 01-06 章的选择题最大的不同就在这里：
-      ★★★ 它允许【中途犯错然后自己纠正】，最终只看结果。
-      ⟹ 这也是为什么它贵——一道题要来回几十轮。
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️ 这张表的适用边界，必须说清楚：
+   ⚠️ ① 它是 2024 年的 GPT-4 Turbo（gpt-4-1106-preview），不是今天的模型。
+   ⚠️ ② 它是 SWE-bench Lite（300 题子集），不是 full；18.0% × 300 = 54 题。
+        ★★ 所以&quot;↓ 1.7 个百分点&quot;其实只是 5 道题的差别 —— ★ 单项小差距别当真。
+   ⚠️ ③ 它证明的是【差异存在且量级很大】，
+        不是&quot;今天换编辑器还能正好差 7.7 个百分点&quot;。
+   ⟹ ★ 把这些数字折算成&quot;脚手架部件值多少分&quot;的完整讨论，见姊妹目录
+      [agent脚手架/08-脚手架怎么影响榜单分数.md](../agent脚手架/08-脚手架怎么影响榜单分数.md)。
 </code></pre></div>
 
+<h3 id="843">8.4.3 ⭐⭐ 完整变量清单：哪些会被算进"模型能力"，哪些不会</h3>
+<p>★★★ 这是本章最该存下来的一张表。左边八项，每一项都会改变那个分数；⚠️ 而榜单上只写第一项的名字。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>变量</th>
+<th>归属</th>
+<th>具体旋钮（举例）</th>
+<th>✅ 有没有实测量级</th>
+<th>⚠️ 榜单上被记在谁头上</th>
+<th>一般说不说</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>模型本身</strong></td>
+<td>模型</td>
+<td>权重、版本快照日期（如 <code>gpt-4-1106-preview</code>）</td>
+<td>✅ Table 1：GPT-4 Turbo 12.47 vs Claude 3 Opus 10.46（同一 ACI）</td>
+<td>★ 模型 —— <strong>这一项本来就该记在模型头上</strong></td>
+<td>★ 说</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>工具集</strong></td>
+<td>脚手架</td>
+<td>有没有 <code>edit</code>、搜索长什么样、文件查看器窗口多大</td>
+<td>✅ Table 3：单项最大 ↓ <strong>7.7 个百分点</strong></td>
+<td>⚠️⚠️ <strong>被记在模型头上</strong></td>
+<td>⚠️ 不说</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>上下文管理</strong></td>
+<td>脚手架</td>
+<td>留全历史还是只留最近 N 次观察、怎么压缩、塞不塞整个文件</td>
+<td>✅ Table 3：↓ 3.0 到 ↓ 5.3 个百分点</td>
+<td>⚠️⚠️ <strong>被记在模型头上</strong></td>
+<td>⚠️ 不说</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>重试与纠错策略</strong></td>
+<td>脚手架</td>
+<td>编辑前做不做语法检查、报错怎么喂回去、失败回滚不回滚、同一步重试几次</td>
+<td>✅ Table 3：linting 护栏值 <strong>3.0 个百分点</strong></td>
+<td>⚠️⚠️ <strong>被记在模型头上</strong></td>
+<td>⚠️ 不说</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>超时与预算</strong></td>
+<td>脚手架</td>
+<td>最多几轮、最多多少 token、最多多少钱、墙钟时间上限</td>
+<td>✅ 论文设 <strong>每题 $4</strong>；✅ 搜索那条消融显示"预算被烧光"会直接掉 6 个百分点</td>
+<td>⚠️⚠️ <strong>被记在模型头上</strong></td>
+<td>⚠️ 几乎不说</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong>权限与环境</strong></td>
+<td>脚手架</td>
+<td>能不能联网装包、能不能跑任意 shell、★★★ <strong>能不能读到 f2p 测试文件</strong></td>
+<td>⚠️ 没有公开消融；★★★ 但"能读测试文件"会让分数虚高到无意义（§8.8 坑②）</td>
+<td>⚠️⚠️ <strong>被记在模型头上</strong></td>
+<td>⚠️ 几乎不说</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td><strong>采样与挑选</strong></td>
+<td>脚手架</td>
+<td>跑一遍还是 N 遍、怎么从 N 份里挑一份交</td>
+<td>✅ Table 10：pass@1 <strong>17.94</strong> → pass@6 <strong>32.67</strong>（§8.5）</td>
+<td>⚠️⚠️ <strong>被记在模型头上</strong></td>
+<td>⚠️ 几乎不说</td>
+</tr>
+<tr>
+<td>⑧</td>
+<td><strong>评测侧 harness 口径</strong></td>
+<td>评测框架</td>
+<td>哪个子集（full/Lite/Verified）、swebench 包版本、镜像版本、<code>SWEBENCH_DOCKER_TIMEOUT</code>、本地跑还是用托管评测</td>
+<td>✅ 07 章 §7.8：三个子集分数系统性不同；✅ 07 章 §7.9：上下文给法差 2.4–3.0 倍</td>
+<td>★ 评测口径</td>
+<td>★ 子集通常说，其余不说</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 把&quot;归属&quot;那一列竖着读一遍，整章的话就说完了：
+
+    ★★★ 只有第 ① 项【应该】记在模型头上。
+    ⚠️⚠️ 第 ②–⑦ 项属于脚手架，第 ⑧ 项属于评测口径，
+       ★★ 但它们全都会改变那个数字，而那个数字上只写着模型的名字。
+
+    ⟹ ★★ 所以&quot;这个分数有多少是模型的&quot;这个问题，
+       🔑 在只给一个数字的情况下【是无法回答的】。
+       ⟹ 能回答的唯一办法：★★★ 固定 ②–⑧，只换 ①。
+          ✅ 这正是 10 章 §10.6 那张表的价值——
+             所有模型都跑同一套 Agentless，于是差异才归因到模型。
+</code></pre></div>
+
+<p>★ 一个立刻能用的判断规则：</p>
+<table>
+<thead>
+<tr>
+<th>你想回答的问题</th>
+<th>必须固定什么</th>
+<th>可以换什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★★ 「这两个<strong>模型</strong>哪个强」</td>
+<td>★★★ 固定 ②–⑧（同一套脚手架、同一口径）</td>
+<td>只换 ①</td>
+</tr>
+<tr>
+<td>★★ 「这两个<strong>产品</strong>哪个好用」</td>
+<td>★ 固定 ⑧（同一题集、同一判分器）</td>
+<td>①–⑦ 都可以不同，★ 因为产品本来就是这一整套</td>
+</tr>
+<tr>
+<td>⚠️ 「这个分数说明模型有多强」</td>
+<td>⚠️⚠️ <strong>无法回答</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="85-vs">8.5 最容易被误导的一点：一次尝试 vs 多次尝试</h2>
-<p>这是 02 章 pass@k 概念在 agentic 场景的翻版，★★★ 但危害大得多。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ ① pass@1 / 单次提交 ──────────────────────────────┐
-   │  跑一遍，交一份补丁。★ 这是榜单的默认口径。         │
-   └────────────────────────────────────────────────────┘
-   ┌─ ② 跑 N 遍，人工/规则挑一份最好的交 ───────────────┐
-   │  ⚠️ 如果挑选依据是【跑了 f2p 测试看哪个绿】，       │
-   │     ★★★ 那就是【看着答案挑答案】——严重高估。      │
-   └────────────────────────────────────────────────────┘
-   ┌─ ③ 跑 N 遍，用【自己写的测试】挑一份交 ────────────┐
-   │  ★★ 这是合法的：模型自己造验收标准、自己筛。       │
-   │  但它显然比 ① 强，★ 且成本是 N 倍。                │
-   └────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<p>这是 02 章 pass@k 概念在 agentic 场景的翻版，★★★ 但危害大得多。★ pass@k 本身的三种算法和算术推演，在 07 章 §7.7b。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>做法</th>
+<th>诚实吗</th>
+<th>⚠️ 成本</th>
+<th>它到底是什么指标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>pass@1 / 单次提交</strong>：跑一遍，交一份补丁</td>
+<td>✅ 诚实</td>
+<td>1×</td>
+<td>★ 这是榜单的默认口径</td>
+</tr>
+<tr>
+<td>②</td>
+<td>跑 N 遍，<strong>用 f2p 测试结果挑</strong>一份最好的交</td>
+<td>❌ <strong>不诚实</strong></td>
+<td>N×</td>
+<td>⚠️⚠️ ★★★ 【看着答案挑答案】——严重高估</td>
+</tr>
+<tr>
+<td>③</td>
+<td>跑 N 遍，用<strong>自己写的测试</strong>挑一份交</td>
+<td>✅ 诚实</td>
+<td>N× + 写测试的开销</td>
+<td>★★ 合法：模型自己造验收标准、自己筛。★ 但它显然比 ① 强</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ① 和 ③ 都是诚实的，但它们【不是同一个指标】。
        把 ③ 的分数和别人 ① 的分数放同一张表里比，就是在骗人。
 
     ⚠️ ② 在 SWE-bench 里技术上是做得到的——因为 f2p 测试名单
        就写在数据集里。★★★ 这是这个基准最需要靠自律来守住的地方。
+
+    ⟹ ★★ 而且请注意：②这件事在 pass@k 的定义里【本来就是明说的】。
+       ✅ HumanEval 论文原文（arXiv:2107.03374 §3）：
+       &gt; &quot;Pass@k can also be interpreted as the result of evaluating the
+       &gt;  **best out of k samples**, where the best sample is picked by an
+       &gt;  **oracle with prior knowledge of the unit tests**.&quot;
+       ⟹ 🔑🔑 ★★★ 所以 pass@k（k&gt;1）在定义上就是&quot;有先知帮你挑&quot;的指标。
+          ⚠️ 它不是错的，它只是【和 pass@1 回答的不是同一个问题】：
+             pass@1  ：「一次交付，它能成吗」
+             pass@k  ：「给它 k 次机会 + 一个完美筛子，天花板在哪」
+       ⟹ ⚠️ 把 pass@k 的数写成 pass@1，或者不标 k，是最常见的一种虚报。
+</code></pre></div>
+
+<h3 id="swe-agent">✅ 到底能差多少：SWE-agent 论文把这个实验也做了</h3>
+<p>★★★ 论文附录 B.5 / Table 10 是本节最有价值的东西：<strong>同一套 SWE-agent + GPT-4，在 SWE-bench Lite 上跑了 6 次</strong>。</p>
+<p>✅ Table 10 上半部分（6 次独立运行各自的解决率）：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Run 1</th>
+<th>Run 2</th>
+<th>Run 3</th>
+<th>Run 4</th>
+<th>Run 5</th>
+<th>Run 6</th>
+<th><strong>平均</strong></th>
+<th>标准差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resolve %</td>
+<td>17.33</td>
+<td>18.00</td>
+<td>18.00</td>
+<td>18.67</td>
+<td>17.33</td>
+<td>18.33</td>
+<td><strong>17.94</strong></td>
+<td><strong>0.49</strong></td>
+</tr>
+<tr>
+<td>★ 换算成题数（÷300）</td>
+<td>52</td>
+<td>54</td>
+<td>54</td>
+<td>56</td>
+<td>52</td>
+<td>55</td>
+<td>53.8</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 先看这一行给出的东西：★★★【同配置重跑的噪声下限】。
+       极差 = 18.67 − 17.33 = ★★ 1.34 个百分点（= 4 道题）
+       标准差 = 0.49 个百分点
+    ⟹ ★★★ 所以两个系统分差【不到 1.5 个百分点】时，在这个题集上
+       ⚠️ 基本不能说谁强 —— 那可能就是同一个系统重跑两次的正常抖动。
+    ⟹ 🔑🔑 ★★ 这条和 10 章 §10.3「一线团队给出的噪声下限」是同一件事，
+       ⟹ 看榜时第一个该问的不是&quot;差几分&quot;，是&quot;噪声多大&quot;。
+</code></pre></div>
+
+<p>✅ Table 10 下半部分（用同样这 6 次运行算出的 pass@k）：</p>
+<table>
+<thead>
+<tr>
+<th>k</th>
+<th>1</th>
+<th>2</th>
+<th>3</th>
+<th>4</th>
+<th>5</th>
+<th>6</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Pass@k (%)</strong></td>
+<td><strong>17.94</strong></td>
+<td>23.89</td>
+<td>27.35</td>
+<td>29.67</td>
+<td>31.33</td>
+<td><strong>32.67</strong></td>
+</tr>
+<tr>
+<td>★ 相对 pass@1 多几个百分点</td>
+<td>—</td>
+<td>↑ 5.95</td>
+<td>↑ 9.41</td>
+<td>↑ 11.73</td>
+<td>↑ 13.39</td>
+<td>↑ <strong>14.73</strong></td>
+</tr>
+<tr>
+<td>★ 换算成题数（÷300）</td>
+<td>53.8</td>
+<td>71.7</td>
+<td>82.1</td>
+<td>89.0</td>
+<td>94.0</td>
+<td><strong>98.0</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★★★ 把这三行读透，本节就没别的了：</p>
+<div class="codehilite"><pre><span></span><code>   ① 17.94 → 32.67，★★★ 高了 14.73 个【百分点】，是 1.82 【倍】。
+      ⚠️ 再强调一次：14.73 个百分点 ≠ 14.73%。
+      ⟹ 🔑 一个【完全没改任何东西】的系统，只是&quot;多跑 5 遍 + 让先知挑&quot;，
+         分数就从 17.94 变成 32.67。
+
+   ② ★★ 6 次的并集是 98 道题，而平均每次只解出 53.8 道。
+      ⟹ 98 − 53.8 = 44.2 道题是【这次行、下次不行】的。
+      ⟹ 🔑🔑 更严的一个下界：最好的那一次（Run 4）也只解出 56 道。
+         ★★★ 所以 98 道里至少有 98 − 56 = 42 道，
+         【在它表现最好的那一次运行里也没解出来】。
+      ⟹ ⚠️ 这 42 道题的&quot;解决&quot;完全依赖于&quot;再试一次&quot;。
+
+   ③ ★ pass@k 的增速在递减：+5.95 → +3.46 → +2.32 → +1.66 → +1.34。
+      ⟹ ★★ 说明可解的题是有限的，再多跑也收敛。
+      ⟹ 🔑 但注意 k=6 时增量（1.34）仍然≈单次重跑的极差（1.34）——
+         ★★ 也就是说曲线还没压平，继续跑还能涨。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 结论：★★★ 看到一个 agentic 分数，
+       【&quot;跑了几遍&quot;这一个变量的影响量级（+14.7 个百分点）
+         可以超过 §8.4.2 里所有 ACI 部件影响的总和（最大单项 7.7）】。
+    ⟹ ⚠️ 而它偏偏是榜单最不爱说的一项。
 </code></pre></div>
 
 <p>★★ 还有一个更隐蔽的变量：<strong>预算</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    07 章提到 DOCKER_CLIENT_TIMEOUT = 1800（30 分钟单题上限）。
+<div class="codehilite"><pre><span></span><code>    07 章 §7.6 提到 DOCKER_CLIENT_TIMEOUT = 1800（30 分钟单题上限）。
     ⟹ 但那只是【判卷】的超时。★ 生成补丁那一段花了多久、
        烧了多少 token，★★★ SWE-bench 完全不记录、也不限制。
+
+    ⟹ ★★ SWE-agent 论文是自己主动加了上限的（✅ 每题 $4）——
+       🔑 那是研究规范，不是基准的要求。⚠️ 没人要求你也这么做。
 
     ⟹ 🔑 所以理论上：让 agent 在一道题上想 2 小时、烧 500 万 token，
        分数会更高，而榜单上【看不出任何差别】。
 
-    ⟹ ★★★ 这叫【测试时计算量】(test-time compute)。
+    ⟹ ★★★ 这叫【测试时计算量】(test-time compute，测试时算力)。
        报分不报预算 ≈ 报油耗不说开了多快。
+    ⟹ ★★ 而且 §8.4.2 ② 那条消融给了一个反面证据：
+       预算是会被【浪费】掉的 —— 一个设计糟糕的搜索工具能把预算烧光，
+       🔑 于是&quot;给更多预算&quot;并不总能换来分数。
 </code></pre></div>
 
 <hr />
 <h2 id="86-swe-bench">8.6 除了 SWE-bench，还有哪些</h2>
 <p>⚠️ 以下是概览，具体数字请以各基准官方发布为准。</p>
-<div class="codehilite"><pre><span></span><code>   ┌────────────────────┬──────────────────────────────────────┐
-   │ SWE-bench (Verified)│ ★★ 事实标准。修 Python 仓库的 bug。 │
-   │                     │ 07 章已详拆。                        │
-   ├────────────────────┼──────────────────────────────────────┤
-   │ SWE-bench Multimodal│ ★ 带截图/前端的变体（源码里出现过：  │
-   │                     │ run_evaluation.py:716 有专门分支）   │
-   ├────────────────────┼──────────────────────────────────────┤
-   │ Terminal-Bench      │ ★★ 不限于修 bug：在【终端里完成任务】│
-   │                     │ 装环境、配服务、处理数据。            │
-   │                     │ ⟹ 🔑 更贴近&quot;Claude Code 日常在干嘛&quot; │
-   ├────────────────────┼──────────────────────────────────────┤
-   │ LiveCodeBench       │ ★★★ 用【持续更新的新题】对抗污染：  │
-   │                     │ 只用模型训练截止日【之后】的竞赛题。  │
-   │                     │ ⟹ 直接呼应 06 章的&quot;时间切分&quot;        │
-   ├────────────────────┼──────────────────────────────────────┤
-   │ HumanEval / MBPP    │ ⚠️ 已基本饱和，只写单个函数。         │
-   │                     │ ★ 现在只当&quot;最低门槛&quot;看，不当能力上限。│
-   └────────────────────┴──────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>形状</th>
+<th>★ 特点</th>
+<th>⚠️ 注意</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SWE-bench (Verified)</strong></td>
+<td>修 Python 仓库的 bug</td>
+<td>★★ 事实标准，07 章已详拆</td>
+<td>⚠️ 三个子集不可比（07 章 §7.8）</td>
+</tr>
+<tr>
+<td><strong>SWE-bench Multimodal</strong></td>
+<td>带截图 / 前端的变体</td>
+<td>★ 源码里有专门分支：<a href="../源码/swebench-5.0.2/swebench/harness/run_evaluation.py">run_evaluation.py:716</a> 提示 test split 要走托管评测</td>
+<td>⚠️ 和主榜完全不可比</td>
+</tr>
+<tr>
+<td><strong>Terminal-Bench</strong></td>
+<td>在终端里完成任务</td>
+<td>★★ 不限于修 bug：装环境、配服务、处理数据</td>
+<td>⟹ 🔑 更贴近"Claude Code 日常在干嘛"</td>
+</tr>
+<tr>
+<td><strong>LiveCodeBench</strong></td>
+<td>持续更新的竞赛题</td>
+<td>★★★ 用【模型训练截止日之后】的新题对抗污染</td>
+<td>⟹ 直接呼应 06 章的"时间切分"；⚠️ 报分必须说"截止日取哪天"</td>
+</tr>
+<tr>
+<td><strong>HumanEval / MBPP</strong></td>
+<td>写单个函数</td>
+<td>⚠️ 已基本饱和</td>
+<td>★ 现在只当"最低门槛"看，不当能力上限</td>
+</tr>
+<tr>
+<td><strong>SWE-Lancer</strong></td>
+<td>真实外包任务 + 报价</td>
+<td>★ 把"值多少钱"也变成了指标</td>
+<td>⚠️ <a href="../papers/SWE-Lancer-arXiv-2502.12115.pdf">论文 PDF</a> 在本仓库里，但本书未详拆</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    🔑 挑基准的一个朴素原则：
        ★★★【你的真实工作长什么样，就找形状最像的那个基准】。
        ⟹ 你要是让模型改自家几十万行的老仓库，
           HumanEval 的分数对你【一点参考价值都没有】。
+
+    ⟹ ★★ 而 §8.4.3 那张表适用于【所有】agentic 基准，不只是 SWE-bench。
+       🔑 换个基准，八个变量一个都不会少。
 </code></pre></div>
 
 <hr />
 <h2 id="87-agentic">8.7 看到一个 agentic 分数，该追问的六件事</h2>
-<p>★★★ 建议把这张表存下来。</p>
-<div class="codehilite"><pre><span></span><code>   ┌───┬──────────────────────┬────────────────────────────────┐
-   │ ① │ 哪个子集？            │ full / Lite / Verified 差别巨大 │
-   │ ② │ 什么脚手架？          │ ★★ 自研 agent 还是官方 baseline│
-   │ ③ │ 几次尝试？怎么挑的？  │ ★★★ pass@1 还是 N 选 1        │
-   │ ④ │ 挑选时用没用 f2p 测试？│ ★★★ 用了 = 看答案挑答案      │
-   │ ⑤ │ 预算多少？            │ 轮数 / token / 墙钟时间        │
-   │ ⑥ │ 模型版本？日期？      │ ★ 同名模型不同快照分数会变     │
-   └───┴──────────────────────┴────────────────────────────────┘
-
-    ⟹ 🔑🔑 六项里【任何一项没说清，这个分数就不能横向比较】。
+<p>★★★ 建议把这张表存下来。⚠️ 每一行的第三列是"必须问到的粒度"——只问到第二列是不够的。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要问什么</th>
+<th>★★ 必须问到的粒度</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>哪个子集？</strong></td>
+<td>full / Lite / Verified；题数对不对（2,294 / 300 / 500）；有没有只跑子集的行（⚠️ 07 章那个 GPT-4 只跑了 25%）</td>
+<td>★ 三个子集分数系统性不同（07 章 §7.8）</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>什么脚手架？</strong></td>
+<td>★★★ 不只是名字，还要 <strong>① 版本 / commit</strong> ② 工具集有哪些 ③ 上下文怎么管 ④ 是自研 agent 还是官方 baseline</td>
+<td>✅ Table 1：同一模型 2.67 → 18.00（6.74 倍）</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>几次尝试？怎么挑的？</strong></td>
+<td>★★★ n 是多少；报的是 pass@1 还是 pass@n；<strong>同一步失败后重试几次</strong>（这和"跑几遍"是两个不同的变量）</td>
+<td>✅ Table 10：pass@1 17.94 → pass@6 32.67（+14.73 个百分点）</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>挑选时用没用 f2p 测试？</strong></td>
+<td>★★★ 挑选依据是"官方 f2p 测试"还是"agent 自己写的测试"；agent 在解题过程中能不能读到测试文件</td>
+<td>★★★ 用了 = 看答案挑答案（§8.5 ②）</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>预算多少？</strong></td>
+<td>轮数上限 / token 上限 / <strong>金额上限</strong> / 墙钟时间上限；超限了怎么处理</td>
+<td>✅ SWE-agent 设每题 $4；⚠️ 基准本身不限制</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong>模型版本？日期？</strong></td>
+<td>★★ 带日期的快照名（<code>gpt-4-1106-preview</code> 这种），不是"GPT-4"；<strong>是官方自报还是第三方复现</strong></td>
+<td>★ 同名模型不同快照分数会变</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 六项里【任何一项没说清，这个分数就不能横向比较】。
        ★★ 现实是：绝大多数宣传口径只说清了 ① 和 ⑥。
+
+    ⟹ ★★★ 还有第 ⑦ 件事，严格说不属于&quot;这个分数&quot;而属于&quot;这句话&quot;：
+       ⚠️ 这个数是【自己跑的】还是【从别人报告里抄的】？
+       🔑 抄来的数往往连 ①–⑥ 都不一样。⟹ 11 章 §11.6 ② 专门讲这个。
+</code></pre></div>
+
+<p>★ 把这六件事对应回 §8.4.3 的八个变量（★★ 六件事是"能问出来的"，八个变量是"实际存在的"）：</p>
+<table>
+<thead>
+<tr>
+<th>§8.7 的追问</th>
+<th>覆盖了 §8.4.3 的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 子集</td>
+<td>⑧ 评测侧口径（部分）</td>
+</tr>
+<tr>
+<td>② 脚手架</td>
+<td>② 工具集、③ 上下文管理、④ 重试与纠错</td>
+</tr>
+<tr>
+<td>③ 次数</td>
+<td>⑦ 采样与挑选（部分）</td>
+</tr>
+<tr>
+<td>④ 挑选依据</td>
+<td>⑦ 采样与挑选、⑥ 权限与环境</td>
+</tr>
+<tr>
+<td>⑤ 预算</td>
+<td>⑤ 超时与预算</td>
+</tr>
+<tr>
+<td>⑥ 模型版本</td>
+<td>① 模型本身</td>
+</tr>
+<tr>
+<td>⚠️ <strong>没被覆盖的</strong></td>
+<td>⑧ 的其余部分：<strong>swebench 包版本、镜像版本、判分器超时设置</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ⚠️ 最后那一行是个真实的盲区：★★ 同一份 predictions.jsonl，
+       用不同版本的 swebench 包 / 不同版本的题目镜像去判，结果可以不同。
+    ⟹ 🔑 所以严谨的报分还要加一句：★★★「用 swebench==x.y.z 判的」。
+       ★ 本书引用的源码是 swebench-5.0.2。
 </code></pre></div>
 
 <hr />
 <h2 id="88-claude-code">8.8 如果你想自己评一次 Claude Code</h2>
 <p>⚠️ 这一节是操作建议，不是论文内容。</p>
-<div class="codehilite"><pre><span></span><code>   ★ 好消息：因为 §8.1 那个设计，你完全做得到。
-     ★★ 你只要产出一个 predictions.jsonl，判卷器不问来路。
+<p>★ 好消息：因为 §8.1 那个设计，你完全做得到。★★ 你只要产出一个 <code>predictions.jsonl</code>，判卷器不问来路。</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>做什么</th>
+<th>★ 要点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>取 SWE-bench Verified 的题目</td>
+<td>每条含 <code>repo</code> + <code>base_commit</code> + <code>problem_statement</code>（issue 文本）</td>
+</tr>
+<tr>
+<td>②</td>
+<td>把仓库 checkout 到那个 <code>base_commit</code></td>
+<td>★★★ 见下面坑 ①</td>
+</tr>
+<tr>
+<td>③</td>
+<td>把 issue 文本作为任务丢给 Claude Code，让它改</td>
+<td>★★ 见下面坑 ②</td>
+</tr>
+<tr>
+<td>④</td>
+<td>它改完后 <code>git diff</code> 出补丁</td>
+<td>★ 注意排除掉它自己新建的临时文件</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>写成一行 JSON</td>
+<td>见下面的格式</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>跑官方判卷器（需要 Docker）</td>
+<td>★ 见下面坑 ③</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;instance_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;django__django-11099&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model_patch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;diff 文本&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model_name_or_path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-code-mysetup-v1&quot;</span><span class="p">}</span>
+</code></pre></div>
 
-   ┌─ 步骤 ─────────────────────────────────────────────┐
-   │ ① 取 SWE-bench Verified 的题目（每条含仓库+commit  │
-   │    +issue 文本）                                    │
-   │ ② 对每条：把仓库 checkout 到那个 commit，           │
-   │    ★ 把 issue 文本作为任务丢给 Claude Code          │
-   │ ③ 它改完后，git diff 出补丁                         │
-   │ ④ 写成一行 JSON：                                   │
-   │    {&quot;instance_id&quot;: ..., &quot;model_patch&quot;: &lt;diff&gt;,      │
-   │     &quot;model_name_or_path&quot;: &quot;claude-code-mysetup&quot;}    │
-   │ ⑤ 跑官方判卷器（需要 Docker）                       │
-   └────────────────────────────────────────────────────┘
-
-    ⚠️ 三个坑：
+<div class="codehilite"><pre><span></span><code>    ⚠️ 三个坑：
       ① ★★★ 必须切到题目指定的 base commit。
          切错了 = 仓库里已经有修好的代码，分数虚高到离谱。
+         ⟹ 🔑 自检方法：切完之后先跑一遍 f2p 测试，★★ 它们应该【全是红的】。
+            如果是绿的，说明你切错了 commit。
       ② ★★ 别让 agent 看 f2p 测试文件（数据集里带着）。
-         看了就是抄答案。
+         看了就是抄答案（§8.7 ④）。
+         ⟹ ★ 但注意这里有个两难：真实开发中人是会看测试的。
+            🔑 所以这条限制是【为了让分数可比】，不是&quot;更真实&quot;。
       ③ ★ 起 Docker 会拉几十 GB 镜像，跑 500 题是【小时级】。
          ⟹ 建议先拿 20 题跑通链路，再放全量。
+
+    ⚠️ 还有两件必须记在跑之前的事（否则跑完了没法写口径）：
+      ④ ★★★ 把 §8.7 那六件事的答案先写进一个文件里。
+         ⟹ 🔑 跑完再回忆&quot;我当时轮数上限设了多少&quot;是回忆不起来的。
+      ⑤ ★★ 至少跑两遍全量（或者同一批 20 题跑三遍）。
+         ⟹ ✅ Table 10 显示同配置重跑的极差有 1.34 个百分点。
+         ⟹ ★★★ 不知道自己的噪声，就没法判断任何改动是不是真的有效。
 
     🔑 但说实话，★★★ 对你自己的业务来说，
        12 章那条路（自建小评测集）比复现榜单值钱得多。
@@ -639,15 +1560,80 @@ trajectories have 1+ failed edit"</p>
 
 <hr />
 <h2 id="89">8.9 本章总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 六条带走：
+<p>★ 本章出现过的关键数字，集中放一遍（✅ 全部来自 arXiv:2405.15793 或 swebench-5.0.2 源码）：</p>
+<table>
+<thead>
+<tr>
+<th>数字</th>
+<th>含义</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3 个字段</td>
+<td>判卷器认识的全部输入：<code>instance_id</code> / <code>model_patch</code> / <code>model_name_or_path</code></td>
+<td>✅ run_evaluation.py:244</td>
+</tr>
+<tr>
+<td>2.67 → 7.33 → 11.00 → 18.00</td>
+<td>★★★ 同一个 GPT-4 Turbo，四种脚手架，SWE-bench Lite</td>
+<td>✅ Table 1</td>
+</tr>
+<tr>
+<td>6.74 倍 / 15.33 个百分点</td>
+<td>上面首尾两档的相对差 / 绝对差</td>
+<td>✅ Table 1 推算；论文写 "6.7-fold"</td>
+</tr>
+<tr>
+<td>↓ 7.7 个百分点</td>
+<td>拿掉 <code>edit</code> 命令的代价（ACI 单项最大）</td>
+<td>✅ Table 3</td>
+</tr>
+<tr>
+<td>12.0 &lt; 15.7</td>
+<td>★★★ 难用的搜索工具，比没有搜索工具还差</td>
+<td>✅ Table 3</td>
+</tr>
+<tr>
+<td>51.7% / 中位数 3 次 / 最多 33 次</td>
+<td>至少写错一次编辑的运行比例 / 写错次数</td>
+<td>✅ 论文正文与附录</td>
+</tr>
+<tr>
+<td>$4 / 每题</td>
+<td>SWE-agent 自设的预算上限</td>
+<td>✅ §4 Metrics</td>
+</tr>
+<tr>
+<td>17.94 ± 0.49，极差 1.34</td>
+<td>★★★ 同配置重跑 6 次的噪声</td>
+<td>✅ Table 10</td>
+</tr>
+<tr>
+<td>17.94 → 32.67（+14.73 个百分点，1.82 倍）</td>
+<td>pass@1 → pass@6</td>
+<td>✅ Table 10</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    🔑 七条带走：
 
     ① ★★★ SWE-bench 只判卷不生成 ⟹【补丁怎么来的它不管】
-       源码证据：main() 只要 predictions_path，只认 3 个字段
+       ✅ 源码证据：main() 只要 predictions_path，只认 3 个字段，
+       ⚠️ 其中一个还是你随便填的字符串
     ② ★★ 于是被评的对象是【模型 + 脚手架】这套系统，不是模型
-    ③ ★★ 脚手架包含：工具集 / 上下文管理 / 循环 / 纠错 / 采样
-    ④ ★★★ ACI（给模型用的界面）本身就是能力的一部分
-    ⑤ ★★★ 尝试次数 + 挑选方式 + 预算，是三个最常被隐藏的变量
-    ⑥ 🔑🔑 追问六件事：子集/脚手架/次数/挑选依据/预算/模型版本
+    ③ ★★ 脚手架包含：工具集 / 上下文管理 / 循环 / 纠错 / 预算 / 权限 / 采样
+       ⟹ 完整八项清单和&quot;归属&quot;在 §8.4.3
+    ④ ★★★ ACI（给模型用的界面）本身就是能力的一部分。
+       ✅ 实证：同一模型换脚手架 2.67 → 18.00；单个部件最多值 7.7 个百分点；
+       ⚠️ 而且【难用的工具比没工具更差】
+    ⑤ ★★★ 尝试次数 + 挑选方式 + 预算，是三个最常被隐藏的变量。
+       ✅ 实证：pass@1 17.94 → pass@6 32.67，★★ 影响量级超过所有 ACI 部件之和
+    ⑥ ★★ 报分先报噪声：✅ 同配置重跑 6 次，极差 1.34 个百分点。
+       ⟹ 🔑 分差小于这个量级时，别说谁强
+    ⑦ 🔑🔑 追问六件事：子集 / 脚手架（含版本）/ 次数（含重试）/ 挑选依据 /
+       预算 / 模型版本（含&quot;自报还是复现&quot;）
 
     ⟹ 回到 01 章那句总论：
        ★★★【分数是&quot;模型 + 评测方法&quot;的联合产物】。
@@ -657,6 +1643,8 @@ trajectories have 1+ failed edit"</p>
 <hr />
 <blockquote>
 <p>下一章：<a href="09-LLM当裁判.html">09-LLM当裁判.md</a> —— ★ 代码能跑测试，那"写得好不好"这种题怎么判？答案是：★★ 让另一个模型来打分。以及这么做的代价。<br />
+脚手架本身怎么造：姊妹目录 <a href="../agent脚手架/README.html">agent脚手架/</a>（8 章 + 速查表）<br />
+源码侧的逐函数拆解：<a href="../SWE-bench拆解.html">SWE-bench拆解.md</a><br />
 返回 <a href="README.html">评测入门总目录</a></p>
 </blockquote>
 </div>

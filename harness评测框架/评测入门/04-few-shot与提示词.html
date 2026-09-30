@@ -257,33 +257,38 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="codehilite"><pre><span></span><code>    shot  = &quot;一发&quot;、&quot;一次尝试&quot;，这里指【给模型看的示例】
     few   = &quot;少数几个&quot;
 
-    ⟹ few-shot = ★ 在正式提问之前，先给模型看几个做好的例题
-    ⟹ zero-shot（零示例）= ★ 一个例题都不给，直接问
+    ⟹ few-shot（少样本）  = ★ 在正式提问之前，先给模型看几个做好的例题
+    ⟹ zero-shot（零样本）= ★ 一个例题都不给，直接问
+    ⟹ 写成 &quot;5-shot&quot; 就是【给 5 个示例】，&quot;0-shot&quot; 就是【一个都不给】
 </code></pre></div>
 
 <p><strong>长什么样</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    ★ 5-shot 的 GSM8K 提示词，实际是这样一大坨：
 
-    ┌────────────────────────────────────────────────┐
-    │ 问：小红有 3 个苹果，又买了 5 个，一共几个？      │  ← 示例 1
-    │ 答：3 + 5 = 8。答案是 8。                       │
-    │                                                │
-    │ 问：一支笔 4 元，买 6 支多少钱？                 │  ← 示例 2
-    │ 答：4 × 6 = 24。答案是 24。                     │
-    │                                                │
-    │ ...（示例 3、4、5）...                          │
-    │                                                │
-    │ 问：小明有 12 盒饼干，每盒 6 块，一共几块？      │  ← ★ 真正要答的题
-    │ 答：                                            │  ← ★★ 模型从这里开始写
-    └────────────────────────────────────────────────┘
+    ┌─ 模型真正收到的那一整段文本 ──────────────────
+    │ Question: 小红有 3 个苹果，又买了 5 个，一共几个？
+    │ Answer: 3 + 5 = 8。
+    │ #### 8
+    │
+    │ Question: 一支笔 4 元，买 6 支多少钱？
+    │ Answer: 4 × 6 = 24。
+    │ #### 24
+    │
+    │ ...（示例 3、示例 4、示例 5，格式一模一样）...
+    │
+    │ Question: 小明有 12 盒饼干，每盒 6 块，一共几块？
+    │ Answer:
+    └───────────────────────────────────────────────
 </code></pre></div>
 
+<p>★ 读这张图的方法：前面 5 组「Question / Answer」是<strong>示例</strong>，最后那一组<strong>只有 Question、没有 Answer</strong>——那才是真正要考的题。模型的全部工作，就是把最后那个 <code>Answer:</code> 后面的内容续写出来。</p>
 <blockquote>
+<p>✅ <strong>这两个格式不是我编的</strong>：<code>Question: {{question}}\nAnswer:</code> 是 <code>lm_eval/tasks/gsm8k/gsm8k.yaml</code> 里 <code>doc_to_text</code> 字段的原文；<code>#### 8</code> 是 GSM8K 数据集本身的标准答案写法（✅ GSM8K 论文 arXiv:2110.14168 附录 D 的样例里，每道题的答案都以 <code>####</code> 加最终数字结尾）。</p>
 <p>🔑 <strong>★★ 为什么要给示例？两个作用，第二个才是关键</strong>：<br />
 ```<br />
     ① 让模型知道【题该怎么解】        —— ⚠️ 作用其实有限<br />
     ② ★★★ 让模型知道【答案该怎么写】 —— ★ 这才是主要作用</p>
-<div class="codehilite"><pre><span></span><code>⟹ 示例里都写&quot;答案是 X&quot;，模型就会照着写&quot;答案是 X&quot;
+<div class="codehilite"><pre><span></span><code>⟹ 示例里都以 &quot;#### 数字&quot; 收尾，模型就会照着以 &quot;#### 数字&quot; 收尾
 ⟹ ★★ 于是 05 章的【答案抽取】才有稳定的格式可抠
 
 ⟹ 🔑🔑 few-shot 的本质是【格式对齐】，不是【教它做题】。
@@ -291,6 +296,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p>```</p>
 </blockquote>
+<p>★★ §4.3 里那张「换答案写法」的表会把作用 ② 算给你看：<strong>同一个会做题的模型，只因为示例里答案的写法不同，分数就在"全对"和"全错"之间跳。</strong></p>
 <hr />
 <h2 id="42">4.2 源码里的这一步</h2>
 <div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/task.py:447</span>
@@ -306,12 +312,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <div class="codehilite"><pre><span></span><code>    ★★ 注意源码注释里那句全大写的 WARNING，以及参数 rnd。
 
-    ⟹ 🔑 它在说：★★★【示例是随机抽的，你必须给随机数种子】。
+    ⟹ 🔑 它在说：★★★【示例可能是随机抽的，你必须给随机数种子】。
     ⟹ ⚠️ 换个种子 ⟹ 抽到不同的示例 ⟹ ★ 分数就变了。
 </code></pre></div>
 
 <p>紧接着的代码强制了这件事：</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/task.py:462-469</span>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/task.py:463-469</span>
 <span class="k">if</span> <span class="n">rnd</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">fewshot_rnd</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">rnd</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fewshot_rnd</span>
@@ -324,6 +330,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>★ <strong>它宁可直接报错，也不给默认值。</strong> 这是很负责任的设计：<br />
 ⟹ <strong>强迫你意识到"这里有随机性"</strong>，而不是让你在不知情的情况下拿到不可复现的结果。</p>
+<p>⚠️ <strong>但"示例是随机抽的"这句话不能一概而论。</strong> ✅ 框架里真正实现了的示例采样器（sampler）只有两个，它们的性质完全相反——详见本章 §4.3 末尾那张「示例选法」对照表。<strong>先记住结论：GSM8K 的 5-shot 是随机抽的（种子一换分数就变），MMLU 的 5-shot 是固定的（换种子一点不变）。</strong> 拿"5-shot"这三个字当统一口径，从这里就已经错了。</p>
 </blockquote>
 <hr />
 <h2 id="43">4.3 ★★ 到底能差多少</h2>
@@ -335,11 +342,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
     ② ★★ 经过指令微调的模型，few-shot 反而可能【掉分】
        ⟹ 它已经被训练成&quot;听懂人话直接答&quot;，
-          ★ 你塞一堆&quot;问：...答：...&quot;反而把它带跑偏
+          ★ 你塞一堆&quot;Question:...Answer:...&quot;反而把它带跑偏
 
     ③ 数学/推理题受 few-shot 影响最大
        ⟹ ★ 因为示例还顺带演示了【要写解题步骤】
-          （这就是 chain-of-thought，见 §4.5）
+          （这就是 CoT，见 §4.5）
 </code></pre></div>
 
 <blockquote>
@@ -348,16 +355,305 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ 分数偏低
     ⟹ ★★ 你以为"新模型不行"，实际是【测法和模型不匹配】</code></p>
 </blockquote>
+<h3 id="20-80">★★ 一个能自己验算的算例：能力一格没动，分数从 20% 走到 80%</h3>
+<p>★★ 下面这张表是<strong>为说明机理构造的算例</strong>（⚠️ 不是实测数字，任何一行都不要引用成某个模型的分数），但每一格的算术你都能自己验一遍。</p>
+<p><strong>设定</strong>：10 道 GSM8K 风格的题，一个固定的模型，抽取规则固定用 GSM8K 的 <code>strict-match</code>（只认 <code>#### 数字</code>，见 <a href="05-答案抽取与打分.html">05 章 §5.1</a>）。</p>
+<div class="codehilite"><pre><span></span><code>    ★ 把&quot;得分&quot;拆成两个互相独立的条件，一道题要【同时满足】才算对：
+
+      条件 A【算对了】：模型的数学算得对。⟹ ★★ 这是&quot;能力&quot;，和 shot 数无关，恒为 8 道。
+      条件 B【格式命中】：答案写成了 &quot;#### 数字&quot;。⟹ ★★ 这是&quot;格式对齐&quot;，shot 数一加就涨。
+
+    ⟹ 🔑 分数 = 同时满足 A 和 B 的题数 ÷ 10
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>shot 数</th>
+<th>A 算对的题数（能力）</th>
+<th>B 格式命中的题数</th>
+<th>A∩B 的可能范围</th>
+<th>本算例取</th>
+<th>报出来的分数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0-shot</strong></td>
+<td>8</td>
+<td>2</td>
+<td>max(0, 8+2−10)=0 … min(8,2)=2</td>
+<td>2</td>
+<td><strong>20%</strong></td>
+</tr>
+<tr>
+<td><strong>1-shot</strong></td>
+<td>8</td>
+<td>6</td>
+<td>max(0, 8+6−10)=4 … min(8,6)=6</td>
+<td>5</td>
+<td><strong>50%</strong></td>
+</tr>
+<tr>
+<td><strong>5-shot</strong></td>
+<td>8</td>
+<td>10</td>
+<td>max(0, 8+10−10)=8 … min(8,10)=8</td>
+<td>8（<strong>没有选择</strong>）</td>
+<td><strong>80%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>第 4 列那个范围是怎么来的</strong>：两个集合的交集大小，下界是 <code>max(0, |A|+|B|−10)</code>（10 道题装不下两个集合，重叠是被挤出来的），上界是 <code>min(|A|, |B|)</code>。看最后一行：格式命中 10 道（全中）时，交集<strong>被逼成恰好 8</strong>——这时分数必然等于能力上限 80%，一点余地都没有。</p>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读这张表最该记住的一件事：
+
+      ★★★ 第 2 列【从头到尾都是 8】。模型的数学能力一格都没变。
+      ⟹ 变的只有第 3 列：答案的【写法】有没有对上抽取规则。
+
+    ⟹ ★★ 0-shot 的 20% 和 5-shot 的 80%，测的不是两种能力，
+       是【同一种能力 + 两种格式配合度】。
+</code></pre></div>
+
+<p>⚠️ <strong>顺手把两个最常被混用的说法钉死</strong>（这是本目录最容易犯的错）：</p>
+<table>
+<thead>
+<tr>
+<th>说法</th>
+<th>20% → 80% 这一跳该怎么说</th>
+<th>对不对</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>涨了 <strong>60 个百分点</strong>（60 pp）</td>
+<td>80 − 20 = 60</td>
+<td><strong>对</strong></td>
+</tr>
+<tr>
+<td><strong>相对</strong>涨了 <strong>300%</strong>（变成原来的 4 倍）</td>
+<td>(80 − 20) ÷ 20 = 3 = 300%</td>
+<td><strong>对</strong></td>
+</tr>
+<tr>
+<td>涨了 <strong>60%</strong></td>
+<td>⚠️ 歧义：读者会理解成"相对涨 60%"，即 20% → 32%</td>
+<td>⚠️ 别这么写</td>
+</tr>
+<tr>
+<td>涨了 <strong>4 倍</strong></td>
+<td>⚠️ 歧义：中文里"涨 4 倍"常被理解成变成 5 倍</td>
+<td>⚠️ 写"变成 4 倍"更安全</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>规矩</strong>：★★ 两个百分比相减，单位是<strong>百分点（pp）</strong>，不是百分比。只要你写的是"分数从 X 涨到 Y"，就用 pp；要讲相对幅度，就把分母明确写出来。</p>
+</blockquote>
+<h3 id="1-0">★★★ 只改示例里答案的写法，同一道对题就从 1 分变 0 分</h3>
+<p>★★ 这一节没有任何构造的数字。抽取规则用 GSM8K 任务配置里<strong>照抄的那一条</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/tasks/gsm8k/gsm8k.yaml，filter_list 的第一条</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;strict-match&quot;</span>
+<span class="w">  </span><span class="nt">filter</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">function</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;regex&quot;</span>
+<span class="w">      </span><span class="nt">regex_pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;####</span><span class="nv"> </span><span class="s">(\\-?[0-9\\.\\,]+)&quot;</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">function</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;take_first&quot;</span>
+</code></pre></div>
+
+<p>★ 这条正则的意思是：找字面的 <code>####</code>，<strong>紧跟一个空格</strong>，再跟一串数字/负号/小数点/逗号。抠不出来就返回 <code>[invalid]</code>，而 <code>[invalid]</code> 和任何标准答案都不相等 ⟹ <strong>判错</strong>。</p>
+<p><strong>题</strong>：小明有 12 盒饼干，每盒 6 块，一共几块？<strong>标准答案 72。假设模型每一行都算对了</strong>，只是答案的写法跟着示例走：</p>
+<table>
+<thead>
+<tr>
+<th>示例里的答案这么写</th>
+<th>模型大概率照着写成</th>
+<th><code>strict-match</code> 命中？</th>
+<th>抽出来的东西</th>
+<th>判分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>#### 72</code></td>
+<td><code>#### 72</code></td>
+<td><strong>命中</strong></td>
+<td><code>72</code></td>
+<td><strong>对</strong></td>
+</tr>
+<tr>
+<td><code>#### 72 块饼干</code>（答案后带单位）</td>
+<td><code>#### 72 块饼干</code></td>
+<td><strong>命中</strong>（正则只吃数字，后面的字不影响）</td>
+<td><code>72</code></td>
+<td><strong>对</strong></td>
+</tr>
+<tr>
+<td><code>答案是 72。</code></td>
+<td><code>答案是 72。</code></td>
+<td><strong>落空</strong></td>
+<td><code>[invalid]</code></td>
+<td><strong>错</strong></td>
+</tr>
+<tr>
+<td><code>The answer is 72.</code></td>
+<td><code>The answer is 72.</code></td>
+<td><strong>落空</strong></td>
+<td><code>[invalid]</code></td>
+<td><strong>错</strong></td>
+</tr>
+<tr>
+<td><code>\boxed{72}</code>（数学题常见的 LaTeX 写法）</td>
+<td><code>\boxed{72}</code></td>
+<td><strong>落空</strong></td>
+<td><code>[invalid]</code></td>
+<td><strong>错</strong></td>
+</tr>
+<tr>
+<td><code>####</code> + <strong>两个</strong>空格 + <code>72</code>（⚠️ 手滑多打了一个空格）</td>
+<td>同左</td>
+<td><strong>落空</strong></td>
+<td><code>[invalid]</code></td>
+<td><strong>错</strong></td>
+</tr>
+<tr>
+<td><code>答案是七十二块。</code>（中文数字）</td>
+<td><code>答案是七十二块。</code></td>
+<td><strong>落空</strong></td>
+<td><code>[invalid]</code></td>
+<td><strong>错</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>这张表我逐行跑过一遍</strong>：把上面那条正则原样编译，按 <code>RegexFilter</code> 的逻辑（<code>findall</code> 之后取第 <code>group_select</code> 个，默认 0 即第一个）跑每种输出。★★ 第 6 行值得单独盯一眼：<strong>正则里写死了"<code>####</code> 后面正好一个空格"，多打一个空格就整条落空</strong>——这种失败在最终的百分比里完全看不见。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 把这张表和上一节那张「能力不变」算例表接起来读：
+
+      ★★★ 同一个模型、同一道题、同一个正确答案 72，
+         只因为【示例里的答案前缀换了一种写法】，
+         这道题的得分就在 1 分和 0 分之间翻转。
+
+    ⟹ ★★ 这就是&quot;few-shot 的本质是格式对齐&quot;这句话的可验算版本。
+    ⟹ ⚠️ 也是为什么【报分数必须报抽取规则】——见 [05 章](05-答案抽取与打分.md)。
+</code></pre></div>
+
+<p>⚠️ <strong>还有一个更阴的版本：改分隔符</strong>。GSM8K 的配置里，停止符（stop sequence）是 <code>until: ["Question:", "&lt;/s&gt;", "&lt;|im_end|&gt;"]</code>（✅ <code>gsm8k.yaml</code> 原文）——它靠"模型开始写下一个 <code>Question:</code>"来判断该停了。如果你把示例的分隔符从 <code>Question:</code> / <code>Answer:</code> 换成别的写法，这个停止符就<strong>永远不会触发</strong>，模型会一路自问自答写下去：</p>
+<div class="codehilite"><pre><span></span><code>    ★ 模型实际吐出来的（停止符失效）：
+
+      6 x 12 = 72
+      #### 72
+      Question: 一支笔 4 元，买 6 支多少钱？
+      Answer: 4 x 6 = 24
+      #### 24
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>抽取流水线</th>
+<th>取第几个匹配</th>
+<th>抠到</th>
+<th>判分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>strict-match</code>（<code>group_select</code> 默认 0）</td>
+<td><strong>第一个</strong></td>
+<td><code>72</code></td>
+<td><strong>对</strong>（侥幸躲过）</td>
+</tr>
+<tr>
+<td><code>flexible-extract</code>（<code>group_select: -1</code>）</td>
+<td><strong>最后一个</strong></td>
+<td><code>24</code></td>
+<td>⚠️ <strong>错</strong>（抠到了下一题的答案）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 ✅ <strong>这两条流水线是同一个 <code>gsm8k.yaml</code> 文件里并列写着的</strong>（见 <a href="05-答案抽取与打分.html">05 章 §5.2</a>）。★★★ 同一份模型输出、同一个任务文件，只因为"取第一个还是取最后一个"，一道题给出了相反的判定。</p>
+</blockquote>
+<h3 id="few-shot">★★ 报 few-shot 分数必须带「示例选法」：框架里只有两种，性质相反</h3>
+<p>✅ 框架的示例采样器注册表原文：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ✅ lm_eval/api/samplers.py:124-127</span>
+<span class="n">SAMPLER_REGISTRY</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">type</span><span class="p">[</span><span class="n">ContextSampler</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;default&quot;</span><span class="p">:</span> <span class="n">ContextSampler</span><span class="p">,</span>
+    <span class="s2">&quot;first_n&quot;</span><span class="p">:</span> <span class="n">FirstNSampler</span><span class="p">,</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★ 两个采样器的差别就一行代码：
+
+      ContextSampler.sample()  ⟹ self.rnd.sample(...)   ★ 随机抽 n 条
+      FirstNSampler.sample()   ⟹ self.df[:n]            ★ 固定取前 n 条
+
+    ⚠️ 另外两个类 BalancedSampler / ManualSampler 都只有一句 raise NotImplementedError
+       ⟹ ✅ 它们【没有实现】，写在文档里也用不了。
+</code></pre></div>
+
+<p>✅ 两个最常被引用的评测集，恰好一个用随机、一个用固定：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>GSM8K</th>
+<th>MMLU</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>任务文件</td>
+<td>✅ <code>lm_eval/tasks/gsm8k/gsm8k.yaml</code></td>
+<td>✅ <code>lm_eval/tasks/mmlu/default/_default_template_yaml</code></td>
+</tr>
+<tr>
+<td><code>num_fewshot</code></td>
+<td>5</td>
+<td>由命令行给（★ 惯例 5）</td>
+</tr>
+<tr>
+<td>示例从哪个 split 抽</td>
+<td><code>fewshot_split: train</code></td>
+<td><code>fewshot_split: dev</code></td>
+</tr>
+<tr>
+<td>用哪个采样器</td>
+<td>没写 ⟹ <strong><code>default</code>（随机）</strong></td>
+<td><code>fewshot_config: sampler: first_n</code> ⟹ <strong>固定前 n 条</strong></td>
+</tr>
+<tr>
+<td><strong>换个随机种子，分数会不会变</strong></td>
+<td>⚠️ <strong>会变</strong></td>
+<td><strong>一点不变</strong></td>
+</tr>
+<tr>
+<td>一手依据</td>
+<td>—</td>
+<td>✅ MMLU 论文（arXiv:2009.03300）§3：数据集专门划了一个 few-shot development set，<strong>每个学科 5 道题</strong>，就是给 5-shot 用的</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <code>FirstNSampler</code> 的源码注释自己说明了原因：<em>"Used for tasks with 'canonical' ordered fewshot examples, such as MMLU and CMMLU."</em> ⟹ ★★ MMLU 有<strong>官方钦定</strong>的那 5 条示例，所以按顺序取前 5 条就是标准口径。GSM8K 没有这个东西，只能从 7473 条训练集里随机抽。</p>
+<p>⚠️ <strong>所以"5-shot"三个字根本不是一个口径。</strong> 报分数时必须补上：<br />
+<code>□ shot 数（0 / 1 / 5 / 25）
+    □ ★★ 示例选法：【固定】（first_n，写清从哪个 split 取前几条）
+                   还是【随机】（写清随机种子）
+                   还是【检索】（按题目相似度动态挑示例）
+    □ ★ 随机的话，跑了几个种子、报的是均值还是单次</code><br />
+⚠️ <strong>第三种「检索」harness 0.4.12 里没有</strong>（<code>SAMPLER_REGISTRY</code> 只有那两个）。它在论文里叫 retrieval-based / kNN few-shot，★ 通常<strong>比固定和随机都高</strong>——因为示例和考题更像。所以看到一个异常高的 few-shot 分数，值得问一句"示例是检索来的吗"。</p>
+</blockquote>
 <hr />
 <h2 id="44">4.4 ★★ 还有一个更隐蔽的变量：对话模板</h2>
+<h3 id="chat-template">★ 对话模板（chat template）：套错方向，好模型也显得很差</h3>
 <p><strong>这是新手最容易完全忽略、但影响巨大的一环。</strong></p>
 <div class="codehilite"><pre><span></span><code>    ★ 现在的模型分两种：
 
       基座模型（base model）：
         ⟹ 只会【续写】。你给它 &quot;今天天气&quot;，它接 &quot;很好，适合出门&quot;
-        ⟹ ★ 适合 few-shot 那种&quot;问：...答：...&quot;的格式
+        ⟹ ★ 适合 few-shot 那种&quot;Question:...Answer:...&quot;的格式
 
-      对话模型（chat / instruct model）：
+      对话模型（chat / instruct model，指令微调模型）：
         ⟹ 被训练成【听指令、按角色说话】
         ⟹ ★★ 它期待输入长这样（这叫【对话模板】chat template）：
 
@@ -378,72 +674,233 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ ⚠️ 反过来，给基座模型套对话模板，同样会掉分。
 </code></pre></div>
 
+<p>★★ 那几个 <code>&lt;|im_start|&gt;</code> 不是随便写的记号，它们是<strong>分词器词表里真实存在的特殊 token</strong>。套模板 = 在输入里放上这些 token；不套 = 模型看到的是一串普通文字。★ 对模型来说，这是两种完全不同的输入。</p>
 <blockquote>
 <p>🔑 <strong>所以一份可信的评测报告，必须交代</strong>：<br />
 <code>□ 测的是基座还是对话版本
     □ ★ 有没有套 chat template
-    □ 套的是哪个版本的模板（★★ 模型更新时模板也会改）
-    □ 系统提示词写了什么</code><br />
+    □ 套的是哪个版本的模板（★★ 见下一节：模板会改）
+    □ 系统提示词（system prompt）写了什么</code><br />
 ⚠️ 这四条任何一条不同，分数就不能直接比。</p>
+</blockquote>
+<h3 id="_1">★★★ 再深一层：模板与框架的版本漂移，权重一个字没动，分数却变了</h3>
+<p>★★ 上一节说的是"套错方向"。<strong>这一节说的是更隐蔽的一层：方向套对了，但套的是旧版本。</strong></p>
+<blockquote>
+<p>⚠️ <strong>读到「§X.Y」这种节号，先看一眼它前面有没有「论文 / 报告」两个字</strong>：★ 本书的小节号（比如本章的 §4.4）和被引论文自己的节号（比如下面要引的 <strong>DeepSeek-V3 报告 §4.4.2 "Evaluation Results"</strong>）在文字上长得一模一样，🔑 区别全在前面那两个字。★★ 顺便钉一句：<strong>本章只有 4.1–4.7，没有三级小节</strong>——你在别处看到的「§4.4.2」一定是那篇论文的节号，不是这里。那段引文的完整解读在 <a href="10-DeepSeek的评测口径.html">10 章 §10.2</a>。</p>
+</blockquote>
+<p>✅ DeepSeek-V3 技术报告 §4.4.2 的那句原话（逐字，✅ 已回溯 <code>推理框架/papers/DeepSeek-V3-arXiv-2412.19437.pdf</code> 第 24 页）：</p>
+<blockquote>
+<p>"Note that <strong>due to the changes in our evaluation framework over the past months</strong>, the performance of DeepSeek-V2-Base exhibits <strong>a slight difference from our previously reported results</strong>."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 翻译：★★★ 同一个模型（V2-Base）、同一个团队，
+       只是评测框架改了几个月，分数就和自己上次公布的不一样了。
+
+    ⟹ ★★ 模型权重一个字都没动。动的全是【测法】。
+</code></pre></div>
+
+<p>★★ 这件事不是 DeepSeek 特有的。<strong>任何一份评测里，都有一整排"会自己变"的旋钮</strong>，而它们变了，分数就变：</p>
+<table>
+<thead>
+<tr>
+<th>变的是什么</th>
+<th>一个具体例子</th>
+<th>分数会不会变</th>
+<th>技术报告里通常写不写</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>对话模板版本</strong></td>
+<td>模型仓库更新了 <code>tokenizer_config.json</code> 里的 <code>chat_template</code> 字段（加了个默认系统提示、换了换行位置）</td>
+<td>⚠️ <strong>会</strong></td>
+<td>★ 几乎从不写</td>
+</tr>
+<tr>
+<td><strong>harness 里任务定义的版本</strong></td>
+<td>✅ <code>gsm8k.yaml</code> 末尾写着 <code>metadata: version: 3.0</code> ⟹ 这个任务本身已经改过三版</td>
+<td>⚠️ <strong>会</strong></td>
+<td>⚠️ 少见</td>
+</tr>
+<tr>
+<td><strong>数据集版本</strong></td>
+<td>HuggingFace 上同一个 <code>dataset_path</code> 的 revision 被更新（修了错题、改了 split）</td>
+<td>⚠️ <strong>会</strong></td>
+<td>★ 几乎从不写</td>
+</tr>
+<tr>
+<td><strong>抽取规则 / 判分器</strong></td>
+<td><code>strict-match</code> 换成 <code>flexible-extract</code>（见 <a href="01-为什么评测是个难题.html">01 章 §1.3b</a> 那个 4 题算例）</td>
+<td>⚠️ <strong>会，而且能差几十 pp</strong></td>
+<td>⚠️ 少见</td>
+</tr>
+<tr>
+<td><strong>示例选法 / 随机种子</strong></td>
+<td>§4.3 的「示例选法」表：GSM8K 换个种子</td>
+<td>⚠️ <strong>会</strong></td>
+<td>⚠️ 少见</td>
+</tr>
+<tr>
+<td><strong>采样参数</strong></td>
+<td>temperature 从 0 改成 0.6、采样次数 k 从 1 改成 64</td>
+<td>⚠️ <strong>会</strong></td>
+<td>★ 有时写</td>
+</tr>
+<tr>
+<td><strong>模型权重</strong></td>
+<td>真的换了个模型</td>
+<td>会</td>
+<td>✅ <strong>一定写</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 看这张表最后两行的对比：
+
+      ★★★ 唯一&quot;一定会被披露&quot;的那一行（换权重），
+         恰恰是前面六行里任何一行都能单独制造出的分数差。
+
+    ⟹ ⚠️ 所以&quot;某模型这次比上次涨了 2 分&quot;这种说法，
+       在不交代上面六行的情况下，★★【无法归因】。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>★★ 两条可操作的规矩</strong>：<br />
+```<br />
+    ① 自己跑评测：把 harness 版本、任务 version、数据集 revision、<br />
+       模板来源（哪个模型仓库的哪个 commit）★ 一起记进结果文件。<br />
+       ⟹ 12 章会给具体做法。</p>
+<div class="codehilite"><pre><span></span><code>② 看别人的分数：只要跨时间比较（&quot;我们比半年前的 X 高&quot;），
+   ★★★ 先问一句【这半年里测法动过吗】。
+   ⟹ ✅ DeepSeek 主动声明了这件事，绝大多数报告不会。
+      ⚠️ 看到有人主动声明，可信度应该往上调。
+</code></pre></div>
+
+<p>```</p>
 </blockquote>
 <hr />
 <h2 id="45-cot">4.5 ★ 顺带说清 CoT</h2>
 <p><strong>CoT = Chain-of-Thought（思维链）</strong>，指让模型<strong>先写推理过程、再给答案</strong>。</p>
 <div class="codehilite"><pre><span></span><code>    不用 CoT：
-      问：12 盒饼干每盒 6 块，一共几块？
-      答：72                              ← ★ 直接蹦答案
+      Question: 12 盒饼干每盒 6 块，一共几块？
+      Answer: 72                              ← ★ 直接蹦答案
 
     ★ 用 CoT：
-      问：12 盒饼干每盒 6 块，一共几块？
-      答：每盒 6 块，共 12 盒，所以 6 × 12 = 72。答案是 72。
-                                          ← ★★ 先算再答
+      Question: 12 盒饼干每盒 6 块，一共几块？
+      Answer: 每盒 6 块，共 12 盒，所以 6 × 12 = 72。
+      #### 72
+                                              ← ★★ 先算再答
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ★★ 怎么让它这么做？两种办法：
 
-    ① few-shot 示例里就这么写 ⟹ ★ 模型照着学（04 章 §4.1 的作用 ②）
+    ① few-shot 示例里就这么写 ⟹ ★ 模型照着学（§4.1 的作用 ②）
     ② 直接在提示词里说 &quot;Let&#39;s think step by step&quot;
 
-    ⟹ ⚠️ 注意：现在的【推理模型】（如 DeepSeek-R1、o 系列）
+    ⟹ ⚠️ 注意：现在的【推理模型】（reasoning model，如 DeepSeek-R1、o 系列）
        ★★ 是被【训练】成自动 CoT 的，不需要你提示。
        ⟹ 这又带来新的评测问题 —— 见 [10 章](10-DeepSeek的评测口径.md)。
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>CoT 让分数变高，但也让评测变贵</strong>：<br />
-<code>★ 输出从 3 个 token 变成 300 个 token ⟹ 慢 100 倍
-    ★★ 而且推理模型的思考过程可能有几千 token
-    ⟹ 🔑 这是评测成本近两年暴涨的主要原因之一。</code></p>
+<p>⚠️ <strong>CoT 让分数变高，但也让评测变贵</strong>。★ 把成本账算清楚一点：<br />
+```<br />
+    ★ 输出从 3 个 token 变成 300 个 token<br />
+    ⟹ 【解码阶段】的耗时变成原来的 100 倍（= 多花 99 倍）</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 但端到端【不会】正好 100 倍，因为：
+   ① 5-shot 的长提示词要先做 prefill（预填充），这部分不随输出长度变
+   ② 排队、加载、批处理的固定开销也不变
+⟹ 🔑 所以只能说&quot;解码耗时 ×100&quot;，★★ 不能说&quot;整体慢 100 倍&quot;。
+</code></pre></div>
+
+<p>```<br />
+⚠️ <strong>顺手钉死另一对容易混的说法</strong>：「耗时减少 50%」= 耗时变成原来的 1/2 = <strong>速度变成 2 倍</strong>；而「加速 50%」通常指速度变成 1.5 倍，对应耗时只减少 33%。★★ 这两句话<strong>不等价</strong>，写的时候必须说清是"耗时减少"还是"速度提升"。</p>
+<p>★★ 而且推理模型的思考过程可能有几千 token ⟹ 🔑 这是评测成本近两年暴涨的主要原因之一。★ 它还会撞上另一个坑：生成长度上限设小了，思考没写完就被截断，答案根本没出来——见 <a href="05-答案抽取与打分.html">05 章 §5.6</a> 第 ⑥ 条。</p>
 </blockquote>
 <hr />
 <h2 id="46">4.6 ★ 一份"可比"的最小信息清单</h2>
 <p><strong>看到任何分数，缺了下面任何一条，就不该直接和别的分数比大小</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ┌─────────────────────────────────────────────┐
-    │  □ 模型的【精确版本】（不是&quot;Llama-3&quot;，       │
-    │    ★ 是 &quot;Llama-3-8B-Instruct&quot; + 具体权重日期）│
-    │  □ 用的哪个 harness、什么版本                │
-    │  □ ★ few-shot 数（0 / 5 / 25）              │
-    │  □ ★ 随机种子（示例是怎么抽的）              │
-    │  □ ★★ 有没有套 chat template                │
-    │  □ 系统提示词内容                            │
-    │  □ ★ 判别式还是生成式（3 章 §3.3 的陷阱）    │
-    │  □ 采样参数（temperature / top_p）          │
-    │  □ 答案抽取规则（★ 05 章）                   │
-    └─────────────────────────────────────────────┘
-
-    ⟹ 🔑 九条。★★ 现实中大部分技术报告只写前两三条。
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>必须交代的一条</th>
+<th>⚠️ 不写会漏掉什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>模型的<strong>精确版本</strong></td>
+<td>"Llama-3" 至少有 8B / 70B、base / Instruct、多个权重日期——不是一个模型</td>
+</tr>
+<tr>
+<td>2</td>
+<td>用的哪个 harness、<strong>什么版本</strong></td>
+<td>§4.4 的「版本漂移」表：✅ <code>gsm8k.yaml</code> 自己都到 <code>version: 3.0</code> 了</td>
+</tr>
+<tr>
+<td>3</td>
+<td>★ <strong>few-shot 数</strong>（0 / 5 / 25）</td>
+<td>§4.3 的算例：能力不变，分数能差 60 pp</td>
+</tr>
+<tr>
+<td>4</td>
+<td>★★ <strong>示例选法 + 随机种子</strong></td>
+<td>§4.3：GSM8K 随机、MMLU 固定，"5-shot"三个字不是口径</td>
+</tr>
+<tr>
+<td>5</td>
+<td>★★ 有没有套 <strong>chat template</strong>，哪个版本</td>
+<td>§4.4：套错方向、或套了旧版本的模板，好模型也显得很差</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>系统提示词</strong>原文</td>
+<td>一句"你是数学专家"就足以改变输出格式</td>
+</tr>
+<tr>
+<td>7</td>
+<td>★ <strong>判别式还是生成式</strong></td>
+<td><a href="03-三个原语.html">3 章 §3.3</a> 的陷阱：同一个 MMLU，两种测法</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>采样参数</strong>（temperature / top_p / 采样几次取平均）</td>
+<td>采样次数 k 不同，就不是同一次实验（<a href="11-怎么读懂一张榜单.html">11 章 §11.6</a> 有方差分解）</td>
+</tr>
+<tr>
+<td>9</td>
+<td>★★★ <strong>答案抽取规则 + 判分器</strong></td>
+<td>✅ <a href="05-答案抽取与打分.html">05 章 §5.2</a>：同一份输出，同一个 YAML 里的两条流水线差 41.7 pp</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 九条。★★ 现实中大部分技术报告只写前两三条。
     ⟹ ⚠️ 这就是为什么「跨报告比分数」这件事基本不成立。
+    ⟹ ★ 反过来说：✅ 10 章那两份 DeepSeek 报告之所以值得当标本，
+       就是因为它们把这九条里的大部分都写了。
 </code></pre></div>
 
 <hr />
 <h2 id="47">4.7 本章小结</h2>
-<div class="codehilite"><pre><span></span><code>    ★★ 四句话：
+<div class="codehilite"><pre><span></span><code>    ★★ 五句话：
 
     ① few-shot 的本质是【格式对齐】，不是教它做题
-    ② ✅ 源码强制你传随机种子（task.py:462-469 宁可报错也不给默认值）
-       ⟹ ★ 因为示例是随机抽的，种子变则分数变
-    ③ ★★ 对话模板是最隐蔽的变量：套错了，好模型也会显得很差
-    ④ ★ 可比性需要九条信息，⚠️ 现实中很少有报告写全
+       ⟹ ★ §4.3 的算例：能力恒为 8 道，分数从 20% 到 80%（+60 pp）
+       ⟹ ★ §4.3 的实跑：只改示例里的答案前缀，同一道对题就从 1 分变 0 分
+
+    ② ✅ 源码强制你传随机种子（task.py:463-469 宁可报错也不给默认值）
+       ⟹ ⚠️ 但&quot;随机&quot;只对一部分任务成立：
+          ✅ GSM8K = 随机抽（种子变则分数变）
+          ✅ MMLU  = first_n 固定取 dev 集前 5 条（种子无关）
+       ⟹ 🔑 所以「5-shot」三个字【不是一个口径】
+
+    ③ ★★ 对话模板是最隐蔽的变量：套错方向，好模型也会显得很差（§4.4）
+
+    ④ ★★★ 更隐蔽的是【版本漂移】：模板版本、任务 version、数据集 revision
+       ⟹ ✅ DeepSeek 自己书面承认过（§4.4 里逐字引了那一句）
+       ⟹ 🔑 权重一个字没动，分数就变了
+
+    ⑤ ★ 可比性需要九条信息（§4.6），⚠️ 现实中很少有报告写全
 
     ⟹ 🔑 承接 01 章那句：分数是「模型 + 方法」的联合产物。
        ★★★ 本章讲的就是「方法」里最容易被忽略的那一半。

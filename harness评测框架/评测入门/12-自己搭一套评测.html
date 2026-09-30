@@ -252,82 +252,337 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ★★ 前十一章全是"别人的分数怎么读"。这一章是"你自己的分数怎么建"。</p>
 <p>⟹ 🔑 先说结论：<strong>★★★ 50 条你自己业务的真实样本，比任何公开榜单都值钱。</strong><br />
 因为榜单在答的是"这个模型有多强"，你真正要答的是"这个模型对我有没有用"。</p>
+<p>★ 本章的记号沿用全书：✅ = 论文/报告原文或可核对的一手事实；⚠️ = 我的判断或经验；★ = 重要程度。</p>
 </blockquote>
 <hr />
+<h2 id="120">12.0 先看全景：七步流水线</h2>
+<p>★★★ 先把整件事的形状摆出来，后面每一节都是在讲其中一步。<strong>注意第 ⑥ 步会往回跳</strong>——这是本章唯一必须记住的结构。</p>
+<div class="codehilite"><pre><span></span><code>   ① 定问题：这次评测要帮你做什么决策
+        ↓
+   ② 攒样本：50 条真实输入
+        ↓
+   ③ 定 gold answer：每条的&quot;正确参考&quot;是什么
+        ↓
+   ④ 写判卷器：一个 score(回答, gold) 函数
+        ↓
+   ⑤ 跑第一遍，拿到 baseline（基线分数）
+        ↓
+   ⑥ 人工读 20 条失败案例，逐条归因
+        ↓
+     归因落在【提示词 / 上下文 / 模型能力】 ⟹ 改那一处，回到 ⑤ 重跑
+     归因落在【评测本身有问题】           ⟹ ★★★ 回到 ③ 或 ④ 重做
+        ↓
+   ⑦ 固化成回归测试：换模型 / 换提示词都能一条命令重跑
+</code></pre></div>
+
+<p>★★ 每一步都必须有【看得见的产出物】和【能判定的验收标准】。⚠️ 没有验收标准的那一步，一定会被跳过：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>产出物（一个具体文件或数字）</th>
+<th>★ 验收标准（过不了就不许进下一步）</th>
+<th>⚠️ 常见的翻车方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 定问题</strong></td>
+<td>一句话的决策语句 + 一个门槛数字</td>
+<td>能写成这种句子：「如果<strong>合同抽取类</strong>的准确率 ≥ <strong>85%</strong>，我们就切到 B 模型」</td>
+<td>⚠️ 写成「看看模型效果怎么样」⟹ 跑完不知道该干什么</td>
+</tr>
+<tr>
+<td><strong>② 攒样本</strong></td>
+<td><code>samples.jsonl</code>，≥ 50 行，每行带 <code>tags</code></td>
+<td>★★ 覆盖 ≥ 8 类；★ 单一类别占比 ≤ 30%；★★★ 全部脱敏</td>
+<td>⚠️ 50 条全是同一类 ⟹ 分数好看但没信息</td>
+</tr>
+<tr>
+<td><strong>③ 定 gold</strong></td>
+<td>每行一个 <code>gold</code> 字段 + 一个「该用哪种判分器」的标注</td>
+<td>★★★ 让两个人<strong>独立</strong>标同样的 20 条，一致率 ≥ 90%</td>
+<td>⚠️ 一个人拍脑袋标完 ⟹ 后面所有分数都建在流沙上</td>
+</tr>
+<tr>
+<td><strong>④ 写判卷器</strong></td>
+<td>一个 <code>score(回答, gold)</code> 函数</td>
+<td>★★★ <strong>自洽性测试</strong>：把 <code>gold</code> 本身当回答喂进去，必须满分；★★ 抽取失败要单独计数，不能混进"答错"</td>
+<td>⚠️ 判卷器自己有 bug，却被当成"模型不行"</td>
+</tr>
+<tr>
+<td><strong>⑤ 跑 baseline</strong></td>
+<td><code>result.json</code>，含 §12.7 的四项元数据</td>
+<td>★★★ 同一份数据跑两遍，<code>temperature=0</code> 下结果<strong>完全一致</strong>；★★ 抽取失败率 &lt; 5%</td>
+<td>⚠️ 忘了固定温度 ⟹ 两次分数不同，以为是模型抖动</td>
+</tr>
+<tr>
+<td><strong>⑥ 读失败案例</strong></td>
+<td>20 条失败案例的归因表</td>
+<td>★★ 每条都归到 A/B/C/D 四类之一（§12.6 Step 4）；★★★ 其中「判卷误判」占比 &lt; 20%</td>
+<td>⚠️ 只看总分不看案例 ⟹ 这是本章最大的浪费</td>
+</tr>
+<tr>
+<td><strong>⑦ 固化</strong></td>
+<td>一个配置文件 + 一条能跑的命令</td>
+<td>★★ 换模型只改配置里一行；★★★ 历史结果能并排对比</td>
+<td>⚠️ 脚本里硬编码模型名 ⟹ 三个月后没人敢动</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ★★★ 全流程最容易被跳过的是第 ⑥ 步，
+       而它是信息量最大的一步（§12.6 会解释为什么）。
+    ⟹ ⚠️ 第二容易被跳过的是第 ④ 步那个【自洽性测试】——
+       ★★ 一行代码的事，能挡掉一整类&quot;判卷器自己写错了&quot;的事故。
+</code></pre></div>
+
+<hr />
 <h2 id="121">12.1 为什么必须自建：四条理由</h2>
-<div class="codehilite"><pre><span></span><code>   ┌─ ① 题目形状不一样 ─────────────────────────────────┐
-   │  ★ MMLU 是四选一知识题；SWE-bench 是 Python 开源仓库。│
-   │  ★★ 你的业务可能是：从合同里抽关键条款、生成电商    │
-   │     客服回复、给代码加中文注释、对话改写成 SQL……    │
-   │  ⟹ 🔑 形状完全不同的题，榜单分数【没有迁移性】。   │
-   └───────────────────────────────────────────────────┘
-   ┌─ ② 领域词汇不一样 ────────────────────────────────┐
-   │  ★★ 医疗报告的&quot;肿物&quot;≠普通&quot;tumor&quot;；                │
-   │     金融里的&quot;资产&quot;和日常的&quot;资产&quot;语义不同。          │
-   │  ⟹ 通用基准测不出【你的领域里表现如何】。          │
-   └───────────────────────────────────────────────────┘
-   ┌─ ③ 质量标准不一样 ────────────────────────────────┐
-   │  ★★★ 你的用户在乎什么，公开榜单可能完全不在乎。   │
-   │  有些业务要求【绝对不能杜撰名字（hallucination，幻觉）】；有些要求【字数   │
-   │  必须在 X 之内】；有些要求【必须回绝敏感查询】。   │
-   │  ⟹ 这些【没有一条在 MMLU 或 SWE-bench 里出现】。   │
-   └───────────────────────────────────────────────────┘
-   ┌─ ④ 污染问题你自己最好控制 ────────────────────────┐
-   │  ★ 06 章讲了：公开基准会被训进下一代模型。         │
-   │  ⚠️ 但你自己的内部样本，只要不公开，                │
-   │     ★★★【物理上不可能进任何模型的训练集】。         │
-   └───────────────────────────────────────────────────┘
+<p>★★ 把「公开榜单」和「你的业务」并排放，四条理由一眼就看清了：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>维度</th>
+<th>公开榜单是什么样</th>
+<th>你的业务是什么样</th>
+<th>⟹ 所以</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>题目形状</strong></td>
+<td>★ MMLU 是四选一知识题；SWE-bench 是 12 个热门 Python 开源仓库的 issue</td>
+<td>★★ 从合同里抽关键条款、生成电商客服回复、给代码加中文注释、把对话改写成 SQL……</td>
+<td>🔑 形状完全不同的题，榜单分数<strong>没有迁移性</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>领域词汇</strong></td>
+<td>★ 通用语料里的常见词</td>
+<td>★★ 医疗报告里的「肿物」不等于普通的 tumor；金融里的「资产」和日常的「资产」语义不同</td>
+<td>通用基准测不出<strong>你的领域里</strong>表现如何</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>质量标准</strong></td>
+<td>★ 只看答案对不对</td>
+<td>★★★ 有些业务要求<strong>绝对不能杜撰人名</strong>；有些要求<strong>字数必须在 X 之内</strong>；有些要求<strong>必须回绝敏感查询</strong></td>
+<td>这些标准<strong>没有一条</strong>在 MMLU 或 SWE-bench 里出现</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>污染风险</strong></td>
+<td>⚠️ 06 章讲了：公开基准会被训进下一代模型</td>
+<td>★ 你自己的内部样本，只要不公开</td>
+<td>★★★ <strong>物理上不可能</strong>进任何模型的训练集</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：hallucination（幻觉）
+      ★★ 模型生成了看起来合理、但事实上不存在的内容
+         （编造的人名、法条、API、引用）。
+      ⟹ 🔑 第 ③ 条里最常见的业务硬指标就是它。
+
+    ⟹ ★★★ 第 ④ 条值得单独强调：
+       这是你【唯一】能拿到的、永远不会被污染的尺子。
+       ⚠️ 代价是它永远不能公开——一公开就开始失效（06 章古德哈特定律）。
 </code></pre></div>
 
 <hr />
 <h2 id="122">12.2 样本从哪里来</h2>
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 最好的来源是【真实发生的输入输出】，而不是精心构造的题目。
+<p>★★ 🔑 最好的来源是【真实发生过的输入】，而不是精心构造的题目。三个来源按优先级排：</p>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>来源</th>
+<th>怎么做</th>
+<th>★ 优点</th>
+<th>⚠️ 缺点与注意</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>首选</strong></td>
+<td>线上日志</td>
+<td>★★ 从真实请求里<strong>随机抽样</strong>，再由人工确认"期望输出是什么"</td>
+<td>★★★ 覆盖你没想到的边界情况；分布天然正确</td>
+<td>⚠️ <strong>必须脱敏</strong>：姓名、手机号、账号、身份证等 PII（Personally Identifiable Information，个人可识别信息）</td>
+</tr>
+<tr>
+<td><strong>次选</strong></td>
+<td>业务人员构造的典型题</td>
+<td>★ 列出「模型最常被问到的 20 类问题」，每类造 2–3 条</td>
+<td>★ 快，且类别覆盖可控</td>
+<td>⚠️ 覆盖不了你<strong>没预料到</strong>的情况 ⟹ 实际线上失败率会高于评测分数</td>
+</tr>
+<tr>
+<td><strong>补充</strong></td>
+<td>边界与压力测试</td>
+<td>★★ 超长文档、含噪声的输入、刻意模糊的指令、★★★ 应该被拒绝的敏感查询</td>
+<td>★★ 专门打你知道的薄弱点</td>
+<td>⚠️ 这一类<strong>不能算进总分</strong>，否则总分会被它拖垮而失去可比性 ⟹ 单独一个 tag 单独看</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    🔑 多少条够？
+    ★★ 50–100 条就能做第一轮决策。
+    ★★★ 能反映【分布】比【多】更重要 ——
+       ⟹ 50 条覆盖 10 类，比 500 条全是同一类有价值得多。
+    ⚠️ 不要为了&quot;数据量大&quot;去构造相似题 ——
+       ★★ 那是在降低多样性，不是提高质量。
+</code></pre></div>
 
-    ┌─ 首选：线上日志 ──────────────────────────────────┐
-    │  ★★ 用户真实的输入 ⟹ 覆盖你没想到的边界情况。     │
-    │  ⟹ 随机抽样，并由人工确认&quot;期望输出是什么&quot;。       │
-    │  ⚠️ 注意脱敏（姓名/账号等 PII，Privacy-sensitive）。│
-    └───────────────────────────────────────────────────┘
-    ┌─ 次选：人工构造的典型 ─────────────────────────────┐
-    │  ★ 业务人员列出&quot;模型最常被问到的 20 类问题&quot;，        │
-    │    每类各造 2-3 条。                               │
-    │  ⚠️ 缺点：覆盖不了你没预料到的情况。              │
-    └───────────────────────────────────────────────────┘
-    ┌─ 补充：边界与压力测试 ─────────────────────────────┐
-    │  ★★ 你知道的【最难】的几类输入：                   │
-    │    超长文档、含噪声的输入、刻意模糊的指令、         │
-    │    ★★★ 应该被拒绝的敏感查询。                     │
-    └───────────────────────────────────────────────────┘
-
-    🔑 多少够？
-    ★★ 50-100 条就能做第一轮决策。
-    ★★★ 能反映「分布」比「多」更重要——
-       50 条覆盖 10 类的比 500 条全是同一类有价值得多。
-    ⚠️ 不要为了&quot;数据量大&quot;去构造相似题——那是在降低多样性，不是提高质量。
+<p>⚠️ 但也要知道 50 条的代价。用 <a href="11-怎么读懂一张榜单.html">11 章 §11.6 ①</a> 那个公式算一下自己手上这把尺子有多粗：</p>
+<table>
+<thead>
+<tr>
+<th>样本数 n</th>
+<th>假设准确率 p</th>
+<th>SE = √(p(1−p)/n)</th>
+<th>⚠️ 95% 区间 ≈ ±1.96·SE</th>
+<th>🔑 这意味着</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>20</strong></td>
+<td>0.80</td>
+<td>⚠️ 8.9 pp</td>
+<td>±17.5 pp</td>
+<td>⚠️ 只够"看有没有明显崩"，<strong>不能比较两个模型</strong></td>
+</tr>
+<tr>
+<td><strong>50</strong></td>
+<td>0.80</td>
+<td>⚠️ 5.7 pp</td>
+<td>±11.1 pp</td>
+<td>★ 能看出<strong>十几个百分点</strong>级别的差异</td>
+</tr>
+<tr>
+<td><strong>100</strong></td>
+<td>0.80</td>
+<td>⚠️ 4.0 pp</td>
+<td>±7.8 pp</td>
+<td>★★ 能看出<strong>十个百分点</strong>级别的差异</td>
+</tr>
+<tr>
+<td><strong>500</strong></td>
+<td>0.80</td>
+<td>⚠️ 1.8 pp</td>
+<td>±3.5 pp</td>
+<td>★★ 能看出<strong>几个百分点</strong>级别的差异</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读这张表的正确方式：★★★ 50 条【不是为了精确测量】，
+       是为了【发现明显的问题和明显的差距】。
+    ⟹ ★★ 所以决策语句要写成&quot;A 比 B 高 15 个百分点才换&quot;，
+       ⚠️ 而不是&quot;A 比 B 高 2 个百分点就换&quot;——后者在 50 条上纯属噪声。
+    ⟹ ★ 想把区间压到几个百分点，需要 500 条量级；
+       🔑 但按 §12.6 Step 3，先花时间读 20 条失败案例，
+          比把样本从 50 条加到 500 条【回报高得多】。
 </code></pre></div>
 
 <hr />
 <h2 id="123-gold-answer">12.3 期望输出（gold answer）怎么定</h2>
-<div class="codehilite"><pre><span></span><code>    ★ 名词：gold answer / gold label（黄金答案）
-      ★★ 评测时对照的&quot;正确参考&quot;。问题是：★★★ 谁来写它？
-
-    ⟹ 按难度分三级：
+<div class="codehilite"><pre><span></span><code>    ★ 名词：gold answer / gold label（黄金答案 / 标准标注）
+      ★★ 评测时用来对照的&quot;正确参考&quot;。
+      ⟹ 🔑 真正的问题不是&quot;它是什么&quot;，而是 ★★★【谁来写它，以及两个人写的一样吗】。
 </code></pre></div>
 
+<p>★★ 按难度分三级。<strong>先看这张总表，再看每一级的细节</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>级别</th>
+<th>你的任务长什么样</th>
+<th>gold 写成什么</th>
+<th>★ 该用哪种判分器</th>
+<th>⚠️ 一致率能做到多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>①</strong> 有客观答案</td>
+<td>实体抽取、分类、结构化信息提取、SQL 生成、代码正确性</td>
+<td>★ 一个确定的值 / 一段代码 + 测试</td>
+<td>★★★ 精确匹配、正则、或<strong>真跑一遍</strong></td>
+<td>★★ 两人标注一致率可做到 95%+</td>
+</tr>
+<tr>
+<td><strong>②</strong> 有参考答案但允许变体</td>
+<td>摘要、改写、翻译、总结</td>
+<td>★ 1–3 个"满意答案样本"，或一份<strong>必须包含的要点清单</strong></td>
+<td>★★ LLM 裁判（带参考答案）</td>
+<td>⚠️ 别指望超过人。✅ <a href="09-LLM当裁判.html">09 章 §9.3</a>：MT-Bench 论文里<strong>人对人</strong>的一致率，只看非平局票（S2 口径）是 <strong>81%</strong>，把平局和"换个顺序就翻"的票都算上（S1 口径）只有 <strong>63%</strong> ⟹ 🔑 引用这个 80% 时<strong>必须带上是哪个口径</strong></td>
+</tr>
+<tr>
+<td><strong>③</strong> 完全开放的生成</td>
+<td>「给这个产品写一段营销文案」</td>
+<td>★★★ 写不出唯一答案 ⟹ 改成<strong>可检查的维度清单</strong></td>
+<td>★ 分维度规则 + LLM 裁判，或 A/B 对比</td>
+<td>⚠️ 最低，且因人而异 ⟹ 必须靠"拆维度"把它降级成 ① 或 ②</td>
+</tr>
+</tbody>
+</table>
 <h3 id="1">① 有客观答案的题——最容易</h3>
 <div class="codehilite"><pre><span></span><code>    ★★ 实体抽取、分类、结构化信息提取、SQL 生成、代码正确性。
     ⟹ 可以直接写出期望的值，后续用【精确匹配或规则】判。
     ⟹ 🔑 如果你的任务属于这类，★★★ 一定用精确判，而不是 LLM 裁判。
-       09 章 Table 4 证明了：直接用 LLM 判有客观答案的题，
-       ★★ 失败率高达 70%。
+</code></pre></div>
+
+<p>✅ 这不是偏好，09 章 §9.4 ④ 引的 MT-Bench 论文 Table 4 把它量化了。⚠️ 注意口径，这个数经常被转述错：</p>
+<table>
+<thead>
+<tr>
+<th>裁判提示词</th>
+<th>✅ 「把错答案判成对」的次数</th>
+<th>换成比例</th>
+<th>⚠️ 口径说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default（直接让裁判判）</td>
+<td>✅ <strong>14 / 20</strong></td>
+<td>70%</td>
+<td>⚠️ 分母是 <strong>20 次判断</strong>（10 道数学题 × 2 个顺序），<strong>不是</strong> 20 道题、也不是「70% 的题被判错」</td>
+</tr>
+<tr>
+<td>CoT（让裁判先自己推一遍）</td>
+<td>✅ 6 / 20</td>
+<td>30%</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Reference（把标准答案给裁判看）</td>
+<td>✅ 3 / 20</td>
+<td>15%</td>
+<td>★★ 降到了 Default 的<strong>约五分之一</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 结论很硬：★★★ 有客观答案的题，别让裁判&quot;凭感觉&quot;判。
+       能给参考答案就给，能跑测试就跑测试。
+
+    ⚠️★★ 但必须同时指出这个数的粗糙程度（🔑 这正是 11 章那个公式的用处）：
+       n = 20，p ≈ 0.7 ⟹ SE = √(0.7 × 0.3 ÷ 20) = √0.0105 ≈ ⚠️ 10.2 个百分点。
+       ⟹ 95% 区间大约是 70% ± 20 pp。
+       ⟹ ★★ 所以可信的结论是【方向】：
+          &quot;直接裁判在数学题上错得离谱，给参考答案能大幅改善&quot;。
+       ⚠️ 不可信的是把 70% 当成一个精确的失败率去引用。
 </code></pre></div>
 
 <h3 id="2">② 有参考答案但允许变体的题</h3>
 <div class="codehilite"><pre><span></span><code>    ★★ 摘要、改写、翻译、总结。
     ⟹ 写出 1-3 个&quot;满意答案样本&quot;，再用 LLM 裁判打相似度。
-    ★ 或者：定义【必须包含的要点清单】，用 LLM 裁判逐项核对
-      （这比&quot;打一个总分&quot;更稳定）。
-    ⟹ 🔑 09 章那套两遍法（交换顺序）仍然推荐用上。
+    ★ 更稳的做法：定义【必须包含的要点清单】，让裁判逐项核对
+      （⟹ 🔑 逐项核对比&quot;打一个总分&quot;稳定得多，
+         因为每一项都退化成了一个 ①类的是/否判断）。
+    ⟹ ★★ 09 章那套两遍法（交换顺序、取平均）仍然推荐用上。
 </code></pre></div>
 
 <h3 id="3">③ 完全开放的生成题</h3>
@@ -345,122 +600,392 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <hr />
 <h2 id="124">12.4 判卷：三档复杂度，按需选择</h2>
-<p>★★ 和 05 章的"三层裁判阶梯"一样，但换到你自己业务的视角。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 第一档：规则/正则 ───────────────────────────────┐
-   │  ★★★ 优先用这个。                                │
-   │  ① 精确匹配（分类标签、提取的实体）               │
-   │  ② 正则（日期格式、金额区间、包含某个关键词）      │
-   │  ③ 代码：真跑一遍（07-08 章的思想复用到你的场景）  │
-   │  ⟹ 🔑 快、准、零成本、可复现。                    │
-   └───────────────────────────────────────────────────┘
-   ┌─ 第二档：模型打分（LLM 裁判） ─────────────────────┐
-   │  ★★ 规则搞不定时才用。                            │
-   │  ⟹ 复用 09 章的所有防范：                         │
-   │    - ★ 用带参考答案的提示词模板（Reference-guided） │
-   │    - ★★ 跑两遍，交换顺序，取平均                  │
-   │    - ★★★ 记录【裁判模型版本】，否则历史对比失效    │
-   └───────────────────────────────────────────────────┘
-   ┌─ 第三档：人工打分 ─────────────────────────────────┐
-   │  ★★★ 建立新场景时的黄金标准，之后可以用来&quot;校准&quot;   │
-   │  前两档。                                          │
-   │  ⟹ 🔑 不必全量：★ 随机抽 10-20 条人工复核，       │
-   │     ★★★ 和自动打分的结论做一致率检查。            │
-   │  ⚠️ 一致率 &lt; 70% ⟹ 自动打分方案必须重做。         │
-   └───────────────────────────────────────────────────┘
+<p>★★ 和 05 章那个"三层裁判阶梯"是同一件事，只是换到你自己业务的视角。<strong>优先级从上到下递减</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>档</th>
+<th>怎么判</th>
+<th>具体手段</th>
+<th>★ 成本 / 可复现性</th>
+<th>⚠️ 什么时候才该往下一档走</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>第一档</strong> 规则</td>
+<td>★★★ <strong>优先用这个</strong></td>
+<td>① 精确匹配（分类标签、抽取的实体）<br>② 正则（日期格式、金额区间、包含某关键词）<br>③ 代码：<strong>真跑一遍</strong>（07–08 章的思想搬到你的场景）</td>
+<td>★★ 快、准、零成本、✅ 完全可复现</td>
+<td>规则<strong>真的</strong>写不出来时</td>
+</tr>
+<tr>
+<td><strong>第二档</strong> LLM 裁判</td>
+<td>★★ 规则搞不定时才用</td>
+<td>① 用<strong>带参考答案</strong>的提示词模板（Reference-guided）<br>② ★★ 跑两遍、交换顺序、取平均<br>③ ★★★ 记录<strong>裁判模型版本</strong></td>
+<td>⚠️ 每条一次额外调用；⚠️ 裁判升级后历史对比失效</td>
+<td>连"要点清单"都列不出来时</td>
+</tr>
+<tr>
+<td><strong>第三档</strong> 人工</td>
+<td>★★★ 新场景的黄金标准</td>
+<td>★ 随机抽 10–20 条人工复核，★★★ 和自动打分做<strong>一致率检查</strong></td>
+<td>⚠️ 最贵，但<strong>不必全量</strong></td>
+<td>永远不要完全省掉：它是前两档的校准器</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 第三档的正确用法是【校准】，不是【打分】：
+       ★★ 抽 20 条，人工判一遍，和自动打分比一致率。
+       ⚠️ 一致率低于 70% ⟹ ★★★ 自动打分方案必须重做，
+          （⚠️ 70% 这条线是我的经验判断，不是论文结论；
+            ★ 定在哪取决于你能容忍多少误判进决策。）
+
+    ⚠️ 顺手提醒一个容易混的点：
+       ★★★ 一致率 70% 和&quot;准确率 70%&quot;完全不是一回事。
+       ⟹ 前者说的是【两个打分方式彼此吻合的比例】，
+          后者说的是【模型答对的比例】。
+       🔑 一致率不达标时，你连&quot;模型准确率是多少&quot;都还不知道。
 </code></pre></div>
 
 <hr />
 <h2 id="125">12.5 复用框架还是手写</h2>
-<p>★★ 简短的答案：先手写，等数量上去再考虑框架。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 手写（推荐起点） ────────────────────────────────┐
-   │  JSONL 文件，每行一条样本：                        │
-   │  {&quot;input&quot;: &quot;...&quot;, &quot;gold&quot;: &quot;...&quot;, &quot;tags&quot;: [...]}   │
-   │  ★★★ 加一个 tags 字段，记录题目类别和难度级别，   │
-   │      ⟹ 以后能按类分析失败模式。                   │
-   │                                                    │
-   │  判卷脚本 100 行 Python 就够：                     │
-   │    for 每条样本：                                  │
-   │      resp = 调 API 得回答                          │
-   │      score = 判卷(resp, gold)                      │
-   │      记录(sample, resp, score)                    │
-   │  然后 pd.DataFrame 算一下总分和按 tags 的分布。    │
-   └───────────────────────────────────────────────────┘
-   ┌─ 什么时候引入 lm-eval-harness / EvalScope ────────┐
-   │  ★★ 满足这三条再考虑：                            │
-   │    ① 你要测的基准在框架里已经有实现                │
-   │    ② 你需要跑多个模型做横向比较                    │
-   │    ③ 你需要 loglikelihood（判别式）能力            │
-   │  ⟹ 🔑 如果只是&quot;跑一个模型、用 generate_until 打分&quot;│
-   │     ★★ 手写脚本 + JSONL 比框架更灵活、更好调试。  │
-   └───────────────────────────────────────────────────┘
-   ┌─ 什么时候引入 SWE-bench 那套思路 ─────────────────┐
-   │  ★★★ 只当你的任务是【修改/生成代码，且有测试】。  │
-   │  ⟹ 07 章那套&quot;起容器 → 打补丁 → 跑测试&quot;的流水线   │
-   │     可以被裁剪移植到你的场景。                     │
-   │  ★ 最小化版本：                                   │
-   │    ① 准备&quot;初始仓库快照&quot; + &quot;需求描述&quot;              │
-   │    ② 模型产出 diff                                │
-   │    ③ 本地（不用 Docker 也行）apply + 跑你自己的 CI │
-   └───────────────────────────────────────────────────┘
+<p>★★ 简短的答案：<strong>先手写，等数量上去再考虑框架。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★★★ 起点长这样（推荐）：一个 JSONL 文件 + 一个不到 100 行的脚本。
+</code></pre></div>
+
+<p>样本文件 <code>samples.jsonl</code>，每行一条：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;这个洗发水洗完头发不干净&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;gold&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;C&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tags&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;personal_care&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;complaint&quot;</span><span class="p">]}</span>
+<span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;物流很快，包装也完好&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;gold&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;A&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tags&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;logistics&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;praise&quot;</span><span class="p">]}</span>
+<span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;在吗&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;gold&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;D&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tags&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;noise&quot;</span><span class="p">]}</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ★★★ 一定要加 tags 字段，记录题目类别和难度级别，
+       ⟹ 🔑 否则 §12.6 Step 2 的&quot;按类别细分&quot;做不了，
+          而那一步是从&quot;总分&quot;走到&quot;知道该改哪里&quot;的唯一通路。
+</code></pre></div>
+
+<p>判卷脚本的骨架（⟹ 完整可跑的版本见 §12.8）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">records</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">samples</span><span class="p">:</span>                       <span class="c1"># 逐条样本</span>
+    <span class="n">resp</span> <span class="o">=</span> <span class="n">call_api</span><span class="p">(</span><span class="n">s</span><span class="p">[</span><span class="s2">&quot;input&quot;</span><span class="p">])</span>         <span class="c1"># 调模型拿回答</span>
+    <span class="n">sc</span>   <span class="o">=</span> <span class="n">score</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">s</span><span class="p">[</span><span class="s2">&quot;gold&quot;</span><span class="p">])</span>       <span class="c1"># 判卷</span>
+    <span class="n">records</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="o">**</span><span class="n">s</span><span class="p">,</span> <span class="s2">&quot;raw&quot;</span><span class="p">:</span> <span class="n">resp</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="n">sc</span><span class="p">})</span>   <span class="c1"># ★★★ resp 原文必须存下来</span>
+<span class="c1"># 然后 pd.DataFrame(records) 算总分 + 按 tags 分组算分布</span>
+</code></pre></div>
+
+<p>★★ 什么时候值得换成现成框架？下面三张卡是三条独立的判断线，<strong>不满足条件就别上</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>★ 满足这些条件才考虑</th>
+<th>它带来什么</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>继续手写 + JSONL</strong></td>
+<td>默认选项</td>
+<td>★★ 最灵活、最好调试、改一行就能看效果</td>
+<td>⚠️ 跑多个模型做横评时要自己写循环和汇总</td>
+</tr>
+<tr>
+<td><strong>lm-eval-harness / OpenCompass / EvalScope</strong></td>
+<td>① 你要测的基准<strong>框架里已经有实现</strong><br>② 你需要跑<strong>多个模型</strong>做横向比较<br>③ 你需要 <code>loglikelihood</code>（判别式）能力</td>
+<td>★★ 现成的任务定义、现成的横评汇总、口径和公开榜单对齐</td>
+<td>⚠️ 学习成本；⚠️ 自定义任务要按它的接口写</td>
+</tr>
+<tr>
+<td><strong>SWE-bench 那套容器化流水线</strong></td>
+<td>★★★ 只当你的任务是【修改或生成代码，且有测试可跑】</td>
+<td>★★ 判分极硬：跑测试的结果不会有歧义</td>
+<td>⚠️ 要管容器、依赖、超时，07 章讲过它为什么贵</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 如果只是&quot;跑一个模型、用 generate_until 打分&quot;，
+       ★★ 手写脚本 + JSONL 比框架更灵活、更好调试。
+       ⟹ ⚠️ 引入框架的收益在【横评】和【口径对齐公开榜单】，
+          ★ 单模型单任务上它只会让你多花两天读文档。
+
+    ★★ SWE-bench 那套思路的最小化移植版（不用 Docker 也能做）：
+       ① 准备&quot;初始仓库快照&quot; + &quot;需求描述&quot;
+       ② 让模型产出 diff（补丁）
+       ③ 本地 apply + 跑你自己的 CI
+       ⟹ 🔑 07 章 §7.5 那个坑请直接抄走：
+          ★★★【补丁 apply 失败】要单独计一类，
+          ⚠️ 不能和&quot;改错了&quot;混在一起，否则你会去优化错的东西。
 </code></pre></div>
 
 <hr />
 <h2 id="126">12.6 跑起来之后：一个最小可行的分析流程</h2>
-<p>★★ 跑完评测得到一堆分数，然后呢？</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ Step 1: 先看整体通过率 ──────────────────────────┐
-   │  ★ 基准在这里：如果没有这个数，后面所有比较没意义。│
-   └───────────────────────────────────────────────────┘
-   ┌─ Step 2: 按 tags 细分，找问题集中的类别 ───────────┐
-   │  ★★ &quot;总分 75%&quot;掩盖了可能&quot;合同类 40%、客服类 90%&quot;  │
-   │  ⟹ 🔑 找到差的那类，才能知道下一步改哪里。        │
-   └───────────────────────────────────────────────────┘
-   ┌─ Step 3: ★★ 手动看失败案例（必做，不能跳过）───────┐
-   │  ★★★ 抽出分数最低的 10-20 条，人工读一遍：         │
-   │    ① 模型真答错了，还是判卷脚本误判了？            │
-   │    ② 失败是因为【模型不会】，还是【提示词没说清】？ │
-   │    ③ 有没有系统性的错误模式（比如都在日期解析上）？ │
-   │  ⟹ 这一步是最有信息量的，比跑 1000 条多 10% 有用。 │
-   └───────────────────────────────────────────────────┘
-   ┌─ Step 4: 决策 ─────────────────────────────────────┐
-   │  ★★ 把错误模式归类：                              │
-   │    A. 提示词问题  → 改提示词，立即重跑              │
-   │    B. 上下文不够  → 改检索/上下文策略               │
-   │    C. 模型能力瓶颈→ 换模型 or 微调                  │
-   │    D. ★ 评测本身有问题 → 先修评测，再谈其他          │
-   │  ⟹ 🔑 ★★★ D 经常出现，而且比你想象的出现得频繁。  │
-   └───────────────────────────────────────────────────┘
+<p>★★ 跑完评测得到一堆分数，然后呢？<strong>四步，顺序不能换。</strong></p>
+<div class="codehilite"><pre><span></span><code>   Step 1  先看整体通过率
+        ↓   有了这个数，后面的比较才有参照
+   Step 2  按 tags 细分，找问题集中的类别
+        ↓   &quot;总分 75%&quot; 可能掩盖了 &quot;合同类 40% / 客服类 90%&quot;
+   Step 3  人工读分数最低的 10–20 条（★★★ 必做，不能跳过）
+        ↓   逐条问三个问题，见下表
+   Step 4  把错误模式归类，决定改哪一处
+        ↓
+     改完回到 Step 1 重跑（⟹ 所以 Step 1 那个数要存下来当基线）
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>干什么</th>
+<th>★ 产出物</th>
+<th>⚠️ 跳过会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Step 1</strong></td>
+<td>算整体通过率</td>
+<td>一个数字 + 它的 95% 区间（用 §12.2 那张表估）</td>
+<td>⚠️ 没有基线，后面所有"改好了"都是感觉</td>
+</tr>
+<tr>
+<td><strong>Step 2</strong></td>
+<td>按 <code>tags</code> 分组算分</td>
+<td>一张「类别 × 准确率 × 样本数」表</td>
+<td>⚠️ ★★★ 关键类别的失败被平均数掩盖（见 §12.9 误区 B）</td>
+</tr>
+<tr>
+<td><strong>Step 3</strong></td>
+<td>人工读 10–20 条失败案例</td>
+<td>一张归因表，每条一行</td>
+<td>⚠️ <strong>这是本章最大的浪费点</strong>：不读案例，你只知道"不够好"，不知道"哪里不好"</td>
+</tr>
+<tr>
+<td><strong>Step 4</strong></td>
+<td>归类 + 决策</td>
+<td>「改哪一处」的一句话结论</td>
+<td>⚠️ 分数变成了一份没人看的报告</td>
+</tr>
+</tbody>
+</table>
+<p>★★★ Step 3 读每一条失败案例时，按顺序问这三个问题——<strong>顺序很重要，因为第一个问题会否掉后面两个</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>问什么</th>
+<th>⟹ 答"是"的话该干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★★ <strong>判卷脚本误判了吗？</strong>（模型其实答对了，只是格式/同义词没被认出来）</td>
+<td>⟹ 🔑 <strong>先修判卷器</strong>，其他一切分析全部作废重来</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★ <strong>是"模型不会"，还是"提示词没说清"？</strong></td>
+<td>⟹ 提示词的问题最便宜，先改它</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★ <strong>有没有系统性的错误模式？</strong>（比如失败的都在日期解析上）</td>
+<td>⟹ 系统性错误值得单独加一类 tag，专门盯</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ★★★ 人工读 20 条失败案例，
+       比把样本量从 50 条堆到 500 条【信息量高得多】。
+    ⟹ ★★ 原因用 §12.2 那张表就能解释：
+       样本从 50 加到 500，95% 区间从 ±11 pp 缩到 ±3.5 pp ——
+       ⚠️ 这只是把【同一把尺子】刻度变细了，
+       ★★★ 而读案例是在告诉你【尺子量的地方对不对、该改哪里】。
+</code></pre></div>
+
+<p>★★ Step 4 的归类只有四种，<strong>而且第四类最常出现</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>错误模式</th>
+<th>⟹ 对策</th>
+<th>★ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong></td>
+<td>提示词问题（指令不清、格式没规定、缺少示例）</td>
+<td>改提示词，立即重跑</td>
+<td>★ 最便宜，分钟级</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td>上下文不够（该给的资料没给到、检索没召回）</td>
+<td>改检索 / 上下文策略</td>
+<td>★ 中等</td>
+</tr>
+<tr>
+<td><strong>C</strong></td>
+<td>模型能力瓶颈（换了提示词也不行）</td>
+<td>换模型 or 微调</td>
+<td>⚠️ 最贵</td>
+</tr>
+<tr>
+<td><strong>D</strong></td>
+<td>★★★ <strong>评测本身有问题</strong>（gold 标错了、判卷器抠不到、样本本身有歧义）</td>
+<td>★★★ <strong>先修评测，再谈其他</strong></td>
+<td>★ 便宜，但必须先做</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 ★★★ D 类经常出现，而且比你想象的出现得频繁。
+    ⚠️ 它有一个明显的信号：★★ 失败案例里【模型的回答看起来是对的】。
+       ⟹ 看到这个信号，立刻回到 §12.0 第 ④ 步，重跑那个自洽性测试。
 </code></pre></div>
 
 <hr />
 <h2 id="127">12.7 版本管理：让结果可复现</h2>
 <p>★★★ 一个只能跑一次、无法复现的评测，和没跑区别不大。</p>
-<div class="codehilite"><pre><span></span><code>   最少要记录的四件事：
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>必须记录</th>
+<th>记成什么</th>
+<th>⚠️ 不记会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★★ <strong>模型标识符</strong></td>
+<td>完整 model ID + API 版本号，或本地 checkpoint 路径</td>
+<td>⚠️ 同名闭源模型会<strong>静默升级</strong>（03 章 §3.3 讲的"闭源 API 陷阱"）⟹ 分数变了你不知道为什么</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★★ <strong>提示词版本</strong></td>
+<td>git commit hash 或文件 md5</td>
+<td>⚠️ "上次那个提示词"很快变成"不记得了"</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★ <strong>测试集版本</strong></td>
+<td>文件 hash 或 git tag，再加一个样本条数</td>
+<td>⚠️ 加了新样本，分数变了，你不知道是模型变好还是题变难</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★★ <strong>判卷方案版本</strong></td>
+<td>判卷脚本 hash；用 LLM 裁判的话还要记裁判模型 + 裁判提示词</td>
+<td>⚠️ ✅ 09 章 §9.6 说过：换裁判 = 换尺子，<strong>历史对比全部失效</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>★ <strong>采样配置</strong></td>
+<td>temperature、top_p、<code>max_tokens</code>、每题跑几次、怎么汇总</td>
+<td>⚠️ 忘了固定温度 ⟹ 同一份数据两次分数不同，误判成模型抖动</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 最简单的实现：★★★ 把这五项直接写进结果文件的头部。
+       ⟹ 不需要数据库，一个 JSON 字段就够：
+</code></pre></div>
 
-   ① ★★★ 模型标识符（model ID + API 版本号或 checkpoint 路径）
-          ⟹ 同名模型会静默升级（03 章讲的&quot;闭源 API 陷阱&quot;）
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gpt-4o-mini-2024-07-18&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;prompt_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;a3f1c9e&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;dataset_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;7b2e0d4&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;dataset_n&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;scorer_sha&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;e91f22a&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;sampling&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;temperature&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;max_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;runs_per_item&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">}</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;accuracy&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.82</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;results&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+<span class="p">}</span>
+</code></pre></div>
 
-   ② ★★★ 提示词版本（用 git commit hash 或文件 md5）
-          ⟹ &quot;上次的提示词&quot;很快变成&quot;不记得了&quot;
+<div class="codehilite"><pre><span></span><code>    ⚠️ 一个容易忽略的点：★★ 第 ⑤ 项里的 runs_per_item 必须记，
+       ⟹ 因为它决定了你这个分数是【单次结果】还是【多次平均】。
+       🔑 11 章 §11.7 误读 D 讲过：
+          ★★★ 这两者都可以叫 &quot;pass@1&quot;，但不是一个东西。
+</code></pre></div>
 
-   ③ ★★ 测试集版本（文件 hash 或 git tag）
-          ⟹ 加了新样本，分数变了，你不知道原因
+<hr />
+<h2 id="127b">12.7b 怎么知道自己搭对了：五条自检</h2>
+<p>★★★ 这一节是本章最该被抄走的部分。<strong>评测系统自己也需要被评测</strong>——⚠️ 而几乎没人做这件事。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>自检动作</th>
+<th>怎么做</th>
+<th>★ 通过标准</th>
+<th>⚠️ 不通过说明什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>同一份数据跑两遍，结果一样吗</strong></td>
+<td><code>temperature=0</code>，同一个模型、同一份样本，跑两次，逐条比</td>
+<td>★★★ 逐条<strong>完全一致</strong></td>
+<td>⚠️ 有随机源没关掉（温度没设 0、并发导致样本顺序变、prompt 里带了时间戳）</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>把 gold 当成回答喂进判卷器</strong></td>
+<td>对每条样本调 <code>score(gold, gold)</code></td>
+<td>★★★ <strong>必须满分</strong></td>
+<td>⚠️ 判卷器自己有 bug ⟹ 🔑 这一条最便宜也最容易抓到问题</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>换一个抽取器，分数变多少</strong></td>
+<td>把「严格正则」换成「宽松正则」（或反之）再跑一遍</td>
+<td>★ 差异 &lt; 2–3 个百分点</td>
+<td>⚠️ 差异大 ⟹ ★★★ 你的分数有相当一部分来自<strong>抽取规则</strong>，不是模型能力（05 章）</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>人工抽查 20 条，判分对不对</strong></td>
+<td>随机抽 20 条（<strong>不只抽失败的</strong>），人工判一遍，和自动打分比</td>
+<td>★★ 一致率 ≥ 90%（①类任务）/ ≥ 80%（②类任务）</td>
+<td>⚠️ 低于此 ⟹ 自动打分方案要重做（§12.4 第三档）</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>打乱样本顺序，分数变吗</strong></td>
+<td>把 <code>samples.jsonl</code> 随机洗牌再跑</td>
+<td>★★ 总分<strong>完全不变</strong></td>
+<td>⚠️ 变了 ⟹ 你的脚本里有跨样本的状态泄漏（复用了上一条的上下文、few-shot 示例取自相邻样本）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 这五条的性价比排序（⚠️ 我的经验）：
+       ★★★ ② 最高 —— 三行代码，能挡掉一整类事故。
+       ★★★ ① 第二 —— 不通过的话，后面一切比较都没有意义。
+       ★★  ③ 第三 —— 它给你一个【自己这把尺子有多软】的量化数字。
+       ★★  ④ 第四 —— 唯一能告诉你&quot;自动打分和人的判断差多远&quot;的办法。
+       ★   ⑤ 第五 —— 出问题概率低，但出了就极难查。
 
-   ④ ★★ 判卷方案版本（LLM 裁判用的话：裁判模型 + 提示词 + 版本）
-          ⟹ 09 章说过：★★ 换裁判 = 换尺子，历史对比全部失效
-
-   ⟹ 🔑🔑 最简单的实现：一个 JSON/YAML 配置文件，
-      ★★★ 每次评测把这四个字段一起存进结果文件里。
+    ⚠️ 第 ③ 条值得多说一句：★★ 它其实是在对自己做 01 章那个实验 ——
+       ⟹ 同一个模型、同一套题，只换抽取规则，看分数差多少。
+       ★★★ 公开榜单上这个差异可以是十几个百分点；
+       🔑 你自己的评测里如果也这么大，说明你在测抽取器，不是在测模型。
 </code></pre></div>
 
 <hr />
 <h2 id="128">12.8 一个完整的小示例</h2>
-<p>★ 场景：你想评估"根据用户输入，给产品打一个类别标签（A/B/C/D）"的效果。<br />
-★★ 这是最干净的一类，完全用规则判，不需要 LLM 裁判。</p>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 样本格式（jsonl 文件，每行一条）</span>
-<span class="c1"># {&quot;input&quot;: &quot;这个洗发水洗完头发不干净&quot;, &quot;gold&quot;: &quot;C&quot;, &quot;tags&quot;: [&quot;personal_care&quot;, &quot;complaint&quot;]}</span>
+<p>★ 场景：你想评估"根据用户评论，给它打一个类别标签（A/B/C/D）"的效果。★★ 这是最干净的一类（§12.3 的 ① 类），完全用规则判，不需要 LLM 裁判。</p>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span><span class="o">,</span><span class="w"> </span><span class="nn">json</span><span class="o">,</span><span class="w"> </span><span class="nn">re</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpenAI</span>      <span class="c1"># 换成 Anthropic 等任意 SDK 同理</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">json</span><span class="o">,</span><span class="w"> </span><span class="nn">os</span><span class="o">,</span><span class="w"> </span><span class="nn">re</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">openai</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpenAI</span>  <span class="c1"># 或者 Anthropic 等任意 SDK</span>
+<span class="c1"># 样本格式（samples.jsonl，每行一条）：</span>
+<span class="c1"># {&quot;input&quot;: &quot;这个洗发水洗完头发不干净&quot;, &quot;gold&quot;: &quot;C&quot;, &quot;tags&quot;: [&quot;personal_care&quot;, &quot;complaint&quot;]}</span>
 
 <span class="n">PROMPT</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;你是一个产品评论分类助手。请将下面的评论分为 A/B/C/D 四类：</span>
 <span class="s2">A = 正面好评  B = 中性/混合  C = 负面投诉  D = 无关/无意义</span>
@@ -470,52 +995,152 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <span class="n">client</span> <span class="o">=</span> <span class="n">OpenAI</span><span class="p">()</span>
 
-<span class="k">def</span><span class="w"> </span><span class="nf">run_eval</span><span class="p">(</span><span class="n">samples_path</span><span class="p">,</span> <span class="n">model_id</span><span class="p">,</span> <span class="n">output_path</span><span class="p">):</span>
-    <span class="n">results</span> <span class="o">=</span> <span class="p">[]</span>
-    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">samples_path</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-        <span class="n">samples</span> <span class="o">=</span> <span class="p">[</span><span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">l</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">f</span><span class="p">]</span>
+<span class="c1"># ★★ 两个抽取器，专门用于 §12.7b 自检 ③：换抽取器看分数差多少</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">extract_strict</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;严格：整条输出必须就是一个字母&quot;&quot;&quot;</span>
+    <span class="n">t</span> <span class="o">=</span> <span class="p">(</span><span class="n">text</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">t</span> <span class="k">if</span> <span class="n">t</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;A&quot;</span><span class="p">,</span> <span class="s2">&quot;B&quot;</span><span class="p">,</span> <span class="s2">&quot;C&quot;</span><span class="p">,</span> <span class="s2">&quot;D&quot;</span><span class="p">)</span> <span class="k">else</span> <span class="kc">None</span>
 
+<span class="k">def</span><span class="w"> </span><span class="nf">extract_loose</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;宽松：从输出里找第一个 A/B/C/D&quot;&quot;&quot;</span>
+    <span class="n">m</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[ABCD]&quot;</span><span class="p">,</span> <span class="p">(</span><span class="n">text</span> <span class="ow">or</span> <span class="s2">&quot;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">upper</span><span class="p">())</span>
+    <span class="k">return</span> <span class="n">m</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span> <span class="k">if</span> <span class="n">m</span> <span class="k">else</span> <span class="kc">None</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">score</span><span class="p">(</span><span class="n">pred</span><span class="p">,</span> <span class="n">gold</span><span class="p">):</span>
+    <span class="k">return</span> <span class="mf">1.0</span> <span class="k">if</span> <span class="n">pred</span> <span class="o">==</span> <span class="n">gold</span> <span class="k">else</span> <span class="mf">0.0</span>     <span class="c1"># ★ 精确匹配（§12.3 ①类任务）</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">sha</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()[:</span><span class="mi">7</span><span class="p">]</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">run_eval</span><span class="p">(</span><span class="n">samples_path</span><span class="p">,</span> <span class="n">model_id</span><span class="p">,</span> <span class="n">output_path</span><span class="p">,</span> <span class="n">extractor</span><span class="o">=</span><span class="n">extract_strict</span><span class="p">):</span>
+    <span class="n">raw_file</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="n">samples_path</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+    <span class="n">samples</span>  <span class="o">=</span> <span class="p">[</span><span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">l</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">raw_file</span><span class="o">.</span><span class="n">splitlines</span><span class="p">()</span> <span class="k">if</span> <span class="n">l</span><span class="o">.</span><span class="n">strip</span><span class="p">()]</span>
+
+    <span class="c1"># ★★★ §12.7b 自检 ②：把 gold 本身当回答喂进去，必须满分</span>
+    <span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">score</span><span class="p">(</span><span class="n">extractor</span><span class="p">(</span><span class="n">s</span><span class="p">[</span><span class="s2">&quot;gold&quot;</span><span class="p">]),</span> <span class="n">s</span><span class="p">[</span><span class="s2">&quot;gold&quot;</span><span class="p">])</span> <span class="o">==</span> <span class="mf">1.0</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">samples</span><span class="p">),</span> \
+        <span class="s2">&quot;自洽性测试没过：抽取器或判卷器有 bug，先修它，别看分数&quot;</span>
+
+    <span class="n">results</span><span class="p">,</span> <span class="n">n_invalid</span> <span class="o">=</span> <span class="p">[],</span> <span class="mi">0</span>
     <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">samples</span><span class="p">:</span>
         <span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">chat</span><span class="o">.</span><span class="n">completions</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
             <span class="n">model</span><span class="o">=</span><span class="n">model_id</span><span class="p">,</span>
-            <span class="n">messages</span><span class="o">=</span><span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">PROMPT</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="nb">input</span><span class="o">=</span><span class="n">s</span><span class="p">[</span><span class="s2">&quot;input&quot;</span><span class="p">])}],</span>
-            <span class="n">temperature</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>      <span class="c1"># ★ greedy，保证可复现</span>
+            <span class="n">messages</span><span class="o">=</span><span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span>
+                       <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">PROMPT</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="nb">input</span><span class="o">=</span><span class="n">s</span><span class="p">[</span><span class="s2">&quot;input&quot;</span><span class="p">])}],</span>
+            <span class="n">temperature</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>      <span class="c1"># ★ greedy，逐次可复现（§12.7b 自检 ①）</span>
             <span class="n">max_tokens</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>       <span class="c1"># ★ 只需要一个字母</span>
         <span class="p">)</span>
-        <span class="n">pred</span> <span class="o">=</span> <span class="n">resp</span><span class="o">.</span><span class="n">choices</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">message</span><span class="o">.</span><span class="n">content</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span>
-        <span class="c1"># 正则抽取：只要 A/B/C/D</span>
-        <span class="n">m</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;[ABCD]&#39;</span><span class="p">,</span> <span class="n">pred</span><span class="p">)</span>
-        <span class="n">pred_label</span> <span class="o">=</span> <span class="n">m</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span> <span class="k">if</span> <span class="n">m</span> <span class="k">else</span> <span class="s2">&quot;[invalid]&quot;</span>  <span class="c1"># ★ 呼应 05 章</span>
+        <span class="n">raw</span>  <span class="o">=</span> <span class="n">resp</span><span class="o">.</span><span class="n">choices</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">message</span><span class="o">.</span><span class="n">content</span>
+        <span class="n">pred</span> <span class="o">=</span> <span class="n">extractor</span><span class="p">(</span><span class="n">raw</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">pred</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">n_invalid</span> <span class="o">+=</span> <span class="mi">1</span>      <span class="c1"># ★★★ 抽取失败【单独计数】，不混进&quot;答错&quot;</span>
+        <span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="o">**</span><span class="n">s</span><span class="p">,</span> <span class="s2">&quot;raw&quot;</span><span class="p">:</span> <span class="n">raw</span><span class="p">,</span> <span class="s2">&quot;pred&quot;</span><span class="p">:</span> <span class="n">pred</span><span class="p">,</span>
+                        <span class="s2">&quot;score&quot;</span><span class="p">:</span> <span class="n">score</span><span class="p">(</span><span class="n">pred</span><span class="p">,</span> <span class="n">s</span><span class="p">[</span><span class="s2">&quot;gold&quot;</span><span class="p">])})</span>
 
-        <span class="n">results</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="o">**</span><span class="n">s</span><span class="p">,</span> <span class="s2">&quot;pred&quot;</span><span class="p">:</span> <span class="n">pred_label</span><span class="p">,</span>
-                        <span class="s2">&quot;correct&quot;</span><span class="p">:</span> <span class="n">pred_label</span> <span class="o">==</span> <span class="n">s</span><span class="p">[</span><span class="s2">&quot;gold&quot;</span><span class="p">]})</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">results</span><span class="p">)</span>
+    <span class="n">out</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;meta&quot;</span><span class="p">:</span> <span class="p">{</span>                                       <span class="c1"># ★ §12.7 那五项</span>
+            <span class="s2">&quot;model&quot;</span><span class="p">:</span>       <span class="n">model_id</span><span class="p">,</span>
+            <span class="s2">&quot;prompt_sha&quot;</span><span class="p">:</span>  <span class="n">sha</span><span class="p">(</span><span class="n">PROMPT</span><span class="p">),</span>
+            <span class="s2">&quot;dataset_sha&quot;</span><span class="p">:</span> <span class="n">sha</span><span class="p">(</span><span class="n">raw_file</span><span class="p">),</span> <span class="s2">&quot;dataset_n&quot;</span><span class="p">:</span> <span class="n">n</span><span class="p">,</span>
+            <span class="s2">&quot;scorer&quot;</span><span class="p">:</span>      <span class="n">extractor</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+            <span class="s2">&quot;sampling&quot;</span><span class="p">:</span>    <span class="p">{</span><span class="s2">&quot;temperature&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">&quot;max_tokens&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span>
+                            <span class="s2">&quot;runs_per_item&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+        <span class="p">},</span>
+        <span class="s2">&quot;accuracy&quot;</span><span class="p">:</span>     <span class="nb">sum</span><span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;score&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span><span class="p">)</span> <span class="o">/</span> <span class="n">n</span><span class="p">,</span>
+        <span class="s2">&quot;invalid_rate&quot;</span><span class="p">:</span> <span class="n">n_invalid</span> <span class="o">/</span> <span class="n">n</span><span class="p">,</span>                  <span class="c1"># ★★★ 抽取失败率</span>
+        <span class="s2">&quot;by_tag&quot;</span><span class="p">:</span>       <span class="p">{},</span>
+        <span class="s2">&quot;results&quot;</span><span class="p">:</span>      <span class="n">results</span><span class="p">,</span>
+    <span class="p">}</span>
+    <span class="k">for</span> <span class="n">tag</span> <span class="ow">in</span> <span class="p">{</span><span class="n">t</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">r</span><span class="p">[</span><span class="s2">&quot;tags&quot;</span><span class="p">]}:</span>  <span class="c1"># ★ §12.6 Step 2</span>
+        <span class="n">sub</span> <span class="o">=</span> <span class="p">[</span><span class="n">r</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span> <span class="k">if</span> <span class="n">tag</span> <span class="ow">in</span> <span class="n">r</span><span class="p">[</span><span class="s2">&quot;tags&quot;</span><span class="p">]]</span>
+        <span class="n">out</span><span class="p">[</span><span class="s2">&quot;by_tag&quot;</span><span class="p">][</span><span class="n">tag</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;n&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">sub</span><span class="p">),</span>
+                              <span class="s2">&quot;accuracy&quot;</span><span class="p">:</span> <span class="nb">sum</span><span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;score&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">sub</span><span class="p">)</span> <span class="o">/</span> <span class="nb">len</span><span class="p">(</span><span class="n">sub</span><span class="p">)}</span>
 
-    <span class="c1"># 存结果，含元数据（★ 12.7）</span>
-    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">output_path</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-        <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">({</span><span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="n">model_id</span><span class="p">,</span>
-                   <span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">results</span><span class="p">),</span>
-                   <span class="s2">&quot;accuracy&quot;</span><span class="p">:</span> <span class="nb">sum</span><span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;correct&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">results</span><span class="p">)</span> <span class="o">/</span> <span class="nb">len</span><span class="p">(</span><span class="n">results</span><span class="p">),</span>
-                   <span class="s2">&quot;results&quot;</span><span class="p">:</span> <span class="n">results</span><span class="p">},</span> <span class="n">f</span><span class="p">,</span> <span class="n">ensure_ascii</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Accuracy: </span><span class="si">{</span><span class="nb">sum</span><span class="p">(</span><span class="n">r</span><span class="p">[</span><span class="s1">&#39;correct&#39;</span><span class="p">]</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">r</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">results</span><span class="p">)</span><span class="o">/</span><span class="nb">len</span><span class="p">(</span><span class="n">results</span><span class="p">)</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">output_path</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+        <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">out</span><span class="p">,</span> <span class="n">f</span><span class="p">,</span> <span class="n">ensure_ascii</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;accuracy=</span><span class="si">{</span><span class="n">out</span><span class="p">[</span><span class="s1">&#39;accuracy&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">  invalid=</span><span class="si">{</span><span class="n">out</span><span class="p">[</span><span class="s1">&#39;invalid_rate&#39;</span><span class="p">]</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">out</span>
 
-<span class="n">run_eval</span><span class="p">(</span><span class="s2">&quot;samples.jsonl&quot;</span><span class="p">,</span> <span class="s2">&quot;gpt-4o-mini&quot;</span><span class="p">,</span> <span class="s2">&quot;eval_result.json&quot;</span><span class="p">)</span>
+<span class="n">base</span> <span class="o">=</span> <span class="n">run_eval</span><span class="p">(</span><span class="s2">&quot;samples.jsonl&quot;</span><span class="p">,</span> <span class="s2">&quot;gpt-4o-mini-2024-07-18&quot;</span><span class="p">,</span> <span class="s2">&quot;result_strict.json&quot;</span><span class="p">)</span>
+<span class="n">loose</span> <span class="o">=</span> <span class="n">run_eval</span><span class="p">(</span><span class="s2">&quot;samples.jsonl&quot;</span><span class="p">,</span> <span class="s2">&quot;gpt-4o-mini-2024-07-18&quot;</span><span class="p">,</span> <span class="s2">&quot;result_loose.json&quot;</span><span class="p">,</span>
+                 <span class="n">extractor</span><span class="o">=</span><span class="n">extract_loose</span><span class="p">)</span>
+<span class="c1"># ★★★ §12.7b 自检 ③：两个抽取器的差距，就是&quot;分数里有多少来自抽取规则&quot;</span>
+<span class="n">gap</span> <span class="o">=</span> <span class="p">(</span><span class="n">loose</span><span class="p">[</span><span class="s2">&quot;accuracy&quot;</span><span class="p">]</span> <span class="o">-</span> <span class="n">base</span><span class="p">[</span><span class="s2">&quot;accuracy&quot;</span><span class="p">])</span> <span class="o">*</span> <span class="mi">100</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;换抽取器带来 </span><span class="si">{</span><span class="n">gap</span><span class="si">:</span><span class="s2">+.1f</span><span class="si">}</span><span class="s2"> 个百分点&quot;</span><span class="p">)</span>   <span class="c1"># ⚠️ 超过 2-3 个百分点就要警惕</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 这段代码有几个&quot;教训的具体化&quot;：
-
-    ★ temperature=0  ────────────── greedy，可复现（10 章 MATH-500 的做法）
-    ★ max_tokens=4   ────────────── 不给它长篇大论，省 token 又避免被截断
-    ★ &quot;[invalid]&quot;    ────────────── 05 章：抽取失败也要记录，不能丢掉
-    ★ results 里保留 pred 原始值  ── 方便事后看失败案例（12.6 Step 3）
-    ★ 元数据存进结果文件          ── 12.7 的最小化实现
+<p>★★ 这段代码里每一行"多出来的"东西，都是前面某一章的教训的具体化：</p>
+<table>
+<thead>
+<tr>
+<th>代码里的这一处</th>
+<th>对应的教训</th>
+<th>⚠️ 不写会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>temperature=0</code></td>
+<td>★ greedy 解码，逐次可复现（✅ DeepSeek 的 MATH-500 也是这么做的）</td>
+<td>⚠️ 两次跑分不同，误判成模型抖动</td>
+</tr>
+<tr>
+<td><code>max_tokens=4</code></td>
+<td>★ 只要一个字母，省 token 又避免被截断（05 章）</td>
+<td>⚠️ 模型长篇大论，反而抽不到答案</td>
+</tr>
+<tr>
+<td><code>assert ... score(extractor(gold), gold)</code></td>
+<td>★★★ §12.7b 自检 ②，自洽性测试</td>
+<td>⚠️ 判卷器有 bug 却被当成"模型不行"</td>
+</tr>
+<tr>
+<td><code>n_invalid</code> 单独计数</td>
+<td>★★★ 05 章：抽取失败要记录，不能混进"答错"</td>
+<td>⚠️ 你分不清"模型不会"和"正则没抠到"</td>
+</tr>
+<tr>
+<td><code>"raw": raw</code> 保留原始输出</td>
+<td>★★ §12.6 Step 3 读失败案例时要用</td>
+<td>⚠️ 只剩分数，案例分析做不了</td>
+</tr>
+<tr>
+<td><code>meta</code> 五项元数据</td>
+<td>★★ §12.7 的最小实现</td>
+<td>⚠️ 三个月后没人知道这个数是怎么来的</td>
+</tr>
+<tr>
+<td><code>by_tag</code> 分组</td>
+<td>★★ §12.6 Step 2</td>
+<td>⚠️ 关键类别的失败被总分掩盖</td>
+</tr>
+<tr>
+<td>跑两个 <code>extractor</code> 对比</td>
+<td>★★ §12.7b 自检 ③</td>
+<td>⚠️ 不知道自己这把尺子有多软</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️★★ 特别说一下那两个抽取器为什么都要留着：
+       extract_loose 会从 &quot;A = 正面好评…所以我选 C&quot; 这种输出里
+       ⟹ 抓到第一个字母 &quot;A&quot;，★★★ 抓错。
+       而 extract_strict 会把它算成【抽取失败】。
+    ⟹ 🔑 两个都跑，差值才是信息：
+       ★★ 差值小 ⟹ 模型输出很规范，两种抽法都行；
+       ⚠️ 差值大 ⟹ 你的分数有一大块来自【抽取规则的选择】，
+          ★★★ 这时候先去改提示词让输出变规范，
+          而不是去挑一个&quot;分数更高的&quot;抽取器。
 </code></pre></div>
 
 <hr />
-<h2 id="129">12.9 两个常见误区</h2>
+<h2 id="129">12.9 三个常见误区</h2>
 <h3 id="a">误区 A：「我先搭好框架，再收集样本」</h3>
 <div class="codehilite"><pre><span></span><code>    ⚠️ ★★★ 完全反了。
     ⟹ 先有 20 条真实样本 + 能跑通的最简判卷 ⟹ 再迭代框架。
     ★★ 没有样本的评测框架，就是一个空壳，测不出任何东西。
+    ⟹ 🔑 §12.0 那张七步表的顺序不是随手排的：
+       ② 攒样本在 ④ 写判卷器【之前】，
+       ★★ 因为&quot;该用哪种判分器&quot;这个问题，只有看过真实样本才回答得了。
 </code></pre></div>
 
 <h3 id="b-95">误区 B：「准确率 95% 就可以上线了」</h3>
@@ -523,21 +1148,88 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ 如果那 5% 全在&quot;拒绝敏感查询&quot;这一类，★★★ 那是严重问题，
        ⚠️ 不是 &quot;only 5% error rate&quot; 这么轻巧。
 
-    ⟹ 🔑 所以 12.6 Step 2 的&quot;按 tags 细分&quot;不可省略。
-       ★★★ 某些类别的成功率你必须单独设定门槛，
+    ⟹ 🔑 所以 §12.6 Step 2 的&quot;按 tags 细分&quot;不可省略。
+       ★★★ 某些类别的成功率你必须【单独设定门槛】，
        ⚠️ 加权平均会把关键失败掩盖掉。
+</code></pre></div>
+
+<p>⚠️ 顺手纠一个几乎所有汇报材料都会犯的算术错误——<strong>百分比和百分点</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>说法</th>
+<th>正确的读法</th>
+<th>⚠️ 常见的错读</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>准确率从 <strong>95%</strong> 提到 <strong>96%</strong></td>
+<td>涨了 <strong>1 个百分点</strong>；⟹ 换成相对量是 1 ÷ 95 ≈ <strong>+1.05%</strong></td>
+<td>⚠️ 说成"提升了 1%"——数值上巧合地接近，但含义不同，换个基数就错</td>
+</tr>
+<tr>
+<td>同一件事换个说法：错误率从 <strong>5%</strong> 降到 <strong>4%</strong></td>
+<td>降了 <strong>1 个百分点</strong>；⟹ ★★★ 但<strong>相对下降了 20%</strong>（1 ÷ 5）</td>
+<td>⚠️ 说成"错误率降低 1%"——把 20% 的改进说成了 1%</td>
+</tr>
+<tr>
+<td>准确率从 <strong>40%</strong> 提到 <strong>50%</strong></td>
+<td>涨了 <strong>10 个百分点</strong>；⟹ 相对涨 <strong>25%</strong>（10 ÷ 40）</td>
+<td>⚠️ 说成"提升了 50%"（把 50 当成增幅）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ★★★ 同一个改进，用&quot;准确率涨了 1 个百分点&quot;汇报，
+       和用&quot;错误率相对下降 20%&quot;汇报，听起来完全不是一件事。
+    ⟹ ⚠️ 这不是话术问题，是【必须写清基数】的问题：
+       ★★ 规矩很简单 —— 两个百分数相减，单位就是【百分点（pp）】；
+          说【百分之几】时，必须同时说出分母是谁。
+    ⟹ ★★ 对已经很高的准确率，🔑 看【错误率的相对下降】信息量更大：
+       95% → 96% 听着无聊，而&quot;错误少了五分之一&quot;是真的能感知的改进。
+</code></pre></div>
+
+<h3 id="c">误区 C：⚠️「我自己测出来比公开榜单低一大截，说明这个模型不行」</h3>
+<div class="codehilite"><pre><span></span><code>    ⚠️ ★★★ 在下这个结论之前，按顺序排除四件事
+       （⟹ 全部来自 11 章 §11.8 那张清单）：
+
+    ① ★★★ 抽取失败率多少？
+       ⟹ 先看 invalid_rate。★★ 它高，就是你的抽取器在扣分，不是模型。
+    ② ★★★ 套没套对话模板（chat template）？
+       ⟹ [04 章 §4.4](04-few-shot与提示词.md)：对话模型不套模板，分数会显著虚低。
+    ③ ★★ shot 数和提示词一样吗？
+       ⟹ 公开榜单多半是 5-shot + 某套固定提示词，你可能是 0-shot。
+    ④ ★★ 你的题和榜单的题是同一种形状吗？
+       ⟹ 大概率不是（§12.1 第 ① 条），★★★ 那就本来不该期望分数接近。
+
+    ⟹ 🔑🔑 排除完这四条还是低，那才是有意义的信号，
+       ★★ 而且这个信号比榜单分数值钱得多：
+       ★★★ 它说的是&quot;这个模型在【你的场景】上不行&quot;。
 </code></pre></div>
 
 <hr />
 <h2 id="1210">12.10 本章总结，也是全篇总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 这一章的五条：
+<div class="codehilite"><pre><span></span><code>    🔑 这一章的七条：
 
     ① ★★★ 50 条自己业务的真实样本 &gt; 任何公开榜单
        ⟹ 它们测的是&quot;对你有没有用&quot;，不是&quot;模型有多强&quot;
-    ② ★★ 样本优先级：线上日志 &gt; 业务人员构造 &gt; 压力测试
-    ③ ★★ 判卷优先级：规则/运行代码 &gt; LLM 裁判（带参考答案）&gt; 人工
-    ④ ★★★ 手动看失败案例是最有信息量的一步，不能跳过
-    ⑤ ★★ 版本管理（模型/提示词/测试集/裁判）让结果可复现
+    ② ★★ 七步流水线（§12.0）：每一步都要有【产出物】和【验收标准】
+       ⟹ ⚠️ 没有验收标准的那一步一定会被跳过
+    ③ ★★ 样本优先级：线上日志 &gt; 业务人员构造 &gt; 压力测试
+       ⟹ ⚠️ 但 50 条的 95% 区间是 ±11 个百分点，
+          ★★★ 它是用来【发现明显问题】的，不是用来【精确比较】的
+    ④ ★★ 判卷优先级：规则/跑代码 &gt; LLM 裁判（带参考答案）&gt; 人工
+       ⟹ ✅ 09 章 Table 4：有客观答案的题直接让裁判判，14/20 次判错
+    ⑤ ★★★ 人工读 20 条失败案例是信息量最大的一步，不能跳过
+       ⟹ 🔑 它比把样本从 50 条堆到 500 条回报高得多
+    ⑥ ★★ 版本管理五项（模型/提示词/测试集/判卷器/采样配置）让结果可复现
+    ⑦ ★★★ 评测系统自己也要被评测（§12.7b 五条自检）
+       ⟹ 🔑 性价比最高的一条只要三行代码：
+          把 gold 当回答喂进判卷器，必须满分
+
+    ⟹ ⚠️ 全章最该记住的一个反直觉结论：
+       ★★★ 失败案例里【模型的回答看起来是对的】，
+       意味着问题在【你的评测】，不在模型（§12.6 Step 4 的 D 类）。
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>   ════════════════════════════════════════════════════════

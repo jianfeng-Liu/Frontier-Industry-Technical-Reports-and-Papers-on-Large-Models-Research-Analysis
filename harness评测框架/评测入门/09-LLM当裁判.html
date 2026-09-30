@@ -255,7 +255,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="91">9.1 为什么非得这么干</h2>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：LLM-as-a-Judge（大模型当裁判）
-      用一个强模型去给另一个模型的回答打分或排序。
+      LLM = Large Language Model（大语言模型）。
+      ★ 用一个强模型去给另一个模型的回答打分或排序。
 </code></pre></div>
 
 <p>✅ 论文原文（MT-Bench，arXiv:2306.05685，NeurIPS 2023，§3）：</p>
@@ -267,19 +268,44 @@ outputs is <strong>extremely challenging</strong>. Traditional evaluation metric
 the similarity between outputs and reference answers (e.g., ROUGE, BLEU)<br />
 are also <strong>ineffective</strong> for these questions."</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 三条路，全堵死了：
-    ┌──────────────────┬────────────────────────────────────┐
-    │ ① 人来打分        │ ★ 最准，但慢且贵，无法天天跑       │
-    │ ② 写规则/正则     │ ★★ 开放题根本没有&quot;标准答案&quot;可比    │
-    │ ③ 和参考答案算相似度│ ★★ BLEU/ROUGE 只看字面重合，       │
-    │                   │   ⚠️ 换个说法但意思一样 → 判低分   │
-    └──────────────────┴────────────────────────────────────┘
-    ⟹ ★★★ 剩下的只有 ④：让模型判。
-</code></pre></div>
-
+<p>★ 三条路，全堵死了：</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>优点</th>
+<th>⚠️ 为什么走不通</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 人来打分</td>
+<td>★ 最准，是"金标准"</td>
+<td>慢且贵，无法天天跑</td>
+</tr>
+<tr>
+<td>② 写规则 / 正则</td>
+<td>★ 便宜、完全可复现</td>
+<td>★★ 开放题根本没有"标准答案"可比</td>
+</tr>
+<tr>
+<td>③ 和参考答案算相似度（BLEU / ROUGE）</td>
+<td>★ 全自动</td>
+<td>★★ 只看字面重合，⚠️ 换个说法但意思一样 → 判低分</td>
+</tr>
+<tr>
+<td>★★★ ④ 让模型判</td>
+<td>便宜、可扩展、★ 还附带解释</td>
+<td>⚠️ 本章后面全部在讲它的代价</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：BLEU / ROUGE
-      两个上古（2002/2004 年）自动指标，本质是【统计你的输出和参考答案
-      有多少词重合】。★★ 对翻译/摘要还行，对开放问答基本失效。
+      BLEU = Bilingual Evaluation Understudy（双语评估替补，2002 年，机器翻译用）
+      ROUGE = Recall-Oriented Understudy for Gisting Evaluation
+              （面向召回的摘要评估替补，2004 年，自动摘要用）
+      ★ 两个上古自动指标，本质都是【统计你的输出和参考答案有多少词/词组重合】。
+      ★★ 对翻译/摘要还行，对开放问答基本失效。
 </code></pre></div>
 
 <p>★★ 论文还指出一个更根本的动机（§1）：</p>
@@ -291,29 +317,71 @@ between these aligned models and the base models</strong>."</p>
        在 MMLU 这类选择题榜上【看不出提升】。
        ⟹ 说明 01-06 章那套判别式评测，
           ★★ 测不出&quot;好不好用&quot;这个维度。这是 LLM 裁判存在的根本理由。
+
+    ★ 名词：RLHF = Reinforcement Learning from Human Feedback
+      （基于人类反馈的强化学习）—— 用人的偏好数据去调模型的那一步训练。
+    ★ 名词：MMLU = Massive Multitask Language Understanding（大规模多任务语言理解）
+    ★ 名词：HELM = Holistic Evaluation of Language Models（语言模型整体评估）
 </code></pre></div>
 
 <hr />
 <h2 id="92">9.2 三种裁判形态</h2>
-<p>✅ 论文 §3.1 明确列了三种：</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ ① Pairwise comparison（两两对比）─────────────────┐
-   │  给裁判一个问题 + 两份答案 → 判谁更好，或平局。     │
-   │  ★★ 最稳，因为&quot;比较&quot;比&quot;打绝对分&quot;容易。            │
-   │  ⚠️ 缺点：✅ &quot;the number of possible pairs grows    │
-   │     quadratically&quot; —— ★ 模型一多，对数爆炸。       │
-   ├─ ② Single answer grading（单答案打分）─────────────┤
-   │  直接给一份答案打个分（比如 1-10）。               │
-   │  ★ 便宜、线性。⚠️ 论文说它 &quot;may become unstable&quot;： │
-   │     ★★ 换个裁判模型，绝对分会整体漂移。           │
-   ├─ ③ Reference-guided grading（带参考答案打分）──────┤
-   │  ★★ 把标准答案也给裁判看，再让它判。              │
-   │  ⟹ 数学题上效果显著（见 §9.4）                     │
-   └────────────────────────────────────────────────────┘
+<p>✅ 论文 §3.1 明确列了三种（<em>"We propose 3 LLM-as-a-judge variations"</em>）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>形态</th>
+<th>怎么做</th>
+<th>★ 优点</th>
+<th>⚠️ 缺点（✅ 均为论文原文）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>Pairwise comparison</strong>（两两对比）</td>
+<td>给裁判一个问题 + 两份答案 → 判谁更好，或平局</td>
+<td>★★ 最稳，因为"比较"比"打绝对分"容易</td>
+<td>✅ <em>"the number of possible pairs grows </em><em>quadratically</em><em>"</em> ⟹ ★ 模型一多，对数爆炸</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>Single answer grading</strong>（单答案打分）</td>
+<td>直接给一份答案打个分（比如 1–10）</td>
+<td>★ 便宜、线性，可扩展</td>
+<td>✅ <em>"may be unable to discern subtle differences"</em>、<em>"results may become </em><em>unstable</em><em>, as absolute scores are likely to fluctuate more than relative pairwise results </em><em>if the judge model changes</em><em>"</em></td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>Reference-guided grading</strong>（带参考答案打分）</td>
+<td>★★ 把一份参考答案也给裁判看，再让它判</td>
+<td>⟹ 数学题上效果显著（见 §9.4 ④）</td>
+<td>⚠️ 需要先有参考答案</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 第 ③ 种有一个极易混淆的地方，必须现在就说清楚：
+
+    ★★★ &quot;Reference&quot; 这个词在两处指的不是同一个东西。
+
+    ① 论文 §3.4 的 reference-guided judge（用来降低数学题误判的那个）：
+       ✅ 原文：&quot;we propose a reference-guided method, in which we first generate
+       ✅        **LLM judge&#39;s answer independently**, and then display it as a
+       ✅        reference answer in the judge prompt.&quot;
+       ⟹ ★★ 它给裁判看的是【裁判自己先独立做一遍得到的答案】，
+          ⚠️ 不是数据集里的标准答案。
+
+    ② 工程框架里的 reference（比如下面 EvalScope 的模板）：
+       ⟹ ★★ 给的是数据集里真正的 gold target（标准答案）。
+
+    ⟹ 🔑 两者都能提升判准率，但【可用的场景完全不同】：
+       ①【任何时候都能用】，因为裁判总能自己先答一遍；
+       ②【只有在你手里有标准答案时才能用】。
+    ⟹ ⚠️ 看到&quot;用了 reference-guided&quot;这句话，★★★ 要问清是哪一种。
 </code></pre></div>
 
-<p>★ 这三种在源码里都能看到。比如 EvalScope 的默认裁判模板<br />
-<a href="../源码/evalscope-1.10.0/evalscope/metrics/judge/llm_judge.py">metrics/judge/llm_judge.py:12</a><br />
-就是第 ③ 种（★ 逐字，节选）：</p>
+<p>★ 这三种在源码里都能看到。比如 EvalScope 的默认裁判模板 <a href="../源码/evalscope-1.10.0/evalscope/metrics/judge/llm_judge.py">metrics/judge/llm_judge.py:12</a> 就是第 ③ 种的"给真标准答案"版本（★ 逐字，节选）：</p>
 <div class="codehilite"><pre><span></span><code>Your job is to look at a question, a gold target, and a predicted answer,
 and return a letter &quot;A&quot; or &quot;B&quot; to indicate whether the predicted answer is
 correct or incorrect.
@@ -335,58 +403,647 @@ Just return the letters &quot;A&quot; or &quot;B&quot;, with no text around it.
        ⟹ ★★ 所以裁判提示词里必须死死约束输出格式。
 </code></pre></div>
 
-<p>同文件里还有第 ② 种模板 <code>DEFAULT_NUMERIC_SCORE_TEMPLATE</code>（★ 逐字节选）：</p>
+<p>同文件 L32-41 还有第 ② 种模板 <code>DEFAULT_NUMERIC_SCORE_TEMPLATE</code>（★ 逐字节选）：</p>
 <blockquote>
 <p>"you must rate the response on a scale of 0 (worst) to 1 (best) by strictly<br />
 following this format: <code>\"[[rating]]\"</code>, for example: <code>\"Rating: [[0.5]]\"</code>"</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ★★ 那个双方括号 [[ ]] 不是装饰，是【给正则用的锚点】。
     ⟹ 🔑 因为裁判会写一大段解释，必须有个不会误命中的标记把分数框出来。
+
+    ⚠️ 而且请记住 05 章那条教训：★★★ 抽取失败要单独记，不能混进&quot;判负&quot;里。
+       ⟹ §9.5 会给出一个源码里的反面例子：
+          某个适配器里，【解析不出来的判决被直接丢掉了】。
 </code></pre></div>
 
 <hr />
-<h2 id="93">9.3 裁判靠谱吗？—— 靠谱到出人意料</h2>
-<p>✅ 论文摘要：</p>
+<h2 id="93-80">9.3 裁判靠谱吗？—— 靠谱，但那个 "80%" 有口径</h2>
+<p>✅ 论文摘要（★ 逐字）：</p>
 <blockquote>
-<p>"strong LLM judges like <strong>GPT-4 can match both controlled and crowdsourced<br />
-human preferences well, achieving </strong>over 80% agreement**, the same level of<br />
-agreement between humans."</p>
+<p>"Our results reveal that strong LLM judges like <strong>GPT-4 can match both controlled<br />
+and crowdsourced human preferences well, achieving </strong>over 80% agreement**, the same<br />
+level of agreement between humans."</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 最后半句是关键：★★★【人和人之间的一致率也就 80% 左右】。
 
     ★★ 这意味着：不能因为&quot;裁判和人不完全一致&quot;就否定它，
        因为【人和人本来也不完全一致】。
        ⟹ 开放题的&quot;正确答案&quot;本身就不唯一。
+</code></pre></div>
 
-    ⚠️ 但请注意时代：这是 2023 年的 GPT-4。
-       ★ 今天的裁判模型只会更强，⚠️ 不过下面那些偏差【并没有消失】。
+<p>⚠️⚠️ <strong>但这个 80% 有一个必须问清的口径</strong>，否则你会把它读高一大截。✅ 论文 Table 5 同时报了两套设定，原文定义如下：</p>
+<table>
+<thead>
+<tr>
+<th>设定</th>
+<th>✅ 论文原文定义</th>
+<th>包含哪些投票</th>
+<th>✅ 随机裁判的基线（论文记作 "R="）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>S1</strong></td>
+<td><em>"includes non-tie, tie, and inconsistent (due to position bias) votes and counts inconsistent as tie"</em></td>
+<td>★ 全部投票，把"交换顺序后结论变了"的也算平局</td>
+<td><strong>R = 33%</strong>（A 胜 / B 胜 / 平局 三种结果）</td>
+</tr>
+<tr>
+<td><strong>S2</strong></td>
+<td><em>"</em><em>only includes non-tie votes</em><em>"</em></td>
+<td>⚠️ 只留双方都给出明确胜负的那些题</td>
+<td><strong>R = 50%</strong>（两种结果）</td>
+</tr>
+</tbody>
+</table>
+<p>✅ Table 5（MT-bench，第一轮；下方灰色小字是投票数，这里一并列出）：</p>
+<table>
+<thead>
+<tr>
+<th>一致率</th>
+<th>S1（含平局，R = 33%）</th>
+<th>S2（只看非平局，R = 50%）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-4 两两对比 vs GPT-4 单答案打分</td>
+<td>70%（1,138 票）</td>
+<td>97%（662 票）</td>
+</tr>
+<tr>
+<td><strong>GPT-4 两两对比 vs 人类专家</strong></td>
+<td><strong>66%</strong>（1,343 票）</td>
+<td><strong>85%</strong>（859 票）</td>
+</tr>
+<tr>
+<td>GPT-4 单答案打分 vs 人类专家</td>
+<td>60%（1,280 票）</td>
+<td>85%（739 票）</td>
+</tr>
+<tr>
+<td><strong>人类专家 vs 人类专家</strong></td>
+<td><strong>63%</strong>（721 票）</td>
+<td><strong>81%</strong>（479 票）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 摘要里那个 &quot;&gt;80%&quot; 和 &quot;same level as humans&quot;，★★★ 说的是 S2 这一列：
+       GPT-4 对人 85%，人对人 81%。
+    ⟹ ⚠️ 而 S1（把平局和&quot;顺序一换就翻&quot;的题都算进去）只有 66% 对 63%。
+
+    ★★ 两个数都是真的，但它们【回答的是不同问题】：
+       S2 问：「在两个人都觉得能分出胜负的题上，裁判和人合得上吗」⟹ 合得上（85%）
+       S1 问：「在全部题目上，裁判和人合得上吗」            ⟹ 只有 66%
+    ⟹ ★★★ 引用时必须带上是 S1 还是 S2，以及票数（★ 注意 S2 的样本量只有 S1 的六成）。
+
+    ⚠️ 还要注意时代：这是 2023 年的 GPT-4（gpt-4-0314 / 0613 那一代）。
+       ★ 今天的裁判模型只会更强，⚠️ 不过 §9.4 那些偏差【并没有消失】。
+</code></pre></div>
+
+<p>★ 大规模众包那边（✅ Table 6，Chatbot Arena，3K 随机单轮投票）趋势一致：</p>
+<table>
+<thead>
+<tr>
+<th>裁判对</th>
+<th>S1（R = 33%）</th>
+<th>S2（R = 50%）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-4 vs 人（众包）</td>
+<td>64%</td>
+<td><strong>87%</strong></td>
+</tr>
+<tr>
+<td>GPT-3.5 vs 人</td>
+<td>54%</td>
+<td>83%</td>
+</tr>
+<tr>
+<td>Claude vs 人</td>
+<td>53%</td>
+<td>84%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 论文对这张表的解读（✅ 原文）：
+    &gt; &quot;they reach a similar non-tie agreement ratio between humans but the number
+    &gt;  of **non-tied votes from GPT-4 is much larger**. This means that GPT-4 is
+    &gt;  more affirmative and less suffered from position bias&quot;
+    ⟹ 🔑 读法：GPT-3.5 / Claude 在&quot;敢下结论的那些题&quot;上也判得不错（83–84%），
+       ★★ 但它们【敢下结论的题少得多】—— 剩下的都掉进了平局和自相矛盾里。
+    ⟹ ★★★ 所以比较两个裁判，光看一致率不够，还要看它【判了多少题】。
 </code></pre></div>
 
 <hr />
-<h2 id="94">9.4 三个必须知道的偏差</h2>
-<p>★★★ 这是本章最有价值的部分。论文 §3.3 用实验把它们量化了。</p>
-<h3 id="1-position-bias">① 位置偏差（position bias）</h3>
-<p>✅ 定义：<em>"an LLM exhibits a propensity to favor certain positions over others"</em></p>
-<p>✅ Table 2（★ 三个裁判，默认提示词）：</p>
-<div class="codehilite"><pre><span></span><code>   ┌───────────┬──────────┬────────────┬────────────┐
-   │ 裁判       │ 一致率    │ 偏向第一个  │ 偏向第二个  │
-   ├───────────┼──────────┼────────────┼────────────┤
-   │ Claude-v1  │  23.8%   │ ★★ 75.0%  │   0.0%     │
-   │ GPT-3.5    │  46.2%   │   50.0%    │   1.2%     │
-   │ GPT-4      │ ★ 65.0%  │   30.0%    │   5.0%     │
-   └───────────┴──────────┴────────────┴────────────┘
-
-   ★ &quot;一致率&quot; = 把两份答案【调换顺序】后，判决不变的比例。
+<h2 id="93b-cohens-kappa">9.3b ⭐⭐ 一致性到底怎么量：把 Cohen's kappa 走一遍</h2>
+<p>★★★ 这一节是本章最该动笔算一遍的地方。<strong>"一致率 80%" 是一个会骗人的数字</strong>，因为它没有扣掉"瞎猜也能蒙对"的那一部分。</p>
+<h3 id="1-80">① 先看问题长什么样：三张都是 80% 的表</h3>
+<p>★ 设定：100 道题，人类和 LLM 裁判各判"A 胜"还是"B 胜"（先不考虑平局）。三张表的<strong>一致率全都正好是 80%</strong>。</p>
+<p><strong>表甲 · 胜负均衡</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>人 = A 胜</th>
+<th>人 = B 胜</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>裁判 = A 胜</strong></td>
+<td><strong>40</strong></td>
+<td>10</td>
+<td>50</td>
+</tr>
+<tr>
+<td><strong>裁判 = B 胜</strong></td>
+<td>10</td>
+<td><strong>40</strong></td>
+<td>50</td>
+</tr>
+<tr>
+<td>列和</td>
+<td>50</td>
+<td>50</td>
+<td>100</td>
+</tr>
+</tbody>
+</table>
+<p><strong>表乙 · 一边倒（多数题都是 A 胜）</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>人 = A 胜</th>
+<th>人 = B 胜</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>裁判 = A 胜</strong></td>
+<td><strong>72</strong></td>
+<td>10</td>
+<td>82</td>
+</tr>
+<tr>
+<td><strong>裁判 = B 胜</strong></td>
+<td>10</td>
+<td><strong>8</strong></td>
+<td>18</td>
+</tr>
+<tr>
+<td>列和</td>
+<td>82</td>
+<td>18</td>
+<td>100</td>
+</tr>
+</tbody>
+</table>
+<p><strong>表丙 · 极度一边倒</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>人 = A 胜</th>
+<th>人 = B 胜</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>裁判 = A 胜</strong></td>
+<td><strong>78</strong></td>
+<td>10</td>
+<td>88</td>
+</tr>
+<tr>
+<td><strong>裁判 = B 胜</strong></td>
+<td>10</td>
+<td><strong>2</strong></td>
+<td>12</td>
+</tr>
+<tr>
+<td>列和</td>
+<td>88</td>
+<td>12</td>
+<td>100</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 三张表的一致率（对角线 ÷ 总数）：
+       表甲 (40+40)/100 = 80%
+       表乙 (72+ 8)/100 = 80%
+       表丙 (78+ 2)/100 = 80%
+    ⟹ ⚠️ 一模一样。但它们的&quot;裁判到底有没有本事&quot;差得非常远。
+    ⟹ 🔑 直觉检查：表丙里，一个【什么都不看、永远判 A 胜】的假裁判
+       就能拿到 88% 的一致率 —— ★★★ 比这个真裁判的 80% 还高！
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读懂这张表：Claude-v1 只有 23.8% 的情况下judgment 不随顺序变，
-       ★★★ 也就是说【四次里有三次，谁放前面谁赢】。
+<h3 id="2-cohens-kappa">② Cohen's kappa：把"蒙对的那部分"扣掉</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：Cohen&#39;s kappa（科恩 kappa 系数，κ）
+      1960 年 Jacob Cohen 提出，用来衡量【两个评分者的一致程度】。
+      ★★ 核心思想：把&quot;就算两人各自乱判也会碰上的那部分一致&quot;先减掉。
+
+      κ = (p_o − p_e) / (1 − p_e)
+
+      p_o = observed agreement  （实测一致率 = 对角线 ÷ 总数）
+      p_e = expected agreement  （★ 偶然一致率 = 把两人的边缘分布当独立事件算出来的）
+      ⟹ κ = 1 完全一致；κ = 0 和瞎猜一样；κ &lt; 0 比瞎猜还差。
+</code></pre></div>
+
+<p>★ p_e 怎么算：<strong>把每一类的"行比例 × 列比例"加起来</strong>。意思是"如果裁判和人各自按自己的习惯独立乱判，会碰上多少"。</p>
+<p>★★★ 三张表逐张算（★ 算术全在这里，可自己验算）：</p>
+<div class="codehilite"><pre><span></span><code>   表甲：
+     行比例 = 50/100、50/100        列比例 = 50/100、50/100
+     p_e = 0.50×0.50 + 0.50×0.50 = 0.25 + 0.25 = 0.5000
+     κ   = (0.80 − 0.5000) / (1 − 0.5000) = 0.3000 / 0.5000 = ★ 0.600
+
+   表乙：
+     行比例 = 82/100、18/100        列比例 = 82/100、18/100
+     p_e = 0.82×0.82 + 0.18×0.18 = 0.6724 + 0.0324 = 0.7048
+     κ   = (0.80 − 0.7048) / (1 − 0.7048) = 0.0952 / 0.2952 = ★ 0.322
+
+   表丙：
+     行比例 = 88/100、12/100        列比例 = 88/100、12/100
+     p_e = 0.88×0.88 + 0.12×0.12 = 0.7744 + 0.0144 = 0.7888
+     κ   = (0.80 − 0.7888) / (1 − 0.7888) = 0.0112 / 0.2112 = ★ 0.053
+</code></pre></div>
+
+<p>★★★ 把结果摆在一起：</p>
+<table>
+<thead>
+<tr>
+<th>表</th>
+<th>实测一致率 p_o</th>
+<th>偶然一致率 p_e</th>
+<th><strong>Cohen's κ</strong></th>
+<th>⚠️ 结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>甲（均衡）</td>
+<td>80%</td>
+<td>50.0%</td>
+<td><strong>0.600</strong></td>
+<td>★ 中等偏好，这个裁判确实有本事</td>
+</tr>
+<tr>
+<td>乙（一边倒）</td>
+<td>80%</td>
+<td>70.5%</td>
+<td><strong>0.322</strong></td>
+<td>⚠️ 勉强，★★ 大半一致是"蒙"出来的</td>
+</tr>
+<tr>
+<td>丙（极度一边倒）</td>
+<td>80%</td>
+<td>78.9%</td>
+<td><strong>0.053</strong></td>
+<td>⚠️⚠️ ★★★ 几乎等于瞎猜</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑🔑 这就是那句话的来源：
+       ★★★【准确率 80% 看着不错，kappa 可能只有 0.05】。
+
+    ⟹ ★★ 什么时候最危险？【题目分布一边倒的时候】。
+       ⟹ 🔑 而这恰恰是主观评测的常态：拿一个强模型去打一个弱模型，
+          90% 的题都是强的赢 —— ★★★ 此时&quot;一致率&quot;这个指标几乎不含信息。
+
+    ⟹ ★★★ 所以报裁判质量，光报一致率不够，必须【同时报 kappa（或同类的
+       去偶然化指标）和两边的边缘分布】。⚠️ 只给一致率的，看不出上面三张表的差别。
+</code></pre></div>
+
+<p>★ κ 的常用解读区间（⚠️ 这是 Landis &amp; Koch 1977 提出的<strong>约定</strong>，不是数学定理，不同领域标准不同）：</p>
+<table>
+<thead>
+<tr>
+<th>κ 区间</th>
+<th>常见说法</th>
+<th>⚠️ 用在裁判评估上的建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 0</td>
+<td>poor（比瞎猜差）</td>
+<td>⚠️ 裁判反着判，查提示词和抽取</td>
+</tr>
+<tr>
+<td>0.00 – 0.20</td>
+<td>slight（微弱）</td>
+<td>⚠️⚠️ 不可用于任何结论</td>
+</tr>
+<tr>
+<td>0.21 – 0.40</td>
+<td>fair（一般）</td>
+<td>⚠️ 只能当迭代方向的弱信号</td>
+</tr>
+<tr>
+<td>0.41 – 0.60</td>
+<td>moderate（中等）</td>
+<td>★ 可做内部迭代信号</td>
+</tr>
+<tr>
+<td>0.61 – 0.80</td>
+<td>substantial（可观）</td>
+<td>★★ 可做内部结论</td>
+</tr>
+<tr>
+<td>0.81 – 1.00</td>
+<td>almost perfect（近乎完美）</td>
+<td>★★★ 主观题上基本达不到，★ 达到了先怀疑数据</td>
+</tr>
+</tbody>
+</table>
+<h3 id="3-33">③ 有平局怎么办：3×3 的例子</h3>
+<p>★★ 真实的两两对比几乎一定有"平局"。★ kappa 的公式一个字都不用改，只是对角线变成三格。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>人 = A 胜</th>
+<th>人 = 平局</th>
+<th>人 = B 胜</th>
+<th>行和</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>裁判 = A 胜</strong></td>
+<td><strong>40</strong></td>
+<td>12</td>
+<td>3</td>
+<td>55</td>
+</tr>
+<tr>
+<td><strong>裁判 = 平局</strong></td>
+<td>8</td>
+<td><strong>10</strong></td>
+<td>6</td>
+<td>24</td>
+</tr>
+<tr>
+<td><strong>裁判 = B 胜</strong></td>
+<td>4</td>
+<td>7</td>
+<td><strong>10</strong></td>
+<td>21</td>
+</tr>
+<tr>
+<td>列和</td>
+<td>52</td>
+<td>29</td>
+<td>19</td>
+<td>100</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   p_o = (40 + 10 + 10) / 100 = 0.6000
+
+   p_e = (55/100)×(52/100) + (24/100)×(29/100) + (21/100)×(19/100)
+       = 0.2860 + 0.0696 + 0.0399
+       = 0.3955
+
+   κ   = (0.6000 − 0.3955) / (1 − 0.3955) = 0.2045 / 0.6045 = ★ 0.338
+
+   ⟹ ★★ 注意 p_e 从 2×2 的 0.5 掉到了 0.3955：★ 类别越多，蒙对越难，
+      所以同样的一致率会换出更高的 kappa。
+   ⟹ 🔑🔑 反过来说：★★★【把平局并进胜负里（论文的 S2 做法）会让
+      一致率变好看，同时让偶然一致率也变高】。两个效应方向相反，
+      ⚠️ 所以不算 kappa 是说不清的。
+</code></pre></div>
+
+<h3 id="4-kappa">④ 把论文那些一致率换算成 kappa</h3>
+<p>★★ 论文给了每个设定下"随机裁判的一致率"（那个 <code>R=</code>），★★★ 这正好就是 p_e。于是可以直接换算：</p>
+<table>
+<thead>
+<tr>
+<th>出处</th>
+<th>一致率 p_o</th>
+<th>✅ 论文给的随机基线 R = p_e</th>
+<th><strong>换算出的 κ</strong></th>
+<th>读法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MT-bench S2，GPT-4 vs 人</td>
+<td>85%</td>
+<td>50%</td>
+<td><strong>0.70</strong></td>
+<td>★★ substantial</td>
+</tr>
+<tr>
+<td>MT-bench S2，人 vs 人</td>
+<td>81%</td>
+<td>50%</td>
+<td><strong>0.62</strong></td>
+<td>★★ substantial</td>
+</tr>
+<tr>
+<td>MT-bench S1，GPT-4 vs 人</td>
+<td>66%</td>
+<td>33%</td>
+<td><strong>0.49</strong></td>
+<td>★ moderate</td>
+</tr>
+<tr>
+<td>MT-bench S1，人 vs 人</td>
+<td>63%</td>
+<td>33%</td>
+<td><strong>0.45</strong></td>
+<td>★ moderate</td>
+</tr>
+<tr>
+<td>Arena S2，GPT-4 vs 人</td>
+<td>87%</td>
+<td>50%</td>
+<td><strong>0.74</strong></td>
+<td>★★ substantial</td>
+</tr>
+<tr>
+<td>Arena S1，GPT-4 vs 人</td>
+<td>64%</td>
+<td>33%</td>
+<td><strong>0.46</strong></td>
+<td>★ moderate</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ★ 算一行给你看：(0.85 − 0.50) / (1 − 0.50) = 0.35 / 0.50 = 0.70
+
+   ⟹ 🔑🔑 换算之后，结论比&quot;80% 一致率&quot;清楚得多：
+      ★★★ GPT-4 当裁判的水平是 κ ≈ 0.49（全量）到 0.70（只看非平局），
+      ★★ 而人类专家之间是 κ ≈ 0.45 到 0.62。
+      ⟹ ★ &quot;和人同级&quot;这个说法成立，而且换算后【两个设定下都成立】——
+         这比只看 S2 那一列更有说服力。
+
+   ⚠️ 两条必须标出的限定：
+   ① 这几行的 κ 是【我用论文给的 p_o 和 R 换算的】，论文本身没有报 kappa。
+   ② ★★ 严格说，用 R（假设两边都均匀乱判）当 p_e，算出来的是
+      Scott&#39;s pi / Fleiss 式的&quot;均匀边缘&quot;版本，而 Cohen&#39;s kappa 用的是
+      【实测的边缘分布】（上面表甲乙丙那种算法）。
+      ⟹ 🔑 两者在边缘分布接近均匀时几乎相同，一边倒时会差很多。
+      ⟹ ⚠️ 所以自己做评估时，请用实测边缘算 Cohen&#39;s kappa，别用固定的 1/2、1/3。
+</code></pre></div>
+
+<h3 id="5-krippendorffs-alpha">⑤ 什么时候该换成 Krippendorff's alpha</h3>
+<div class="codehilite"><pre><span></span><code>    ★ 名词：Krippendorff&#39;s alpha（克里彭多夫 alpha，α）
+      ★ 另一个去偶然化的一致性系数，公式形状是：
+
+      α = 1 − D_o / D_e
+
+      D_o = observed disagreement（实测分歧量）
+      D_e = expected disagreement（偶然分歧量）
+      ★★ 和 kappa 同一个思路（&quot;实测 vs 偶然&quot;），
+         区别在于它是按【分歧】而不是【一致】来算，所以能带权重。
+</code></pre></div>
+
+<p>★ 三种情况下 kappa 不够用，要换 alpha：</p>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th>⚠️ kappa 的问题</th>
+<th>★ alpha 怎么解决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>评分者多于 2 个</strong></td>
+<td>★★ Cohen's kappa 只定义在两个评分者之间</td>
+<td>★ α 原生支持任意多个评分者</td>
+</tr>
+<tr>
+<td><strong>有缺失值</strong>（不是每个人都判了每一题）</td>
+<td>⚠️ 要么丢数据，要么两两算再平均</td>
+<td>★★ α 直接支持不完整设计</td>
+</tr>
+<tr>
+<td><strong>分数是有序的或连续的</strong>（比如 1–10 分）</td>
+<td>⚠️⚠️ ★★★ kappa 把"判 9 分 vs 判 10 分"和"判 1 分 vs 判 10 分"当成同样严重的分歧</td>
+<td>★★★ α 可以换距离函数（ordinal / interval），让"差得远"罚得更重</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 一条朴素的选择规则：
+       ★★ 两个裁判 + 离散类别（A 胜 / 平 / B 胜）⟹ Cohen&#39;s kappa，够用且好解释
+       ★★★ 多个裁判，或者要判的是 1–10 分这种【有序分数】⟹ Krippendorff&#39;s alpha
+       ⚠️ 用 kappa 去衡量 1–10 分的单答案打分，会系统性地低估一致性。
+
+    ⚠️ 还有一个更简单但常被忘掉的做法：★★ 对有序分数直接算
+       Spearman 秩相关或 Kendall&#39;s tau。它不去偶然化，但胜在人人都会读。
+       ⟹ 🔑 最稳的做法：★★★ 同时报【一致率 + 去偶然化系数 + 秩相关】三个数，
+          任何一个单独拿出来都能被曲解。
+</code></pre></div>
+
+<hr />
+<h2 id="94">9.4 三个必须知道的偏差（每个都配一个可操作的检测法）</h2>
+<p>★★★ 这是本章最有价值的部分。论文 §3.3 用实验把它们量化了，下面在每一条后面补一套【你自己能跑的检测流程】。</p>
+<h3 id="1-position-bias">① 位置偏差（position bias）</h3>
+<p>✅ 定义：<em>"an LLM exhibits a propensity to favor certain positions over others"</em></p>
+<p>✅ 实验设置（★ 逐字）：<em>"we construct two similar answers to each first-turn question in MT-bench by calling </em><em>GPT-3.5 twice with a temperature of 0.7</em><em>"</em> —— ★★ 也就是同一个模型采两次，本来就极难分辨。</p>
+<p>✅ Table 2（★ 三个裁判 × 两种提示词，原文数值）：</p>
+<table>
+<thead>
+<tr>
+<th>裁判</th>
+<th>提示词</th>
+<th>一致率（交换顺序后结论不变）</th>
+<th>偏向第一个</th>
+<th>偏向第二个</th>
+<th>⚠️ 输出格式错误</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude-v1</td>
+<td>default</td>
+<td>⚠️⚠️ <strong>23.8%</strong></td>
+<td>★★ <strong>75.0%</strong></td>
+<td>0.0%</td>
+<td>1.2%</td>
+</tr>
+<tr>
+<td>Claude-v1</td>
+<td><strong>rename</strong></td>
+<td><strong>56.2%</strong></td>
+<td>11.2%</td>
+<td>★ <strong>28.7%</strong></td>
+<td>3.8%</td>
+</tr>
+<tr>
+<td>GPT-3.5</td>
+<td>default</td>
+<td>46.2%</td>
+<td>50.0%</td>
+<td>1.2%</td>
+<td>2.5%</td>
+</tr>
+<tr>
+<td>GPT-3.5</td>
+<td>rename</td>
+<td>51.2%</td>
+<td>38.8%</td>
+<td>6.2%</td>
+<td>3.8%</td>
+</tr>
+<tr>
+<td>GPT-4</td>
+<td>default</td>
+<td>★ <strong>65.0%</strong></td>
+<td>30.0%</td>
+<td>5.0%</td>
+<td>0.0%</td>
+</tr>
+<tr>
+<td>GPT-4</td>
+<td>rename</td>
+<td>66.2%</td>
+<td>28.7%</td>
+<td>5.0%</td>
+<td>0.0%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读懂 Claude-v1 的 default 那一行：只有 23.8% 的情况下判决不随顺序变，
+       而 75.0% 的情况下【谁放前面谁赢】。
+       ⟹ ★★★ 也就是四次里有三次，胜负是摆放顺序决定的。
        ⟹ 那一次评测得到的排名，★★ 相当大一部分是【摆放顺序造成的】。
 
-    ⚠️ 论文自己说明这个测试很苛刻：两份答案是同一个模型
-       temperature=0.7 采两次生成的，本来就极难分辨。
+    ⚠️ 论文自己说明这个测试很苛刻：
        ✅ &quot;occasionally indistinguishable even to humans&quot;
        ⟹ ★ 所以别把 23.8% 理解成&quot;Claude 判什么都乱&quot;。
+       ✅ 论文也给了一个宽松些的结论：&quot;Only GPT-4 outputs consistent results
+          in more than 60% of cases.&quot;
+</code></pre></div>
+
+<p>★★★ 现在看 <strong>rename 那两行</strong>，它藏着一个比"位置偏见"更精确的诊断：</p>
+<div class="codehilite"><pre><span></span><code>    ★ rename 是什么：✅ 论文原文 —— &quot;&#39;rename&#39; renames the assistants in our
+      default prompt to see whether the bias is on **positions** or **names**.&quot;
+
+    ⟹ 🔑🔑 Claude-v1 换了名字之后，★★★【偏向的方向翻过来了】：
+       default：偏向第一个 75.0%，偏向第二个  0.0%
+       rename ：偏向第一个 11.2%，偏向第二个 28.7%   ← ★★ 反过来了
+
+    ⟹ ✅ 论文的结论（逐字）：&quot;Claude-v1 also shows a **name bias** which makes
+       it favors **&quot;Assistant A&quot;**, as illustrated by the &quot;rename&quot; prompt.&quot;
+    ⟹ ★★★ 所以 Claude-v1 那个 75% 不是&quot;偏爱前面的位置&quot;，
+       ★★ 是【偏爱叫做 &quot;Assistant A&quot; 的那一个】。
+       ⟹ 🔑 这是两种完全不同的病，药也不同：
+          位置偏见 ⟹ 交换顺序判两遍就能抵消
+          ⚠️ 名字偏见 ⟹ 交换顺序【治不了】，必须同时换标签，或者干脆用中性标签
+
+    ⚠️ 上面&quot;哪个标签落到了第几位&quot;是我对 rename 设置的合理推断；
+       论文只写了 &quot;renames the assistants&quot;，没给出具体改成了什么。
+       ★ 但&quot;存在名字偏见、偏向 Assistant A&quot;这一条是论文明文写的。
 </code></pre></div>
 
 <p>★★ 论文对成因的猜测（✅ 逐字）：</p>
@@ -397,45 +1054,247 @@ left-to-right architecture of causal transformers</strong>"</p>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：causal transformer（因果 Transformer）
       ★★ 就是现在所有主流大模型的结构：读文本时【只能看左边，不能看右边】。
       ⟹ 于是&quot;先读到的东西&quot;天然占据了更多的推理路径。
-      ⚠️ 这只是论文的猜测，未被证明。
+      ⚠️ 这只是论文的猜测（&quot;we suspect&quot;），未被证明。
 </code></pre></div>
 
-<p><strong>★★★ 怎么治：跑两遍，交换位置，取平均。</strong></p>
-<p>这在源码里是标准做法。EvalScope 的 Arena-Hard 适配器<br />
-<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:41</a><br />
-文档字符串直接写着（★ 逐字）：</p>
+<p><strong>★★★ 可操作的检测流程（位置偏差 + 名字偏差）</strong></p>
+<div class="codehilite"><pre><span></span><code>   ① 准备 N 道题，每道题两份答案 A、B
+      ★★★ 关键：两份答案的质量要【尽量接近】。
+      ⟹ 论文的做法是同一个模型 temperature=0.7 采两次。
+      ⚠️ 拿强模型答案 vs 弱模型答案去测，测不出偏差 —— 因为差距太大，
+         裁判不靠位置也能判对。
+
+   ② 每道题判两遍：顺序 (A, B)，以及顺序 (B, A)
+
+   ③ 把每道题归到四类里的一类，统计比例：
+        一致        两遍结论指向同一份答案（含两遍都判平局）
+        偏向第一位  两遍都判&quot;排在前面的那一份&quot;赢
+        偏向第二位  两遍都判&quot;排在后面的那一份&quot;赢
+        格式错误    至少一遍抽不出结论   ← ★★ 务必单独记（05 章那条铁律）
+
+   ④ ★ 加一组对照实验（这一步很多人省掉，然后误诊）：
+      把标签从 &quot;Assistant A / Assistant B&quot; 换成别的（比如 &quot;甲 / 乙&quot;，
+      或者把 A/B 两个标签的位置互换），★★ 位置不动，只动名字。
+      ⟹ 一致率变了 ⟹ 你抓到的是【名字偏见】
+      ⟹ 一致率没变 ⟹ 你抓到的是【位置偏见】
+</code></pre></div>
+
+<p>★ 拿到"一致率"这个数之后怎么用（⚠️ 以下阈值是我给的操作建议，不是论文结论）：</p>
+<table>
+<thead>
+<tr>
+<th>一致率</th>
+<th>怎么判</th>
+<th>该怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 50%</td>
+<td>⚠️⚠️ 结论基本由顺序决定</td>
+<td>★★★ 换裁判模型，或重写提示词。两遍法救不回来</td>
+</tr>
+<tr>
+<td>50% – 70%</td>
+<td>⚠️ 偏差显著</td>
+<td>★★ 必须两遍法，且要接受"很多题判不出胜负"</td>
+</tr>
+<tr>
+<td>70% – 85%</td>
+<td>★ 偏差可控</td>
+<td>★★ 仍然建议两遍法；单遍要随机化位置</td>
+</tr>
+<tr>
+<td>&gt; 85%</td>
+<td>★★ 良好</td>
+<td>★ 单遍可接受，但仍要随机化位置以防系统性漂移</td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★★ 怎么治：两遍法。但"两遍"之后怎么合，有两种做法，结果不一样。</strong></p>
+<p>✅ 论文 §3.4 给的是<strong>保守法</strong>（逐字）：</p>
+<blockquote>
+<p>"A <strong>conservative</strong> approach is to call a judge twice by swapping the order of two<br />
+answers and <strong>only declare a win when an answer is preferred in both orders</strong>.<br />
+If the results are inconsistent after swapping, we can <strong>call it a tie</strong>. ...<br />
+Another more <strong>aggressive</strong> approach is to <strong>assign positions randomly</strong>, which can be<br />
+effective at a large scale with the correct expectations."</p>
+</blockquote>
+<p>★★ 而 EvalScope 的 Arena-Hard 适配器用的是另一种：<strong>两局取平均</strong>。<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:41</a> 的文档字符串直接写着（★ 逐字）：</p>
 <div class="codehilite"><pre><span></span><code>- Two-game battle system (A vs B and B vs A)
 </code></pre></div>
 
-<p>实现在同文件 L110-138：</p>
-<div class="codehilite"><pre><span></span><code><span class="n">game1_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt1</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
+<p>实现在同文件 L105-138：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">prompt1</span> <span class="o">=</span> <span class="n">GRADER_TEMPLATE</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">question</span><span class="o">=</span><span class="n">question</span><span class="p">,</span> <span class="n">answer_1</span><span class="o">=</span><span class="n">reference</span><span class="p">,</span> <span class="n">answer_2</span><span class="o">=</span><span class="n">filtered_prediction</span><span class="p">)</span>
+<span class="n">prompt2</span> <span class="o">=</span> <span class="n">GRADER_TEMPLATE</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">question</span><span class="o">=</span><span class="n">question</span><span class="p">,</span> <span class="n">answer_1</span><span class="o">=</span><span class="n">filtered_prediction</span><span class="p">,</span> <span class="n">answer_2</span><span class="o">=</span><span class="n">reference</span><span class="p">)</span>  <span class="c1"># 交换</span>
+<span class="n">game1_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt1</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
 <span class="n">game2_response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">llm_judge</span><span class="o">.</span><span class="n">judge</span><span class="p">(</span><span class="n">prompt2</span><span class="p">,</span> <span class="n">system_prompt</span><span class="o">=</span><span class="n">GRADER_SYSTEM_PROMPT</span><span class="p">)</span>
 <span class="o">...</span>
-<span class="n">score1</span> <span class="o">=</span> <span class="n">get_judge_score</span><span class="p">(</span><span class="n">res1</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>     <span class="c1"># ★ 注意 reverse</span>
+<span class="n">score1</span> <span class="o">=</span> <span class="n">get_judge_score</span><span class="p">(</span><span class="n">res1</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>     <span class="c1"># ★ 注意 reverse：第一局里基线在前</span>
 <span class="n">score2</span> <span class="o">=</span> <span class="n">get_judge_score</span><span class="p">(</span><span class="n">res2</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 <span class="o">...</span>
 <span class="n">score</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;score&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">score1</span> <span class="o">+</span> <span class="n">score2</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span><span class="p">}</span>   <span class="c1"># ★★ 两局取平均</span>
 </code></pre></div>
 
+<p>★ 那个 <code>get_judge_score</code> 不是 0/1，而是五档（<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/utils.py">utils.py:22-53</a>，★ 逐字数值）：</p>
+<table>
+<thead>
+<tr>
+<th>裁判输出</th>
+<th>含义</th>
+<th>分数（正向）</th>
+<th>分数（reverse）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A&gt;&gt;B</code></td>
+<td>A 明显胜</td>
+<td>1.00</td>
+<td>0.00</td>
+</tr>
+<tr>
+<td><code>A&gt;B</code></td>
+<td>A 略胜</td>
+<td>0.75</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td><code>A=B</code></td>
+<td>平局</td>
+<td>0.50</td>
+<td>0.50</td>
+</tr>
+<tr>
+<td><code>B&gt;A</code></td>
+<td>B 略胜</td>
+<td>0.25</td>
+<td>0.75</td>
+</tr>
+<tr>
+<td><code>B&gt;&gt;A</code></td>
+<td>B 明显胜</td>
+<td>0.00</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>⚠️ 抽取失败</td>
+<td>—</td>
+<td>★ 默认 0.5（<code>score_mapping.get(result, 0.5)</code>）</td>
+<td>同</td>
+</tr>
+</tbody>
+</table>
+<p>★★★ 两种合法的对比：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>✅ 论文的保守法</th>
+<th>✅ Arena-Hard 源码的平均法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>两局都赢</td>
+<td>判赢</td>
+<td>高分（接近 1.0）</td>
+</tr>
+<tr>
+<td>两局矛盾</td>
+<td>★★ <strong>判平局</strong></td>
+<td>★ 落在 0.5 附近的中间分</td>
+</tr>
+<tr>
+<td>输出的粒度</td>
+<td>胜 / 平 / 负（三档）</td>
+<td>★ 0 到 1 的连续值</td>
+</tr>
+<tr>
+<td>★ 优点</td>
+<td>⚠️ 保守，不会把"顺序造成的胜利"记成胜利</td>
+<td>★★ 保留强弱程度，分辨率更高</td>
+</tr>
+<tr>
+<td>⚠️ 缺点</td>
+<td>★★ 平局大量增多，榜单可能分不出胜负</td>
+<td>⚠️ 矛盾判决被"摊平"成 0.5，★ 看不出它是矛盾还是真平局</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑 一句话：★★★ 一道题判两次，成本翻倍，换掉一个系统性偏差。
        ⚠️ 看到某个主观榜单【只判一遍】，它的结果就要打折看。
+    ⟹ ⚠️ 而看到&quot;我们用了两遍法&quot;，★★ 还要再问一句【怎么合的】——
+       保守法和平均法得出的榜单不是同一个东西。
+</code></pre></div>
+
+<p>★ 论文还试了另一条路：<strong>给裁判几个示范</strong>（few-shot judge，✅ §3.4）：</p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>GPT-4 的一致率</th>
+<th>⚠️ 代价（✅ 均为论文原文）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>zero-shot（默认）</td>
+<td>65.0%</td>
+<td>—</td>
+</tr>
+<tr>
+<td>few-shot（3 个判例）</td>
+<td>★★ <strong>77.5%</strong></td>
+<td>⚠️ <em>"high consistency may not imply high accuracy and we are not sure whether the few-shot examples will introduce new biases"</em>；⚠️ <em>"the longer prompts make API calls </em><em>4× more expensive</em><em>"</em></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ★★★ 这一行值得单独记住：&quot;一致率变高&quot; ≠ &quot;判得更准&quot;。
+       ⚠️ 一个【永远判 A 赢】的裁判，一致率是 0%（交换后就翻）……
+          但一个【永远判平局】的裁判，一致率是 100%。
+       ⟹ ★★★ 所以一致率必须和&quot;和人的一致率 / kappa&quot;一起看（§9.3b），
+          单独优化一致率可以优化出一个毫无用处的裁判。
 </code></pre></div>
 
 <h3 id="2-verbosity-bias">② 冗长偏差（verbosity bias）</h3>
-<p>✅ 定义：<em>"an LLM judge favors longer, verbose responses, even if they are not<br />
-as clear, high-quality, or accurate as shorter alternatives"</em></p>
-<p>★★ 论文设计了一个很妙的攻击实验："repetitive list" attack ——<br />
-把一个 5 条的列表，让 GPT-4 换个说法复述成 5 条，拼在原列表前面，<br />
-★ 变成 10 条但<strong>信息量完全没增加</strong>。</p>
-<p>✅ Table 3（23 个答案上的"攻击成功率"）：</p>
-<div class="codehilite"><pre><span></span><code>   ┌───────────┬───────────┬─────────┐
-   │ Claude-v1 │  GPT-3.5  │  GPT-4  │
-   │ ★★ 91.3% │ ★★ 91.3% │  8.7%   │
-   └───────────┴───────────┴─────────┘
-</code></pre></div>
-
+<p>✅ 定义：<em>"an LLM judge favors longer, verbose responses, even if they are not as clear, high-quality, or accurate as shorter alternatives"</em></p>
+<p>★★ 论文设计了一个很妙的攻击实验："repetitive list" attack。✅ 原文的配方（逐字）：</p>
+<blockquote>
+<p>"We first select <strong>23 model answers</strong> from MT-bench that contain a numbered list.<br />
+We then make them unnecessarily verbose by asking GPT-4 to <strong>rephrase the list<br />
+without adding any new information</strong> and insert the rephrased new list to the<br />
+beginning of the original list. For example, if the original response contains<br />
+5 items, then the new response will contain <strong>10 items but the first 5 items are<br />
+rephrased from the original 5 items</strong>. ... We define the attack is successful if<br />
+an LLM judge thinks the new response is better than the old response."</p>
+</blockquote>
+<p>✅ Table 3（23 个答案上的"攻击成功率"，论文列名为 Failure rate）：</p>
+<table>
+<thead>
+<tr>
+<th>裁判</th>
+<th>Claude-v1</th>
+<th>GPT-3.5</th>
+<th>GPT-4</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>攻击成功率</td>
+<td>⚠️⚠️ <strong>91.3%</strong></td>
+<td>⚠️⚠️ <strong>91.3%</strong></td>
+<td>★ <strong>8.7%</strong></td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 读法：★★★ 把答案注水一倍、不加任何新信息，
        有两个裁判【九成以上会认为变好了】。
+
+    ★ 顺手验算一下样本量：23 × 91.3% = 21.0 条，23 × 8.7% = 2.0 条。
+      ⟹ ⚠️ 所以这三个数字背后各自只有 23 道题。
+         ★★ 91.3% vs 8.7% 的差距足够大，结论可信；
+         ⚠️ 但如果有人报&quot;某裁判 87.0%&quot;，那只是差 1 条，★ 别当真。
 
     ⟹ ★★ 这直接解释了一个你一定见过的现象：
        为什么很多模型答什么都要先来一段&quot;这是一个很好的问题&quot;，
@@ -446,134 +1305,695 @@ as clear, high-quality, or accurate as shorter alternatives"</em></p>
        ★★★ 评测的偏差会顺着训练回流到模型行为里。
 </code></pre></div>
 
-<p>★ 论文还做了个对照：裁判对<strong>完全相同</strong>的两个答案总是判平局<br />
-（✅ "always return a tie for two identical answers"），<br />
-⟹ ★★ 说明它不是乱判，是【真的被"更长"骗到了】。</p>
-<p><strong>怎么治：</strong> ⚠️ 论文没给通用解法。工程上常见的是<br />
-"控制长度偏差"的评测变体——OpenCompass 里就专门有一个数据集叫<br />
-<a href="../源码/opencompass-0.5.3/opencompass/datasets/subjective/compassbench_control_length_bias.py">compassbench_control_length_bias.py</a>。<br />
-★ 一个偏差重要到要为它单独做一套题，说明它有多难缠。</p>
+<p>★★★ 论文还做了一个<strong>必须复制的对照组</strong>（✅ 原文）：</p>
+<blockquote>
+<p>"As a calibration, we find LLM judges are able to correctly judge identical<br />
+answers (i.e., they <strong>always return a tie for two identical answers</strong>) but<br />
+cannot pass the more advanced "repetitive list" attack."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 这一步的作用：★★★ 排除&quot;裁判就是在瞎判&quot;这个平凡解释。
+       ⟹ 两份【完全相同】的答案，它稳定判平局 ⟹ 说明它有判断力。
+       ⟹ 两份【信息量相同但一长一短】的答案，它判长的赢 ⟹ ★★ 它是真的被长度骗了。
+</code></pre></div>
+
+<p><strong>★★★ 可操作的检测流程（冗长偏差）</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 方法 A：注水攻击（论文那套，★★ 最推荐，因为它直接控住了&quot;质量&quot;这个混淆变量）
+   ① 从你自己的评测集里挑 N 条【含编号列表或分点结构】的回答（N ≥ 20）
+   ② 用另一个模型把列表&quot;★★ 换个说法复述，不许加任何新信息&quot;
+   ③ 把复述版拼在原列表【前面】⟹ 条数翻倍，信息量不变
+   ④ 让裁判两两对比&quot;新版 vs 原版&quot;（★ 记得用两遍法消掉位置偏差）
+   ⑤ 攻击成功率 = 判&quot;新版更好&quot;的比例
+      ★ 理想值 = 0%，★★ 理想的判决分布应该是&quot;绝大多数平局&quot;
+   ⑥ ★★★ 必做对照：把【完全相同】的两份答案喂进去，确认它判平局。
+      ⟹ 这一步不做，你无法区分&quot;被长度骗了&quot;和&quot;判决本来就是噪声&quot;
+
+   ★ 方法 B：长度分桶（★ 便宜，用来做日常监控）
+   ① 把所有被评的回答按 token 数分成 4–5 桶
+   ② 看每个桶的平均得分 / 胜率随长度的走势
+   ⚠️⚠️ 致命混淆：★★★【长回答可能真的更好】。
+      ⟹ 所以只看&quot;长度和分数正相关&quot;证明不了偏差。
+   ③ 修正办法：★★ 只在【人工已判定质量相同】的样本内做这个对比，
+      或者反过来看——固定人工评分档位，看同档位内长度对裁判分的影响。
+
+   ★ 方法 C：截断对照（★ 最省事的近似）
+   ① 把同一份回答删掉纯冗余部分（客套话、重复总结），造一个短版
+   ② 让裁判判&quot;长版 vs 短版&quot;
+   ③ ⚠️ 比方法 A 弱，因为&quot;删掉的到底是不是纯冗余&quot;是人判断的，有主观性
+</code></pre></div>
+
+<p><strong>怎么治：</strong> ⚠️ 论文没给通用解法。工程上常见的是"控制长度偏差"的评测变体——OpenCompass 里就专门有一个数据集叫 <a href="../源码/opencompass-0.5.3/opencompass/datasets/subjective/compassbench_control_length_bias.py">compassbench_control_length_bias.py</a>。★ 一个偏差重要到要为它单独做一套题，说明它有多难缠。</p>
 <h3 id="3-self-enhancement-bias">③ 自我偏好（self-enhancement bias）</h3>
 <p>✅ 定义：<em>"LLM judges may favor the answers generated by themselves"</em></p>
-<p>✅ 论文 §3.3 实测：</p>
+<p>✅ 论文 §3.3 实测（★ 逐字，★★ 请把后半句一起读完）：</p>
 <blockquote>
 <p>"GPT-4 favors itself with a <strong>10% higher win rate</strong>;<br />
 Claude-v1 favors itself with a <strong>25% higher win rate</strong>.<br />
-However, they also favor other models and <strong>GPT-3.5 does not favor itself</strong>."</p>
+However, they also favor other models and <strong>GPT-3.5 does not favor itself</strong>.<br />
+<strong>Due to limited data and small differences, our study cannot determine whether<br />
+the models exhibit a self-enhancement bias.</strong> Conducting a controlled study is<br />
+challenging because we cannot easily rephrase a response to fit the style of<br />
+another model without changing the quality."</p>
 </blockquote>
+<table>
+<thead>
+<tr>
+<th>裁判</th>
+<th>给"自己写的答案"的胜率，比人给的高多少</th>
+<th>读法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-4</td>
+<td><strong>+10 个百分点</strong></td>
+<td>⚠️ 有迹象</td>
+</tr>
+<tr>
+<td>Claude-v1</td>
+<td><strong>+25 个百分点</strong></td>
+<td>⚠️⚠️ 迹象明显</td>
+</tr>
+<tr>
+<td>GPT-3.5</td>
+<td>✅ <strong>不偏袒自己</strong></td>
+<td>★ 说明这不是普适规律</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 最实用的一条推论：
        ★★★【不要用 A 家的模型当裁判去评 A 家的模型】。
 
-    ⚠️ 但也别过度解读：论文自己说 GPT-3.5 就不偏袒自己，
-       ✅ 而且明确写了 &quot;Due to limited data&quot; ——★ 样本量有限。
-       ⟹ 这是一个【要防范的风险】，不是一条铁律。
+    ⚠️⚠️ 但请务必别过度解读，★★★ 论文自己把结论收得很紧：
+       ✅ &quot;our study **cannot determine** whether the models exhibit a
+          self-enhancement bias&quot;
+       ⟹ ★★ 也就是说论文【没有断言自我偏好存在】，只是观察到了迹象。
+       ⟹ 🔑 所以这是一个【要防范的风险】，不是一条已证实的铁律。
+
+    ⚠️ 还有一个术语精确性问题：★★ 那个 &quot;+10%&quot; 是【胜率的百分点差】
+       （win rate 从 x% 变成 x+10%），⚠️ 不是&quot;胜率相对提高了 10%&quot;。
+       ⟹ 🔑 百分比和百分点混用，是这一类数字最常见的误传方式。
+</code></pre></div>
+
+<p><strong>★★★ 可操作的检测流程（自我偏好）</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 核心工具：轮流当裁判矩阵（round-robin judge matrix）
+
+   ① 取 k 个模型，让它们【既当选手又当裁判】
+   ② 填一张 k 行（裁判）× k 列（选手）的表，每格是&quot;该裁判给该选手打出的胜率&quot;
+   ③ ★★★ 一定要多加一行：【人类评分】那一行，当作参照基准
+   ④ 自我偏好量 = 对角线那一格 − 人类那一行对应的那一格
+      ⟹ ✅ 论文就是这么算的（Figure 3(b)：六个模型在不同裁判下的胜率）
+</code></pre></div>
+
+<p>★ 一张示意表，说明这个矩阵怎么读（⚠️ 下面的数字是我编的示例，★ 用来演示算法，不是实测）：</p>
+<table>
+<thead>
+<tr>
+<th>裁判 \ 选手</th>
+<th>模型 M</th>
+<th>模型 N</th>
+<th>模型 P</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>模型 M 当裁判</strong></td>
+<td>⚠️ <strong>72%</strong> ← 对角线</td>
+<td>55%</td>
+<td>30%</td>
+</tr>
+<tr>
+<td>模型 N 当裁判</td>
+<td>61%</td>
+<td>58%</td>
+<td>28%</td>
+</tr>
+<tr>
+<td>模型 P 当裁判</td>
+<td>60%</td>
+<td>54%</td>
+<td>33%</td>
+</tr>
+<tr>
+<td>★★★ <strong>人类评分</strong></td>
+<td><strong>60%</strong></td>
+<td>56%</td>
+<td>31%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★ 逐列算&quot;自我偏好量&quot;：
+      M 自评 72% − 人给 M 的 60% = ⚠️ +12 个百分点   ← 有自我偏好迹象
+      N 自评 58% − 人给 N 的 56% = +2 个百分点        ← 可忽略
+      P 自评 33% − 人给 P 的 31% = +2 个百分点        ← 可忽略
+
+   ⟹ 🔑🔑 关键在于【必须用人类那一行当基准】，★★★ 不能用&quot;其他裁判的平均&quot;：
+      ⚠️ 因为如果 N 和 P 都是同一家的模型、有共同的风格偏好，
+         &quot;其他裁判的平均&quot;本身就是偏的。
+
+   ⟹ ★★ 另一个必须做的健壮性检查（✅ 论文提到的难点）：
+      去风格化后重判 —— 用第三个中性模型把所有答案改写成统一文风，再判一遍。
+      ⚠️ 论文明确说这很难做好：&quot;we cannot easily rephrase a response to fit
+         the style of another model **without changing the quality**&quot;。
+      ⟹ 🔑 所以这条只能当辅助证据，不能当判决。
 </code></pre></div>
 
 <h3 id="4">④ 附带一个：裁判自己不会做题</h3>
-<p>✅ Table 4（10 道数学题，"裁判把错答案判成对"的失败次数）：</p>
-<div class="codehilite"><pre><span></span><code>   ┌──────────┬─────────┬────────────┐
-   │ Default  │  CoT    │ Reference  │
-   │ ★★ 14/20│  6/20   │  ★ 3/20    │
-   └──────────┴─────────┴────────────┘
+<p>✅ Table 4 原文（★ 连表题一起读，因为那个"20"是怎么来的全在表题里）：</p>
+<blockquote>
+<p>"Table 4: Judge failure rate on <strong>10 math questions</strong> with different prompts.<br />
+We test LLaMA-13B vs. Vicuna-13B and <strong>swap positions</strong>.<br />
+<strong>A failure means when GPT-4 says an incorrect answer is correct.</strong>"</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>提示词</th>
+<th>Default（直接判）</th>
+<th>CoT（先自己想一遍再判）</th>
+<th>Reference（给参考答案）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>失败次数</td>
+<td>⚠️⚠️ <strong>14 / 20</strong></td>
+<td>6 / 20</td>
+<td>★ <strong>3 / 20</strong></td>
+</tr>
+<tr>
+<td>换成百分比</td>
+<td><strong>70%</strong></td>
+<td>30%</td>
+<td><strong>15%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★ 先把那个分母解释清楚：★★★ 20 = 10 道题 × 2（交换位置各判一遍）。
+      ⟹ 🔑 所以这张表本身就是&quot;两遍法&quot;的产物，位置偏差已经被摊进去了。
+
+    ⟹ ✅ 论文对这两个端点的原话：&quot;we see a significant improvement in failure
+       rate (**from 70% to 15%**) over the default prompt.&quot;
+
+    ⟹ 🔑 直接裁判：★★★ 二十次里有十四次把错的判成对。
+    ⟹ ★ 让裁判先自己想一遍（CoT，Chain-of-Thought 思维链）：降到 6/20。
+    ⟹ ★★ 给它一份参考答案：降到 3/20。
+
+    ⚠️⚠️ 两处常见误读，必须纠正：
+
+    ① ❌ 有人把 14/20 说成&quot;比瞎猜还差&quot;。★★★ 这个说法没有意义：
+       这一列量的是【把错答案判成对】这一种单向失败的发生率，
+       ⚠️ 不是&quot;判对率&quot;，所以没有 50% 这个&quot;瞎猜基线&quot;可比。
+       ⟹ 🔑 正确的读法是：★★ &quot;在明知有错答案的 20 次判决里，它放过了 14 次&quot;。
+
+    ② ❌ 有人把 Reference 那一列理解成&quot;把数据集的标准答案给裁判看&quot;。
+       ★★★ 在这张表里【不是】。✅ 论文 §3.4 原文：
+       &gt; &quot;we propose a reference-guided method, in which we first generate
+       &gt;  **LLM judge&#39;s answer independently**, and then display it as a
+       &gt;  reference answer in the judge prompt.&quot;
+       ⟹ ★★ 给的是【裁判自己先独立做一遍的答案】（见 §9.2 那段说明）。
+       ⟹ 🔑 这一点非常重要，因为它意味着：★★★ 就算你手里没有标准答案，
+          也能拿到这 70% → 15% 的改善 —— 只要让裁判先自己答一遍。
+
+    ⚠️ 还有一个诚实的限定：✅ 论文明说即使用了 CoT，
+       &quot;in many cases LLM makes exactly the **same mistake** as the given answers
+        in its problem-solving process&quot; ⟹ ★★ 裁判会被给定答案带着一起错。
+       🔑 这也解释了为什么 Reference 比 CoT 更有效：★★★ 先独立作答再看答案，
+          顺序不能颠倒。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 直接裁判：★★★ 二十次里有十四次把错的判成对——比瞎猜还差。
-    ⟹ ★ 让裁判先自己想一遍（CoT）：降到 6/20。
-    ⟹ ★★ 把标准答案给它看（Reference）：降到 3/20。
-
-    🔑🔑 结论：★★★ 有客观答案的题，就别让裁判&quot;凭感觉&quot;判。
-       能给参考答案就给，能跑测试就跑测试（07 章）。
+<div class="codehilite"><pre><span></span><code>    🔑🔑 结论：★★★ 有客观答案的题，就别让裁判&quot;凭感觉&quot;判。
+       ⟹ 能让它先独立答一遍就先答（省不了多少钱，省很多错）；
+       ⟹ 能给标准答案就给；能跑测试就跑测试（07 章）。
        ⟹ LLM 裁判是【开放题的无奈之选】，不是万能替代品。
+    ⟹ ★ 12 章 §12.3 把这条规则落成了&quot;三档期望输出&quot;的选择流程。
 </code></pre></div>
 
 <hr />
 <h2 id="95-elo">9.5 从"两两对比"到一个排行榜：Elo</h2>
 <p>★★ 两两对比只能告诉你"A 赢了 B"。要变成一张榜，还差一步。</p>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：Elo 评分（Elo rating）
-      来自国际象棋（1960 年代，Arpad Elo 发明）。
+      由 Arpad Elo 提出，1960 年代起用于国际象棋排名。
       ★★ 核心思想：赢了高分对手加很多分，赢了低分对手加一点点。
       ⟹ 从一堆【两两胜负】推出【每个人的绝对实力分】。
 </code></pre></div>
 
-<p>源码里就是这么做的，<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:148-158</a>：</p>
+<h3 id="1-elo-elo">① ⚠️ 源码里那个 "Elo"，其实不是国际象棋那个 Elo</h3>
+<p>源码在 <a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:148-166</a>：</p>
 <div class="codehilite"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_mle_elo</span><span class="p">,</span> <span class="n">get_battles_from_row</span><span class="p">,</span> <span class="n">get_bootstrap_result</span><span class="p">,</span> <span class="n">get_win_rate_column</span>
 <span class="n">battles</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">concat</span><span class="p">([</span><span class="n">get_battles_from_row</span><span class="p">(</span><span class="n">res</span><span class="o">.</span><span class="n">score</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;battle_result&#39;</span><span class="p">])</span> <span class="k">for</span> <span class="n">res</span> <span class="ow">in</span> <span class="n">sample_scores</span><span class="p">])</span>
 <span class="n">bootstrap_online_elo</span> <span class="o">=</span> <span class="n">compute_mle_elo</span><span class="p">(</span><span class="n">battles</span><span class="p">)</span>
 </code></pre></div>
 
+<p>★★★ 但打开 <code>compute_mle_elo</code> 看实现（<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/utils.py">utils.py:110-153</a>，★ 逐字节选）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">compute_mle_elo</span><span class="p">(</span><span class="n">df</span><span class="p">,</span> <span class="n">SCALE</span><span class="o">=</span><span class="mi">400</span><span class="p">,</span> <span class="n">BASE</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">INIT_RATING</span><span class="o">=</span><span class="mi">1000</span><span class="p">):</span>
+    <span class="o">...</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">sklearn.linear_model</span><span class="w"> </span><span class="kn">import</span> <span class="n">LogisticRegression</span>
+    <span class="n">lr</span> <span class="o">=</span> <span class="n">LogisticRegression</span><span class="p">(</span><span class="n">fit_intercept</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">penalty</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">tol</span><span class="o">=</span><span class="mf">1e-8</span><span class="p">)</span>
+    <span class="n">lr</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">Y</span><span class="p">)</span>
+    <span class="n">elo_scores</span> <span class="o">=</span> <span class="n">SCALE</span> <span class="o">*</span> <span class="n">lr</span><span class="o">.</span><span class="n">coef_</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">+</span> <span class="n">INIT_RATING</span>
+    <span class="c1"># set anchor as gpt4-0314 = 1000</span>
+    <span class="k">if</span> <span class="s1">&#39;gpt4-0314&#39;</span> <span class="ow">in</span> <span class="n">models</span><span class="o">.</span><span class="n">index</span><span class="p">:</span>
+        <span class="n">elo_scores</span> <span class="o">+=</span> <span class="mi">1000</span> <span class="o">-</span> <span class="n">elo_scores</span><span class="p">[</span><span class="n">models</span><span class="p">[</span><span class="s1">&#39;gpt4-0314&#39;</span><span class="p">]]</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ ⚠️⚠️ 它是一个【逻辑回归】，不是国际象棋那种&quot;一局一局往上加分&quot;的算法。
+       ★ MLE = Maximum Likelihood Estimation（极大似然估计）。
+       ★★ 这套做法的正式名字是 Bradley-Terry 模型（BT 模型，1952 年），
+          只是把系数乘以 400 再加 1000，让数值看起来像 Elo 分。
+
+    ⟹ 🔑🔑 为什么要区分这两个？★★★ 因为它们有一个实质差别：
+       ┌ 在线 Elo（增量式）：★★ 结果【依赖比赛顺序】。
+       │   同一批对局换个播放顺序，最终分数不一样。
+       └ BT 极大似然（这里用的）：★★ 结果【与顺序无关】，
+           因为它是把所有对局一次性拟合出来的。
+    ⟹ ★★ 所以看到&quot;Elo 1247&quot;，要问一句是哪种算法 —— 前者可复现性更差。
+</code></pre></div>
+
+<p>★ 顺便把那三个常量的含义讲清楚，因为它们决定了"分差多少算差得多"：</p>
+<div class="codehilite"><pre><span></span><code>   SCALE = 400，BASE = 10  ⟹ 期望胜率公式（源码 predict_win_rate，utils.py:166-180）：
+       胜率(A 对 B) = 1 / (1 + 10^((R_B − R_A) / 400))
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>分差 R_A − R_B</th>
+<th>期望胜率</th>
+<th>算式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><strong>50.0%</strong></td>
+<td>1/(1 + 10^0) = 1/2</td>
+</tr>
+<tr>
+<td>+100</td>
+<td><strong>64.0%</strong></td>
+<td>1/(1 + 10^(−0.25)) = 1/1.5623</td>
+</tr>
+<tr>
+<td>+200</td>
+<td><strong>76.0%</strong></td>
+<td>1/(1 + 10^(−0.5)) = 1/1.3162</td>
+</tr>
+<tr>
+<td>+400</td>
+<td><strong>90.9%</strong></td>
+<td>1/(1 + 10^(−1)) = 1/1.1</td>
+</tr>
+<tr>
+<td>−100</td>
+<td>36.0%</td>
+<td>对称</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 拿这张表去读榜单：★★★【分差 100 分 ≈ 六四开】，
+       ⚠️ 不是&quot;强一倍&quot;。看到两个模型差 20 分就说&quot;明显更强&quot;的，
+       换算过来是 52.9% 对 47.1% —— ★★ 基本等于打平。
+</code></pre></div>
+
+<h3 id="2">② ⚠️ 平局、抽取失败、"明显胜"，在拟合前被怎么处理</h3>
+<p>★★★ 这三条藏在 <code>get_battles_from_row</code>（<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/utils.py">utils.py:56-107</a>）里，每一条都是一个口径：</p>
+<table>
+<thead>
+<tr>
+<th>裁判输出</th>
+<th>进入 BT 拟合时算几场</th>
+<th>⚠️ 含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A&gt;B</code> / <code>B&gt;A</code>（略胜）</td>
+<td><strong>1 场</strong></td>
+<td>正常</td>
+</tr>
+<tr>
+<td><code>A&gt;&gt;B</code> / <code>B&gt;&gt;A</code>（明显胜）</td>
+<td>★★ <strong>3 场</strong>（<code>multiplier=3</code>）</td>
+<td>★★★ "明显胜"被【当成赢了三局】，权重是略胜的 3 倍</td>
+</tr>
+<tr>
+<td><code>A=B</code>（平局）</td>
+<td>1 场，标记为 tie</td>
+<td>★ 后续在 <code>compute_mle_elo</code> 里被拆成"一次 A 赢 + 一次 B 赢"（源码把对局表复制了一份，L114-131）</td>
+</tr>
+<tr>
+<td>⚠️ <strong>抽取失败</strong></td>
+<td>★★★ <strong>0 场，直接丢弃</strong></td>
+<td>⚠️⚠️ 见下</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 盯住最后一行。源码 utils.py:74-78：
+        else:
+            weight = 0
+        if weight:
+            results += [output] * weight
+    ⟹ ★★★ 裁判输出里正则抽不出 [[A&gt;B]] 这类标记时，
+       这一局【从对局表里消失了】，既不算平局也不算失败。
+
+    ⟹ 🔑🔑 这正是 05 章那条铁律在主观评测里的重演：
+       ★★ 抽取失败被静默吞掉 ⟹ 样本量悄悄变小，而报告里看不出来。
+    ⟹ ⚠️ 对比一下 07 章的做法：SWE-bench 给&quot;补丁打不进去&quot;立了一个
+       专门的标记 APPLY_PATCH_FAIL。★★★ 那是对的做法，这里不是。
+    ⟹ ★★ 你自己搭裁判评测时，务必把&quot;抽取失败率&quot;作为一个独立指标报出来。
+
+    ⚠️ 注意还有一处不一致：同一份源码里，per-sample 那条路径
+       （get_judge_score，utils.py:51）对抽取失败是【记 0.5 分】，
+       而进入 Elo 拟合这条路径（get_battles_from_row）是【直接丢弃】。
+       ⟹ 🔑 同一个框架，两条路径，两种处理方式。★★ 这就是为什么口径要逐条问。
+</code></pre></div>
+
+<h3 id="3-bootstrap">③ ⚠️ 置信区间：bootstrap 写了，但不一定跑</h3>
 <div class="codehilite"><pre><span></span><code>    ★ 名词：bootstrap（自助法）
       ★★ 一种统计方法：把数据【有放回地重复抽样】很多次，
       每次算一遍分数，看这些分数散得有多开。
       ⟹ 🔑 用来算【置信区间】——也就是&quot;这个分数上下浮动多少算正常&quot;。
-
-    ⟹ 🔑🔑 所以正经的主观榜单，★★★ 报的应该是
-       &quot;1247 ± 8&quot; 而不是光秃秃一个 &quot;1247&quot;。
-       ⚠️ 两个模型分差 3 分、区间重叠 20 分 ⟹ 【实际上没分出胜负】。
 </code></pre></div>
 
-<p>★★ 还要注意 arena_hard 源码里的这两行：</p>
+<p>★★★ 但源码里的实情值得看清楚，这是个很好的教学案例：</p>
+<table>
+<thead>
+<tr>
+<th>适配器</th>
+<th><code>get_bootstrap_result</code></th>
+<th>实际报出来的指标</th>
+<th>有没有区间</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>arena_hard</strong></td>
+<td>⚠️⚠️ L151 <strong>导入了，但全文没有调用</strong></td>
+<td>一个 <code>winrate</code>（<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">adapter L166-172</a>）</td>
+<td>❌ <strong>没有</strong></td>
+</tr>
+<tr>
+<td><strong>general_arena</strong></td>
+<td>✅ L314 真的调用了，<code>num_round=100</code></td>
+<td><code>winrate</code> / <code>winrate_lower</code> / <code>winrate_upper</code>（<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/general_arena/general_arena_adapter.py">adapter L325-331</a>）</td>
+<td>✅ <strong>95% 区间</strong>（2.5 / 97.5 分位）</td>
+</tr>
+</tbody>
+</table>
+<p>✅ general_arena 那三行（★ 逐字）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">stats</span><span class="o">.</span><span class="n">at</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="s1">&#39;lower&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">bootstrap_model_coef</span><span class="p">[</span><span class="n">model</span><span class="p">],</span> <span class="mf">2.5</span><span class="p">)</span>
+<span class="n">stats</span><span class="o">.</span><span class="n">at</span><span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="s1">&#39;upper&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">bootstrap_model_coef</span><span class="p">[</span><span class="n">model</span><span class="p">],</span> <span class="mf">97.5</span><span class="p">)</span>
+<span class="o">...</span>
+<span class="n">metrics_dict</span><span class="p">[</span><span class="s1">&#39;winrate&#39;</span><span class="p">]</span>       <span class="o">=</span> <span class="n">get_win_rate_column</span><span class="p">(</span><span class="n">stats</span><span class="p">,</span> <span class="s1">&#39;score&#39;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">baseline</span><span class="p">)</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+<span class="n">metrics_dict</span><span class="p">[</span><span class="s1">&#39;winrate_lower&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">get_win_rate_column</span><span class="p">(</span><span class="n">stats</span><span class="p">,</span> <span class="s1">&#39;lower&#39;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">baseline</span><span class="p">)</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+<span class="n">metrics_dict</span><span class="p">[</span><span class="s1">&#39;winrate_upper&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">get_win_rate_column</span><span class="p">(</span><span class="n">stats</span><span class="p">,</span> <span class="s1">&#39;upper&#39;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">baseline</span><span class="p">)</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 所以正经的主观榜单，★★★ 报的应该是
+       &quot;1247 ± 8&quot; 或 &quot;胜率 58.3%（95% 区间 54.1%–62.6%）&quot;，
+       ⚠️ 而不是光秃秃一个 &quot;1247&quot; 或 &quot;58.3%&quot;。
+       ⚠️ 两个模型分差 3 分、区间重叠 20 分 ⟹ 【实际上没分出胜负】（11 章 §11.6）。
+
+    ⟹ ⚠️ 但从上面这张表你也看到了：★★★【框架里有这个能力，不代表这次跑了】。
+       同一个 EvalScope，两个适配器，一个报区间一个不报。
+    ⟹ 🔑 所以看到一个没有区间的主观分数，第一反应不该是&quot;他们不懂&quot;，
+       ★★ 而是&quot;这条代码路径可能压根没算&quot;。⟹ 你自己跑的时候要主动确认。
+</code></pre></div>
+
+<h3 id="4-n2">④ ★★ 锚点模型：省了 N² 场，代价是整张榜绑死</h3>
+<p>★★ 还要注意 <code>arena_hard</code> 源码里的这两行（<a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">adapter L121-122</a>）：</p>
 <div class="codehilite"><pre><span></span><code><span class="s1">&#39;model_a&#39;</span><span class="p">:</span> <span class="s1">&#39;gpt4-0314&#39;</span><span class="p">,</span>
 <span class="s1">&#39;model_b&#39;</span><span class="p">:</span> <span class="s1">&#39;test_model&#39;</span><span class="p">,</span>
+</code></pre></div>
+
+<p>★ 以及 <code>compute_mle_elo</code> 结尾那两行（utils.py:150-152）：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># set anchor as gpt4-0314 = 1000</span>
+<span class="k">if</span> <span class="s1">&#39;gpt4-0314&#39;</span> <span class="ow">in</span> <span class="n">models</span><span class="o">.</span><span class="n">index</span><span class="p">:</span>
+    <span class="n">elo_scores</span> <span class="o">+=</span> <span class="mi">1000</span> <span class="o">-</span> <span class="n">elo_scores</span><span class="p">[</span><span class="n">models</span><span class="p">[</span><span class="s1">&#39;gpt4-0314&#39;</span><span class="p">]]</span>
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>    ⟹ 🔑 它不是让所有模型互相打，而是【全部去挑战同一个固定基线】。
        ★★ 这叫【锚点模型】(anchor / baseline model)。
 
-    ⟹ ★★★ 好处：新模型加进来只要打 N 场，不是 N² 场（解决了 §9.2 的爆炸问题）。
-    ⟹ ⚠️ 代价：★★ 整张榜的刻度绑死在这个锚点上。
-       锚点一换，所有历史分数【全部不可比】。
+    ⟹ ★★★ 好处：新模型加进来只要打 N 场，不是 N² 场（解决了 §9.2 ① 的爆炸问题）。
+    ⟹ ⚠️ 代价一：★★ 整张榜的刻度绑死在这个锚点上。锚点一换，所有历史分数【全部不可比】。
+    ⟹ ⚠️ 代价二：★★★ 如果参赛模型已经明显强过锚点（比如都赢 90%），
+       ★ 那么它们彼此之间的差距会被压缩到看不出来 —— 因为大家都在打同一个沙包。
+       🔑 这就是为什么主观榜单每隔一段时间就要换一次锚点，而换完就得从头积累历史。
 </code></pre></div>
 
 <hr />
 <h2 id="96">9.6 裁判评测的复现性：比你想的更差</h2>
-<p>★★ 把 01 章的"分数是联合产物"套到这里，变量列表变得很长：</p>
-<div class="codehilite"><pre><span></span><code>   ┌───────────────────────┬──────────────────────────────────┐
-   │ ★★ 裁判模型是哪个？   │ 换裁判 = 换尺子                   │
-   │ ★★★ 裁判模型的版本？  │ 闭源 API 会静默更新              │
-   │ ★ 裁判的提示词？       │ Table 2 里 default vs rename     │
-   │                        │ 就让一致率从 23.8% → 56.2%       │
-   │ ★★ 判了一遍还是两遍？  │ 位置偏差有没有被抵消              │
-   │ ★ 裁判的 temperature？ │ 非 0 就不可复现                   │
-   │ ★★ 锚点模型是谁？      │ 换锚点整张榜作废                  │
-   │ ★ 平局怎么算分？       │ 0.5 分还是不计入                  │
-   └───────────────────────┴──────────────────────────────────┘
+<p>★★ 把 01 章的"分数是联合产物"套到这里，变量列表变得很长。★★★ 下面每一项，换一个值就换一张榜：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>变量</th>
+<th>换掉它会怎样</th>
+<th>✅ 证据 / 出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★ <strong>裁判模型是哪个</strong></td>
+<td>换裁判 = 换尺子</td>
+<td>✅ Table 3：同一个注水攻击，Claude-v1 上成功 91.3%，GPT-4 上只有 8.7%</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★★ <strong>裁判模型的版本 / 日期</strong></td>
+<td>⚠️ 闭源 API 会静默更新，历史分数无声失效</td>
+<td>⚠️ 我的判断，但 10 章 §10.5 ④ 有一线团队因此固定 API 快照的做法</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★ <strong>裁判的提示词</strong></td>
+<td>一致率可以翻倍</td>
+<td>✅ Table 2：Claude-v1 default 23.8% → rename 56.2%</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★ <strong>给不给示范（few-shot）</strong></td>
+<td>一致率 65.0% → 77.5%，⚠️ 但成本 ×4 且不保证更准</td>
+<td>✅ 论文 §3.4 + Table 12</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>★★ <strong>判一遍还是两遍</strong></td>
+<td>位置偏差有没有被抵消</td>
+<td>✅ §3.4 的保守法 / Arena-Hard 的平均法</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>★★ <strong>两遍怎么合</strong></td>
+<td>保守法（矛盾→平局）和平均法（矛盾→0.5）得出不同的榜</td>
+<td>✅ 论文 §3.4 vs <a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/arena_hard_adapter.py">arena_hard_adapter.py:138</a></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>★ <strong>裁判的 temperature</strong></td>
+<td>非 0 就逐次不可复现</td>
+<td>★ 常识；⚠️ 但 10 章 §10.7b 说明"逐次可复现"未必是最该追求的那种</td>
+</tr>
+<tr>
+<td>⑧</td>
+<td>★★ <strong>锚点模型是谁</strong></td>
+<td>换锚点整张榜作废</td>
+<td>✅ <code>compute_mle_elo</code> 把 gpt4-0314 钉死在 1000</td>
+</tr>
+<tr>
+<td>⑨</td>
+<td>★ <strong>平局怎么算分</strong></td>
+<td>0.5 分、拆成一胜一负、还是不计入</td>
+<td>✅ 源码：拆成"一次 A 赢 + 一次 B 赢"</td>
+</tr>
+<tr>
+<td>⑩</td>
+<td>⚠️⚠️ <strong>"明显胜"的权重</strong></td>
+<td><code>multiplier=3</code>，改成 1 或 2 就是另一张榜</td>
+<td>✅ <a href="../源码/evalscope-1.10.0/evalscope/benchmarks/arena_hard/utils.py">utils.py:56</a></td>
+</tr>
+<tr>
+<td>⑪</td>
+<td>⚠️⚠️ <strong>抽取失败怎么算</strong></td>
+<td>丢弃 / 记 0.5 / 记为平局，三种都能见到</td>
+<td>✅ 同一份源码里两条路径两种做法（§9.5 ②）</td>
+</tr>
+<tr>
+<td>⑫</td>
+<td>★ <strong>bootstrap 跑不跑、跑几轮</strong></td>
+<td>决定有没有置信区间</td>
+<td>✅ arena_hard 不跑，general_arena 跑 100 轮</td>
+</tr>
+</tbody>
+</table>
+<p>★★★ 最后一个坑，是我核对源码时撞上的，值得单独拎出来：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 同一个 EvalScope 里，【文档说的默认裁判】和【代码里的默认裁判】不是一个：
 
-    ⟹ 🔑🔑 EvalScope 默认裁判是写死在源码里的：
-       DEFAULT_JUDGE_MODEL = &#39;Qwen/Qwen3-235B-A22B&#39;
-       ★ 这是好事——★★ 至少它【明确写出来了】。
-       ⚠️ 很多榜单只说&quot;用了 LLM 裁判&quot;，不说是谁。那种分数没法用。
+    ✅ arena_hard_adapter.py:49（文档字符串）：
+         &quot;Uses LLM judge (default: gpt-4-1106-preview)&quot;
+    ✅ metrics/judge/llm_judge.py:43（真正生效的代码）：
+         DEFAULT_JUDGE_MODEL = &#39;Qwen/Qwen3-235B-A22B&#39;
+    ✅ 同文件 L87 的取值顺序：
+         self.model_id = model_id or os.environ.get(&#39;MODELSCOPE_JUDGE_LLM&#39;, DEFAULT_JUDGE_MODEL)
+
+    ⟹ 🔑🔑 也就是说：★★★ 你不显式指定的话，用的是 Qwen3-235B-A22B，
+       ⚠️ 而适配器的文档字符串还停留在原始 Arena-Hard 论文的 GPT-4 设定上。
+    ⟹ ★★ 这不是谁的错——文档字符串描述的是这个基准的【原始定义】，
+       代码里的是这个框架的【默认实现】。⚠️ 但两者不同，而分数只认后者。
+    ⟹ ★★★ 结论：报主观分数时，★ 裁判模型要从【运行日志】里读，
+       不要从文档或论文里抄。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑 EvalScope 至少有一点做得好：★★ 默认裁判是【写死在源码里、有名有姓】的。
+       ⚠️ 很多榜单只说&quot;用了 LLM 裁判&quot;，不说是谁、哪个版本。那种分数没法用。
 </code></pre></div>
 
 <hr />
 <h2 id="97">9.7 什么时候该用、什么时候不该用</h2>
-<div class="codehilite"><pre><span></span><code>   ┌─ ✅ 适合 ────────────────────────────────────────────┐
-   │ ① 开放题：写作、总结、角色扮演、多轮对话             │
-   │ ② ★★ 相对比较（A 和 B 哪个好），而不是绝对分        │
-   │ ③ ★ 快速迭代：你改了提示词，想知道有没有变好         │
-   │ ④ 大规模粗筛：先用裁判筛掉明显差的，再人工看剩下的   │
-   └──────────────────────────────────────────────────────┘
-   ┌─ ❌ 不适合 ──────────────────────────────────────────┐
-   │ ① ★★★ 有客观答案的（数学/代码）—— Table 4 已证明   │
-   │ ② ★★ 需要跨时间比较的（裁判会升级，刻度会漂）       │
-   │ ③ ★★ 评自家模型用自家裁判（自我偏好）               │
-   │ ④ ★★★ 要拿去对外宣称&quot;我们比 X 强&quot;的场合            │
-   │    ⟹ 因为对方可以用另一个裁判得出相反结论           │
-   └──────────────────────────────────────────────────────┘
+<table>
+<thead>
+<tr>
+<th>✅ 适合</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 开放题：写作、总结、角色扮演、多轮对话</td>
+<td>★ 没有可跑的测试，也算不了相似度</td>
+</tr>
+<tr>
+<td>② ★★ 相对比较（A 和 B 哪个好），而不是绝对分</td>
+<td>✅ 论文：单答案打分 "may become unstable ... if the judge model changes"</td>
+</tr>
+<tr>
+<td>③ ★ 快速迭代：你改了提示词，想知道有没有变好</td>
+<td>★★ 同一个裁判、同一天、同一批题 ⟹ 变量只剩你改的那一项</td>
+</tr>
+<tr>
+<td>④ 大规模粗筛：先用裁判筛掉明显差的，再人工看剩下的</td>
+<td>★ 把人的时间用在裁判拿不准的那一段</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>❌ 不适合</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① ★★★ 有客观答案的（数学 / 代码）</td>
+<td>✅ Table 4 已证明：直判 14/20 把错的判成对</td>
+</tr>
+<tr>
+<td>② ★★ 需要跨时间比较的</td>
+<td>⚠️ 裁判会升级，刻度会漂；锚点会换，历史全废（§9.5 ④）</td>
+</tr>
+<tr>
+<td>③ ★★ 评自家模型用自家裁判</td>
+<td>⚠️ 自我偏好（+10 ~ +25 个百分点的迹象，§9.4 ③）</td>
+</tr>
+<tr>
+<td>④ ★★★ 要拿去对外宣称"我们比 X 强"的场合</td>
+<td>⟹ 对方可以用另一个裁判得出相反结论</td>
+</tr>
+<tr>
+<td>⑤ ★★ 题目分布一边倒的场景（强模型 vs 弱模型）</td>
+<td>⚠️ 此时"一致率"几乎不含信息，κ 会掉到 0.05 那一档（§9.3b ①）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★★ 一条能立刻用上的自检：
+    在你说出&quot;我们的裁判和人的一致率有 XX%&quot;之前，先回答这三个问题——
+      ① 这个 XX% 是把平局算进去的（S1）还是排除掉的（S2）？
+      ② 对应的 kappa 是多少？两边的边缘分布一边倒吗？
+      ③ 判了一遍还是两遍？抽取失败的那些题去哪了？
+    ⟹ 🔑 三个都答不上来，这个数字就不该出现在任何对外材料里。
 </code></pre></div>
 
 <hr />
 <h2 id="98">9.8 本章总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 七条带走：
+<table>
+<thead>
+<tr>
+<th>关键数字</th>
+<th>含义</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>85% / 81%</td>
+<td>GPT-4 对人 / 人对人的一致率（★★ <strong>S2 口径，只算非平局</strong>）</td>
+<td>✅ MT-Bench Table 5</td>
+</tr>
+<tr>
+<td>66% / 63%</td>
+<td>同上，⚠️ <strong>S1 口径（含平局与自相矛盾）</strong></td>
+<td>✅ MT-Bench Table 5</td>
+</tr>
+<tr>
+<td>κ ≈ 0.70 / 0.62</td>
+<td>上面 85% / 81% 换算出的 kappa（⚠️ 我的换算）</td>
+<td>⚠️ 由 p_o 与论文给的 R 推算</td>
+</tr>
+<tr>
+<td>23.8% → 56.2%</td>
+<td>Claude-v1 一致率，default → rename ⟹ ★★ 是<strong>名字</strong>偏见</td>
+<td>✅ Table 2</td>
+</tr>
+<tr>
+<td>91.3% / 8.7%</td>
+<td>注水攻击成功率：Claude-v1、GPT-3.5 / GPT-4（23 条样本）</td>
+<td>✅ Table 3</td>
+</tr>
+<tr>
+<td>+10 / +25 个百分点</td>
+<td>GPT-4 / Claude-v1 自评胜率高出人评多少 ⚠️ 论文说证据不足</td>
+<td>✅ §3.3</td>
+</tr>
+<tr>
+<td>14/20 → 6/20 → 3/20</td>
+<td>数学题误判次数：直判 / CoT / 先自答再判</td>
+<td>✅ Table 4</td>
+</tr>
+<tr>
+<td>65.0% → 77.5%</td>
+<td>few-shot 提升一致率，⚠️ 代价是成本 ×4 且不保证更准</td>
+<td>✅ §3.4</td>
+</tr>
+<tr>
+<td>100 分 ≈ 64% 胜率</td>
+<td>Elo 分差与期望胜率的换算</td>
+<td>✅ 源码 <code>predict_win_rate</code></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    🔑 九条带走：
 
     ① ★★ 开放题没有可跑的测试，也没法算相似度 ⟹ 只能让模型判
     ② ★ 三种形态：两两对比 / 单答案打分 / 带参考答案打分
-    ③ ✅ GPT-4 与人的一致率 &gt;80%，★★ 和人与人之间的一致率同级
-    ④ ★★★ 三大偏差：位置（Claude-v1 一致率仅 23.8%）、
-       冗长（注水攻击成功率 91.3%）、自我偏好（+10%~+25%）
-    ⑤ ★★ 位置偏差有解：交换顺序判两遍取平均（源码是标准做法）
-    ⑥ ★★★ 有客观答案就别用裁判：直判 14/20 判错，给参考答案降到 3/20
-    ⑦ 🔑🔑 Elo + bootstrap ⟹ 看榜要看【置信区间】，
-       区间重叠就是没分出胜负；换锚点则整张榜作废
+       ⚠️ 第三种的 &quot;reference&quot; 有两个意思：裁判自己先答的 vs 数据集的标准答案
+    ③ ✅ GPT-4 与人的一致率 &gt;80%，★★ 和人与人之间同级 ——
+       ⚠️ 但那是【排除平局】的 S2 口径，含平局只有 66%
+    ④ ★★★ 一致率会骗人：★★ 同样 80% 的一致率，kappa 可能是 0.60，也可能是 0.05。
+       ⟹ 🔑 报一致率必须同时报 kappa（或同类去偶然化系数）和边缘分布
+    ⑤ ★★★ 三大偏差：位置（Claude-v1 一致率仅 23.8%，⚠️ 且其实是名字偏见）、
+       冗长（注水攻击成功率 91.3%）、自我偏好（+10~+25 个百分点，⚠️ 论文未定论）
+    ⑥ ★★ 位置偏差有解：交换顺序判两遍。⚠️ 但&quot;两遍怎么合&quot;有保守法和平均法两种，
+       结果不同，引用时要说清
+    ⑦ ★★★ 有客观答案就别用裁判：直判 70% 误判，让裁判先自己答一遍降到 15%
+    ⑧ 🔑🔑 Elo + bootstrap ⟹ 看榜要看【置信区间】，区间重叠就是没分出胜负；
+       ⚠️ 而且源码里的 &quot;Elo&quot; 是 Bradley-Terry 极大似然，不是增量式 Elo；
+       ⚠️ 还有一个适配器压根没跑 bootstrap
+    ⑨ ⚠️⚠️ 抽取失败的判决可能被【静默丢弃】（源码实证）。
+       ⟹ 🔑 05 章那条铁律在主观评测里同样成立：★★★ 失败要单独记，不能吞
 
     ⟹ 🔑🔑🔑 一句话立场：
        ★★★ LLM 裁判是【便宜、可扩展、有解释】的近似人类偏好，
@@ -583,6 +2003,7 @@ However, they also favor other models and <strong>GPT-3.5 does not favor itself<
 <hr />
 <blockquote>
 <p>下一章：<a href="10-DeepSeek的评测口径.html">10-DeepSeek的评测口径.md</a> —— ⭐⭐ 拿一份真实的技术报告，看一线团队到底怎么设置 harness，以及为什么同一个模型在不同口径下能差十几分。<br />
+框架侧的裁判源码逐行拆解：<a href="../OpenCompass与EvalScope拆解.html">OpenCompass与EvalScope拆解.md</a><br />
 返回 <a href="README.html">评测入门总目录</a></p>
 </blockquote>
 </div>

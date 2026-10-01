@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,96 +256,219 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="08">08 · ⭐ 幻觉与多模态后训练：落地路上最大的一堵墙</h1>
 <blockquote>
-<p>📖 <strong>前置</strong>：本章大量借用纯文本后训练的概念（SFT / DPO / RLVR / GRPO）。<br />
-不熟的话先扫一眼 <a href="../后训练/README.html">../后训练/README.md</a> 的那张地图，<strong>这里只讲多模态特有的部分</strong>。</p>
+<p>📖 <strong>前置</strong>：本章大量借用纯文本后训练的概念，它们的全称是：<br />
+<strong>SFT</strong>（Supervised Fine-Tuning，监督微调）、<strong>RL</strong>（Reinforcement Learning，强化学习）、<br />
+<strong>DPO</strong>（Direct Preference Optimization，直接偏好优化）、<br />
+<strong>RLVR</strong>（Reinforcement Learning with Verifiable Rewards，可验证奖励强化学习）、<br />
+<strong>GRPO</strong>（Group Relative Policy Optimization，组相对策略优化）。<br />
+<strong>这些机制本身不在本章重复</strong>——它们有一个专门的目录：<a href="../后训练/">../后训练/</a>，<br />
+先扫一眼 <a href="../后训练/README.html">../后训练/README.md</a> 的那张地图。<strong>本章只讲多模态特有的部分。</strong></p>
 </blockquote>
 <hr />
 <h2 id="81">8.1 先看它错成什么样</h2>
-<div class="codehilite"><pre><span></span><code>    [一张只有一只猫的照片]
-    问：图里的狗是什么品种？
-    答：⚠️ &quot;这是一只金毛寻回犬，毛色偏浅……&quot;    ← ★ 图里根本没有狗
+<div class="codehilite"><pre><span></span><code>[一张只有一只猫的照片]
+问：图里的狗是什么品种？
+答：⚠️ &quot;这是一只金毛寻回犬，毛色偏浅……&quot;    ← ★ 图里根本没有狗
 
-    [一张手写的 &quot;3 + 5 = 8&quot;]
-    问：这个算式对吗？
-    答：⚠️ &quot;对的，3 + 5 = 8。&quot;（图里其实写的是 3 + 5 = 9）
+[一张手写的 &quot;3 + 5 = 9&quot;]
+问：这个算式对吗？
+答：⚠️ &quot;对的，3 + 5 = 8。&quot;    ← ★ 它把 9 看成了 8，还顺手确认了&quot;对&quot;
 
-    [一张会议室照片]
-    问：桌上有几台笔记本电脑？
-    答：⚠️ &quot;三台。&quot;（实际是两台）
+[一张会议室照片]
+问：桌上有几台笔记本电脑？
+答：⚠️ &quot;三台。&quot;（实际是两台）
 </code></pre></div>
 
 <blockquote>
-<p>📖 <strong>多模态幻觉</strong>：模型给出的描述<strong>在图里没有依据</strong>。常见四类：<br />
-<strong>物体幻觉</strong>（说了不存在的东西）、<strong>属性幻觉</strong>（颜色/数量说错）、<br />
-<strong>关系幻觉</strong>（左右、上下、包含关系说反）、<strong>OCR 幻觉</strong>（把不认识的字"脑补"成常见词）。</p>
+<p>📖 <strong>多模态幻觉</strong>：模型给出的描述<strong>在图里没有依据</strong>。</p>
+</blockquote>
+<h3 id="_1">★ 五类幻觉：例子、机制、缓解、能不能程序化判错</h3>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>一个具体例子</th>
+<th>★ 为什么会这样</th>
+<th>主要缓解手段</th>
+<th>能不能程序化判错</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 物体幻觉</strong><br>说出不存在的东西</td>
+<td>只有一只猫的照片，问"图里的狗是什么品种" → "金毛寻回犬"</td>
+<td>问题<strong>预设了"有狗"</strong>，而训练数据里几乎没有"图里没有 X"这种句子 ⟹ 模型没学过否认（<strong>yes 偏置</strong>，8.3 节③）</td>
+<td>造负样本教它说"没有"；把对抗式问法放进训练集</td>
+<td>★★ <strong>能</strong>——拿物体标注比一下就行</td>
+</tr>
+<tr>
+<td><strong>② 属性幻觉</strong><br>颜色 / 材质 / 状态说错</td>
+<td>一辆白色的车 → "这辆红色的车很醒目"</td>
+<td>属性和物体在语言里强共现（"消防车—红色"）；而属性这类细节正是视觉编码为了语义而压掉的（09 章 9.6 节）</td>
+<td>反事实对（同一张图，只改一处属性）；提高<strong>有效</strong>分辨率</td>
+<td>★ 能，前提是标注里有属性字段</td>
+</tr>
+<tr>
+<td><strong>③ 关系幻觉</strong><br>左右 / 上下 / 包含说反</td>
+<td>杯子在书的左边 → "杯子在书的右边"</td>
+<td>★ 对比学习<strong>不惩罚词序错乱</strong>（02 章）⟹ 视觉塔特征里的空间关系本来就弱；位置编码是唯一的来源（05 章）</td>
+<td><strong>grounding（输出坐标）</strong>——把关系变成可算的数值；交错数据</td>
+<td>★ 能——拿两个框的坐标直接比大小</td>
+</tr>
+<tr>
+<td><strong>④ 数量幻觉</strong><br>数目说错</td>
+<td>桌上两台笔记本 → "三台"</td>
+<td>数数需要"逐个遍历并计数"这种<strong>串行</strong>操作，一次前向里没有这个机制；注意力是<strong>并行加权求和</strong>，天生不擅长计数</td>
+<td>先逐个 grounding 再数；用渲染合成造"已知数量"的数据（07 章 7.4 节）</td>
+<td>★★ <strong>能</strong>——数字相等判断，最干净的一类</td>
+</tr>
+<tr>
+<td><strong>⑤ OCR 幻觉</strong><br>把不认识的字"脑补"成常见词</td>
+<td>手写 <code>3 + 5 = 9</code> → 读成 <code>3 + 5 = 8</code></td>
+<td>★★ <strong>最危险的一类</strong>：语言先验（"3+5 应该等于 8"）直接<strong>覆盖</strong>了视觉证据。字越小、越模糊，先验的权重越大</td>
+<td>分辨率拉满（04 章）；OCR 专项数据；⚠️ <strong>这一类目前压不干净</strong></td>
+<td>⚠️ 评测集里能判（和真值串比），但<strong>生产环境里没有真值可比</strong>——见 8.7 节</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这五类不互斥</strong>：一句"图中三辆红色轿车停在楼的左侧"可以同时犯②③④。做评测时按最严格的那一类计。<br />
+★ <strong>按落地危害排序，不是按发生频率排序</strong>：⑤ &gt; ④ &gt; ③ &gt; ② &gt; ①。① 最容易被发现（你一眼就看出图里没狗），⑤ 最难被发现（数字看起来完全合理）。</p>
 </blockquote>
 <hr />
-<h2 id="82">8.2 ★★ 病根：语言先验压过了视觉证据</h2>
-<p>这是本章最重要的一段。<strong>幻觉不是 bug，是训练目标的必然产物。</strong></p>
-<div class="codehilite"><pre><span></span><code>    ① 主干是个语言模型，它 99% 的参数是在【纯文本】上训出来的
-       ⟹ 它对&quot;什么话说出来像话&quot;的先验，远强于对&quot;图里有什么&quot;的证据
+<h2 id="82">8.2 ★★ 多模态幻觉和纯文本幻觉的根本差别：它可以被客观判错</h2>
+<p><strong>这是本章最值得先建立的一个直觉</strong>，因为后面所有能上 RL 的路线都建立在它上面。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>纯文本幻觉</th>
+<th>多模态幻觉</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>典型例子</td>
+<td>"爱因斯坦 1952 年获诺贝尔化学奖"</td>
+<td>"图里的狗是金毛寻回犬"</td>
+</tr>
+<tr>
+<td><strong>真值在哪里</strong></td>
+<td>★ 在模型外面的世界里</td>
+<td>★★ <strong>就在输入里</strong>——图是跟问题一起交上来的</td>
+</tr>
+<tr>
+<td>判错需要什么</td>
+<td>外部检索 + 一个会判断的裁判（常常只能是人，或一个更强的模型）</td>
+<td>这张图的物体 / 属性 / 坐标标注，<strong>一次字符串或数值比较</strong></td>
+</tr>
+<tr>
+<td>判错的成本</td>
+<td>高、慢</td>
+<td>★ 低、快、可程序化批量跑</td>
+</tr>
+<tr>
+<td>判错的客观性</td>
+<td>⚠️ "这句话到底算不算幻觉"经常要讨论（口径、时效、模糊表述）</td>
+<td>★★ <strong>"图里没有狗"是一个客观事实，不需要讨论</strong></td>
+</tr>
+<tr>
+<td>能不能做可验证奖励</td>
+<td>难——这正是纯文本 RL 只能靠数学题和单元测试起步的原因</td>
+<td>★ <strong>能</strong>——这是 8.5 节那几条奖励来源的全部基础</td>
+</tr>
+<tr>
+<td>⚠️ 可测的边界</td>
+<td>—</td>
+<td><strong>只有"存在 / 数量 / 位置 / 属性"这类客观项能测</strong>；"这张图的氛围如何""这个设计好不好看"<strong>测不了</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>一句话总结这张表</strong>：<strong>多模态幻觉比文本幻觉更容易犯（因为模态多了一道，8.3 节讲为什么），但同时更容易查（因为真值和问题一起交上来了）。</strong> ⟹ ★ 这个"更容易查"是整个领域的一个杠杆：它让"幻觉"从一个需要人去评判的软指标，变成了一个<strong>能自动算分、能当奖励信号</strong>的硬指标。</p>
+<p>⚠️ <strong>别把这个杠杆用过头</strong>。能客观判错的只有画面里的<strong>客观属性</strong>。<strong>"图里有没有狗"可判；"这张图传达了一种孤独感"不可判。</strong> ⟹ 后者才是语音和视频评测里真正难的部分（<a href="10-语音与实时全双工.html">10 章</a> 10.6 节②、<a href="11-多模态评测.html">11 章</a>）。</p>
+</blockquote>
+<hr />
+<h2 id="83">8.3 ★★ 病根：语言先验压过了视觉证据</h2>
+<p><strong>幻觉不是 bug，是训练目标的必然产物。</strong></p>
+<div class="codehilite"><pre><span></span><code>① 主干是个语言模型，它 99% 的参数是在【纯文本】上训出来的
+   ⟹ 它对&quot;什么话说出来像话&quot;的先验，远强于对&quot;图里有什么&quot;的证据
 
-    ② 训练数据里，&quot;厨房&quot;这个词后面高概率跟着&quot;冰箱、水槽、微波炉&quot;
-       ⟹ 给它一张厨房照片，即使画面里没有微波炉，
-         ★ 模型顺着语言概率往下滑，就把微波炉&quot;说&quot;出来了
+② 训练数据里，&quot;厨房&quot;这个词后面高概率跟着&quot;冰箱、水槽、微波炉&quot;
+   ⟹ 给它一张厨房照片，即使画面里没有微波炉，
+     ★ 模型顺着语言概率往下滑，就把微波炉&quot;说&quot;出来了
 
-    ③ ⚠️ 更要命的：训练数据【几乎从不说&quot;图里没有什么&quot;】
-       所有的图片描述都在描述【存在的东西】
-       ⟹ 模型从没学过&quot;否认&quot;这个动作
-       ⟹ ★★ 这解释了那个著名的【yes 偏置】：
-         问&quot;图里有 X 吗&quot;，不管有没有，模型都倾向答&quot;有&quot;
+③ ⚠️ 更要命的：训练数据【几乎从不说&quot;图里没有什么&quot;】
+   所有的图片描述都在描述【存在的东西】
+   ⟹ 模型从没学过&quot;否认&quot;这个动作
+   ⟹ ★★ 这解释了那个著名的【yes 偏置】：
+     问&quot;图里有 X 吗&quot;，不管有没有，模型都倾向答&quot;有&quot;
 
-    ④ SFT 数据奖励【详细的长描述】
-       ⟹ 模型学到&quot;说得越细越像好答案&quot; ⟹ 细节不够就编
+④ SFT 数据奖励【详细的长描述】
+   ⟹ 模型学到&quot;说得越细越像好答案&quot; ⟹ 细节不够就编
+
+⑤ ★ 还有一条训练侧的结构性原因（06 章 6.3 节那笔账）：
+   视觉 token 占了序列的 95%，却【不产生任何 loss 项】
+   ⟹ 监督信号全部来自文本位置
+   ⟹ ⚠️ 换句话说：模型被明确训练去&quot;说出像样的话&quot;，
+     而&quot;说的话和图一致&quot;只是前者的一个【副产品】，从来没有被单独奖励过
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>一句话</strong>：<strong>幻觉的本质是"模型在语言概率和视觉证据冲突时，选了语言"。</strong><br />
 ⟹ ⚠️ 所以那些"提高分辨率就能解决幻觉"的说法是错的——<br />
-看清了也可能编，因为<strong>问题出在它更信自己的语言直觉</strong>。</p>
+看清了也可能编，因为<strong>问题出在它更信自己的语言直觉</strong>。<br />
+⟹ ★ 回头看 8.1 那张表的第 ⑤ 行：<code>3 + 5 = 9</code> 被读成 <code>= 8</code>，<strong>不是因为像素不够，是因为"3+5=8"这个先验太强</strong>。</p>
 </blockquote>
 <hr />
-<h2 id="83">8.3 四类缓解手段</h2>
+<h2 id="84">8.4 四类缓解手段</h2>
 <h3 id="1">手段① 数据侧：教模型说"没有"</h3>
-<div class="codehilite"><pre><span></span><code>    ★ 造【负样本】：
-      图里没有狗 → 造一条 &quot;问：有狗吗？ 答：没有，画面中只有一只猫。&quot;
-    ★ 造【反事实对】：
-      同一张图，一个正确描述 + 一个只改了一处的错误描述
+<div class="codehilite"><pre><span></span><code>★ 造【负样本】：
+  图里没有狗 → 造一条 &quot;问：有狗吗？ 答：没有，画面中只有一只猫。&quot;
+★ 造【反事实对】：
+  同一张图，一个正确描述 + 一个只改了一处的错误描述
 
-    ✅ 最直接、最有效，也最枯燥
-    ⚠️ 副作用：造多了模型会【过度保守】，什么都说&quot;看不清、不确定&quot;
+✅ 最直接、最有效，也最枯燥
+⚠️ 副作用：造多了模型会【过度保守】，什么都说&quot;看不清、不确定&quot;
+⟹ ★ 判断是不是造过头了，看 8.7 节那个指标：
+  准确率不动、但&quot;答否&quot;的比例飙升，就是已经过头了
 </code></pre></div>
 
 <h3 id="2">手段② 训练侧：用偏好对齐去压幻觉</h3>
-<div class="codehilite"><pre><span></span><code>    造偏好对：  chosen = 无幻觉的描述
-              rejected = 有幻觉的描述（可以【故意让模型不看图去生成】来批量造）
-    然后跑 DPO ⟹ 机制和纯文本完全一样
-    ⟹ 见 ../后训练/04-偏好对齐-RLHF与DPO.md
+<div class="codehilite"><pre><span></span><code>造偏好对：  chosen = 无幻觉的描述
+          rejected = 有幻觉的描述（可以【故意让模型不看图去生成】来批量造）
+然后跑 DPO ⟹ 机制和纯文本完全一样
+⟹ 见 ../后训练/04-偏好对齐-RLHF与DPO.md
 
-    ★ 一个巧妙的造数据技巧：
-      让模型【蒙着眼】（不给图）回答同一个问题
-      ⟹ 它答出来的东西，必然全是语言先验 ⟹ 天然的 rejected 样本
+★ 一个巧妙的造数据技巧：
+  让模型【蒙着眼】（不给图）回答同一个问题
+  ⟹ 它答出来的东西，必然全是语言先验 ⟹ 天然的 rejected 样本
+  ⟹ 🔑 这个技巧的漂亮之处：它把 8.3 节的病因【直接做成了负样本的生成器】
 </code></pre></div>
 
 <h3 id="3">手段③ 解码侧：对比解码</h3>
-<div class="codehilite"><pre><span></span><code>    同一个问题跑两遍：
-      logits_有图  −  α × logits_无图（或图被加噪）
-      ⟹ 差值放大了【真正来自视觉的那部分证据】
-      ⟹ 削弱纯语言先验
+<div class="codehilite"><pre><span></span><code>同一个问题跑两遍：
+  logits_有图  −  α × logits_无图（或图被加噪）
+  ⟹ 差值放大了【真正来自视觉的那部分证据】
+  ⟹ 削弱纯语言先验
 
-    ✅ 不用训练，推理时即插即用
-    ⚠️ 推理成本 ×2，且 α 要调；生产上用得不多
+✅ 不用训练，推理时即插即用
+⚠️ 推理成本 ×2，且 α 要调；生产上用得不多
+⟹ ★ 注意这是【吞吐减半】，不是【延迟加倍】：两遍可以并发跑在同一个 batch 里，
+  延迟只涨一点，但同样的卡只能服务一半的请求。⚠️ 这两件事别混（10 章 10.5 节会再展开）
 </code></pre></div>
 
 <h3 id="4-grounding">手段④ ★★ Grounding：逼模型给出"证据坐标"</h3>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 普通问法：  &quot;图里有几个人？&quot;  → &quot;三个&quot;   ← 无法核实
-    ★ grounding：  &quot;图里有几个人？请给出每个人的框&quot;
-                   → &quot;三个：[0.12,0.34,0.28,0.71] [0.55,...] [0.81,...]&quot;
-                   ⟹ ★ 现在你可以【把框画回图上，一眼看出它是不是在编】
+<div class="codehilite"><pre><span></span><code>⚠️ 普通问法：  &quot;图里有几个人？&quot;  → &quot;三个&quot;   ← 无法核实
+★ grounding：  &quot;图里有几个人？请给出每个人的框&quot;
+               → &quot;三个：[0.12,0.34,0.28,0.71] [0.55,...] [0.81,...]&quot;
+               ⟹ ★ 现在你可以【把框画回图上，一眼看出它是不是在编】
 
-    🔑 这是我认为最有价值的一条路线：
-       它把幻觉从【不可验证】变成了【可验证】
-       ⟹ 而&quot;可验证&quot;是能上 RL 的前提（下一节）
+🔑 这是我认为最有价值的一条路线：
+   它把幻觉从【不可验证】变成了【可验证】
+   ⟹ 而&quot;可验证&quot;是能上 RL 的前提（下一节）
+   ⟹ ★ 它同时治 8.1 表里的 ③ 关系 和 ④ 数量两类：
+     关系变成&quot;比较两个框的坐标&quot;，数量变成&quot;数有几个框&quot;
 </code></pre></div>
 
 <blockquote>
@@ -348,86 +476,215 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 坐标一般被归一化到 0~1 后<strong>当成普通文本 token 输出</strong>（比如直接写 <code>[0.12,0.34,...]</code>），<br />
 ⟹ ⚠️ 所以它的精度受限于<strong>数字 token 的分词方式</strong>，这是一个真实存在的、很少被讨论的精度上限。</p>
 </blockquote>
-<hr />
-<h2 id="84-rl">8.4 ★ 多模态 RL：奖励从哪来</h2>
-<p>纯文本 RL 之所以在 2025 年爆发，是因为找到了<strong>可验证奖励</strong>（数学题对不对、单测过不过）。<br />
-多模态的对应问题是：<strong>看图这件事，怎么自动判分？</strong></p>
-<div class="codehilite"><pre><span></span><code> 来源① 有唯一答案的多模态题
-      多模态数学题、图表读数、OCR 精确匹配
-      ✅ 直接复用 RLVR，见 ../后训练/05-RLVR-可验证奖励.md
+<div class="codehilite"><pre><span></span><code>★ 把这个精度上限算一下：
+  坐标写成两位小数（0.00 ~ 1.00）⟹ 只有 101 个可选值
+  ⟹ 在一张 1092 像素宽的图上，一格 = 1092 / 100 ≈ 11 个像素
+  ⟹ ✅ 框一只猫够用；⚠️ 框一个 8 像素宽的勾选框，不够
 
- 来源② ★★ 渲染回环（render loop）—— 多模态独有
-      让模型写前端代码 → 真的渲染出来 → 【把渲染结果截图给模型自己看】
-      → 和目标图对比 → 差异就是奖励
-      ✅ 一手证据：GLM-5.3 用【环境反馈的强化学习】做前端方向，
-         并把验证范围 &quot;beyond functional correctness to the rendered
-         and interactive product&quot;（从功能正确性扩展到渲染结果和可交互产物）
-         官方演示是 &quot;Initial Version with Layout Issues&quot; →
-         &quot;After Visual Self-Verification&quot; 的前后对比
-         出处：../业界模型技术报告/GLM-5.3.md §六
-
- 来源③ GUI 任务成功率
-      &quot;在这个 App 里把飞机票退掉&quot; → 环境返回成功/失败
-      ⟹ ★ 这是标准的 Agentic RL，瓶颈在【环境】不在算法
-      ⟹ 见 ../后训练/07-AgenticRL-环境成为瓶颈.md
-
- 来源④ 幻觉惩罚
-      用一个检测器核对描述里的每个物体是否真的在图里 → 扣分
-      ⚠️ 检测器本身会错 ⟹ 奖励噪声大 ⟹ 容易被【奖励攻击】
-      ⟹ 见 ../后训练/06-奖励从哪来.md
+  写成三位小数 ⟹ 一格 ≈ 1.1 像素，精度够了
+  ⟹ ⚠️ 但坐标字符串变长，一个框从 ~12 个 token 涨到 ~16 个
+  ⟹ ★ 输出 50 个框时，这是 600 vs 800 个 token 的差别
+⚠️ 以上是按&quot;一个数字字符约一个 token&quot;的粗口径估的，具体分词器会有出入。
 </code></pre></div>
 
+<hr />
+<h2 id="85-rl">8.5 ★ 多模态 RL：奖励从哪来</h2>
+<p>纯文本 RL 之所以在 2025 年爆发，是因为找到了<strong>可验证奖励</strong>（数学题对不对、单测过不过）。多模态的对应问题是：<strong>看图这件事，怎么自动判分？</strong> ⟹ ★ 8.2 那张表已经给了答案的一半：<strong>真值就在输入里</strong>。</p>
+<div class="codehilite"><pre><span></span><code>来源① 有唯一答案的多模态题
+     多模态数学题、图表读数、OCR 精确匹配
+     ✅ 直接复用 RLVR，见 ../后训练/05-RLVR-可验证奖励.md
+
+来源② ★★ 渲染回环（render loop）—— 多模态独有
+     让模型写前端代码 → 真的渲染出来 → 【把渲染结果截图给模型自己看】
+     → 和目标图对比 → 差异就是奖励
+     ✅ 一手证据：GLM-5.3 用【环境反馈的强化学习】做前端方向，
+        并把验证范围 &quot;beyond functional correctness to the rendered
+        and interactive product&quot;（从功能正确性扩展到渲染结果和可交互产物）
+        官方演示是 &quot;Initial Version with Layout Issues&quot; →
+        &quot;After Visual Self-Verification&quot; 的前后对比
+        出处：../业界模型技术报告/GLM-5.3.md §六
+
+来源③ GUI 任务成功率
+     &quot;在这个 App 里把飞机票退掉&quot; → 环境返回成功/失败
+     ⟹ ★ 这是标准的 Agentic RL，瓶颈在【环境】不在算法
+     ⟹ 见 ../后训练/07-AgenticRL-环境成为瓶颈.md
+
+来源④ 幻觉惩罚
+     用一个检测器核对描述里的每个物体是否真的在图里 → 扣分
+     ⚠️ 检测器本身会错 ⟹ 奖励噪声大 ⟹ 容易被【奖励攻击】
+     ⟹ ★ 典型的攻击形态：模型学会【只说最保险的那几个物体】，
+       描述变得又短又空，幻觉分数很高但一点用都没有
+     ⟹ 见 ../后训练/06-奖励从哪来.md
+</code></pre></div>
+
+<p><strong>四条来源的可靠度排一下</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>奖励来源</th>
+<th>真值从哪来</th>
+<th>噪声</th>
+<th>能不能规模化</th>
+<th>⚠️ 主要风险</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 唯一答案的题</td>
+<td>人工或程序生成的标准答案</td>
+<td>★ 极低</td>
+<td>受题库限制</td>
+<td>只覆盖"有唯一答案"的任务</td>
+</tr>
+<tr>
+<td>② <strong>渲染回环</strong></td>
+<td>★★ <strong>程序渲染出来的真实结果</strong></td>
+<td>★ 极低</td>
+<td>★★ <strong>无上限</strong>（能渲染就能造）</td>
+<td>只覆盖"能被渲染"的任务（前端、图表、文档）</td>
+</tr>
+<tr>
+<td>③ GUI 成功率</td>
+<td>环境返回的成功 / 失败</td>
+<td>中（环境本身会抖）</td>
+<td>⚠️ 受环境搭建速度限制</td>
+<td>环境是瓶颈；一次 rollout 很慢很贵</td>
+</tr>
+<tr>
+<td>④ 幻觉惩罚</td>
+<td>⚠️ <strong>另一个模型（检测器）的判断</strong></td>
+<td>⚠️ <strong>高</strong></td>
+<td>高</td>
+<td>★★ 奖励攻击：学会"少说话"来骗分</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>★★ <strong>来源②值得单独强调</strong>：它是多模态版的"单元测试"。<br />
 <strong>代码能被跑，界面能被渲染，渲染结果能被自己看</strong> ⟹ <strong>闭环成立</strong> ⟹ 可以无限自我改进。<br />
 ⟹ 🔑 <strong>这就是 GLM-5.3 那句"视觉需要原生集成进模型，让它自己决定何时去看"的真正分量</strong>（✅ 官方原话）：<br />
-<strong>视觉在这里不是一个输入模态，而是一个 agent 的"传感器 + 验证器"。</strong></p>
+<strong>视觉在这里不是一个输入模态，而是一个 agent 的"传感器 + 验证器"。</strong><br />
+⟹ ★ 注意它和 ④ 的区别：<strong>② 的真值是程序算出来的，④ 的真值是另一个模型猜出来的</strong>——这正是 07 章 7.4 节"程序当标注员 vs 模型当标注员"那个区分，在奖励侧的翻版。</p>
 </blockquote>
 <hr />
-<h2 id="85">8.5 多模态长思维链：先看，再想，再看一眼</h2>
+<h2 id="86">8.6 多模态长思维链：先看，再想，再看一眼</h2>
 <p>纯文本的推理模型会写很长的思考过程。搬到多模态上，出现了一个新动作：<strong>回头再看</strong>。</p>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 传统流程（一次性）：
-       图 → 一次编码 → 全程只能靠这一次编码的记忆去推理
-       ⟹ 图里那行小字如果第一次没看清，后面想破头也没用
+<div class="codehilite"><pre><span></span><code>⚠️ 传统流程（一次性）：
+   图 → 一次编码 → 全程只能靠这一次编码的记忆去推理
+   ⟹ 图里那行小字如果第一次没看清，后面想破头也没用
 
-    ★ agentic 视觉（2025~2026 的方向）：
-       图 → 想 → &quot;我需要看清右下角&quot; → 【调工具裁剪+放大】→ 再编码 → 接着想
-       ⟹ ★★ 把&quot;看&quot;变成一个【可以重复调用的动作】，而不是一次性的输入
-       ⟹ 这和纯文本 agent 调用搜索工具是同一个结构
+★ agentic 视觉（2025~2026 的方向）：
+   图 → 想 → &quot;我需要看清右下角&quot; → 【调工具裁剪+放大】→ 再编码 → 接着想
+   ⟹ ★★ 把&quot;看&quot;变成一个【可以重复调用的动作】，而不是一次性的输入
+   ⟹ 这和纯文本 agent 调用搜索工具是同一个结构
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 为什么这条路在 token 账上是赚的（04 章口径：patch 14 + 2×2 合并）：
+  做法 A  把整张 2184×2184 的图一次拉满
+          (2184/14)² = 24336 patch → 6084 视觉 token
+  做法 B  先看 1092×1092 的缩略图，再把右下角那块裁出来按原分辨率看
+          缩略图 (1092/14)² / 4 = 1521 token
+          + 裁出来的 546×546 一块  (546/14)² / 4 = 380 token
+          合计 1901 token
+  ⟹ ★ 1901 vs 6084，省了约 69% 的视觉 token，而要看的那行小字分辨率一样
+  ⟹ ⚠️ 代价：多了一轮编码 + 一轮生成，【延迟变长】。
+    省的是 token（钱和吞吐），付的是往返次数（延迟）——又是一次延迟换吞吐的交换。
 </code></pre></div>
 
 <blockquote>
 <p>🔑 <strong>这可能是理解型多模态未来两年最重要的一条线</strong>：<br />
 <strong>从"把图喂给模型"变成"让模型自己决定看哪、看几次"。</strong><br />
-⚠️ 这是我的判断。可以对照的一手材料是 GLM-5.3 那句<br />
+⚠️ 这是我的判断，上面那笔 token 账也是我按通用口径算的，不是某篇论文报告的结果。<br />
+可以对照的一手材料是 GLM-5.3 那句<br />
 <em>"enabling it to decide </em><em>when to observe</em><em> and use visual feedback to guide subsequent actions"</em> ✅——<br />
 官方说的是"何时去看"，和这里说的"看哪里"是同一个思想的两个面。</p>
 </blockquote>
 <hr />
-<h2 id="86">8.6 ⚠️ 一个必须说的坏消息</h2>
-<div class="codehilite"><pre><span></span><code>    幻觉【没有被解决】，只是被压到了&quot;日常使用中不太容易撞见&quot;的水平。
+<h2 id="87">8.7 ⚠️ 一个必须说的坏消息</h2>
+<div class="codehilite"><pre><span></span><code>幻觉【没有被解决】，只是被压到了&quot;日常使用中不太容易撞见&quot;的水平。
 
-    · 榜单上的幻觉指标（POPE 等）已经刷得很高
-    · 但那些榜单问的是&quot;图里有没有 X&quot;这类【简单存在性】问题
-    · 真实场景里的幻觉是：★ 把发票金额看错一位、把合同条款的否定词漏掉
+· 榜单上的幻觉指标已经刷得很高
+· 但那些榜单问的是&quot;图里有没有 X&quot;这类【简单存在性】问题
+· 真实场景里的幻觉是：★ 把发票金额看错一位、把合同条款的否定词漏掉
 
-    ⟹ ⚠️ 而这类错误的共同特征是：【它看起来完全合理】
-       —— 你不逐字核对，根本发现不了
+⟹ ⚠️ 而这类错误的共同特征是：【它看起来完全合理】
+   —— 你不逐字核对，根本发现不了
+</code></pre></div>
+
+<h3 id="_2">★ 算一笔账：为什么"幻觉榜单分数很高"这句话本身没有信息量</h3>
+<p><strong>POPE</strong>（Polling-based Object Probing Evaluation，轮询式物体探测评测，arXiv 2305.10355）是最常被引用的幻觉榜单。它的构造是：拿图的物体标注，问一批 <code>Is there a {物体} in the image?</code>，<strong>答案设计成 yes / no 各一半</strong>。</p>
+<p>设一共 500 道题，250 道真答案是 yes、250 道是 no。现在考虑一个<strong>完全不看图、一律答 yes</strong> 的"模型"：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>真正例 TP</td>
+<td>答 yes 且真有</td>
+<td>250</td>
+</tr>
+<tr>
+<td>假正例 FP</td>
+<td>答 yes 但没有</td>
+<td>250</td>
+</tr>
+<tr>
+<td>假负例 FN</td>
+<td>答 no 但真有</td>
+<td>0</td>
+</tr>
+<tr>
+<td><strong>准确率</strong> Accuracy</td>
+<td>(250 + 0) / 500</td>
+<td><strong>50.0%</strong></td>
+</tr>
+<tr>
+<td><strong>精确率</strong> Precision</td>
+<td>250 / (250 + 250)</td>
+<td><strong>50.0%</strong></td>
+</tr>
+<tr>
+<td><strong>召回率</strong> Recall</td>
+<td>250 / (250 + 0)</td>
+<td><strong>100%</strong></td>
+</tr>
+<tr>
+<td><strong>F1</strong></td>
+<td>2 × 0.50 × 1.00 / (0.50 + 1.00)</td>
+<td>★★ <strong>66.7%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ ★★ 一个【完全盲的】模型，F1 就能拿到 66.7%。
+⟹ ⚠️ 所以看到&quot;POPE F1 = 72&quot;这种数字，先在脑子里减掉 66.7 —— 剩下的才是视觉带来的部分。
+⟹ 🔑 真正要看的两个数：
+   ① 【答 yes 的比例】—— 远超 50% 就是在猜（POPE 论文自己就报这一项）
+   ② 【Precision 和 Recall 的不对称】
+      Recall 高、Precision 低  ⟹ yes 偏置（在编）
+      Recall 低、Precision 高  ⟹ 过度保守（8.4 节手段①造过头了）
 </code></pre></div>
 
 <blockquote>
+<p>★ <strong>POPE 的采样设计本身就是针对 8.3 节②那条病因的</strong>：它的 <code>adversarial</code> 一档<strong>专门挑"和图中物体共现频率最高、但图里确实没有"的物体</strong>来问——比如给一张厨房照片，就问"有微波炉吗"。⟹ 🔑 <strong>这一档的分数才是在直接测"语言先验压不压得住"</strong>，random 一档几乎没有区分度。</p>
 <p>🔑 <strong>给使用者的一条硬建议</strong>：<br />
-<strong>凡是"从图里读出一个数字/名字/条款"并且这个值会被下游用掉的场景，<br />
-都必须有人工或程序复核。</strong> 这不是保守，这是当前技术水平的客观边界。</p>
+<strong>凡是"从图里读出一个数字 / 名字 / 条款"并且这个值会被下游用掉的场景，<br />
+都必须有人工或程序复核。</strong> 这不是保守，这是当前技术水平的客观边界。<br />
+⟹ ★ 理由就是 8.1 那张表的最后一列：<strong>⑤ OCR 幻觉在评测集里能判错，在生产里没有真值可比。</strong></p>
 </blockquote>
 <hr />
-<h2 id="87">8.7 🔑 这一章的五句话</h2>
+<h2 id="88">8.8 🔑 这一章的六句话</h2>
 <ol>
-<li><strong>多模态幻觉的病根是"语言先验压过视觉证据"</strong>，不是"看不清"。提高分辨率解决不了它。</li>
-<li><strong>训练数据里几乎没有"图里没有 X"这样的句子</strong> ⟹ 模型没学过否认 ⟹ 著名的 <strong>yes 偏置</strong>。</li>
-<li>四类手段里，<strong>grounding（输出坐标）最有价值</strong>——它把幻觉从不可验证变成可验证。</li>
-<li>★★ <strong>多模态 RL 最有前途的奖励来源是"渲染回环"</strong>：写代码→渲染→自己看→对比。✅ GLM-5.3 已经这么做了。</li>
-<li>⚠️ <strong>幻觉没有被解决</strong>，只是被压到了不容易撞见的水平。<strong>读数字的场景必须复核。</strong></li>
+<li><strong>五类幻觉</strong>（物体 / 属性 / 关系 / 数量 / OCR）里，<strong>危害排序和发生频率排序是相反的</strong>：物体幻觉最容易被一眼看破，OCR 幻觉最难——因为看错的那个数字<strong>看起来完全合理</strong>。</li>
+<li>★★ <strong>多模态幻觉比文本幻觉更容易犯，但更容易查</strong>——因为<strong>真值和问题一起交上来了</strong>。"图里没有狗"是客观事实，不需要讨论。这个"可客观判错"是本领域所有自动奖励的基础。</li>
+<li><strong>病根是"语言先验压过视觉证据"</strong>，不是"看不清"。提高分辨率解决不了它。⚠️ 训练数据里几乎没有"图里没有 X"这样的句子 ⟹ 模型没学过否认 ⟹ 著名的 <strong>yes 偏置</strong>。</li>
+<li>四类手段里，<strong>grounding（输出坐标）最有价值</strong>——它把关系幻觉变成"比坐标"、数量幻觉变成"数框"。⚠️ 它的精度上限受坐标的小数位数限制：两位小数在 1092 像素宽的图上一格 11 个像素。</li>
+<li>★★ <strong>多模态 RL 最有前途的奖励来源是"渲染回环"</strong>：写代码 → 渲染 → 自己看 → 对比。✅ GLM-5.3 已经这么做了。⚠️ 而"用检测器扣幻觉分"噪声最大，典型攻击是<strong>学会少说话来骗分</strong>。</li>
+<li>⚠️ <strong>幻觉没有被解决</strong>。<strong>一个完全不看图、一律答 yes 的模型在 POPE 上 F1 就有 66.7%</strong>——幻觉榜单的高分里有一大截是白送的。<strong>读数字的场景必须复核。</strong></li>
 </ol>
 <hr />
 <blockquote>

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,230 +257,637 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="02">02 · 视觉编码器：图片怎么变成"有意义的"向量</h1>
 <blockquote>
 <p>三大件的第一件。<strong>输入像素，输出一串向量。</strong><br />
-这一章讲：它内部怎么转（ViT）、它怎么学会"意义"（CLIP/SigLIP）、以及 2026 年的一个反转结论。</p>
+这一章讲：它内部怎么转（ViT）、它怎么学会"意义"（CLIP/SigLIP）、2026 年的一个反转结论，以及 <strong>2.7 节那笔最容易被低估的算力账</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="21-vit">2.1 ViT：把图片当句子读</h2>
 <blockquote>
-<p>📖 <strong>ViT = Vision Transformer，视觉 Transformer</strong>（2020，arXiv 2010.11929）。<br />
-<strong>一句话</strong>：把图片切成小方块，每块当一个"词"，然后用和 GPT 一模一样的 Transformer 去处理。</p>
+<p>📖 <strong>ViT = Vision Transformer，视觉 Transformer</strong>（2020，arXiv 2010.11929）。<strong>一句话</strong>：把图片切成小方块，每块当一个"词"，然后用和 GPT 一模一样的 Transformer 去处理。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>   ① 切块 patchify
-      1092×1092 的图，每 14×14 像素切一块 → 78×78 = 6084 块
-      每块拉平成一个向量：14 × 14 × 3(RGB) = 588 个数
+<div class="codehilite"><pre><span></span><code>   (1) 切块 patchify
+       1092x1092 的图，每 14x14 像素切一块 -&gt; 78x78 = 6084 块
+       每块拉平成一个向量：14 x 14 x 3(RGB) = 588 个数
 
-   ② 线性投影
-      588 维 ──[一个矩阵 W: 588×1152]──→ 1152 维
-      ★ 就这一个矩阵，参数量 588×1152 ≈ 68 万。整件事没有任何&quot;卷积魔法&quot;
+   (2) 线性投影
+       588 维 --[一个矩阵 W: 588x1152]--&gt; 1152 维
+       ★ 就这一个矩阵，参数量 588x1152 = 677,376 ≈ 68 万
+       整件事没有任何&quot;卷积魔法&quot;
 
-   ③ 加位置编码
-      ⚠️ 必须加！否则模型不知道哪块在左上、哪块在右下
-      （Transformer 天生看不见顺序，位置怎么编是 05 章的主题）
+   (3) 加位置编码
+       ⚠️ 必须加！否则模型不知道哪块在左上、哪块在右下
+       （Transformer 天生看不见顺序，位置怎么编是 05 章的主题）
 
-   ④ 过 N 层 Transformer
-      每层：注意力（让每块去看其它所有块）+ FFN
-      ⟹ 一块原本只是&quot;一小片浅蓝&quot;，看过邻居后变成&quot;天空的一部分&quot;
-      ⟹ ★ 这一步就是&quot;理解&quot;发生的地方
+   (4) 过 N 层 Transformer
+       每层：注意力（让每块去看其它所有块）+ FFN
+       ==&gt; 一块原本只是&quot;一小片浅蓝&quot;，看过邻居后变成&quot;天空的一部分&quot;
+       ==&gt; ★ 这一步就是&quot;理解&quot;发生的地方
 
-   ⑤ 输出 6084 个 1152 维向量  ← 交给连接器（03 章）
+   (5) 输出 6084 个 1152 维向量  &lt;- 交给连接器（03 章）
 </code></pre></div>
 
-<p><strong>常见规格</strong>（这些型号名会反复出现）：</p>
+<h3 id="211">2.1.1 ★ 六个视觉塔的规格对照</h3>
+<p>这些型号名会反复出现，<strong>背下这张表能省掉读报告时一半的查找</strong>：</p>
 <table>
 <thead>
 <tr>
-<th>名字</th>
+<th>视觉塔</th>
 <th>层数</th>
-<th>宽度</th>
+<th>宽度 d</th>
 <th>patch</th>
 <th>参数量</th>
+<th>输出维度</th>
+<th>支持输入</th>
+<th>怎么训的</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>ViT-L/14</td>
+<td>CLIP ViT-L/14</td>
 <td>24</td>
 <td>1024</td>
 <td>14</td>
-<td>≈ 300M</td>
+<td>≈0.30 B</td>
+<td>1024</td>
+<td>224²（靠插值扩）</td>
+<td>对比学习</td>
 </tr>
 <tr>
 <td><strong>SigLIP-SO400M/14</strong></td>
 <td>27</td>
 <td>1152</td>
 <td>14</td>
-<td>≈ 400M ← ★ 2024~2025 事实标准</td>
+<td>≈0.40 B</td>
+<td>1152</td>
+<td>224² / 384²</td>
+<td>sigmoid 对比</td>
 </tr>
 <tr>
 <td><strong>MoonViT-V2</strong>（Kimi K3）</td>
-<td>27</td>
-<td>—</td>
-<td>14</td>
-<td>≈ 0.4B ✅</td>
+<td>27 ✅</td>
+<td>⚠️ ≈1152（反推）</td>
+<td>14 ✅</td>
+<td><strong>401 M</strong> ✅</td>
+<td>⚠️ ≈1152</td>
+<td><strong>3584²</strong> ✅</td>
+<td>✅ <strong>从零，next-token prediction</strong></td>
+</tr>
+<tr>
+<td><strong>DeepSeek-ViT</strong>（V4.1-Flash）</td>
+<td>32 ✅</td>
+<td><strong>1024</strong> ✅</td>
+<td>14 ✅</td>
+<td>⚠️ ≈0.40 B</td>
+<td>⚠️ 1024</td>
+<td><strong>≈1344²</strong> ✅</td>
+<td>✅ 两阶段：对比 → 自回归</td>
+</tr>
+<tr>
+<td><strong>M3 的 ViT</strong></td>
+<td>32 ✅</td>
+<td><strong>1280</strong> ✅</td>
+<td>14 ✅</td>
+<td>⚠️ ≈0.63 B</td>
+<td>⚠️ 1280</td>
+<td><strong>2016²</strong> ✅</td>
+<td>⚠️ 未披露</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3-Flash 的视觉塔</strong></td>
+<td>24 ✅</td>
+<td>⚠️ 1024（反推）</td>
+<td>⚠️ 未披露</td>
+<td><strong>0.30 B</strong> ✅</td>
+<td>⚠️ 1024</td>
+<td>⚠️ 未披露</td>
+<td>⚠️ 未披露</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ <strong>我的观察</strong>：MoonViT-V2 的"27 层 / patch 14 / 0.4B"和 SigLIP-SO400M <strong>形状完全一致</strong>。<br />
-K3 报告说它是从零训的，但<strong>尺寸显然是照着这个业界标配选的</strong>。报告没说这一点，这是我的推断。</p>
+<p>✅ 出处：<a href="../业界模型技术报告/Kimi-K3.html">Kimi-K3.md</a> 报告 §六、<a href="../业界模型技术报告/DeepSeek-V4.1-Flash.html">DeepSeek-V4.1-Flash.md</a> 报告 §十一、<a href="../业界模型技术报告/GLM-5.3.html">GLM-5.3.md</a> 报告 §5.2、<a href="../业界模型技术报告/模型技术对比.html">模型技术对比.md</a> 报告 §二 的多模态行。前两行（CLIP / SigLIP）是公开常识，不是本仓库核对过的一手数字。<br />
+⚠️ 标"反推"的宽度，是我按<strong>一层 Transformer ≈ 12 d²</strong>（注意力 4d² + FFN 8d²）从层数和参数量倒算的。</p>
+<p>★★ <strong>这张表最大的一条信息是第 4 列</strong>：<strong>六个视觉塔里，五个的 patch 都是 14，参数量全在 0.3~0.63 B 这一个窄区间里。</strong> 2026 年"视觉塔该做多大、patch 该多细"已经基本收敛了，差距全在<strong>输入分辨率</strong>（第 7 列，从 224² 到 3584²，边长差 16 倍）和<strong>训练方法</strong>（第 8 列）上。⟹ 这正是 04 章存在的理由。</p>
+</blockquote>
+<h3 id="212-moonvit-v2-401-m">2.1.2 ★ 把 MoonViT-V2 的 401 M 自己加出来</h3>
+<p>K3 报告只给了"27 层 / 约 0.4 B / patch 14"，没给宽度。但<strong>如果它真的是照着 SigLIP-SO400M 的形状选的</strong>（宽 1152、FFN 中间维 4304），参数量就该能算准：</p>
+<table>
+<thead>
+<tr>
+<th>部件</th>
+<th>算式</th>
+<th>参数量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每层注意力（Q/K/V/O 四个矩阵）</td>
+<td>4 × 1152²</td>
+<td>5.31 M</td>
+</tr>
+<tr>
+<td>每层 FFN（1152 → 4304 → 1152）</td>
+<td>2 × 1152 × 4304</td>
+<td>9.92 M</td>
+</tr>
+<tr>
+<td><strong>一层合计</strong></td>
+<td>5.31 + 9.92</td>
+<td><strong>15.22 M</strong></td>
+</tr>
+<tr>
+<td>27 层</td>
+<td>27 × 15.22 M</td>
+<td>411 M</td>
+</tr>
+<tr>
+<td>patch 嵌入矩阵</td>
+<td>588 × 1152</td>
+<td>0.68 M</td>
+</tr>
+<tr>
+<td><strong>推算合计</strong></td>
+<td></td>
+<td><strong>≈412 M</strong></td>
+</tr>
+<tr>
+<td><strong>✅ 报告给的实际值</strong></td>
+<td></td>
+<td><strong>401 M</strong></td>
+</tr>
+<tr>
+<td>差</td>
+<td></td>
+<td><strong>+2.7 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>差 2.7% 就是 LayerNorm、位置编码这些零碎项的量级。</strong> 所以 <strong>MoonViT-V2 的形状和 SigLIP-SO400M 几乎一样</strong>。K3 报告说它是从零训的 ✅，但<strong>尺寸显然是照着这个业界标配选的</strong> —— ⚠️ <strong>报告没说这一点，这是我用上表反推出来的结论，不能当报告结论引用。</strong></p>
 </blockquote>
 <hr />
 <h2 id="22">2.2 ★★ 关键问题：它怎么知道"这块是猫"？</h2>
-<p>上面第 ④ 步说"理解发生在这里"——<strong>但凭什么？</strong> 一个随机初始化的 Transformer 什么也不懂。<br />
-答案在<strong>怎么训这个视觉塔</strong>。历史上有三种训法：</p>
+<p>上面第 (4) 步说"理解发生在这里" —— <strong>但凭什么？</strong> 一个随机初始化的 Transformer 什么也不懂。答案在<strong>怎么训这个视觉塔</strong>。历史上有三种训法：</p>
 <h3 id="1-20122020">训法① 分类监督（2012~2020 的老路）</h3>
-<p>拿 ImageNet 的 1000 类标签训分类。<strong>问题</strong>：模型只学会区分那 1000 类，<br />
-"泰勒·斯威夫特""SQL 报错弹窗"这些它一概不知。<strong>天花板被标签集卡死。</strong></p>
+<p>拿 ImageNet 的 1000 类标签训分类。<strong>问题</strong>：模型只学会区分那 1000 类，"泰勒·斯威夫特""SQL 报错弹窗"这些它一概不知。<strong>天花板被标签集卡死。</strong></p>
 <h3 id="2-clip">训法② ★★ 对比学习：CLIP</h3>
 <blockquote>
-<p>📖 <strong>CLIP = Contrastive Language-Image Pre-training</strong>（OpenAI，2021，arXiv 2103.00020）。<br />
-<strong>一句话</strong>：从网上爬 4 亿组"图片 + 它的说明文字"，训练模型把<strong>配对的图和文拉近、不配对的推远</strong>。</p>
+<p>📖 <strong>CLIP = Contrastive Language-Image Pre-training，对比式图文预训练</strong>（OpenAI，2021，arXiv 2103.00020）。<strong>一句话</strong>：从网上爬 4 亿组"图片 + 它的说明文字"，训练模型把<strong>配对的图和文拉近、不配对的推远</strong>。</p>
 </blockquote>
-<p>具体怎么算？看一个 batch 为 4 的例子：</p>
-<div class="codehilite"><pre><span></span><code>        文本→   &quot;一只橘猫&quot;  &quot;日落海滩&quot;  &quot;报错弹窗&quot;  &quot;红色跑车&quot;
-    图片↓    ┌──────────┬──────────┬──────────┬──────────┐
-    [猫图]   │  ★ 0.9   │   0.1    │   0.0    │   0.1    │
-    [海滩]   │   0.1    │  ★ 0.8   │   0.1    │   0.0    │
-    [截图]   │   0.0    │   0.1    │  ★ 0.9   │   0.0    │
-    [跑车]   │   0.1    │   0.0    │   0.1    │  ★ 0.8   │
-             └──────────┴──────────┴──────────┴──────────┘
-             ★ 格子里是两个向量的余弦相似度
-             训练目标：让【对角线】尽量大，其它格子尽量小
-             ⟹ 每一行做一次 softmax 分类，每一列也做一次
+<p>具体怎么算？看一个 batch 为 4 的例子。表里每个格子是"<strong>这张图的向量</strong>"和"<strong>这句话的向量</strong>"的<strong>余弦相似度</strong>（取值 −1 到 1，1 = 方向完全一致）：</p>
+<table>
+<thead>
+<tr>
+<th>图片 ↓ ＼ 文本 →</th>
+<th>"一只橘猫"</th>
+<th>"日落海滩"</th>
+<th>"报错弹窗"</th>
+<th>"红色跑车"</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>[猫图]</strong></td>
+<td><strong>0.9</strong></td>
+<td>0.1</td>
+<td>0.0</td>
+<td>0.1</td>
+</tr>
+<tr>
+<td><strong>[海滩照]</strong></td>
+<td>0.1</td>
+<td><strong>0.8</strong></td>
+<td>0.1</td>
+<td>0.0</td>
+</tr>
+<tr>
+<td><strong>[报错截图]</strong></td>
+<td>0.0</td>
+<td>0.1</td>
+<td><strong>0.9</strong></td>
+<td>0.0</td>
+</tr>
+<tr>
+<td><strong>[跑车照]</strong></td>
+<td>0.1</td>
+<td>0.0</td>
+<td>0.1</td>
+<td><strong>0.8</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    训练目标：让【加粗的对角线】尽量大，其它 12 个格子尽量小
+    做法：每一行做一次 softmax 四选一分类（&quot;这张图配哪句话&quot;）
+          每一列也做一次 softmax 四选一分类（&quot;这句话配哪张图&quot;）
+          两个方向的交叉熵损失加起来
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>为什么这招这么强</strong>：它的"标签"就是<strong>互联网上现成的图片说明文字</strong>，<br />
-不用人标注，所以能吃下 4 亿对。<strong>规模换来了开放词汇的理解能力。</strong><br />
-⟹ 这就是为什么 CLIP 认识泰勒·斯威夫特——网上有几百万张带她名字的图。</p>
-<p>⚠️ <strong>代价（后面会反复咬人）</strong>：CLIP 的训练目标是"<strong>整张图</strong>和<strong>整句话</strong>对得上"，<br />
-它<strong>从来没被要求关心细节</strong>。图里有 3 只猫还是 4 只猫，说明文字一般都写"几只猫"。<br />
-⟹ <strong>这是多模态模型数不清数、分不清左右、看不清小字的病根。</strong> 2.5 节展开。</p>
+<p>🔑 <strong>为什么这招这么强</strong>：它的"标签"就是<strong>互联网上现成的图片说明文字</strong>，不用人标注，所以能吃下 4 亿对。<strong>规模换来了开放词汇的理解能力。</strong> ⟹ 这就是为什么 CLIP 认识泰勒·斯威夫特 —— 网上有几百万张带她名字的图。</p>
+<p>⚠️ <strong>代价（后面会反复咬人）</strong>：CLIP 的训练目标是"<strong>整张图</strong>和<strong>整句话</strong>对得上"，它<strong>从来没被要求关心细节</strong>。图里有 3 只猫还是 4 只猫，说明文字一般都写"几只猫"。⟹ <strong>这是多模态模型数不清数、分不清左右、看不清小字的病根。</strong> 2.5 节展开。</p>
 </blockquote>
 <h3 id="3-siglip-softmax-sigmoid">训法③ SigLIP：把 softmax 换成 sigmoid</h3>
 <blockquote>
-<p>📖 <strong>SigLIP = Sigmoid Loss for Language-Image Pre-training</strong>（Google，2023，arXiv 2303.15343）。</p>
+<p>📖 <strong>SigLIP = Sigmoid Loss for Language-Image Pre-training，用 sigmoid 损失做的图文预训练</strong>（Google，2023，arXiv 2303.15343）。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    CLIP：  每一行必须做 softmax  ⟹ 必须知道【整个 batch 的所有格子】
-            ⟹ 多卡训练时要把全部特征 all-gather 到一起，batch 越大通信越贵
+<div class="codehilite"><pre><span></span><code>    CLIP：  每一行必须做 softmax  ==&gt; 必须知道【整个 batch 的所有格子】
+            ==&gt; 多卡训练时要把全部特征 all-gather 到一起，batch 越大通信越贵
 
     SigLIP：每个格子【独立】判断&quot;这对图文配不配&quot;，做二分类
-            ⟹ 不需要全局归一化 ⟹ 大 batch 便宜得多，小 batch 效果还更好
+            ==&gt; 不需要全局归一化 ==&gt; 大 batch 便宜得多，小 batch 效果还更好
 </code></pre></div>
 
+<p><strong>回到上面那张 4×4 表，两种训法的区别一句话就能说清</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>CLIP（softmax）</th>
+<th>SigLIP（sigmoid）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个格子的目标</td>
+<td>"在这一行里，你是最大的那个吗"</td>
+<td>"你自己是 1 还是 0"</td>
+</tr>
+<tr>
+<td>算一个格子要用到</td>
+<td><strong>整行 / 整列</strong>的格子</td>
+<td><strong>只用这一个格子</strong></td>
+</tr>
+<tr>
+<td>多卡时要不要 all-gather 全部特征</td>
+<td><strong>要</strong></td>
+<td>不要</td>
+</tr>
+<tr>
+<td>batch 越大</td>
+<td>通信开销越贵</td>
+<td>几乎不涨</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>⟹ 结果：<strong>SigLIP-SO400M 成了 2024~2025 开源多模态的默认视觉塔</strong>，几乎所有开源 VLM 都在用它。<br />
-⚠️ 这也带来一个隐患：<strong>大家的视觉能力上限被同一个视觉塔绑在了一起</strong>——<br />
-它看不清的东西，所有人都看不清。</p>
+⚠️ 这也带来一个隐患：<strong>大家的视觉能力上限被同一个视觉塔绑在了一起</strong> —— 它看不清的东西，所有人都看不清。<br />
+✅ <strong>顺带一个一手证据</strong>：DeepSeek-ViT 的第一阶段<strong>仍然用 SigLIP 的 sigmoid 对比损失</strong>（约 470 亿图文对，分辨率限死 224×224；报告明说"更高分辨率在这阶段收益不大，白费算力"）。⟹ 所以 SigLIP 这个<strong>损失函数</strong>并没有过时，过时的只是"把 SigLIP 的<strong>权重</strong>拿来当初始化"这件事 —— 下一节就是它。</p>
 </blockquote>
 <hr />
 <h2 id="23-2026">2.3 ★ 2026 年的反转：视觉塔可以不用对比学习</h2>
 <p>Kimi K3 做了一件反直觉的事，而且给了证据：</p>
 <blockquote>
-<p>✅ <strong>官方结论（本仓库已核对）</strong>：MoonViT-V2 <strong>完全从零、用 next-token prediction 训练</strong>，<br />
-不拿 SigLIP/CLIP 初始化。<strong>结果在视觉评测上追平了 SigLIP 初始化的基线。</strong><br />
-报告的原话结论是：<em>在规模化的多模态语言模型上，对比学习预训练作为初始化是不必要的。</em></p>
-<p><strong>理由是稳定性</strong> ✅：报告给了梯度范数曲线——SigLIP 初始化的版本<strong>梯度范数持续更高且频繁 spike</strong>，<br />
-从零训的版本全程平稳。架构上还<strong>移除了所有线性层和注意力投影的 bias 项</strong>来进一步稳定优化。</p>
-<p>出处：<a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a> §六</p>
+<p>✅ <strong>官方结论（本仓库已核对）</strong>：MoonViT-V2 <strong>完全从零、用 next-token prediction（预测下一个 token）训练</strong>，不拿 SigLIP/CLIP 初始化。<strong>结果在视觉评测上追平了 SigLIP 初始化的基线。</strong> 报告的原话结论是：<em>在规模化的多模态语言模型上，对比学习预训练作为初始化是不必要的。</em></p>
+<p><strong>理由是稳定性</strong> ✅：报告给了梯度范数曲线（Fig. 6）—— SigLIP 初始化的版本<strong>梯度范数持续更高且频繁 spike</strong>，从零训的版本全程平稳。架构上还<strong>移除了所有线性层和注意力投影的 bias 项</strong>、改用 RMSNorm，来进一步稳定优化。</p>
+<p>出处：<a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a> 报告 §六</p>
 </blockquote>
 <p><strong>怎么读这个结论</strong>（⚠️ 以下是我的解读，不是报告原话）：</p>
 <div class="codehilite"><pre><span></span><code>    对比学习是【小数据时代的拐杖】：
-      你只有 60 万条指令数据 ⟹ 视觉塔必须自带知识 ⟹ 必须用 CLIP 初始化
-      你有 30T 多模态 token   ⟹ 视觉知识可以在联合训练里自己长出来
-                              ⟹ 拐杖反而成了包袱（优化目标不一致 ⟹ 梯度打架）
+      你只有 60 万条指令数据 ==&gt; 视觉塔必须自带知识 ==&gt; 必须用 CLIP 初始化
+      你有几十 T 的多模态 token ==&gt; 视觉知识可以在联合训练里自己长出来
+                                ==&gt; 拐杖反而成了包袱（优化目标不一致 ==&gt; 梯度打架）
 
-    ⟹ 🔑 这条结论【只对能负担原生多模态预训练的玩家成立】。
-       如果你是在自己微调一个 7B 模型，老老实实用 SigLIP。
+    ==&gt; 🔑 这条结论【只对能负担原生多模态预训练的玩家成立】。
+        如果你是在自己微调一个 7B 模型，老老实实用 SigLIP。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>而且这条结论目前只有一家实证，另一家还走着相反的路</strong>：DeepSeek-ViT 也是<strong>从零自己训</strong>，但它的<strong>第一阶段仍然是 SigLIP 式的对比学习</strong> ✅（470 亿图文对、224×224），只是对比学习之后<strong>再接一个 4 B 的 MoE LLM 做 2360 亿 token 的自回归微调，训完把 LLM 扔掉只留视觉编码器</strong>。</p>
+<p>⟹ <strong>两家都"从零训"，但"从零"的含义不一样</strong>：K3 是<strong>全程不用对比学习</strong>，DeepSeek 是<strong>自己做一遍对比学习</strong>。⟹ 🔑 <strong>看到"视觉塔从零训练"这句话，要接着问"用什么目标训的"。</strong></p>
+</blockquote>
 <hr />
 <h2 id="24">2.4 三个必须知道的工程细节</h2>
-<h3 id="1">① 取哪一层的输出？——通常不是最后一层</h3>
+<h3 id="1">① 取哪一层的输出？—— 通常不是最后一层</h3>
 <div class="codehilite"><pre><span></span><code>    ⚠️ 惯例是取【倒数第二层】的输出，而不是最后一层
     原因：最后一层是为&quot;对比学习那个目标&quot;高度特化过的，
-          丢掉了很多对下游有用的细节 ⟹ 倒数第二层更&quot;通用&quot;
+          丢掉了很多对下游有用的细节 ==&gt; 倒数第二层更&quot;通用&quot;
+    ⚠️ 注意这条惯例的前提是&quot;视觉塔是用对比学习训的&quot;。
+       按 2.3 节 K3 那条路线（全程 next-token prediction），这条惯例未必还成立，
+       ⟹ 而 K3 报告没说它取哪一层。
 </code></pre></div>
 
 <h3 id="2-cls-token-patch">② CLS token 还是全部 patch？</h3>
-<div class="codehilite"><pre><span></span><code>    CLIP 原本只输出一个 [CLS] 向量（整张图的摘要）——一个 token
-    ⟹ ⚠️ 对&quot;这张图是什么&quot;够用，对&quot;左下角写的什么字&quot;完全不够
-    ⟹ 所以多模态大模型一律用【全部 patch 的向量】，不用 CLS
-    ⟹ 这也正是 token 数爆炸的来源（04 章）
+<div class="codehilite"><pre><span></span><code>    CLIP 原本只输出一个 [CLS] 向量（整张图的摘要）—— 一个 token
+    ==&gt; ⚠️ 对&quot;这张图是什么&quot;够用，对&quot;左下角写的什么字&quot;完全不够
+    ==&gt; 所以多模态大模型一律用【全部 patch 的向量】，不用 CLS
+    ==&gt; 这也正是 token 数爆炸的来源（04 章）
 </code></pre></div>
 
+<blockquote>
+<p>📖 <strong>CLS token</strong> = classification token，一个额外加在序列最前面的"汇总位"，训练时让它去代表整张图。</p>
+</blockquote>
 <h3 id="3">③ 冻结还是一起训？</h3>
-<div class="codehilite"><pre><span></span><code>    阶段一（对齐）    视觉塔【冻结】，只训连接器   ← 便宜、稳
-    阶段二（预训练）  视觉塔【解冻】，一起训       ← 效果好，但容易训崩
-    阶段三（指令微调）视觉塔常常再次【冻结】或用很小的学习率
-
-    ⚠️ &quot;视觉塔用比 LLM 小 10~100 倍的学习率&quot;是一条广泛流传的工程经验，
-       各家实现不一，本仓库的一手报告里没有统一口径。见 06 章。
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>视觉塔</th>
+<th>连接器</th>
+<th>LLM</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一 · 对齐</td>
+<td><strong>冻结</strong></td>
+<td>训</td>
+<td>冻结</td>
+<td>便宜、稳；只学"翻译"</td>
+</tr>
+<tr>
+<td>二 · 预训练</td>
+<td><strong>解冻</strong></td>
+<td>训</td>
+<td>训</td>
+<td>效果好，但容易训崩</td>
+</tr>
+<tr>
+<td>三 · 指令微调</td>
+<td>常常再次冻结，或用很小的学习率</td>
+<td>训</td>
+<td>训</td>
+<td>保住已经长出来的视觉能力</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"视觉塔用比 LLM 小 10~100 倍的学习率"是一条广泛流传的工程经验</strong>，各家实现不一，<strong>本仓库的一手报告里没有统一口径</strong>。见 <a href="06-训练流程三阶段.html">06 章</a>。</p>
+</blockquote>
 <hr />
 <h2 id="25">2.5 ★★ 视觉塔的四个已知短板</h2>
 <p>这四条是<strong>多模态模型出错时最常见的根因</strong>，值得单独记：</p>
-<div class="codehilite"><pre><span></span><code> ① 数不清     &quot;图里有几个人？&quot; —— 5 个以上基本靠猜
-              ⟹ 病根：CLIP 的训练文本几乎不含精确计数
-
- ② 分不清空间关系  &quot;杯子在书的左边还是右边？&quot;
-              ⟹ 病根：patch 顺序信息只靠位置编码，且对比学习不惩罚这类错误
-
- ③ 看不清小字   分辨率被 patch 大小卡死（00 章 0.6 节）
-              ⟹ 这条是唯一被【工程手段】基本解决的（04 章的动态分辨率）
-
- ④ &quot;CLIP 盲对&quot;  两张人眼一看就不同的图，CLIP 给出几乎相同的向量
-              ⟹ 视觉塔没编码进去的信息，后面多大的 LLM 都救不回来
-              ⟹ 有一类工作专门造这种对抗样本来测（如 V* 类基准，见 11 章）
+<table>
+<thead>
+<tr>
+<th>短板</th>
+<th>典型症状</th>
+<th>病根</th>
+<th>治好了吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 数不清</strong></td>
+<td>"图里有几个人？" —— 5 个以上基本靠猜</td>
+<td>CLIP 的训练文本几乎不含精确计数</td>
+<td>❌ 没有</td>
+</tr>
+<tr>
+<td><strong>② 分不清空间关系</strong></td>
+<td>"杯子在书的左边还是右边？"</td>
+<td>patch 顺序信息只靠位置编码，且对比学习不惩罚这类错误</td>
+<td>⚠️ 2D/3D RoPE 有改善（05 章）</td>
+</tr>
+<tr>
+<td><strong>③ 看不清小字</strong></td>
+<td>读不出截图里的报错行号</td>
+<td>分辨率被 patch 大小卡死（00 章 0.6 节）</td>
+<td>✅ <strong>唯一被工程手段基本解决的一条</strong>（04 章的动态分辨率）</td>
+</tr>
+<tr>
+<td><strong>④ "CLIP 盲对"</strong></td>
+<td>两张人眼一看就不同的图，视觉塔给出几乎相同的向量</td>
+<td>对比学习只要求"整图配整句"，细节差异不产生损失</td>
+<td>❌ 没有</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code> ⟹ 第 ④ 条最要命：视觉塔没编码进去的信息，后面多大的 LLM 都救不回来
+ ⟹ 有一类工作专门造这种对抗样本来测（如 V* 类基准，见 11 章）
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>一条排错原则</strong>：多模态模型答错时，先问 <strong>"是没看见，还是看见了但想错了？"</strong><br />
-把图放大、裁剪出关键区域再问一遍——<strong>如果裁剪后就对了，那是视觉塔的分辨率问题（04 章），<br />
-不是模型笨。</strong></p>
+<p>🔑 <strong>一条排错原则</strong>：多模态模型答错时，先问 <strong>"是没看见，还是看见了但想错了？"</strong> 把图放大、裁剪出关键区域再问一遍 —— <strong>如果裁剪后就对了，那是视觉塔的分辨率问题（04 章），不是模型笨。</strong></p>
 </blockquote>
 <hr />
 <h2 id="26">2.6 ⚠️ 一条少数派路线：干脆不要视觉编码器</h2>
-<p>有人提出过更激进的做法：<strong>把 patch 直接线性投影后就丢进 LLM，中间什么塔都不要</strong>。<br />
-（Adept 的 Fuyu 是最出名的例子；学术上有 EVE 等"无编码器 VLM"。）</p>
+<p>有人提出过更激进的做法：<strong>把 patch 直接线性投影后就丢进 LLM，中间什么塔都不要</strong>。（Adept 的 Fuyu 是最出名的例子；学术上有 EVE 等"无编码器 VLM"。）</p>
 <div class="codehilite"><pre><span></span><code>    ✅ 好处：架构极简；天然支持任意分辨率（没有塔就没有塔的尺寸限制）
-    ⚠️ 坏处：所有视觉学习的担子全压在 LLM 主干上 ⟹ 要非常大的数据才追得上
+    ⚠️ 坏处：所有视觉学习的担子全压在 LLM 主干上 ==&gt; 要非常大的数据才追得上
+    ⚠️ 还有一条很少被提的好处：2.7 节那笔账直接消失一半
+       —— 没有视觉塔，就没有&quot;在 n 个 patch 上跑 27 层注意力&quot;这件事
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>我的判断</strong>：这条路线目前是少数派，但它和 2.3 的 K3 结论<strong>指向同一个方向</strong>——<br />
-<strong>当预训练规模足够大时，"专门的视觉预训练"这件事的必要性在下降。</strong><br />
-这可能是未来几年的一个变化方向，但<strong>现在还不是主流</strong>，<a href="14-演进主线与开放问题.html">14 章</a>会再提。</p>
+<p>⚠️ <strong>我的判断</strong>：这条路线目前是少数派，但它和 2.3 的 K3 结论<strong>指向同一个方向</strong> —— <strong>当预训练规模足够大时，"专门的视觉预训练"这件事的必要性在下降。</strong> 这可能是未来几年的一个变化方向，但<strong>现在还不是主流</strong>，<a href="14-演进主线与开放问题.html">14 章</a>会再提。</p>
 </blockquote>
 <hr />
-<h2 id="27">2.7 算一笔计算量的账</h2>
-<p>拿 00 章那张 1092×1092 的图（6084 个 patch），过 27 层、宽 1152 的视觉塔：</p>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 我的估算（按 forward ≈ 24·n·d² + 4·n²·d，n=6084, d=1152, 27 层）：
+<h2 id="27-01">2.7 ★★ 算一笔计算量的账：为什么 0.1% 的参数能吃掉一半算力</h2>
+<p>这是本章最该带走的一节。<strong>视觉塔只占总参数的 0.014%~0.15%（01 章 1.2 节那张表），但它吃掉的算力完全不是这个比例。</strong></p>
+<h3 id="271">2.7.1 先把公式摆出来</h3>
+<p>一层标准 Transformer 的前向 FLOPs（浮点运算次数，乘加各算 1 次）：</p>
+<div class="codehilite"><pre><span></span><code>    矩阵乘部分（Q/K/V/O + FFN）：24 x n x d^2      &lt;- 和 token 数 n 成【正比】
+    注意力部分（QK^T 和 乘 V）：  4 x n^2 x d      &lt;- 和 token 数 n 成【平方】
 
-      每层  24 × 6084 × 1152²  ≈ 1.9 × 10¹¹   （矩阵乘部分）
-          + 4 × 6084² × 1152   ≈ 1.7 × 10¹¹   （注意力部分，n² 项）
-      27 层 ⟹ 合计 ≈ 1 × 10¹³ FLOPs = 10 TFLOPs
+    n = patch 数（★ 注意：视觉塔跑在【压缩前】的 patch 数上，不是压缩后的 token 数）
+    d = 视觉塔宽度
+</code></pre></div>
 
-    ⟹ 一张 H100 按有效 400 TFLOPS 算 ⟹ ★ 单张图约 25 毫秒
+<p>代入 <strong>27 层、d = 1152</strong> 的视觉塔（也就是 SigLIP-SO400M / MoonViT-V2 那个形状），整座塔就是：</p>
+<div class="codehilite"><pre><span></span><code>    视觉塔 FLOPs = 27 x (24 x 1152^2) x n  +  27 x (4 x 1152) x n^2
+                 = 8.60e8 x n             +  1.244e5 x n^2
+</code></pre></div>
+
+<h3 id="272">2.7.2 把分辨率一档一档代进去</h3>
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>patch 数 n</th>
+<th>矩阵乘项</th>
+<th>注意力项（n²）</th>
+<th>合计</th>
+<th><strong>n² 项占比</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>336²</td>
+<td>576</td>
+<td>0.50 TFLOP</td>
+<td>0.04 TFLOP</td>
+<td><strong>0.54 TFLOP</strong></td>
+<td>7.7 %</td>
+</tr>
+<tr>
+<td>448²</td>
+<td>1024</td>
+<td>0.88</td>
+<td>0.13</td>
+<td><strong>1.01</strong></td>
+<td>12.9 %</td>
+</tr>
+<tr>
+<td>1024²</td>
+<td>5329</td>
+<td>4.58</td>
+<td>3.53</td>
+<td><strong>8.12</strong></td>
+<td>43.5 %</td>
+</tr>
+<tr>
+<td>1092²</td>
+<td>6084</td>
+<td>5.23</td>
+<td>4.61</td>
+<td><strong>9.84</strong></td>
+<td>46.8 %</td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>9216</td>
+<td>7.93</td>
+<td>10.57</td>
+<td><strong>18.49</strong></td>
+<td>57.1 %</td>
+</tr>
+<tr>
+<td>2016²</td>
+<td>20736</td>
+<td>17.83</td>
+<td>53.50</td>
+<td><strong>71.33</strong></td>
+<td><strong>75.0 %</strong></td>
+</tr>
+<tr>
+<td>3584²</td>
+<td>65536</td>
+<td>56.37</td>
+<td>534.4</td>
+<td><strong>590.7</strong></td>
+<td><strong>90.5 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>看最后一列</strong>：336² 时注意力只占视觉塔开销的 8%，到 3584² 时它占 <strong>90%</strong>。<strong>同一座塔，什么都没改，只是喂了更大的图，开销结构就彻底翻了个个儿。</strong></p>
+<p>⚠️ <strong>这里有个"边长翻倍"的陷阱</strong>：边长翻倍 → patch 数变 <strong>4 倍</strong> → 矩阵乘项变 4 倍、注意力项变 <strong>16 倍</strong>。所以 <strong>"支持 2 倍分辨率"在算力上不是 2 倍代价，是 4~16 倍。</strong></p>
+</blockquote>
+<h3 id="273-llm">2.7.3 和 LLM 那边比一比</h3>
+<p>LLM 侧的 prefill FLOPs 有个简单估法：<code>2 × 激活参数量 × token 数</code>。而<strong>视觉 token 数 = patch 数 ÷ 4</strong>（2×2 合并）。拿 <strong>GLM-5.3-Flash 的 18 B 激活</strong>当参照：</p>
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>视觉塔 FLOPs</th>
+<th>视觉 token</th>
+<th>LLM prefill FLOPs</th>
+<th><strong>视觉塔占两者之和</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>336²</td>
+<td>0.54 TFLOP</td>
+<td>144</td>
+<td>5.18 TFLOP</td>
+<td>9.4 %</td>
+</tr>
+<tr>
+<td>448²</td>
+<td>1.01</td>
+<td>256</td>
+<td>9.22</td>
+<td>9.9 %</td>
+</tr>
+<tr>
+<td>1024²</td>
+<td>8.12</td>
+<td>1332</td>
+<td>47.95</td>
+<td>14.5 %</td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>18.49</td>
+<td>2304</td>
+<td>82.94</td>
+<td>18.2 %</td>
+</tr>
+<tr>
+<td>2016²</td>
+<td>71.33</td>
+<td>5184</td>
+<td>186.6</td>
+<td><strong>27.7 %</strong></td>
+</tr>
+<tr>
+<td>3584²</td>
+<td>590.7</td>
+<td>16384</td>
+<td>589.8</td>
+<td><strong>50.0 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>最后一行值得单独记住</strong>：<strong>一张 3584×3584 的图，视觉塔消耗的算力，和一个 18 B 激活参数的 LLM 把那 16384 个 token 过一遍，刚好一样多（591 对 590 TFLOP）。</strong> 而这座塔只有 0.4 B 参数 —— <strong>是 LLM 激活量的 1/45。</strong></p>
+</blockquote>
+<p><strong>把这个"打平点"算成一个通用结论</strong>，让 <code>视觉塔 FLOPs = LLM prefill FLOPs</code> 解出激活参数量 P：</p>
+<div class="codehilite"><pre><span></span><code>    8.60e8 x n + 1.244e5 x n^2 = 2 x P x (n / 4)
+    ==&gt; P = 2 x (8.60e8 + 1.244e5 x n)
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>patch 数 n</th>
+<th><strong>LLM 激活参数多大时两边打平</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1024²</td>
+<td>5329</td>
+<td><strong>3.0 B</strong></td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>9216</td>
+<td><strong>4.0 B</strong></td>
+</tr>
+<tr>
+<td>2016²</td>
+<td>20736</td>
+<td><strong>6.9 B</strong></td>
+</tr>
+<tr>
+<td>3584²</td>
+<td>65536</td>
+<td><strong>18.0 B</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这张表是本章的结论</strong>：<strong>LLM 的激活参数量比打平值小，视觉塔就是瓶颈；比它大，LLM 才是瓶颈。</strong><br />
+⟹ 所以同一座视觉塔，在不同模型里的地位完全不同：接在 <strong>18 B 激活</strong>的 GLM-5.3-Flash 后面，3584² 输入时它吃掉一半算力；接在 <strong>104.2 B 激活</strong>的 Kimi K3 后面（✅ 报告数字），同样的输入它只占 ⚠️ <strong>14.7%</strong>（<code>590.7 ÷ (590.7 + 2×104.2e9×16384÷1e12)</code>）。<br />
+⟹ 🔑 <strong>"视觉塔是不是瓶颈"这个问题，在 MoE 把激活参数压到十几 B 的 2026 年，答案变了。</strong></p>
+</blockquote>
+<h3 id="274">2.7.4 换成墙上时间</h3>
+<div class="codehilite"><pre><span></span><code>    H100 SXM5 的 BF16 稠密峰值 = 989 TFLOPS
+      ⚠️ 别用 1979 —— 那是 2:4 稀疏值，常规算子用不上
+    取一个现实的 40% MFU（模型算力利用率）==&gt; 有效约 400 TFLOPS
+
+    1092x1092 一张图：  9.84 TFLOP / 400 TFLOPS  ≈  25 毫秒
+    3584x3584 一张图：  590.7 TFLOP / 400 TFLOPS ≈  1.48 秒   &lt;- ★ 一张图！
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>看这两项的比例</strong>：n² 那一项已经和矩阵乘那一项一样大了。<br />
-<strong>图再大一倍（n 变 4 倍），注意力那项就变 16 倍。</strong><br />
-⟹ 这就是 04 章那些"限制 token 数"的手段为什么不是抠门，而是必须。</p>
-<p>⟹ 也解释了 GLM-5.3 为什么要把视觉编码<strong>单独拆成一个部署池</strong>（EPD 分离）：<br />
-✅ <em>"视觉编码是纯计算密集的（过 24 层 ViT），prefill 是计算密集但要 KV，decode 是访存密集。<br />
-挤在一起的话，一张图片的编码会把 decode 的卡堵住。"</em><br />
-—— 出处 <a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a> §7.2，细节见本教程 <a href="12-推理与训练工程.html">12 章</a>。</p>
+<p>⟹ <strong>1.48 秒</strong>这个数字，一下就解释了 GLM-5.3-Flash 为什么要把视觉编码<strong>单独拆成一个部署池</strong>（EPD 分离）：</p>
+<p>✅ <strong>官方原文</strong>：<em>"our production-grade Encode–Prefill–Decode (EPD) disaggregated architecture separates multimodal encoding, prompt prefill, and token-by-token decoding into independently scheduled and scalable worker pools"</em>（把多模态编码、prompt 预填充、逐 token 解码拆成三个独立调度、独立扩缩容的 worker 池）。出处 <a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a> 报告 §7.2。</p>
+<p>⚠️ <strong>必须区分哪句是官方的、哪句不是</strong>：官方原文只说了"拆成三池"这件事本身。"视觉编码是纯计算密集、挤在一起会把 decode 的卡堵住"<strong>是本仓库归档时自己加的解释</strong>，不是报告结论 —— 本节这笔账算的就是它到底成不成立（结论：<strong>成立，而且量级比直觉大得多</strong>）。GLM-5.3-Flash 的视觉塔是 <strong>24 层 / 0.30 B</strong> ✅（这个数字倒是一手的，来自报告 §5.2 按 <code>config.json</code> 做的参数推演）。</p>
+<p>部署侧细节见本教程 <a href="12-推理与训练工程.html">12 章</a>。</p>
 </blockquote>
 <hr />
-<h2 id="28">2.8 🔑 这一章的四句话</h2>
+<h2 id="28">2.8 🔑 这一章的五句话</h2>
 <ol>
 <li><strong>ViT = 把图切块当句子读。</strong> 没有魔法，就是一个线性投影 + 标准 Transformer。</li>
 <li><strong>CLIP/SigLIP 用"图文配对"这个免费监督信号，换来了开放词汇的视觉理解。</strong> SigLIP 因为大 batch 便宜而成为事实标准。</li>
-<li>✅ <strong>但 2026 年 K3 证明了：在足够大的规模上，对比学习初始化不是必需的</strong>，从零训反而更稳。</li>
-<li>⚠️ <strong>视觉塔是整条链路的信息瓶颈</strong>：它没编码的东西，后面 2.78T 参数也变不出来。<strong>排错先怀疑它。</strong></li>
+<li>✅ <strong>2026 年 K3 证明了：在足够大的规模上，对比学习初始化不是必需的</strong>，从零训反而更稳。⚠️ 但 DeepSeek-ViT 走的是"自己做一遍对比学习再自回归微调"，<strong>"从零训"这四个字含义不统一，要追问训练目标。</strong></li>
+<li>⚠️ <strong>视觉塔是整条链路的信息瓶颈</strong>：它没编码的东西，后面 2.78 T 参数也变不出来。<strong>排错先怀疑它。</strong></li>
+<li>★★ <strong>它同时还可能是算力瓶颈</strong>：2.7 节算出来，3584² 输入下一座 0.4 B 的视觉塔，吃掉的算力等于一个 <strong>18 B 激活</strong> LLM 的全部 prefill。<strong>参数量占比和算力占比是两件事，差三个数量级。</strong></li>
 </ol>
 <hr />
 <blockquote>

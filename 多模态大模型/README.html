@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -250,33 +255,53 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这个目录讲什么</strong>：大模型怎么"看图、看视频、听声音"，以及这件事在 2026 年做到了哪一步。<br />
 <strong>假设你会什么</strong>：知道大模型是"预测下一个 token"的，其他不需要。<br />
-<strong>不假设你会</strong>：不需要懂 CNN、ViT、扩散模型、CLIP —— 用到的地方都会现场解释。</p>
+<strong>不假设你会</strong>：不需要懂 CNN、ViT、扩散模型、CLIP —— 用到的地方都会现场解释。<br />
+<strong>规模</strong>：<strong>15 章正文（00~14）+ 1 份速查表</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="_2">⚠️ 先说清楚三件事（可靠性说明）</h2>
 <p><strong>① 2026 年的事实，来自本仓库已核对过的一手技术报告。</strong><br />
-本目录里凡是标 ✅ 的，都能追到 <code>../业界模型技术报告/</code> 下的 Kimi-K3、MiniMax-M3、GLM-5.3、DeepSeek-V4、openPangu 报告原文（第 13 章是一张纯一手来源的对照表）。</p>
+本目录里凡是标 ✅ 的，都能追到 <code>../业界模型技术报告/</code> 下的 DeepSeek-V4.1-Flash、Kimi-K3、MiniMax-M3、GLM-5.3、openPangu 报告原文（第 13 章是一张纯一手来源的对照表）。</p>
+<blockquote>
+<p>⚠️ <strong>一处已更新的事实，别被旧印象带跑</strong>：DeepSeek 那一列已经从 <strong>V4（纯文本）</strong> 换成 <strong>V4.1-Flash（原生多模态）</strong>。所以"五家里两家不做多模态"这个旧结论<strong>已经作废</strong>——<strong>现在只剩 openPangu 一家是纯文本</strong>。详见 <a href="13-业界横向对照.html">13 章</a>。</p>
+</blockquote>
 <p><strong>② 论文的 arXiv 编号是我凭记忆写的，本次没能逐一核实。</strong><br />
 本次写作时尝试访问 <code>export.arxiv.org</code> 被环境拦截，返回的原话是：</p>
 <blockquote>
 <p>Unable to verify if domain export.arxiv.org is safe to fetch.</p>
 </blockquote>
-<p>所以 <strong>本目录出现的 arXiv 编号请自行核对后再引用</strong>（这一点和 <code>../后训练/</code> 不同 —— 那个目录的 38 个编号是逐条验证过的）。论文的<strong>结论</strong>我有把握，<strong>编号</strong>请当作线索而不是引用。</p>
+<p>所以 <strong>本目录出现的 arXiv 编号请自行核对后再引用</strong>（这一点和 <code>../后训练/</code> 不同 —— 那个目录的 38 个编号是逐条验证过的，它自己在 README 里写明了核对口径）。论文的<strong>结论</strong>我有把握，<strong>编号</strong>请当作线索而不是引用。</p>
 <p><strong>③ 时效声明：本目录写于 2026 年 9 月。</strong><br />
 多模态是全领域变化最快的方向之一。第 14 章（开放问题）是最容易过期的一章；第 00~06 章讲的是原理，过期最慢。</p>
 <hr />
 <h2 id="_3">一句话地图</h2>
-<div class="codehilite"><pre><span></span><code>    图片/视频/语音   ──①切块──▶  向量  ──②视觉编码器──▶  语义向量
-                                                            │
-                                                          ③连接器（翻译）
-                                                            │
-                                                            ▼
-    文字 ──▶ tokenizer ──▶ 向量  ──④拼在一起──▶  【同一个 LLM 主干】──▶ 文字
-                                                            │
-                                                    （少数模型还能 ──▶ 图片/语音）
+<div class="codehilite"><pre><span></span><code>    图片 / 视频 / 语音
+      |
+      |  ① 切块（patchify）：切成一堆 14×14 像素的小方格
+      v
+    一堆小方格
+      |
+      |  ② 视觉编码器（视觉塔）：让每块&quot;看看邻居&quot;，变成有语义的向量
+      v
+    视觉向量
+      |
+      |  ③ 连接器（翻译）：变成 LLM 认识的形状和风格
+      v
+    视觉 token
+      |
+      |  ④ 和文本 token 拼成一条序列
+      |     （文字那边走 tokenizer，出来直接就是 token，不需要前三步）
+      v
+    【同一个 LLM 主干】
+      |
+      v
+    文字（少数模型还能吐出图片 / 语音，见 09、10 章）
 </code></pre></div>
 
 <p><strong>全部难点就三个</strong>：怎么编码（02）、怎么翻译（03）、<strong>这堆向量要占多少 token 预算（04，最重要）</strong>。</p>
+<blockquote>
+<p>🔑 <strong>为什么"token 预算"是最重要的那一环</strong>：一张 1092×1092 的截图最后占 <strong>1521 个 token</strong>，约等于 <strong>1100 个汉字</strong>、一页半 A4。⟹ ★ 一张普通截图就是一篇短文的成本，这一句话解释了这个领域一大半的技术动作。</p>
+</blockquote>
 <hr />
 <h2 id="_4">📚 阅读顺序</h2>
 <table>
@@ -358,57 +383,99 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>11</strong></td>
 <td><a href="11-多模态评测.html">多模态评测</a></td>
-<td>★ 盲测基线陷阱；口径分歧</td>
+<td>盲测基线陷阱；OCR 判分规则、视频抽帧会改答案；先算噪声再比分数</td>
 <td>⭐⭐</td>
 </tr>
 <tr>
 <td><strong>12</strong></td>
 <td><a href="12-推理与训练工程.html">推理与训练工程</a></td>
-<td>EPD 三段分离；KV 账；缓存 key 的坑</td>
+<td>EPD 三段分离；两道平方关系；视觉 token 吃掉 90% 的 KV</td>
 <td>⭐⭐⭐</td>
 </tr>
 <tr>
 <td><strong>13</strong></td>
 <td><a href="13-业界横向对照.html">业界横向对照</a></td>
-<td>五份 2026 报告的一手对照表</td>
+<td>五家同口径主表；<strong>token 预算差 64 倍</strong>；披露程度本身就是信息</td>
 <td>⭐⭐</td>
 </tr>
 <tr>
 <td><strong>14</strong></td>
 <td><a href="14-演进主线与开放问题.html">⭐⭐ 演进主线与开放问题</a></td>
-<td><strong>全教程的脊柱</strong>，可单独读</td>
+<td><strong>全教程的脊柱</strong>，可单独读；八个开放问题各配一条"进展判据"</td>
 <td>⭐⭐</td>
 </tr>
 <tr>
 <td><strong>附</strong></td>
 <td><a href="附-速查表.html">速查表</a></td>
-<td>缩写总表 + 数字速查</td>
+<td>缩写总表 + 数字速查 + ★ 可验算的换算表</td>
 <td>—</td>
 </tr>
 </tbody>
 </table>
 <hr />
 <h2 id="_5">🗺️ 推荐路线</h2>
-<p><strong>A · 我只有 20 分钟</strong> → <code>00</code> → <code>14</code><br />
-一个例子建立直觉，再看主线和开放问题。跳过所有技术细节。</p>
-<p><strong>B · 我要能听懂别人讨论多模态</strong> → <code>00</code> → <code>01</code> → <code>04</code> → <code>13</code> → <code>14</code><br />
-名词消歧、token 预算、各家在干什么，够用了。</p>
-<p><strong>C · 我要真的理解模型怎么工作</strong> → <code>00</code> → <code>01</code> → <code>02</code> → <code>03</code> → <code>04</code> → <code>05</code> → <code>06</code><br />
-按顺序读，这是完整的原理链。</p>
-<p><strong>D · 我要部署/压成本</strong> → <code>04</code> → <code>12</code> → <code>11</code><br />
-token 预算是成本，EPD 是部署形态，评测是验收。</p>
-<p><strong>E · 我关心训练和数据</strong> → <code>06</code> → <code>07</code> → <code>08</code><br />
-三阶段、六类数据、后训练怎么治幻觉。</p>
-<p><strong>F · 我关心生成和语音（"全模态"）</strong> → <code>09</code> → <code>10</code><br />
-和理解侧关系不大，可以独立读。</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>你的处境</th>
+<th>顺序</th>
+<th>为什么是这几章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong></td>
+<td>我只有 20 分钟</td>
+<td><code>00</code> → <code>14</code></td>
+<td>一个例子建立直觉，再看主线和开放问题。跳过所有技术细节</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td>我要能听懂别人讨论多模态</td>
+<td><code>00</code> → <code>01</code> → <code>04</code> → <code>13</code> → <code>14</code></td>
+<td>名词消歧、token 预算、各家在干什么，够用了</td>
+</tr>
+<tr>
+<td><strong>C</strong></td>
+<td>我要真的理解模型怎么工作</td>
+<td><code>00</code> → <code>01</code> → <code>02</code> → <code>03</code> → <code>04</code> → <code>05</code> → <code>06</code></td>
+<td>按顺序读，这是完整的原理链</td>
+</tr>
+<tr>
+<td><strong>D</strong></td>
+<td>我要部署 / 压成本</td>
+<td><code>04</code> → <code>12</code> → <code>11</code></td>
+<td>token 预算是成本，EPD 是部署形态，评测是验收</td>
+</tr>
+<tr>
+<td><strong>E</strong></td>
+<td>我关心训练和数据</td>
+<td><code>06</code> → <code>07</code> → <code>08</code></td>
+<td>三阶段、六类数据、后训练怎么治幻觉</td>
+</tr>
+<tr>
+<td><strong>F</strong></td>
+<td>我关心生成和语音（"全模态"）</td>
+<td><code>09</code> → <code>10</code></td>
+<td>和理解侧关系不大，可以独立读</td>
+</tr>
+<tr>
+<td><strong>G</strong></td>
+<td>我只想查一个数或一个缩写</td>
+<td><a href="附-速查表.html">附 速查表</a></td>
+<td>缩写全称、分辨率→token 换算、单位陷阱都在那里</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="_6">🔑 全目录总结（读完你应该记住这五句）</h2>
 <ol>
 <li><strong>多模态的全部难点，是在没有词典的情况下把图变成"像文字一样的向量"</strong>，然后管理它带来的 token 账。</li>
 <li><strong>三代范式</strong>：对齐（图≈一句话）→ 看清（图=一份预算）→ <strong>使用（视觉=agent 的传感器与验证器）</strong>。</li>
-<li>✅ <strong>2026 年架构已经收敛</strong>（patch 14 + 2×2 合并 + 中等大小 ViT），<strong>差距在数据和训练</strong>；五家旗舰里仍有两家不做多模态，且都是推理导向。</li>
-<li>⚠️ <strong>两件事没解决</strong>：幻觉（语言先验压过视觉证据）、尺子（各家 benchmark 零重叠）。</li>
-<li>🔮 <strong>最贵的开放问题</strong>：多模态到底能不能提升纯文本智能 —— 至今没有公开对照实验。</li>
+<li>✅ <strong>2026 年架构的部件收敛了</strong>（patch 14 + 2×2 合并 + 中等大小 ViT），⚠️ <strong>但预算完全没收敛——一张图的视觉 token 从 256 到 16384，四家之间差 64 倍</strong>。</li>
+<li>✅ <strong>五家旗舰里只剩 openPangu 一家纯文本</strong>；⚠️ 而<strong>四家都只花一节篇幅写多模态</strong> ⟹ 它已经从"战略选择"变成"默认的基础设施"。</li>
+<li>⚠️ <strong>两件事没解决</strong>：幻觉（语言先验压过视觉证据）、尺子（各家 benchmark 零重叠）。🔮 <strong>最贵的开放问题</strong>：多模态到底能不能提升纯文本智能 —— 至今没有公开对照实验。</li>
 </ol>
 <hr />
 <h2 id="_7">📐 记号约定</h2>
@@ -422,7 +489,7 @@ token 预算是成本，EPD 是部署形态，评测是验收。</p>
 <tbody>
 <tr>
 <td>✅</td>
-<td>一手技术报告/论文里<strong>明确写了</strong>的，可直接引用</td>
+<td>一手技术报告/论文/<code>config.json</code> 里<strong>明确写了</strong>的，可直接引用</td>
 </tr>
 <tr>
 <td>⚠️</td>
@@ -437,16 +504,77 @@ token 预算是成本，EPD 是部署形态，评测是验收。</p>
 <td>重点 / 最重点，赶时间就只看这些</td>
 </tr>
 <tr>
+<td>⭐ / ⭐⭐</td>
+<td>标在章节标题上的重要度，也用作上表的难度分级</td>
+</tr>
+<tr>
 <td>📖</td>
 <td>前置知识补充，已经懂的可以跳过</td>
 </tr>
 <tr>
 <td>🔑</td>
-<td>本章总结</td>
+<td>本章总结，或一句要记住的话</td>
+</tr>
+<tr>
+<td>⟹</td>
+<td>"所以"——推导的下一步</td>
+</tr>
+<tr>
+<td>❌ / ❄️</td>
+<td>没有 / 不做 ｜ 这部分参数冻住不更新</td>
 </tr>
 </tbody>
 </table>
-<p><strong>关于数字</strong>：本目录所有算例（1521 token/图、76800 token/5分钟视频、178 MB KV/图 等）都是<strong>我按公开参数算出来的</strong>，标 ⚠️，用来建立数量级直觉，<strong>不要当作官方数据引用</strong>。</p>
+<p><strong>关于数字</strong>：本目录所有算例都是<strong>我按公开参数算出来的</strong>，一律标 ⚠️，用来建立数量级直觉，<strong>不要当作官方数据引用</strong>。几个最常被引的：</p>
+<table>
+<thead>
+<tr>
+<th>算例</th>
+<th>值</th>
+<th>在哪算的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一张 1092×1092 图的视觉 token</td>
+<td>⚠️ <strong>1521</strong></td>
+<td>00 章</td>
+</tr>
+<tr>
+<td>同一张图 ≈ 多少汉字</td>
+<td>⚠️ ≈1100</td>
+<td>00 章</td>
+</tr>
+<tr>
+<td>5 分钟视频（1 fps，每帧 256 token）</td>
+<td>⚠️ <strong>76800 token</strong></td>
+<td>00 章</td>
+</tr>
+<tr>
+<td>KV cache 每 token</td>
+<td>⚠️ ≈120 KiB</td>
+<td>12 章</td>
+</tr>
+<tr>
+<td>一张 1092² 图的 KV</td>
+<td>⚠️ ≈<strong>178 MiB</strong></td>
+<td>12 章</td>
+</tr>
+<tr>
+<td>一张 3584² 图的 KV</td>
+<td>⚠️ ≈<strong>1.9 GiB</strong></td>
+<td>12 章</td>
+</tr>
+<tr>
+<td>带图请求里视觉 token 占 KV 的比例</td>
+<td>⚠️ <strong>90% 以上</strong></td>
+<td>12 章</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>单位提醒</strong>：本目录的显存都按 2 的幂算（KiB / MiB / GiB）。<strong>厂商标的 "80 GB" 如果是十进制，同一笔容量账会差约 7%</strong>——写方案时必须说清是 GB 还是 GiB。</p>
+</blockquote>
 <hr />
 <h2 id="_8">🔗 和隔壁目录的关系</h2>
 <table>
@@ -459,7 +587,7 @@ token 预算是成本，EPD 是部署形态，评测是验收。</p>
 <tbody>
 <tr>
 <td><a href="../业界模型技术报告/">../业界模型技术报告/</a></td>
-<td>★ <strong>本目录 ✅ 结论的来源</strong>。想看原始表述就去那里</td>
+<td>★ <strong>本目录 ✅ 结论的来源</strong>。想看原始表述就去那里。⚠️ 注意 DeepSeek 一列已换代为 V4.1-Flash</td>
 </tr>
 <tr>
 <td><a href="../后训练/">../后训练/</a></td>
@@ -475,11 +603,11 @@ token 预算是成本，EPD 是部署形态，评测是验收。</p>
 </tr>
 <tr>
 <td><a href="../训练框架/分布式训练入门/">../训练框架/分布式训练入门/</a></td>
-<td>12 章的 TP/PP/DP 概念来源</td>
+<td>12 章的 TP / PP / DP 概念来源</td>
 </tr>
 <tr>
 <td><a href="../harness评测框架/">../harness评测框架/</a></td>
-<td>11 章讲"评什么"，那里讲"怎么跑评测"</td>
+<td>★ <strong>分工很清楚</strong>：那里讲评测的<strong>通用方法论</strong>（few-shot、答案抽取、污染、LLM 裁判、怎么读榜单）；11 章只讲<strong>多模态特有的难点</strong></td>
 </tr>
 <tr>
 <td><a href="../具身智能与世界模型/">../具身智能与世界模型/</a></td>

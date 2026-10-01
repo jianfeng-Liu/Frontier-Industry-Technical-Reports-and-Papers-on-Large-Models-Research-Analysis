@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,149 +257,555 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="10">10 · 语音与实时全双工：难点根本不在智能</h1>
 <blockquote>
 <p>这一章讲第三个战场。<strong>它的技术含量常被低估</strong>：<br />
-一个能考满分的模型，做成语音助手照样难用——因为<strong>这里的敌人是毫秒，不是智商</strong>。</p>
+一个能考满分的模型，做成语音助手照样难用——因为<strong>这里的敌人是毫秒，不是智商</strong>。<br />
+<strong>读法</strong>：10.1 和 10.2 那两张延迟账是本章的核心，建议拿纸笔跟着加一遍。</p>
 </blockquote>
 <hr />
+<p><strong>本章关键词</strong>（缩写第一次出现时给全称，后面直接用缩写）</p>
+<p><strong>VAD</strong>（Voice Activity Detection，语音活动检测）—— 判断"现在有没有人在说话 / 他说完了没有"的模块。<br />
+<strong>ASR</strong>（Automatic Speech Recognition，自动语音识别）—— 声音转文字。<br />
+<strong>TTS</strong>（Text-to-Speech，语音合成）—— 文字转声音。<br />
+<strong>TTFT</strong>（Time To First Token，首 token 延迟）—— 从请求到吐出第一个字的时间。<br />
+<strong>codec</strong>（coder-decoder，编解码器）—— 这里特指<strong>神经音频编解码器</strong>：把波形压成少量离散编号，再还原回波形。<br />
+<strong>RVQ</strong>（Residual Vector Quantization，残差向量量化）—— 用多层码本依次量化"上一层量化后剩下的残差"，是音频 codec 的标准做法。<br />
+<strong>全双工</strong>（full-duplex）—— 双方可以同时说话、随时打断。<br />
+<strong>帧率 / 帧长</strong> —— codec 每秒产出多少帧；帧长 = 1 / 帧率，它同时就是这个 codec 的<strong>延迟下限</strong>。</p>
+<hr />
 <h2 id="101">10.1 老办法：三段式级联</h2>
-<div class="codehilite"><pre><span></span><code>    你说话 ──→ [ASR 语音识别] ──→ 文字 ──→ [LLM] ──→ 文字 ──→ [TTS 语音合成] ──→ 声音
-              📖 Automatic          📖 Text-to-Speech
-              Speech Recognition
+<div class="codehilite"><pre><span></span><code>你说话 ──→ [ASR 语音识别] ──→ 文字 ──→ [LLM] ──→ 文字 ──→ [TTS 语音合成] ──→ 声音
 </code></pre></div>
 
 <p><strong>✅ 优点</strong>：三段各自独立、可替换、可调试，<strong>至今仍是绝大多数产品的做法</strong>。</p>
-<p><strong>⚠️ 但有两个致命伤：</strong></p>
-<h3 id="1">伤口① 延迟账</h3>
-<div class="codehilite"><pre><span></span><code>    ① 判断&quot;你说完了&quot;（VAD 静音检测）     500 ~ 800 ms   ← ★ 最大的一块，且无法压缩
-    ② ASR 出最终文本                      100 ~ 300 ms
-    ③ LLM 首 token（TTFT）                300 ~ 800 ms
-    ④ TTS 出第一段音频                    100 ~ 300 ms
-    ─────────────────────────────────────────────────
-      合计首声延迟                        ★ 1.0 ~ 2.2 秒
-
-    ⚠️ 参照：人和人对话的轮次间隔约 200 毫秒
-    ⟹ 1.5 秒的停顿，在人类感受里就是【这人反应好慢 / 是不是没听见】
+<p><strong>⚠️ 但有两个致命伤。</strong></p>
+<h3 id="1">伤口① 延迟账：一段一段加起来</h3>
+<p><strong>这是本章第一张必须自己加一遍的表。</strong> 从"你说完最后一个字"算到"你听见它的第一个音"：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>环节</th>
+<th>这一段在干什么</th>
+<th>⚠️ 典型耗时</th>
+<th><strong>累计</strong></th>
+<th>能不能压</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>VAD</strong> 判定"他说完了"</td>
+<td>等到连续静音超过阈值，才认为这一轮结束</td>
+<td>500 ~ 800 ms</td>
+<td>500 ~ 800</td>
+<td>❌ <strong>架构性的，压了就会打断用户</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>ASR</strong> 出最终文本</td>
+<td>流式 ASR 一路在出草稿，这一步是定稿（回头修正、补标点）</td>
+<td>100 ~ 300 ms</td>
+<td>600 ~ 1100</td>
+<td>部分可压</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>LLM 首 token</strong>（TTFT）</td>
+<td>prefill 完整段文本，吐出第一个字</td>
+<td>300 ~ 800 ms</td>
+<td>900 ~ 1900</td>
+<td>✅ 可压：小模型、prefix cache、投机解码</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>TTS</strong> 出第一段音频</td>
+<td>把第一个短语合成成波形</td>
+<td>100 ~ 300 ms</td>
+<td>1000 ~ 2200</td>
+<td>✅ 可压：流式 TTS 按短语出，不等整句</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>播放缓冲</strong> + 网络单程</td>
+<td>先攒一小段再播（抖动缓冲，jitter buffer），防网络抖动造成断音</td>
+<td>50 ~ 150 ms</td>
+<td>★ <strong>1050 ~ 2350</strong></td>
+<td>❌ 取消就卡顿</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ 合计首声延迟：★ 1.05 ~ 2.35 秒
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>注意第①项</strong>：它是<strong>架构性</strong>的——<strong>因为你必须先确定他说完了，才能开始想</strong>。<br />
-⟹ 这一条单独就决定了级联方案<strong>永远做不到自然对话的节奏</strong>。</p>
+<p>⚠️ <strong>这五个数字是工程量级，没有一手来源</strong>（不同产品、网络、模型差别很大），本文给出来只为说明<strong>各段的相对大小和不可压缩的那一段在哪</strong>。唯一有出处的是最后要对照的那个门槛，见 10.2 节末。</p>
+<p>★★ <strong>注意第①项，它是整张表的要害</strong>：它<strong>不是实现不好</strong>，而是<strong>架构性</strong>的——<strong>因为你必须先确定他说完了，才能开始想</strong>。VAD 的阈值是一个两难：<br />
+阈值调短 ⟹ 他只是中间喘了口气，你就抢话 ⟹ 体验更差；<br />
+阈值调长 ⟹ 反应更慢。<br />
+⟹ 🔑 <strong>这一条单独就决定了级联方案永远做不到自然对话的节奏。</strong> 后面三段再怎么优化，都压不过这半秒的底座。</p>
 </blockquote>
 <h3 id="2-asr">伤口② 信息在 ASR 那一步被丢光了</h3>
-<div class="codehilite"><pre><span></span><code>    语音里有：文字内容 + 语气 + 情绪 + 音量 + 重音 + 谁在说 + 背景声 + 停顿
-    ASR 输出：★ 只有文字
+<div class="codehilite"><pre><span></span><code>语音里有：文字内容 + 语气 + 情绪 + 音量 + 重音 + 谁在说 + 背景声 + 停顿
+ASR 输出：★ 只有文字
 
-    ⟹ 「你行啊。」这句话，是夸奖还是嘲讽？ ⚠️ 转成文字后，模型永远无法知道
-    ⟹ 反过来，TTS 那一端也只拿到文字 ⟹ 它不知道这句话该用什么情绪念
+⟹ 「你行啊。」这句话，是夸奖还是嘲讽？ ⚠️ 转成文字后，模型永远无法知道
+⟹ 反过来，TTS 那一端也只拿到文字 ⟹ 它不知道这句话该用什么情绪念
 </code></pre></div>
 
+<blockquote>
+<p>★ <strong>这是一个"信息瓶颈"，和 <a href="09-生成侧-图像与统一模型.html">09 章 9.3 节</a> 那根"文本细管子"是</strong>完全同一个毛病<strong>：两个强模型之间只通过一段纯文本通信，所有装不进文字的信息都在那一步永久丢失。⟹ 🔑 </strong>这也是为什么这两章的解法在结构上长得一模一样：把中间那根管子从"文本"换成"向量"。**</p>
+</blockquote>
 <hr />
 <h2 id="102">10.2 ★ 新办法：端到端语音</h2>
 <p><strong>思路和视觉完全同构</strong>（这就是为什么它属于多模态）：</p>
-<div class="codehilite"><pre><span></span><code>    输入侧：声音 → [音频编码器] → 音频 token → 和文本 token 拼进同一条序列
-                   📖 通常是 Whisper（arXiv 2212.04356）那一类的编码器
-                   ⟹ ★ 和 02 章的视觉塔是同一个位置、同一个角色
+<div class="codehilite"><pre><span></span><code>输入侧：声音 → [音频编码器] → 音频 token → 和文本 token 拼进同一条序列
+               📖 通常是 Whisper（arXiv 2212.04356）那一类的编码器
+               ⟹ ★ 和 02 章的视觉塔是同一个位置、同一个角色
 
-    输出侧：★ 这里是新问题 —— 怎么让 LLM &quot;吐&quot;出声音？
-            ⟹ 和 09 章图像生成【一模一样的困境】，也用了同一个解法：
-              给声音造一本词典（音频 codec）
+输出侧：★ 这里是新问题 —— 怎么让 LLM &quot;吐&quot;出声音？
+        ⟹ 和 09 章图像生成【一模一样的困境】，也用了同一个解法：
+          给声音造一本词典（音频 codec）
 </code></pre></div>
 
 <blockquote>
-<p>📖 <strong>音频 codec / 声学 token</strong>：用 <strong>RVQ（残差矢量量化）</strong> 把每 80 毫秒的声音<br />
-编码成几个整数（比如 8 层码本、每层一个编号）。<br />
+<p>📖 <strong>音频 codec / 声学 token</strong>：用 <strong>RVQ</strong> 把每一帧声音编码成<strong>几个整数</strong>（比如 8 层码本、每层出一个编号）。<br />
 ⟹ <strong>声音就变成了一串"词"</strong> ⟹ LLM 可以像写字一样"写"出声音。<br />
-⟹ ⚠️ 注意它是<strong>多层</strong>的：第一层管内容，后面几层管音色和细节 ——<br />
-所以输出时要<strong>同时预测好几个流</strong>，这是语音生成比文本生成复杂的地方。</p>
+⟹ ⚠️ 注意它是<strong>多层</strong>的：第一层主要管内容（语义），后面几层管音色和细节 ——<br />
+所以输出时要<strong>同时预测好几个流</strong>，这是语音生成比文本生成复杂的地方。<br />
+⟹ ★ 和 <a href="09-生成侧-图像与统一模型.html">09 章 9.4 节</a> 的图像 VQ 对照着看：图像是<strong>一个 token 管一小块空间</strong>，音频是<strong>好几个 token 一起管同一小段时间</strong>。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ✅ 收益①：★★ 延迟直接砍到 300 毫秒以内 —— 因为不需要等 ASR、TTS 两次转换
-    ✅ 收益②：情绪、语气、说话人信息【全程保留】，模型能听出嘲讽、能带情绪回答
-    ⚠️ 代价①：音频 token 很占位置（每秒几十到上百个 token）
-    ⚠️ 代价②：★ 语音数据远比图文数据稀缺，尤其是【带情绪、多轮、真实对话】的
-    ⚠️ 代价③：文本能力会掉——和 06 章&quot;加视觉会让文本变笨&quot;是同一个病
+<h3 id="_1">★ 端到端的同一笔延迟账</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>环节</th>
+<th>⚠️ 典型耗时</th>
+<th><strong>累计</strong></th>
+<th>为什么是这个数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>判定"他说完了"</td>
+<td>★★ <strong>0</strong></td>
+<td>0</td>
+<td><strong>根本不需要判定</strong>：模型每一拍都在决定自己要不要出声</td>
+</tr>
+<tr>
+<td>②</td>
+<td>收满一帧音频</td>
+<td>80 ms</td>
+<td>80</td>
+<td>★ <strong>帧长就是硬下限</strong>。✅ Mimi 的帧率是 12.5 Hz ⟹ 1 / 12.5 = 80 ms</td>
+</tr>
+<tr>
+<td>③</td>
+<td>模型跑完这一拍</td>
+<td>&lt; 80 ms</td>
+<td>80 ~ 160</td>
+<td>⚠️ <strong>必须小于一帧，否则跟不上实时</strong>（硬实时约束，10.5 节）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>codec 解码出波形</td>
+<td>10 ~ 30 ms</td>
+<td>90 ~ 190</td>
+<td>一个小解码器，很快</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>播放缓冲 + 网络单程</td>
+<td>50 ~ 150 ms</td>
+<td>★ <strong>140 ~ 340</strong></td>
+<td>和级联一样，这一段省不掉</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ 合计首声延迟：★ 140 ~ 340 毫秒
+⟹ ★★ 真正被砍掉的就是第 ① 项那半秒多，其余几段只是从&quot;两次模态转换&quot;
+  变成了&quot;一次前向&quot;。⟹ 🔑 收益的大头来自【架构改变】，不是【算得更快】。
+</code></pre></div>
+
+<h3 id="_2">✅ 门槛在哪：两个有出处的参照</h3>
+<blockquote>
+<p>✅ <strong>参照一（人类侧）</strong>：Stivers 等人在 PNAS 发表的 <em>Universals and cultural variation in turn-taking in conversation</em>（2009，PNAS 106(26): 10587–10592）对 10 种语言做了跨语言测量，结论是<strong>各语言的平均应答间隔彼此相差不超过 1/4 秒</strong>，轮次衔接存在明显的人类共性。这是"人类对话的间隔是几百毫秒量级"这个门槛最常被引用的源头。<br />
+⚠️ <strong>口径提醒</strong>：平常被引用的"约 200 毫秒"是这个分布的典型值，各语言有快有慢。<strong>本文没有逐字回溯该文正文的中位数表格</strong>，所以这里只采用已核到的"跨语言差异不超过 1/4 秒"这个说法，以及"几百毫秒量级"这个量级结论。</p>
+<p>✅ <strong>参照二（机器侧）</strong>：OpenAI 的 GPT-4o System Card（arXiv 2410.21276）给出的官方数字是：对音频输入的响应<strong>最快 232 毫秒、平均 320 毫秒</strong>，官方的表述是这"接近人类在对话中的响应时间"。<br />
+⚠️ <strong>注意这两个数不是一个东西</strong>：232 ms 是"最快可以到"，320 ms 是"平均"。很多二手文章把它们混着写成"平均 232 ms"，那是错的。</p>
+</blockquote>
+<p><strong>把四组数放在一起比</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>首声延迟</th>
+<th>数值</th>
+<th>出处</th>
+<th>相对人类间隔（按 200 ms）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>人类对话的轮次间隔</td>
+<td>几百毫秒量级</td>
+<td>✅ Stivers 等（PNAS 2009）</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>端到端（<strong>本文推演</strong>）</td>
+<td>140 ~ 340 ms</td>
+<td>⚠️ 本文按上表逐段相加</td>
+<td>0.7 ~ 1.7×</td>
+</tr>
+<tr>
+<td>GPT-4o 的音频响应</td>
+<td>232 ms（最快）/ 320 ms（平均）</td>
+<td>✅ GPT-4o System Card</td>
+<td>1.2 ~ 1.6×</td>
+</tr>
+<tr>
+<td>级联（<strong>本文推演</strong>）</td>
+<td>1050 ~ 2350 ms</td>
+<td>⚠️ 本文按 10.1 那张表相加</td>
+<td>★ <strong>5 ~ 12×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>本文那笔 140 ~ 340 ms 的推演落在官方区间里，这只能算一次"一致性检查"，不是对那个数字的复现</strong>——OpenAI 没有披露它的分段预算。★ <strong>别把"本文的推断"写成"报告的结论"。</strong></p>
+</blockquote>
+<h3 id="_3">⚠️ 顺手纠一个最常见的口径错误</h3>
+<div class="codehilite"><pre><span></span><code>从 1500 ms 压到 300 ms，这件事的两种说法：
+
+   时间减少了  (1500 − 300) / 1500 = 80%        ✅ 对
+   加速了      1500 / 300         = 5 倍        ✅ 对
+   &quot;加速了 80%&quot;                                 ❌ 错！
+     ⟹ 加速 80% 的意思是 1500 / 1.8 = 833 ms，完全是另一个数
+
+⟹ 🔑 【时间减少 X%】和【加速 X%】不是一回事，差得很远。
+⟹ ⚠️ 同理，&quot;延迟从 5% 降到 2%&quot;是降了【3 个百分点】，不是降了【3%】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>✅ 收益①：★★ 首声延迟从秒级进入几百毫秒级 —— 因为不必等 VAD 判定、不必做两次模态转换
+✅ 收益②：情绪、语气、说话人信息【全程保留】，模型能听出嘲讽、能带情绪回答
+⚠️ 代价①：★★ 音频 token 很占位置 —— 下一节算出到底有多占
+⚠️ 代价②：★ 语音数据远比图文数据稀缺，尤其是【带情绪、多轮、真实对话】的
+⚠️ 代价③：文本能力会掉 —— 和 06 章&quot;加视觉会让文本变笨&quot;是同一个病
 </code></pre></div>
 
 <hr />
-<h2 id="103">10.3 ★★ 真正的分水岭：全双工</h2>
+<h2 id="103-token">10.3 ★★ 音频的 token 率：算一遍就知道贵在哪</h2>
+<p><strong>这一节只做一道乘法，但它解释了语音方向一半的工程取舍。</strong></p>
+<div class="codehilite"><pre><span></span><code>每秒 token 数 = 帧率（每秒多少帧） × 码本层数（每帧多少个编号）
+</code></pre></div>
+
+<p>✅ 拿 Moshi 的 codec <strong>Mimi</strong> 做例子（它的参数是公开的，而且可以自己验算）：</p>
+<div class="codehilite"><pre><span></span><code>Mimi：帧率 12.5 Hz，8 层码本，每层码本 2048 个码字
+
+   每个 token 携带 = log₂(2048) = 11 bit
+   每秒 token 数   = 12.5 × 8 = ★ 100 个 token/秒
+   比特率          = 12.5 × 8 × 11 = 1100 bit/s = ★ 1.1 kbps
+
+⟹ ✅ 这个 1.1 kbps 正是 Moshi 论文公布的数字 —— 算得上，说明这几个参数自洽。
+⟹ ★ 帧长 = 1 / 12.5 Hz = 80 ms，这就是 10.2 节②那个 80 ms 的来源，
+  也是 Mimi 自己给出的&quot;理论延迟 80 毫秒&quot;。
+</code></pre></div>
+
+<p><strong>和文本、以及和别的 codec 比一下</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>帧率</th>
+<th>码本层数</th>
+<th><strong>每秒 token 数</strong></th>
+<th>比特率</th>
+<th>相对文本（按 3.5 token/s）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>人说话转成文本</strong></td>
+<td>≈ 3.5 Hz</td>
+<td>—</td>
+<td><strong>≈ 3.5</strong></td>
+<td>—</td>
+<td><strong>1×</strong></td>
+</tr>
+<tr>
+<td><strong>Mimi</strong>（Moshi 用）</td>
+<td>12.5 Hz</td>
+<td>8</td>
+<td><strong>100</strong></td>
+<td>1.1 kbps</td>
+<td>★ <strong>约 29 倍</strong></td>
+</tr>
+<tr>
+<td><strong>SpeechTokenizer</strong></td>
+<td>50 Hz</td>
+<td>8</td>
+<td><strong>400</strong></td>
+<td>4 kbps</td>
+<td>⚠️ <strong>约 114 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ <strong>"文本约 3.5 Hz"和 SpeechTokenizer 的"50 Hz / 4 kbps"都来自 Moshi 论文自己的对照表</strong>，Moshi 把"把帧率压到接近文本 token 的速率（约 3~4 Hz）"<strong>明确写成了设计目标</strong>——目的就是<strong>减少自回归步数</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>⟹ 🔑 读这张表的正确方式：
+   把帧率从 50 Hz 降到 12.5 Hz，每秒 token 从 400 降到 100 —— ★ 降到 1/4。
+   这不是&quot;顺手优化了一下&quot;，这是【能不能实时】的分界线：
+   ⟹ 每秒要跑 400 步自回归 vs 100 步，差的是 4 倍的算力预算。
+
+⟹ ⚠️ 但即使压到 100 token/秒，它仍然是文本的 29 倍。
+   ★ 这个 29 倍是语音方向绕不过去的税：同样长度的上下文窗口，
+     装文本能装几十分钟的对话内容，装音频只能装几分钟。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 再把 Moshi 的&quot;双流&quot;加进来（10.4 节会解释为什么要双流）：
+   你说的那一路音频      100 token/秒
+   它说的那一路音频      100 token/秒
+   它的&quot;内心独白&quot;文本流  12.5 token/秒（每拍一个文本 token）
+   ──────────────────────────────────────
+   合计                  ★ 约 212.5 token/秒
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这里有一个极容易算错的地方，下一节的显存账全靠它</strong>：<strong>8 层码本不等于 8 个序列位置。</strong> Moshi 用一个小的"深度 Transformer"（RQ-Transformer）在<strong>同一拍之内</strong>把 8 层展开，所以<strong>主干的自回归步数是 12.5 步/秒，不是 100 步/秒</strong>。<br />
+⟹ 🔑 <strong>"每秒 100 个 token"和"每秒 12.5 个时间步"都对，但用途完全不同</strong>：<br />
+算<strong>上下文占用和计费</strong>看 token 数；算 <strong>KV cache 长度和自回归步数</strong>看时间步数。<br />
+⚠️ <strong>这两个数差 8 倍，混了就会把显存估算搞错一个数量级</strong>（10.5 节有例子）。</p>
+</blockquote>
+<hr />
+<h2 id="104">10.4 ★★ 真正的分水岭：全双工</h2>
 <blockquote>
 <p>📖 <strong>半双工</strong>：像对讲机，一次只能一个人说（你说完 → 它说 → 你说）。<br />
 📖 <strong>全双工（full-duplex）</strong>：像真人对话，<strong>双方随时可以同时说、可以打断、可以"嗯嗯"附和</strong>。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 半双工模型在架构上是&quot;回合制&quot;的：
-       听（收集 token）→ 想 → 说（生成 token）→ 停 → 再听
-       ★ 在它&quot;说&quot;的时候，它【根本没在听】
-       ⟹ 你想打断它？它听不见。只能靠外面的程序检测到你出声、然后掐掉它
+<div class="codehilite"><pre><span></span><code>⚠️ 半双工模型在架构上是&quot;回合制&quot;的：
+   听（收集 token）→ 想 → 说（生成 token）→ 停 → 再听
+   ★ 在它&quot;说&quot;的时候，它【根本没在听】
+   ⟹ 你想打断它？它听不见。只能靠外面的程序检测到你出声、然后掐掉它
 
-    ★ 全双工的做法（Moshi，arXiv 2410.00037 是最出名的公开工作）：
-       模型【每 80 毫秒一拍】，每一拍同时做两件事：
-         · 读入这一拍你说的声音
-         · 输出这一拍它要说的声音（可以是&quot;静音&quot;）
-       ⟹ ★★ 于是&quot;听&quot;和&quot;说&quot;变成【两条永远并行的流】
-       ⟹ 打断不再需要外部逻辑 —— 它听见你出声，自己就会停
-       ⟹ 它甚至可以在你说话时插一句&quot;嗯&quot;（📖 backchannel，附和音）
+★ 全双工的做法（Moshi，arXiv 2410.00037 是最出名的公开工作）：
+   模型【每 80 毫秒一拍】，每一拍同时做两件事：
+     · 读入这一拍你说的声音
+     · 输出这一拍它要说的声音（可以是&quot;静音&quot;）
+   ⟹ ★★ 于是&quot;听&quot;和&quot;说&quot;变成【两条永远并行的流】
+   ⟹ 打断不再需要外部逻辑 —— 它听见你出声，自己就会停
+   ⟹ 它甚至可以在你说话时插一句&quot;嗯&quot;（📖 backchannel，附和音）
 </code></pre></div>
 
+<h3 id="_4">★ 全双工对模型结构到底提了哪些要求</h3>
+<p><strong>这张表是本节的核心</strong>：左右两列的差别，没有一项是调参能跨过去的。</p>
+<table>
+<thead>
+<tr>
+<th>要求</th>
+<th>半双工（回合制）</th>
+<th>★ 全双工</th>
+<th>为什么必须这样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>时间轴</strong></td>
+<td>没有时间轴，按"轮"推进，想多久算多久</td>
+<td>★★ <strong>固定节拍</strong>（Moshi：12.5 拍/秒，一拍 80 ms）</td>
+<td>要边听边说，两条流必须对齐在同一根时间轴上</td>
+</tr>
+<tr>
+<td><strong>每一拍做几件事</strong></td>
+<td>一件：要么听，要么说</td>
+<td>★ <strong>两件</strong>：读入这一拍的输入 <strong>+</strong> 输出这一拍的输出</td>
+<td>这就是"同时"的定义</td>
+</tr>
+<tr>
+<td><strong>"不说话"是什么</strong></td>
+<td>程序层面的一个状态（模型压根没被调用）</td>
+<td>★★ <strong>一个要被预测出来的 token（静音）</strong></td>
+<td>⟹ 沉默变成模型的合法动作，它才能<strong>学会</strong>什么时候该闭嘴</td>
+</tr>
+<tr>
+<td><strong>打断怎么实现</strong></td>
+<td>⚠️ 外部程序检测到你出声，<strong>强行掐掉</strong>输出</td>
+<td>★ 模型听见你出声，<strong>自己就停</strong>（下一拍它预测的就是静音）</td>
+<td>听觉输入在<strong>每一拍</strong>都影响输出</td>
+</tr>
+<tr>
+<td><strong>序列有没有结束符</strong></td>
+<td>有（一轮结束就收尾）</td>
+<td>★ <strong>没有</strong>。对话永不结束，序列一直长</td>
+<td>⟹ KV cache 持续增长，见 10.5</td>
+</tr>
+<tr>
+<td><strong>计算预算</strong></td>
+<td>平均延迟低就行</td>
+<td>⚠️ ★★ <strong>硬实时</strong>：每一拍只有 80 ms，一次都不能超</td>
+<td>超过一拍就跟不上，声音会断</td>
+</tr>
+<tr>
+<td><strong>能不能做长思维链</strong></td>
+<td>可以（让用户等着）</td>
+<td>❌ <strong>不能</strong>：一拍 80 ms，没有想 30 秒的余地</td>
+<td>⟹ 这就是 10.6 节③"智能倒退"的直接原因</td>
+</tr>
+<tr>
+<td><strong>训练数据要什么</strong></td>
+<td>单声道混音录音够用</td>
+<td>⚠️ ★ <strong>双通道</strong>：用户一轨、模型一轨<strong>分开录</strong></td>
+<td>混成一轨，模型学不到"谁在什么时候说"，也学不到重叠</td>
+</tr>
+<tr>
+<td><strong>音频编码器</strong></td>
+<td>可以离线（看完整句再编码）</td>
+<td>⚠️ 必须<strong>流式 / 因果</strong>，来一小段算一小段</td>
+<td>不能等他说完，见 10.5</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>🔑 <strong>这是一个架构级的差别，不是调参能达到的。</strong><br />
 ⟹ <strong>判断一个语音产品是不是真全双工，只要试一件事：在它说话时插一句"等一下"。</strong><br />
-半双工的会说完那一句才反应，或者被硬生生掐断（听起来像卡带）。</p>
+半双工的会说完那一句才反应，或者被硬生生掐断（听起来像卡带）。<br />
+⟹ ★ 上表第三行是最本质的一行：<strong>"沉默是不是一个被建模的 token"</strong>，这一个设计决定了其余全部。</p>
 </blockquote>
 <hr />
-<h2 id="104">10.4 流式：所有东西都要"边来边算"</h2>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 视觉可以等图片完整了再编码；语音不行 —— 你不能等他说完
-    ⟹ 音频编码器必须【流式】：来一小段算一小段
-    ⟹ 注意力要限制成【只看过去 + 一小段未来】（chunk-wise / 因果注意力）
-    ⟹ ⚠️ 代价：模型损失了&quot;回头听&quot;的能力，识别准确率比离线模式低一截
+<h2 id="105">10.5 流式与硬实时：所有东西都要"边来边算"</h2>
+<div class="codehilite"><pre><span></span><code>⚠️ 视觉可以等图片完整了再编码；语音不行 —— 你不能等他说完
+⟹ 音频编码器必须【流式】：来一小段算一小段
+⟹ 注意力要限制成【只看过去 + 一小段未来】（chunk-wise / 因果注意力）
+⟹ ⚠️ 代价：模型损失了&quot;回头听&quot;的能力，识别准确率比离线模式低一截
 </code></pre></div>
 
-<p><strong>推理侧的连锁反应</strong>（可对照 <a href="../推理框架/推理优化入门/">../推理框架/推理优化入门/</a>）：</p>
-<div class="codehilite"><pre><span></span><code>    · 语音的 KV cache 是【持续增长】的 —— 一通 10 分钟的电话，
-      按每秒 50 个音频 token 算 ⟹ ⚠️ 3 万个 token 的 KV，全程占着显存
-    · 必须严格控制【每一拍的计算量】：80 毫秒一拍，你就只有 80 毫秒
-      ⟹ ★ 这是【硬实时】约束，和聊天场景&quot;平均延迟低就行&quot;完全不同
-    · ⟹ 和隔壁 ../具身智能与世界模型/ 里机器人控制的实时性约束是同一类问题
+<h3 id="kv-cache-token">★ KV cache 账：先把"时间步"和"token 总数"分清</h3>
+<p><strong>接 10.3 节末那条警告。</strong> 算一通 <strong>10 分钟</strong>的电话，用 Moshi 那套参数（12.5 Hz，8 层码本，双流）：</p>
+<table>
+<thead>
+<tr>
+<th>要算的量</th>
+<th>算式</th>
+<th>结果</th>
+<th>用来干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>时间步数</strong></td>
+<td>600 秒 × 12.5 拍/秒</td>
+<td><strong>7,500</strong></td>
+<td>★★ <strong>这才是 KV cache 的长度</strong>（一拍占一个序列位置）</td>
+</tr>
+<tr>
+<td>声学 token 总数</td>
+<td>7500 × 8 层 × 2 流</td>
+<td><strong>120,000</strong></td>
+<td>上下文占用、计费、"模型处理了多少 token"的口径</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ ⚠️ 两个数差 16 倍。拿 120,000 去估 KV cache，显存会高估 16 倍。
+</code></pre></div>
+
+<p><strong>接着算显存</strong>（⚠️ 下面的模型配置是本文假设的一个典型值，不对应任何真实模型）：</p>
+<div class="codehilite"><pre><span></span><code>假设：32 层，GQA 的 KV 头 8 个，head_dim 128，bf16（2 字节/个数）
+
+每个序列位置、每层的 KV = 2（K 和 V）× 8 头 × 128 = 2048 个数 = 4096 字节
+每个序列位置（32 层）    = 4096 × 32 = 131,072 字节 = 128 KiB
+
+7,500 个时间步 ⟹ 7500 × 128 KiB = 960,000 KiB ≈ ★ 937 MiB ≈ 0.92 GiB
+   ⟹ 一通 10 分钟的电话，一路会话占不到 1 GB 的 KV cache
+
+⚠️ 如果错用 120,000 ⟹ 14.6 GiB，把一张卡的并发能力算低 16 倍。
+
+⟹ ★ 顺手算一下并发上限：一张 80 GB 的卡，假设留 60 GB 给 KV cache
+     ⟹ 60 / 0.92 ≈ 65 路 10 分钟长度的并发会话
+   ⟹ 🔑 这就是实时语音服务的真实瓶颈长相：不是算不过来，是【装不下】。
+</code></pre></div>
+
+<h3 id="_5">⚠️ 延迟和吞吐是两件事，而且优化方向常常相反</h3>
+<div class="codehilite"><pre><span></span><code>实时语音：batch 尽量小（常常就是 1），每 80 ms 必须返回一次
+  ⟹ 假设一拍的前向只要 10 ms：
+     GPU 干活 10 ms，然后【空转 70 ms】等下一帧音频到达
+     ⟹ ★ 单路会话的 GPU 利用率 = 10 / 80 = 12.5%
+  ⟹ 想把利用率提上去，只有一条路：
+     ★ 把【更多并发会话】塞进同一个 batch（每路都在自己的第 N 拍）
+     ⚠️ 不能靠&quot;多攒一点 token 再算&quot; —— 攒就要等，等就违反实时
+
+批处理（离线转写、离线配音）：
+  ⟹ 大 batch、填满 GPU、吞吐拉到最高；第一个结果等几秒钟无所谓
+
+⟹ 🔑 两边的优化目标是不同的量：
+   实时场景看【p99 延迟】：一拍之内必须算完，平均快没用，偶尔超时就断音
+   批处理看【吞吐】：单位时间处理的总量
+⟹ ⚠️ 所以&quot;某个推理优化让吞吐涨了 3 倍&quot;这句话，对实时语音可能毫无意义、
+   甚至有害 —— 因为大多数提吞吐的手段都是靠【攒批】，而攒批就是在加延迟。
+⟹ ★ 这和 09 章 9.7 节&quot;单张图延迟 vs 批处理吞吐&quot;是同一个道理。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>这类"每一拍必须算完"的硬实时约束，和隔壁 <a href="../具身智能与世界模型/">../具身智能与世界模型/</a> 里机器人控制回路的约束是同一类问题</strong>：都不是"平均够快就行"，而是"<strong>每一次都不能超时</strong>"。可对照的推理优化通论见 <a href="../推理框架/推理优化入门/">../推理框架/推理优化入门/</a>。</p>
+</blockquote>
+<hr />
+<h2 id="106">10.6 ⚠️ 这个方向的三个真实困难</h2>
+<div class="codehilite"><pre><span></span><code>① 数据       ★ 最大的坎。真实的、多轮的、带打断和情绪的对话录音，
+             既稀缺又有隐私和版权问题
+             ⟹ ⚠️ 而且 10.4 那张表倒数第二行加了一道额外门槛：
+               必须是【双通道分轨】录音，单声道混音的数据根本训不了全双工
+             ⟹ 合成数据在这里很难造：★ 合成对话没有真实的【打断和重叠】
+
+② 评测       ⚠️ 几乎无解。&quot;这个语音助手好不好用&quot;该怎么打分？
+             延迟能测，打断响应能测（10.4 那个&quot;插一句等一下&quot;就是一个可测项），
+             但【对话的自然度】只能靠人听
+             ⟹ ★ 对照 08 章 8.2 节那张表：视觉幻觉之所以好治，
+               是因为&quot;图里有没有狗&quot;是客观事实；
+               而&quot;这段对话自不自然&quot;【没有客观真值】⟹ 做不成可验证奖励
+             ⟹ 见 11 章：这是多模态评测困境里最严重的一格
+
+③ 智能倒退   ★ 端到端语音模型的【推理能力普遍弱于同源文本模型】
+             ⚠️ 原因我认为有两条，而且两条都在前面算过账：
+               · 语音数据量小得多（① 这一条）
+               · 10.4 那张表第 7 行：一拍只有 80 ms，★★ 结构上不允许长思维链
+                 —— 你不能让用户等它想 30 秒
+             ⟹ 🔑 这是【延迟和智能的直接对立】，目前无解，
+               只能靠工程折中：简单问题端到端直接答、
+               复杂问题转给文本模型（⚠️ 代价是那一路又回到秒级延迟）
+             ⟹ ★ Moshi 的&quot;内心独白&quot;文本流（10.3 节末）是另一种折中：
+               让它每拍写一个文本 token 当作思考的落脚点，
+               ⚠️ 但每拍只有一个 token 的预算，这个&quot;思考&quot;极其短促
 </code></pre></div>
 
 <hr />
-<h2 id="105">10.5 ⚠️ 这个方向的三个真实困难</h2>
-<div class="codehilite"><pre><span></span><code> ① 数据       ★ 最大的坎。真实的、多轮的、带打断和情绪的对话录音，
-              既稀缺又有隐私和版权问题
-              ⟹ 合成数据在这里很难造：★ 合成对话没有真实的【打断和重叠】
+<h2 id="107-omni">10.7 "omni / 全模态"这个词该怎么理解</h2>
+<div class="codehilite"><pre><span></span><code>宣传里的 omni：文 / 图 / 音 / 视频，全都能进、全都能出
+⚠️ 实际拆开看，通常是：
+   · 文、图、音【进】     ← 这个一般是真的
+   · 文【出】             ← 一定是真的
+   · 音【出】             ← 可能是端到端，也可能是外挂 TTS ★ 差别巨大
+   · 图【出】             ← 大概率是外挂扩散（09 章路线①）
 
- ② 评测       ⚠️ 几乎无解。&quot;这个语音助手好不好用&quot;该怎么打分？
-              延迟能测，打断响应能测，但【对话的自然度】只能靠人听
-              ⟹ 见 11 章：这是多模态评测困境里最严重的一格
-
- ③ 智能倒退   ★ 端到端语音模型的【推理能力普遍弱于同源文本模型】
-              ⚠️ 原因我认为有两条：语音数据量小得多；
-                 以及&quot;实时&quot;这个约束不允许它做长思维链——
-                 ★★ 你不能让用户等它想 30 秒
-              ⟹ 🔑 这是【延迟和智能的直接对立】，目前无解，
-                 只能靠&quot;简单问题端到端答、复杂问题转给文本模型&quot;这类工程折中
+🔑 三个问题看穿一个&quot;全模态&quot;模型：
+   ① 语音输出是端到端的，还是接了 TTS？
+      ⟹ ★ 怎么验：问它一句带情绪的话，看它的回答有没有相应的语气
+   ② 是不是全双工？
+      ⟹ ★ 怎么验：在它说话时插一句&quot;等一下&quot;（10.4 节末）
+   ③ 图像输出是同一个模型出的，还是调了另一个模型？
+      ⟹ ★ 怎么验：让它&quot;把刚才那张图里的猫换成狗，其它一模一样&quot;（09 章 9.3 节）
 </code></pre></div>
 
+<blockquote>
+<p>🔑 <strong>这三个问题的共同点</strong>：<strong>都不看分数，只看"中间那根管子是文本还是向量"。</strong> 一旦某一段退化成纯文本，那一段的信息就一定被丢掉过——这是本章和 09 章共用的那条判据。</p>
+</blockquote>
 <hr />
-<h2 id="106-omni">10.6 "omni / 全模态"这个词该怎么理解</h2>
-<div class="codehilite"><pre><span></span><code>    宣传里的 omni：文/图/音/视频，全都能进、全都能出
-    ⚠️ 实际拆开看，通常是：
-       · 文、图、音【进】     ← 这个一般是真的
-       · 文【出】             ← 一定是真的
-       · 音【出】             ← 可能是端到端，也可能是外挂 TTS ★ 差别巨大
-       · 图【出】             ← 大概率是外挂扩散（09 章路线①）
-
-    🔑 三个问题看穿一个&quot;全模态&quot;模型：
-       ① 语音输出是端到端的，还是接了 TTS？
-       ② 是不是全双工？（在它说话时打断试试）
-       ③ 图像输出是同一个模型出的，还是调了另一个模型？
-</code></pre></div>
-
-<hr />
-<h2 id="107">10.7 🔑 这一章的五句话</h2>
+<h2 id="108">10.8 🔑 这一章的六句话</h2>
 <ol>
-<li><strong>级联（ASR→LLM→TTS）的两个致命伤：1.5 秒起步的延迟，和 ASR 那一步把语气情绪全丢光。</strong></li>
-<li><strong>端到端语音 = 音频编码器（对应视觉塔）+ 音频 codec 输出（对应图像词典）</strong>——结构和前面九章完全同构。</li>
-<li>★★ <strong>全双工是架构级差别</strong>：听和说是两条并行的流。<strong>试着打断它，就知道是不是真的。</strong></li>
-<li>⚠️ <strong>实时约束和智能直接对立</strong>：不能让用户等你想 30 秒 ⟹ 端到端语音模型的推理能力普遍弱一截。</li>
-<li>⚠️ <strong>"全模态"是营销词</strong>，拆开问四个模态各自"进还是出、端到端还是外挂"，宣传就现形了。</li>
+<li><strong>级联（ASR → LLM → TTS）的首声延迟是 1.05 ~ 2.35 秒</strong>，而<strong>最大的一块（VAD 判定"说完了"的 0.5 ~ 0.8 秒）是架构性的、压不掉的</strong>——因为你必须先确定他说完了才能开始想。</li>
+<li><strong>端到端把那一段整个删掉，推演下来是 140 ~ 340 毫秒</strong>；✅ GPT-4o System Card 官方报的是<strong>最快 232 ms、平均 320 ms</strong>，对照 ✅ Stivers 等人（PNAS 2009）测出的"人类跨语言应答间隔相差不超过 1/4 秒"，这才进了"像人"的区间。⚠️ 本文的推演和官方数字吻合只是一致性检查，不是复现。</li>
+<li>★★ <strong>音频的 token 率 = 帧率 × 码本层数</strong>。✅ Mimi：12.5 Hz × 8 层 = <strong>100 token/秒</strong>，是文本（约 3.5 token/秒）的 <strong>29 倍</strong>；把帧率从 50 Hz 压到 12.5 Hz 是能不能实时的分界线。</li>
+<li>★★ <strong>"每秒 100 个 token"和"每秒 12.5 个时间步"都对，但 KV cache 只按时间步算</strong>——混了会把显存高估 16 倍。一通 10 分钟的电话约 0.9 GB KV cache，<strong>实时语音服务的瓶颈是装不下，不是算不过来</strong>。</li>
+<li>★★ <strong>全双工是架构级差别</strong>，最本质的一条是：<strong>"沉默"从一个程序状态变成了一个被预测出来的 token</strong>。所以它能自己停、能附和；代价是硬实时、双通道数据、和<strong>结构上不允许长思维链</strong>。</li>
+<li>⚠️ <strong>实时场景看 p99 延迟，批处理看吞吐，优化方向常常相反</strong>——"吞吐涨 3 倍"对实时语音可能是有害的；而<strong>"时间减少 80%"叫"加速 5 倍"，不叫"加速 80%"</strong>。</li>
 </ol>
 <hr />
 <blockquote>

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,67 +257,291 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="06">06 · 训练流程：三个阶段，谁冻谁训</h1>
 <blockquote>
 <p>前五章讲的是"模型长什么样"，这一章讲"它是怎么被训出来的"。<br />
-<strong>两条路线的训练流程完全不同</strong>（01 章 1.3 节），先讲便宜的那条，再讲贵的那条。</p>
+<strong>两条路线的训练流程完全不同</strong>（01 章 1.3 节），先讲便宜的那条，再讲贵的那条。<br />
+<strong>读法</strong>：6.1 那张表是本章的骨架，6.2 和 6.3 是两笔必须自己算一遍的账。</p>
 </blockquote>
 <hr />
-<h2 id="61">6.1 ★ 拼接式路线：三阶段流水线</h2>
-<p>这是<strong>开源社区和绝大多数团队实际会走的路</strong>，也是你自己动手时会走的路。</p>
-<div class="codehilite"><pre><span></span><code> ┌── 阶段一：对齐（alignment / 预对齐）──────────────────────────┐
- │  数据：几百万 ~ 几千万条【图 + 一句说明】（图文对）              │
- │  冻结：视觉塔 ❄️   连接器 🔥   LLM ❄️                          │
- │  目标：让连接器学会&quot;把视觉向量翻译成 LLM 听得懂的话&quot;             │
- │  代价：几十张卡 × 几天                                        │
- │  ★ 为什么冻 LLM：数据量小、质量参差，放开会【破坏语言能力】        │
- └──────────────────────────────────────────────────────────┘
-                              ↓
- ┌── 阶段二：多模态预训练（也叫 continued pretraining）─────────────┐
- │  数据：几百 B ~ 几 T token，图文交错文档 + OCR + 图表 + 视频      │
- │  冻结：视觉塔 🔥   连接器 🔥   LLM 🔥（全放开）                  │
- │  目标：真正长本事——认字、读表、懂图表、理解画面里的世界            │
- │  代价：★ 这一阶段占多模态训练总成本的大头                        │
- └──────────────────────────────────────────────────────────┘
-                              ↓
- ┌── 阶段三：多模态指令微调（SFT）────────────────────────────────┐
- │  数据：几十万 ~ 几百万条【图 + 问题 + 标准答案】                  │
- │  冻结：视觉塔 ❄️ 或小学习率   连接器 🔥   LLM 🔥                 │
- │  目标：学会【按人类期望的方式回答】——格式、拒答、不瞎编            │
- │  ⟹ 机制和纯文本 SFT 一模一样，见 ../后训练/02-SFT-监督微调.md    │
- └──────────────────────────────────────────────────────────┘
-                              ↓
- ┌── 阶段四（2025 年后新增）：多模态后训练 / RL ────────────────────┐
- │  ⟹ 单独用一章讲：08 章                                         │
- └──────────────────────────────────────────────────────────┘
+<h2 id="61">6.1 ★ 拼接式路线：四个阶段一张表</h2>
+<p>这是<strong>开源社区和绝大多数团队实际会走的路</strong>，也是你自己动手时会走的路。四个阶段按顺序跑，<strong>每一阶段只改变两件事：哪些参数解冻、喂什么数据</strong>。</p>
+<p>先把三大件的符号约定好：❄️ = 冻住（参数不更新）、🔥 = 解冻（参数跟着梯度走）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>阶段一</strong> 对齐</th>
+<th><strong>阶段二</strong> 多模态预训练</th>
+<th><strong>阶段三</strong> 指令微调（SFT）</th>
+<th><strong>阶段四</strong> 偏好对齐 / RL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>视觉塔</strong></td>
+<td>❄️ 冻</td>
+<td>🔥 训</td>
+<td>❄️ 冻，或给小 10~100 倍的学习率</td>
+<td>❄️ 冻</td>
+</tr>
+<tr>
+<td><strong>连接器</strong></td>
+<td>🔥 训（<strong>全场唯一在训的</strong>）</td>
+<td>🔥 训</td>
+<td>🔥 训</td>
+<td>🔥 训或冻，影响很小</td>
+</tr>
+<tr>
+<td><strong>LLM 主干</strong></td>
+<td>❄️ 冻</td>
+<td>🔥 训（全放开）</td>
+<td>🔥 训</td>
+<td>🔥 训</td>
+</tr>
+<tr>
+<td><strong>可训参数占比</strong></td>
+<td>★ <strong>约 0.1%</strong>（算法见 6.2）</td>
+<td>100%</td>
+<td>约 99%</td>
+<td>约 99%</td>
+</tr>
+<tr>
+<td><strong>数据长什么样</strong></td>
+<td>图 + 一句说明（图文对）</td>
+<td>图文交错文档 + OCR + 图表 + 视频</td>
+<td>图 + 问题 + 标准答案</td>
+<td>图 + 问题 + 好答案 / 坏答案</td>
+</tr>
+<tr>
+<td><strong>数据量级</strong></td>
+<td>几百万 ~ 几千万条</td>
+<td>几百 B ~ 几 T token</td>
+<td>几十万 ~ 几百万条</td>
+<td>几万 ~ 几十万条 prompt</td>
+</tr>
+<tr>
+<td><strong>学习率量级</strong></td>
+<td>⚠️ ~10⁻³</td>
+<td>⚠️ ~10⁻⁵ ~ 10⁻⁴</td>
+<td>⚠️ ~10⁻⁵</td>
+<td>⚠️ ~10⁻⁶</td>
+</tr>
+<tr>
+<td><strong>目标</strong></td>
+<td>让连接器学会"把视觉向量翻译成 LLM 听得懂的话"</td>
+<td>真正长本事——认字、读表、懂图表、理解画面里的世界</td>
+<td>学会<strong>按人类期望的方式</strong>回答：格式、拒答、不瞎编</td>
+<td>压幻觉、对齐偏好、学会用视觉反馈改自己</td>
+</tr>
+<tr>
+<td><strong>算力代价</strong></td>
+<td>几十张卡 × 几天</td>
+<td>★ <strong>占多模态训练总成本的大头</strong></td>
+<td>几十 ~ 几百张卡 × 几天</td>
+<td>⚠️ 看 rollout 规模，可以很贵</td>
+</tr>
+<tr>
+<td><strong>⚠️ 跳过它会怎样</strong></td>
+<td>随机初始化的连接器把噪声梯度直接灌进 LLM ⟹ <strong>纯文本能力掉、训练不稳</strong>（机制见 6.2）</td>
+<td>模型只会"看图说一句话"：<strong>OCR 近乎为零，图表读不出数</strong></td>
+<td>会描述但不会答题：<strong>答非所问、格式失控、不会说"我看不清"</strong></td>
+<td><strong>幻觉压不住</strong>（08 章）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>学习率那一行必须打折扣看</strong>：这组量级来自 LLaVA 系列公开配置里最常被引用的一套（阶段一 10⁻³、阶段三 2×10⁻⁵），<strong>本文没有逐字回溯原论文附录</strong>，各家实际取值出入很大。要记住的不是具体数值，而是<strong>阶段一的学习率比阶段三大两个数量级</strong>这个相对关系——下一节解释为什么可以这么大。</p>
+<p>📖 <strong>阶段四在 2025 年之后才成为标配</strong>，它借用的全是纯文本后训练的机制（SFT / DPO / RLVR / GRPO）。<strong>本章不重复那些机制</strong>，多模态特有的部分单独用一章讲：<a href="08-幻觉与多模态后训练.html">08 章</a>；通用机制见 <a href="../后训练/README.html">../后训练/README.md</a> 那张地图。</p>
+</blockquote>
+<hr />
+<h2 id="62-llm">6.2 ★★ 为什么第一阶段必须冻住 LLM</h2>
+<p><strong>这是全章最值得想明白的一个机制</strong>，而大多数教程只给结论（"数据质量差，放开会破坏语言能力"），不给过程。</p>
+<h3 id="01">先把"0.1%"这个数算出来</h3>
+<p>拿一个典型的拼接式配置：LLM 32B、视觉塔 0.4B（27 层 / 宽 1152，02 章那张表里的形状）、连接器是两层 MLP。</p>
+<div class="codehilite"><pre><span></span><code>连接器的参数量（2×2 合并后 4 个 patch 拼成一个输入向量）：
+   输入维度 = 4 × 1152 = 4608
+   第一层：4608 × 4096  = 18.9 M
+   第二层：4096 × 4096  = 16.8 M
+   合计                 ≈ 35.7 M ≈ 0.036 B
+
+阶段一可训参数占比 = 0.036 / (32 + 0.4 + 0.036) = 0.036 / 32.44 = 0.11%
 </code></pre></div>
 
-<hr />
-<h2 id="62-loss">6.2 ★★ loss 加在哪：一个初学者一定会踩的坑</h2>
-<div class="codehilite"><pre><span></span><code>    序列：[&lt;img&gt;][v1][v2]...[v1521][&lt;/img&gt;][「这][「个][「报][「错]...[答][案]
+<p><strong>阶段一只有千分之一的参数在动。</strong> 这不是省钱的权宜之计，这是设计。</p>
+<h3 id="vs">机制：固定靶 vs 移动靶</h3>
+<div class="codehilite"><pre><span></span><code>阶段一开始的那一刻，连接器是【随机初始化】的
+   ⟹ 它输出的向量，在 LLM 的嵌入空间里就是一串噪声
+   ⟹ LLM 看到噪声，预测下一个字当然预测不对 ⟹ loss 很大 ⟹ 梯度很大
 
-    ⚠️ 天真做法：所有 token 都算 next-token prediction loss
-       ⟹ 但视觉 token 是【连续向量】，根本不在词表里，
-         &quot;预测下一个视觉 token&quot;这件事在标准 LLM 的输出头上【无法定义】
+★ 关键在于：这个大 loss 的责任全在连接器，不在 LLM。
+   但梯度下降【不区分责任归属】——它会同时沿两边的梯度往下走。
 
-    ★ 标准做法：视觉 token 位置【不算 loss】（用 loss mask 屏蔽），
-       只在文本 token 上算。视觉 token 只作为【上下文】参与注意力。
+⟹ 如果 LLM 也解冻：
+     连接器在学&quot;怎么说 LLM 听得懂的话&quot;
+     LLM 同时在学&quot;怎么听懂连接器的乱码&quot;
+     ⟹ ⚠️ 两边都在动 = 互相迁就 = 打一个【移动靶】
+     ⟹ 而&quot;听懂乱码&quot;这个方向，就是【破坏原有语言分布】的方向
 
-    ⟹ 🔑 这就是为什么理解型多模态模型【只能吐字，不能吐图】——
-       它的输出头就只有一个词表那么宽。
-    ⟹ ★★ 想让它吐图，就必须改输出头，这是 09 章的全部内容。
+⟹ 冻住 LLM 之后：
+     LLM 变成一个【固定不动的评分函数】
+     连接器的任务从&quot;互相迁就&quot;变成&quot;打一个固定靶&quot;
+     ⟹ ★ 优化问题从非平稳变成平稳，这才是它能稳定收敛的原因
 </code></pre></div>
 
 <blockquote>
-<p>📖 <strong>loss mask（损失掩码）</strong>：只在序列的某些位置计算损失、其余位置置零。<br />
-纯文本 SFT 里"只在答案上算 loss"用的是同一个机制，见 <a href="../后训练/02-SFT-监督微调.html">../后训练/02-SFT-监督微调.md</a>。</p>
+<p>🔑 <strong>一句话</strong>：<strong>冻住 LLM 不是为了省算力，是为了把"对齐"变成一个有固定目标的优化问题。</strong> 两边同时动，你不知道是连接器学会了说，还是 LLM 学会了听懂乱码——而后者是你最不想要的。</p>
+</blockquote>
+<h3 id="llm-caption">第二条理由：阶段一的数据会把 LLM 带进"caption 腔"</h3>
+<div class="codehilite"><pre><span></span><code>阶段一的数据是几千万条图文对，典型句式：
+   &quot;a photo of a cat sitting on a sofa&quot;
+   &quot;红色连衣裙 春季新款&quot;
+   ⟹ ⚠️ 短、句式单一、没有推理、没有多轮、噪声大（7.2 节会展开有多差）
+
+⟹ 用这种数据去微调一个在几十 T token 上训出来的 LLM，
+   等于用一个极窄的分布去覆盖一个极宽的分布
+   ⟹ ★ 结果是输出分布塌缩：它开始用 caption 腔回答所有问题，
+     数学、代码、多轮对话一起退化
+</code></pre></div>
+
+<h3 id="103">第三条理由：这才是阶段一的学习率能开到 10⁻³ 的前提</h3>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>学习率量级</th>
+<th>在训的是什么</th>
+<th>为什么是这个量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>阶段一</strong></td>
+<td>~10⁻³</td>
+<td>连接器（随机初始化的新模块）</td>
+<td>它离最优点<strong>很远</strong> ⟹ 必须大步走</td>
+</tr>
+<tr>
+<td><strong>阶段三</strong></td>
+<td>~2×10⁻⁵</td>
+<td>LLM 全部权重</td>
+<td>它<strong>已经在一个很好的点上</strong> ⟹ 大步走就是破坏</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>10⁻³ ÷ 2×10⁻⁵ = 50 倍
+
+⟹ ★ 这 50 倍只有在&quot;LLM 被冻住&quot;时才是安全的。
+   一旦解冻，同一个 10⁻³ 会在几百步内把语言能力砸掉。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个常见的误读</strong>："冻住 LLM"不等于"LLM 不参与计算"。它照常跑完整的前向，也照常反向传播——<strong>梯度穿过它、回到连接器</strong>，只是到了它自己的权重这里不做更新。所以阶段一<strong>省的是优化器状态和梯度的显存，不省前向算力</strong>。</p>
 </blockquote>
 <hr />
-<h2 id="63">6.3 原生多模态路线：没有"阶段一"</h2>
-<div class="codehilite"><pre><span></span><code>    ✅ GLM-5.3-Flash：预训练语料就是【30T 多模态语料】
-       —— 不是&quot;先训文本再加视觉&quot;，而是从头就混着
-       出处：../业界模型技术报告/GLM-5.3.md §五、§九
+<h2 id="63-loss">6.3 ★★ loss 加在哪：一个初学者一定会踩的坑</h2>
+<div class="codehilite"><pre><span></span><code>序列：[&lt;img&gt;][v1][v2]...[v1521][&lt;/img&gt;][「这][「个][「报][「错]...[答][案]
 
-    ✅ Kimi K3：视觉塔 MoonViT-V2 【从零、用 next-token prediction 训练】
-       ⟹ 连&quot;拿 SigLIP 当起点&quot;这一步都省了
-       出处：../业界模型技术报告/Kimi-K3.md §六
+⚠️ 天真做法：所有 token 都算 next-token prediction loss
+   ⟹ 但视觉 token 是【连续向量】，根本不在词表里，
+     &quot;预测下一个视觉 token&quot;这件事在标准 LLM 的输出头上【无法定义】
+
+★ 标准做法：视觉 token 位置【不算 loss】（用 loss mask 屏蔽），
+   只在文本 token 上算。视觉 token 只作为【上下文】参与注意力。
+
+⟹ 🔑 这就是为什么理解型多模态模型【只能吐字，不能吐图】——
+   它的输出头就只有一个词表那么宽。
+⟹ ★★ 想让它吐图，就必须改输出头，这是 09 章的全部内容。
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>loss mask（损失掩码）</strong>：只在序列的某些位置计算损失、其余位置置零。纯文本 SFT 里"只在答案上算 loss"用的是同一个机制，见 <a href="../后训练/02-SFT-监督微调.html">../后训练/02-SFT-监督微调.md</a>。</p>
+<p>⚠️ <strong>"不算 loss"≠"没有梯度"，这两件事经常被混</strong>。视觉 token 所在的位置不产生 loss 项，但文本位置的 loss 会<strong>通过注意力反传到视觉 token 上</strong>，再往回传到连接器和视觉塔。阶段二里视觉塔之所以能被训起来，靠的就是这条路径。</p>
+</blockquote>
+<h3 id="_1">★ 把"梯度信号密度"这笔账算出来</h3>
+<p>用全书的那张跑例图：1092×1092 像素，patch 14 ⟹ (1092/14)² = 78² = <strong>6084 个 patch</strong> ⟹ 2×2 合并 ⟹ <strong>1521 个视觉 token</strong>（00 章 / 04 章同一口径）。配一问一答：问题 12 个文本 token，答案 60 个。</p>
+<table>
+<thead>
+<tr>
+<th>序列里的段</th>
+<th>token 数</th>
+<th>占序列</th>
+<th>参与前向计算</th>
+<th>参与注意力</th>
+<th><strong>算 loss</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>视觉 token</td>
+<td>1521</td>
+<td><strong>95.4%</strong></td>
+<td>是</td>
+<td>是</td>
+<td><strong>否</strong></td>
+</tr>
+<tr>
+<td><code>&lt;img&gt;</code> / <code>&lt;/img&gt;</code> 两个标记</td>
+<td>2</td>
+<td>0.1%</td>
+<td>是</td>
+<td>是</td>
+<td>一般否</td>
+</tr>
+<tr>
+<td>问题（文本）</td>
+<td>12</td>
+<td>0.8%</td>
+<td>是</td>
+<td>是</td>
+<td><strong>否</strong>（SFT 只在答案算）</td>
+</tr>
+<tr>
+<td>答案（文本）</td>
+<td>60</td>
+<td><strong>3.8%</strong></td>
+<td>是</td>
+<td>是</td>
+<td><strong>是</strong></td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>1595</strong></td>
+<td>100%</td>
+<td>—</td>
+<td>—</td>
+<td><strong>只有 60 个位置</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>多模态 SFT：算力按 1595 个 token 收费，梯度信号只从  60 / 1595 = 3.8% 的位置来
+纯文本 SFT：同样一问一答，序列只有 12 + 60 = 72 个 token
+            梯度信号从  60 / 72 = 83.3% 的位置来
+
+⟹ 梯度信号密度相差 83.3% ÷ 3.8% ≈ 22 倍
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这个 22 倍的口径要说清楚，别写成"多模态 SFT 比纯文本贵 22 倍"</strong>。它说的是：<strong>每花一份前向算力，你拿到的监督信号少 22 倍</strong>。总成本还要看序列变长带来的注意力开销（1595² ÷ 72² ≈ 490 倍），那是另一笔账。<strong>"信号密度低 22 倍"和"算力贵 N 倍"是两个不同的量，不要相加也不要互相代替。</strong></p>
+</blockquote>
+<h3 id="_2">⚠️ 顺手验一下分辨率的平方关系</h3>
+<div class="codehilite"><pre><span></span><code>把输入从 1092×1092 换成 2184×2184（★ 边长只翻了 1 倍）：
+   patch 数    6084 → (2184/14)² = 156² = 24336      ← ★ 4 倍，不是 2 倍
+   视觉 token  1521 → 24336 / 4 = 6084               ← 同样 4 倍
+   序列长度    1595 → 6084 + 2 + 12 + 60 = 6158
+   算 loss 的  还是 60 个位置，一个都没多             ← ★ 分子没动
+   信号密度    3.8% → 60 / 6158 = 0.97%              ← ★ 降到 1/4
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>边长翻倍 ⟹ patch 数 4 倍 ⟹ 梯度信号密度降到 1/4。</strong> 这是 04 章"分辨率不是越高越好"那条曲线的一个训练侧解释：<strong>分辨率越高，同样的答案要去监督越多的视觉 token，监督变得越稀</strong>。⚠️ 这是本文的推演，不是某篇论文的结论——各家对那条曲线的归因并不一致。</p>
+</blockquote>
+<hr />
+<h2 id="64">6.4 原生多模态路线：没有"阶段一"</h2>
+<div class="codehilite"><pre><span></span><code>✅ GLM-5.3-Flash：预训练语料就是【30T 多模态语料】
+   —— 不是&quot;先训文本再加视觉&quot;，而是从头就混着
+   出处：../业界模型技术报告/GLM-5.3.md §五、§九
+
+✅ Kimi K3：视觉塔 MoonViT-V2 【从零、用 next-token prediction 训练】
+   ⟹ 连&quot;拿 SigLIP 当起点&quot;这一步都省了
+   出处：../业界模型技术报告/Kimi-K3.md §六
 </code></pre></div>
 
 <p><strong>两条路线的对照</strong>：</p>
@@ -332,8 +561,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td>有没有"冻结阶段"</td>
-<td>★ 有，而且很关键</td>
+<td>★ 有，而且很关键（6.2 节）</td>
 <td>基本没有</td>
+</tr>
+<tr>
+<td>为什么可以不冻</td>
+<td>—</td>
+<td>★ <strong>没有"预训练好的语言能力"需要保护</strong>——语言能力本身就是在这一轮里长出来的</td>
 </tr>
 <tr>
 <td>多模态数据量</td>
@@ -357,15 +591,21 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>🔑 <strong>把 6.2 和这张表连起来看</strong>：<strong>"要不要冻结"这个问题的答案，完全取决于"有没有东西需要保护"。</strong> 拼接式的 LLM 是一笔已经存好的资产，所以要先围起来；原生路线没有这笔资产，自然也没有冻结阶段。</p>
+</blockquote>
 <hr />
-<h2 id="64">6.4 ⚠️ 三个真实会咬人的问题</h2>
+<h2 id="65">6.5 ⚠️ 三个真实会咬人的问题</h2>
 <h3 id="1">问题① 灾难性遗忘：加了视觉，文本变笨了</h3>
-<div class="codehilite"><pre><span></span><code>    现象：多模态微调后，MMLU / 数学 / 代码分数【掉几个点】
-    原因：阶段二三的数据里图文占比过高，模型往&quot;看图说话&quot;漂移
+<div class="codehilite"><pre><span></span><code>现象：多模态微调后，MMLU / 数学 / 代码分数【掉几个点】
+⚠️ 注意口径：这里说的是【百分点】（比如 72.0 → 68.5，掉 3.5 个百分点），
+   不是&quot;掉了 3.5%&quot;（那会是 72.0 → 69.5）。两者差了一倍，别混。
 
-    ★ 标准解法：在多模态训练数据里【混入相当比例的纯文本数据】
-    ⚠️ 混多少？各家不披露，这是多模态训练里最重要的一个&quot;暗数&quot;之一
-    ⟹ 数据配比的通用方法论见 ../数据格式和数据处理/10-数据配比.md
+原因：阶段二三的数据里图文占比过高，模型往&quot;看图说话&quot;漂移
+
+★ 标准解法：在多模态训练数据里【混入相当比例的纯文本数据】
+⚠️ 混多少？各家不披露，这是多模态训练里最重要的一个&quot;暗数&quot;之一
+⟹ 数据配比的通用方法论见 ../数据格式和数据处理/10-数据配比.md
 </code></pre></div>
 
 <blockquote>
@@ -373,56 +613,67 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ⚠️ 很多模型的多模态版本会悄悄比文本版本弱一截，而模型卡上通常不会并排放这两组数字。</p>
 </blockquote>
 <h3 id="2">问题② 训练不稳定</h3>
-<div class="codehilite"><pre><span></span><code>    ✅ 一手证据（K3）：SigLIP 初始化的视觉塔在联合训练时
-       【梯度范数持续更高且频繁 spike】；从零训的 MoonViT-V2 全程平稳。
-       K3 还【移除了视觉塔中所有线性层和注意力投影的 bias 项】来进一步稳定优化。
+<div class="codehilite"><pre><span></span><code>✅ 一手证据（K3）：SigLIP 初始化的视觉塔在联合训练时
+   【梯度范数持续更高且频繁 spike】；从零训的 MoonViT-V2 全程平稳。
+   K3 还【移除了视觉塔中所有线性层和注意力投影的 bias 项】来进一步稳定优化。
 
-    ⚠️ 我的解读：视觉塔和 LLM 是【在完全不同的目标下训出来的】，
-       梯度尺度天差地别 ⟹ 硬接在一起就打架。
-       ⟹ 这也是&quot;视觉塔用小 10~100 倍学习率&quot;这条工程经验的由来。
+⚠️ 我的解读：视觉塔和 LLM 是【在完全不同的目标下训出来的】，
+   梯度尺度天差地别 ⟹ 硬接在一起就打架。
+   ⟹ 这也是&quot;视觉塔用小 10~100 倍学习率&quot;这条工程经验的由来（6.1 那张表）。
+   ⟹ ★ 注意它和 6.2 是同一个病的两个面：6.2 讲的是&quot;别让大梯度冲进 LLM&quot;，
+     这里讲的是&quot;别让 LLM 的梯度尺度冲进视觉塔&quot;。
 </code></pre></div>
 
 <h3 id="3">问题③ 分辨率课程</h3>
-<div class="codehilite"><pre><span></span><code>    ★ 常见做法：低分辨率起步 → 逐步提高
-       前期：448² 训得快、token 少 ⟹ 用同样算力看更多样本
-       后期：切到 1792² 或更高 ⟹ 学&quot;看清小字&quot;
+<div class="codehilite"><pre><span></span><code>★ 常见做法：低分辨率起步 → 逐步提高
+   前期：448² 训得快、token 少 ⟹ 用同样算力看更多样本
+   后期：切到 1792² 或更高 ⟹ 学&quot;看清小字&quot;
 
-    ⟹ ⚠️ 和长上下文扩展是同一个套路：
-       ✅ K3 报告的原则是&quot;把昂贵的长序列计算【集中在总训练预算的一小部分里】&quot;
-          （出处 ../业界模型技术报告/Kimi-K3.md §七）
-       ⟹ 贵的东西留到最后、只训一小段，是大模型训练的通用节俭原则。
+⟹ ★ 算一下这个课程到底省了多少（patch 14 + 2×2 合并）：
+     448²   → (448/14)²  = 1024 patch → 256 视觉 token
+     1792²  → (1792/14)² = 16384 patch → 4096 视觉 token
+     ⟹ 边长 4 倍 ⟹ token 数 16 倍（★ 又是平方关系）
+     ⟹ 同样的卡时，前期能看的样本数是后期的 16 倍（按 token 计）
+
+⟹ ⚠️ 和长上下文扩展是同一个套路：
+   ✅ K3 报告的原则是&quot;把昂贵的长序列计算【集中在总训练预算的一小部分里】&quot;
+      （出处 ../业界模型技术报告/Kimi-K3.md §七）
+   ⟹ 贵的东西留到最后、只训一小段，是大模型训练的通用节俭原则。
 </code></pre></div>
 
 <hr />
-<h2 id="65">6.5 ⚠️ "多模态到底该在哪个阶段进来"——一个未解决的问题</h2>
-<div class="codehilite"><pre><span></span><code>    观点 A（原生派）：越早越好。
-      视觉应该是世界观的一部分，后加的永远是外挂。
-      ✅ GLM-5.3 的论证：编程模型需要【自己决定何时去看】渲染结果，
-         这要求视觉是原生的能力，而不是一个可选插件。
+<h2 id="66">6.6 ⚠️ "多模态到底该在哪个阶段进来"——一个未解决的问题</h2>
+<div class="codehilite"><pre><span></span><code>观点 A（原生派）：越早越好。
+  视觉应该是世界观的一部分，后加的永远是外挂。
+  ✅ GLM-5.3 的论证：编程模型需要【自己决定何时去看】渲染结果，
+     这要求视觉是原生的能力，而不是一个可选插件。
 
-    观点 B（拼接派）：越晚越好。
-      文本 token 的信息密度远高于图像 token，
-      ⚠️ 用宝贵的预训练算力去看图，可能不如多看几 T 文本划算。
-      ⟹ 证据：DeepSeek-V4、openPangu-2.0-Pro 这两个【纯文本】模型
-         在代码和推理上依然处于第一梯队。
+观点 B（拼接派）：越晚越好。
+  文本 token 的信息密度远高于图像 token，
+  ⚠️ 用宝贵的预训练算力去看图，可能不如多看几 T 文本划算。
+  ⟹ ★ 6.3 那笔账正好是这一边的量化支持：
+    视觉 token 占了序列 95%，却贡献 0 个 loss 项。
+  ⟹ 证据：DeepSeek-V4、openPangu-2.0-Pro 这两个【纯文本】模型
+     在代码和推理上依然处于第一梯队。
 
-    🔑 目前【没有公开的对照实验】能回答这个问题——
-       因为做这个实验要花两次预训练的钱。
+🔑 目前【没有公开的对照实验】能回答这个问题——
+   因为做这个实验要花两次预训练的钱。
 </code></pre></div>
 
 <blockquote>
 <p>⚠️ <strong>我的判断</strong>：这个问题的答案很可能和<strong>你想要什么</strong>有关，而不是有一个普适最优：<br />
-做<strong>通用助手/GUI agent</strong> ⟹ 原生；做<strong>代码/数学推理引擎</strong> ⟹ 纯文本可能更划算。<br />
-<strong>五家 2026 年旗舰"三家做、两家不做"，且不做的那两家都是推理/代码导向</strong>（01 章那张表），<br />
+做<strong>通用助手 / GUI agent</strong> ⟹ 原生；做<strong>代码 / 数学推理引擎</strong> ⟹ 纯文本可能更划算。<br />
+<strong>五家 2026 年旗舰"三家做、两家不做"，且不做的那两家都是推理 / 代码导向</strong>（01 章那张表），<br />
 这个分布本身就是对上述判断的一点支持。</p>
 </blockquote>
 <hr />
-<h2 id="66">6.6 🔑 这一章的四句话</h2>
+<h2 id="67">6.7 🔑 这一章的五句话</h2>
 <ol>
-<li>拼接式的三阶段是 <strong>对齐（只训连接器）→ 联合预训练（全放开）→ 指令微调</strong>，冻结策略是核心。</li>
-<li><strong>视觉 token 不算 loss</strong>——这条决定了理解型模型"只进不出"，也是 09 章统一生成的起点。</li>
-<li>⚠️ <strong>加视觉会让纯文本变笨</strong>，靠混纯文本数据兜底；<strong>混多少是各家最不肯说的暗数之一</strong>。</li>
-<li>✅ <strong>训练稳定性是原生路线的真实痛点</strong>，K3 用"从零训 + 去 bias"给出了一个有证据的答案。</li>
+<li>拼接式的四个阶段是 <strong>对齐（只训连接器，约 0.1% 的参数）→ 联合预训练（全放开，花掉大头算力）→ 指令微调 → 偏好对齐</strong>，<strong>冻结策略是唯一的核心变量</strong>。</li>
+<li>★★ <strong>冻住 LLM 的真正理由是"把移动靶变成固定靶"</strong>，不是省钱——两边同时动，你分不清是连接器学会了说，还是 LLM 学会了听懂乱码。这也是阶段一的学习率敢比阶段三大 50 倍的前提。</li>
+<li>★★ <strong>视觉 token 不算 loss，但照样有梯度</strong>（通过注意力回传）。一张 1092² 的图配一问一答，<strong>95% 的 token 不产生 loss 项，梯度信号密度只有纯文本 SFT 的 1/22</strong>。</li>
+<li>⚠️ <strong>边长翻倍 ⟹ patch 数 4 倍 ⟹ 信号密度降到 1/4</strong>；<strong>分数掉"几个百分点"不等于掉"几个百分比"</strong>，这两处口径最容易写错。</li>
+<li>✅ <strong>训练稳定性是原生路线的真实痛点</strong>，K3 用"从零训 + 去 bias"给出了一个有证据的答案；⚠️ 而<strong>纯文本数据混多少</strong>，是各家最不肯说的暗数之一。</li>
 </ol>
 <hr />
 <blockquote>

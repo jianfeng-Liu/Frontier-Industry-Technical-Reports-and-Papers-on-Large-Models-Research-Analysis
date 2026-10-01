@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,21 +257,22 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="04-token">04 · ⭐ 分辨率与 token 预算：这个领域一半的工程量</h1>
 <blockquote>
 <p><strong>如果你只读本教程的一章，读这一章。</strong><br />
-2023→2026 年多模态能力的提升，<strong>来自"看得更清"的部分，很可能大于来自"想得更明白"的部分。</strong></p>
+2023→2026 年多模态能力的提升，<strong>来自"看得更清"的部分，很可能大于来自"想得更明白"的部分。</strong><br />
+<strong>读法</strong>：4.3 节是一张从分辨率一路算到"128K 窗口塞得下几张图"的扫描表，<strong>本章其余每一节都在解释那张表里的某一行为什么长这样</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="41-2021">4.1 病根：一个 2021 年留下的历史包袱</h2>
 <p>CLIP 是在 <strong>224×224</strong> 上训练的。ViT 的位置编码是<strong>为固定块数写死的</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    224 ÷ 14 = 16  ⟹  16×16 = 256 个 patch  ⟹  位置编码表就只有 256 行
-    ⟹ 你喂一张 1000×1000 的图进去？位置编码表不够用，直接报错
-    ⟹ 所以只能【先把图缩小到 224×224】
+<div class="codehilite"><pre><span></span><code>    224 / 14 = 16  ==&gt;  16x16 = 256 个 patch  ==&gt;  位置编码表就只有 256 行
+    ==&gt; 你喂一张 1000x1000 的图进去？位置编码表不够用，直接报错
+    ==&gt; 所以只能【先把图缩小到 224x224】
 </code></pre></div>
 
 <p><strong>这意味着什么，看一眼就懂</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    你的 1920×1080 截图  ──缩到 336×336──→  一张糊得看不清任何字的小图
+<div class="codehilite"><pre><span></span><code>    你的 1920x1080 截图  --缩到 336x336--&gt;  一张糊得看不清任何字的小图
 
-    ⟹ 🔑 2023 年多模态模型&quot;看不懂截图、读不了 PDF&quot;，
-       ★ 根本原因不是模型笨，是【它压根没看见】。
+    ==&gt; 🔑 2023 年多模态模型&quot;看不懂截图、读不了 PDF&quot;，
+        ★ 根本原因不是模型笨，是【它压根没看见】。
 </code></pre></div>
 
 <hr />
@@ -274,32 +280,77 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h3 id="2023">第一代：插值 + 高分辨率微调（2023）</h3>
 <p>把 256 行的位置编码表<strong>插值</strong>成 576 行（对应 336×336），然后在高分辨率数据上微调。</p>
 <div class="codehilite"><pre><span></span><code>    ✅ 简单，直接有效
-    ⚠️ 但 336×336 依然不够看 PDF；而且分辨率每提一档，
-       token 数按【平方】涨、注意力按【四次方】涨（02.7 节那笔账）
+    ⚠️ 但 336x336 依然不够看 PDF
 </code></pre></div>
 
+<p><strong>而且代价涨得比直觉快</strong>，这一条必须说清楚：</p>
+<div class="codehilite"><pre><span></span><code>    边长 x2  ==&gt;  patch 数 x4  ==&gt;  视觉 token 数 x4
+                              ==&gt;  线性部分（矩阵乘）开销 x4
+                              ==&gt;  ★ 注意力部分开销 x16   &lt;- token 数的平方
+
+    ⚠️ 所以&quot;支持 2 倍分辨率&quot;在 token 预算上是【4 倍代价】，
+       在注意力算力上是【16 倍代价】。02 章 2.7 节把这笔账算到了具体 FLOPs。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>视觉 token（2×2 合并后）</th>
+<th>线性部分相对开销</th>
+<th>注意力部分相对开销</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>336²</td>
+<td>144</td>
+<td>1×</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>672²</td>
+<td>576</td>
+<td>4×</td>
+<td><strong>16×</strong></td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>2304</td>
+<td>16×</td>
+<td><strong>256×</strong></td>
+</tr>
+<tr>
+<td>2688²</td>
+<td>9216</td>
+<td>64×</td>
+<td><strong>4096×</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 这张表只是"边长每翻一倍"的四级阶梯，用来建立量级感。<strong>边长从 336 涨到 2688 是 8 倍，注意力开销涨了 4096 倍。</strong></p>
+</blockquote>
 <h3 id="anyres-2024">第二代：★ AnyRes / 动态切图（2024，主流）</h3>
 <blockquote>
-<p>📖 <strong>AnyRes / dynamic tiling / 动态切图</strong>：把大图切成若干块<strong>标准尺寸的小图</strong>，<br />
-每块<strong>分别</strong>过视觉塔，再把结果拼起来；另外<strong>额外过一张缩略图</strong>保留全局视野。</p>
+<p>📖 <strong>AnyRes / dynamic tiling / 动态切图</strong>：把大图切成若干块<strong>标准尺寸的小图</strong>，每块<strong>分别</strong>过视觉塔，再把结果拼起来；另外<strong>额外过一张缩略图</strong>保留全局视野。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    原图 1920×1080
-      │
-      ├─→ 切成 4×2 = 8 块，每块 448×448    ← 局部细节：小字能看清了
-      │      每块过塔 → (448/14)² = 1024 patch → 2×2 合并 → 256 token
-      │      8 块 × 256 = 2048 token
-      │
-      └─→ 整图缩略成一张 448×448           ← ★ 全局视野：不然模型看不出整体布局
-             → 256 token
+<div class="codehilite"><pre><span></span><code>    原图 1920x1080
+      |
+      +--&gt; 切成 4x2 = 8 块，每块 448x448    &lt;- 局部细节：小字能看清了
+      |      每块过塔 -&gt; (448/14)^2 = 1024 patch -&gt; 2x2 合并 -&gt; 256 token
+      |      8 块 x 256 = 2048 token
+      |
+      +--&gt; 整图缩略成一张 448x448           &lt;- ★ 全局视野：不然看不出整体布局
+             -&gt; 1024 patch -&gt; 256 token
 
-    ⟹ 合计 2304 token
+    ==&gt; 合计 2304 token
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>那张缩略图（thumbnail）是这个方案的灵魂</strong>。没有它，模型只能看到八块碎片，<br />
-<strong>"这个按钮在页面的哪个位置"这类问题会全错。</strong></p>
+<p>★★ <strong>那张缩略图（thumbnail）是这个方案的灵魂</strong>。没有它，模型只能看到八块碎片，<strong>"这个按钮在页面的哪个位置"这类问题会全错。</strong></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ✅ 优点：复用 224/448 训好的视觉塔，不用改位置编码 ⟹ 工程代价极小
+<div class="codehilite"><pre><span></span><code>    ✅ 优点：复用 224/448 训好的视觉塔，不用改位置编码 ==&gt; 工程代价极小
     ⚠️ 缺点①：★ 切块的边界会把一个字、一个表格单元格【切成两半】
     ⚠️ 缺点②：块与块之间【看不见彼此】（各自独立过塔），跨块的表格关系要靠 LLM 去缝
     ⚠️ 缺点③：长宽比被强行凑成网格，会有形变或留白
@@ -308,133 +359,449 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong>代表</strong>：LLaVA-NeXT（LLaVA-1.6）、InternVL 的 dynamic tiling。</p>
 <h3 id="2024">第三代：★ 原生分辨率 / 变长（2024 末～，前沿路线）</h3>
 <blockquote>
-<p>📖 <strong>原生分辨率（native resolution）</strong>：不切、不缩，<strong>图多大就切多少块</strong>，<br />
-视觉塔直接处理<strong>变长</strong>的 patch 序列。位置编码换成能外推的形式（05 章的 2D RoPE）。</p>
+<p>📖 <strong>原生分辨率（native resolution）</strong>：不切、不缩，<strong>图多大就切多少块</strong>，视觉塔直接处理<strong>变长</strong>的 patch 序列。位置编码换成能外推的形式（05 章的 2D RoPE）。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    1920×1080 直接切：(1920/14) × (1080/14) ≈ 137 × 77 = 10549 patch
-                      → 2×2 合并 → ≈ 2637 token
+<div class="codehilite"><pre><span></span><code>    1920x1080 直接切：(1920/14) x (1080/14) = 137 x 77 = 10549 patch
+                      -&gt; 2x2 合并 -&gt; 2637 token
 
     ✅ 优点：★ 无切块伪影、无形变、全图 patch 互相可见（一趟注意力全看到）
-    ⚠️ 代价：视觉塔必须支持【变长 batch】——每张图 token 数都不同
-             ⟹ 训练时要做 patch packing（把多张图打包成一条长序列 + 掩码隔开）
-             ⟹ ★ 这正是纯文本训练里&quot;样本打包&quot;的同一套技术
+    ⚠️ 代价：视觉塔必须支持【变长 batch】—— 每张图 token 数都不同
+             ==&gt; 训练时要做 patch packing（把多张图打包成一条长序列 + 掩码隔开）
+             ==&gt; ★ 这正是纯文本训练里&quot;样本打包&quot;的同一套技术
                 见 ../数据格式和数据处理/13-打包与文档掩码.md
 </code></pre></div>
 
-<p><strong>思想源头</strong>：NaViT / <em>Patch n' Pack</em>（Google，2023，arXiv 2307.06304）；<br />
-<strong>工程落地</strong>：Qwen2-VL 的"naive dynamic resolution"（arXiv 2409.12191）等。</p>
+<p><strong>思想源头</strong>：NaViT / <em>Patch n' Pack</em>（Google，2023，arXiv 2307.06304）；<strong>工程落地</strong>：Qwen2-VL 的"naive dynamic resolution"（arXiv 2409.12191）等。</p>
 <blockquote>
-<p>✅ <strong>2026 年的一手证据</strong>：Kimi K3 的 MoonViT-V2 支持到 <strong>3584×3584</strong> 输入<br />
-（65536 个 patch → pixel shuffle 后 16384 token），MiniMax M3 的 ViT 输入尺寸为 <strong>2016²</strong>。<br />
-<strong>这个量级已经不是"能看清字"，而是"能看清一整页 PDF 的字"。</strong><br />
-⟹ 出处：<a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a>、<a href="../业界模型技术报告/MiniMax-M3.html">../业界模型技术报告/MiniMax-M3.md</a></p>
+<p>✅ <strong>2026 年的一手证据</strong>（三家都走到第三代，但支持上限差 7 倍）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>最大输入</th>
+<th>patch 数</th>
+<th>压缩</th>
+<th>视觉 token</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Kimi K3</strong> / MoonViT-V2</td>
+<td><strong>3584²</strong></td>
+<td>65536</td>
+<td>2×2</td>
+<td>⚠️ 16384</td>
+<td><a href="../业界模型技术报告/Kimi-K3.html">Kimi-K3.md</a> 报告 §六</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong> 的 ViT</td>
+<td><strong>2016²</strong></td>
+<td>20736</td>
+<td>2×2</td>
+<td>⚠️ 5184</td>
+<td><a href="../业界模型技术报告/模型技术对比.html">模型技术对比.md</a> 报告 §二 多模态行 ⚠️ <strong>不在 MiniMax-M3.md 里</strong></td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4.1-Flash</strong></td>
+<td><strong>≈1344²</strong></td>
+<td>9216</td>
+<td>★ <strong>3×3</strong></td>
+<td>⚠️ 1024</td>
+<td><a href="../业界模型技术报告/DeepSeek-V4.1-Flash.html">DeepSeek-V4.1-Flash.md</a> 报告 §十一</td>
+</tr>
+</tbody>
+</table>
+<p><strong>3584² 这个量级已经不是"能看清字"，而是"能看清一整页 PDF 的字"。</strong><br />
+★ 而 DeepSeek 那一行是另一种取舍：<strong>分辨率上限只有 K3 的 3/8，但用 9 合 1 把 token 压到 1024</strong> —— 它要的是"便宜"，不是"看得最清"。✅ 它的视觉塔还明说第一阶段对比预训练<strong>只在 224×224 上做</strong>，理由是"更高分辨率在这阶段收益不大，白费算力"，高分辨率留给第二阶段（544² ~ 1344²）。</p>
 </blockquote>
 <hr />
-<h2 id="43-token">4.3 ★ 同一张截图，四种方案的 token 账</h2>
-<p><strong>这张表是本章的核心。</strong> 1920×1080 的截图：</p>
+<h2 id="43-token">4.3 ★★ 核心：把 token 账一档一档算出来</h2>
+<h3 id="431">4.3.1 从分辨率一路算到"相当于多少汉字"</h3>
+<p><strong>全部用一套固定口径</strong>：patch 14 × 14，视觉塔宽 1152，之后做 2×2 或 3×3 空间合并。<strong>每一列都能自己验算</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>patch 网格</th>
+<th><strong>patch 数</strong></th>
+<th>2×2 合并 → token</th>
+<th>3×3 合并 → token</th>
+<th>文本当量（汉字）</th>
+<th>占 128K 窗口</th>
+<th>占 1M 窗口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>336²</td>
+<td>24 × 24</td>
+<td>576</td>
+<td><strong>144</strong></td>
+<td>64</td>
+<td>≈100</td>
+<td>0.11 %</td>
+<td>0.014 %</td>
+</tr>
+<tr>
+<td>448²</td>
+<td>32 × 32</td>
+<td>1024</td>
+<td><strong>256</strong></td>
+<td>113</td>
+<td>≈180</td>
+<td>0.20 %</td>
+<td>0.024 %</td>
+</tr>
+<tr>
+<td>672²</td>
+<td>48 × 48</td>
+<td>2304</td>
+<td><strong>576</strong></td>
+<td>256</td>
+<td>≈400</td>
+<td>0.44 %</td>
+<td>0.055 %</td>
+</tr>
+<tr>
+<td><strong>1024²</strong></td>
+<td><strong>73 × 73</strong></td>
+<td><strong>5329</strong></td>
+<td><strong>1332</strong></td>
+<td>592</td>
+<td>≈930</td>
+<td><strong>1.0 %</strong></td>
+<td>0.13 %</td>
+</tr>
+<tr>
+<td>1092²</td>
+<td>78 × 78</td>
+<td>6084</td>
+<td><strong>1521</strong></td>
+<td>676</td>
+<td>≈1070</td>
+<td>1.2 %</td>
+<td>0.15 %</td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>96 × 96</td>
+<td>9216</td>
+<td><strong>2304</strong></td>
+<td>1024</td>
+<td>≈1610</td>
+<td>1.8 %</td>
+<td>0.22 %</td>
+</tr>
+<tr>
+<td>2016²</td>
+<td>144 × 144</td>
+<td>20736</td>
+<td><strong>5184</strong></td>
+<td>2304</td>
+<td>≈3630</td>
+<td>4.0 %</td>
+<td>0.49 %</td>
+</tr>
+<tr>
+<td>3584²</td>
+<td>256 × 256</td>
+<td>65536</td>
+<td><strong>16384</strong></td>
+<td>7281</td>
+<td>≈11470</td>
+<td><strong>12.5 %</strong></td>
+<td>1.6 %</td>
+</tr>
+</tbody>
+</table>
+<p><strong>每一列是怎么来的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    patch 网格  = floor(边长 / 14)                   例：1024 / 14 = 73.1 -&gt; 73
+    patch 数    = 网格边长的平方                     例：73^2 = 5329
+    2x2 后token = patch 数 / 4                       例：5329 / 4 = 1332
+    3x3 后token = patch 数 / 9                       例：5329 / 9 = 592
+    汉字当量    = token 数 x 0.7                     例：1332 x 0.7 = 932
+    占窗口      = token 数 / 131072（128K）或 1048576（1M）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>三处口径必须记住，不然这张表会被误用</strong>：<br />
+① <strong><code>floor</code> 不是四舍五入</strong>：<code>1024 ÷ 14 = 73.14</code>，取 73，所以<strong>最右边那 2 个像素列被丢掉了</strong>。真实实现一般会先 pad 或 resize 到 14 的整数倍。<br />
+② <strong>2×2 / 3×3 的除法同样需要整除</strong>：73 既不是 2 也不是 3 的倍数，真实实现会再垫一圈，所以实际 token 数会比表里略多几个（03 章 3.3.2 节同样的提醒）。<br />
+③ <strong>汉字当量那一列的 0.7 是一档保守值</strong>。换成中文优化过的 tokenizer（约 1 token ≈ 1.5 汉字），整列要<strong>再乘 2.1 倍</strong>。口径说明见 <a href="00-一个例子讲清.html">00 章 0.5 节</a>。</p>
+<p>★★ <strong>这张表最该带走的两行是 1024² 和 3584²</strong>：<br />
+<strong>一张 1024×1024 的普通截图 = 5329 个 patch = 1332 个视觉 token ≈ 930 个汉字 ≈ 一页半 A4 纸。</strong><br />
+<strong>一张 3584×3584 的高清 PDF 页 = 16384 个视觉 token ≈ 11470 个汉字 ≈ 16 页 A4 纸。</strong></p>
+<p>🔑 <strong>"一张图 ≈ 一篇短文"这句话，在最高档上变成"一张图 ≈ 一个章节"。</strong></p>
+</blockquote>
+<h3 id="432">4.3.2 ★ 接到上下文窗口：塞得下几张图</h3>
+<p>把上表的 token 数去除窗口大小，得到<strong>本章最有工程意义的一张表</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>每张图 token（2×2）</th>
+<th><strong>128K 窗口塞几张</strong></th>
+<th><strong>1M 窗口塞几张</strong></th>
+<th>不压缩（1×1）1M 能塞几张</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>336²</td>
+<td>144</td>
+<td>910</td>
+<td>7281</td>
+<td>1820</td>
+</tr>
+<tr>
+<td>448²</td>
+<td>256</td>
+<td>512</td>
+<td>4096</td>
+<td>1024</td>
+</tr>
+<tr>
+<td>672²</td>
+<td>576</td>
+<td>227</td>
+<td>1820</td>
+<td>455</td>
+</tr>
+<tr>
+<td>1024²</td>
+<td>1332</td>
+<td><strong>98</strong></td>
+<td>787</td>
+<td>196</td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>2304</td>
+<td><strong>56</strong></td>
+<td>455</td>
+<td>113</td>
+</tr>
+<tr>
+<td>2016²</td>
+<td>5184</td>
+<td><strong>25</strong></td>
+<td>202</td>
+<td>50</td>
+</tr>
+<tr>
+<td>3584²</td>
+<td>16384</td>
+<td>★ <strong>8</strong></td>
+<td>★ <strong>64</strong></td>
+<td>★ <strong>16</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这是理论上限，实际要打折</strong>：窗口里还得装系统提示、用户问题、模型输出，以及每张图的边界标记。<strong>留 10%~20% 给文字是常识</strong>，所以上表的数字实际要乘 0.8 左右。</p>
+<p>★★ <strong>看最后一行，三个数字连起来读</strong>：<br />
+<strong>3584×3584 的输入，1M 上下文不压缩只能放 16 张图；做了 2×2 合并就能放 64 张。</strong> ⟹ 这正好解释了 K3 报告那句话的分量：✅ <em>"投影前用 2×2 pixel shuffle 把视觉 token 数降 4 倍，</em><em>让 3584×3584 的输入在 1M 上下文里放得下</em><em>"</em>。<br />
+⟹ 🔑 <strong>"放得下"不是修辞。16 张 vs 64 张，是"勉强能用"和"真的能用"的差别。</strong></p>
+<p>★ <strong>反过来读这张表，就得到多模态产品的一条硬约束</strong>：128K 窗口（2024 年的主流规格）配 1024² 输入，<strong>最多 98 张图</strong> —— 而一份 100 页的 PDF 正好就是 100 张图。⟹ <strong>"把一份 PDF 整本喂进去"这件事，在 128K 时代刚好差一点，在 1M 时代才真正成立。</strong></p>
+</blockquote>
+<h3 id="433-1080p">4.3.3 同一张 1080p 截图，五种方案的账</h3>
+<p><strong>这是 4.2 三代解法的对账单。</strong> 1920×1080 的截图：</p>
 <table>
 <thead>
 <tr>
 <th>方案</th>
+<th>年代</th>
 <th>实际看到的分辨率</th>
-<th>视觉 token 数</th>
+<th>做空间合并吗</th>
+<th>视觉 token</th>
 <th>能读小字吗</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>固定 336（2023）</td>
+<td>固定 336</td>
+<td>2023</td>
 <td>336×336（严重形变+模糊）</td>
+<td>❌ 当时还没这招</td>
 <td><strong>576</strong></td>
 <td>❌ 完全不行</td>
 </tr>
 <tr>
 <td>AnyRes 2 块 + 缩略</td>
+<td>2024 初</td>
 <td>672×336 + 全局</td>
+<td>❌</td>
 <td><strong>1728</strong></td>
 <td>⚠️ 大字可以</td>
 </tr>
 <tr>
 <td>动态切图 8 块 + 缩略</td>
+<td>2024</td>
 <td>≈1792×896 + 全局</td>
+<td>✅ 2×2</td>
 <td><strong>2304</strong></td>
 <td>✅ 可以</td>
 </tr>
 <tr>
 <td>原生分辨率</td>
-<td>1920×1080</td>
+<td>2025~</td>
+<td><strong>1920×1080（真分辨率）</strong></td>
+<td>✅ 2×2</td>
 <td><strong>≈2637</strong></td>
-<td>✅ 可以，且无切块伪影</td>
+<td>✅ 且无切块伪影</td>
+</tr>
+<tr>
+<td>原生分辨率 + 9 合 1</td>
+<td>2026（DeepSeek 式）</td>
+<td><strong>1920×1080</strong></td>
+<td>✅ 3×3</td>
+<td><strong>≈1172</strong></td>
+<td>⚠️ 未有公开对照实验</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ 表中数字是我按"patch 14 + 2×2 合并"这一组常见口径算的，<strong>具体模型会有出入</strong>。</p>
+<p>⚠️ 表中数字是我按"patch 14 + 对应合并倍数"算的，<strong>具体模型会有出入</strong>。<code>原生分辨率</code> 那两行的算法是 <code>137 × 77 = 10549 patch</code>，再 <code>÷4 = 2637</code> 或 <code>÷9 = 1172</code>。</p>
 </blockquote>
-<p><strong>三条结论</strong>：</p>
-<div class="codehilite"><pre><span></span><code> ① 从 576 → 2637，token 涨了 4.6 倍 ⟹ ★ 钱和延迟也涨了这么多
+<p><strong>四条结论</strong>：</p>
+<div class="codehilite"><pre><span></span><code> ① 从 576 -&gt; 2637，token 涨了 4.58 倍 ==&gt; ★ 钱和延迟也涨了这么多
  ② 但&quot;能不能读小字&quot;是【0 或 1】的差别 —— 这钱必须花
- ③ ⟹ 🔑 所以真正的战场不是&quot;要不要高分辨率&quot;，而是
+ ③ ★★ 最后一行最值得看：同样是看【真 1080p】，9 合 1 把 token 压到 1172，
+    比 2024 年那个只看 672x336 的 AnyRes 方案（1728）还便宜 32%。
+    ==&gt; ⚠️ 代价是信息通道从 89% 掉到 40%（03 章 3.3.3 节），
+       但 DeepSeek 报告没给对照实验，这个代价有多大【目前无法核对】。
+ ④ ==&gt; 🔑 所以真正的战场不是&quot;要不要高分辨率&quot;，而是
     ★★【怎么在同样的 token 预算下，把预算花在真正有信息的地方】
 </code></pre></div>
 
 <hr />
 <h2 id="44-token">4.4 于是有了 token 预算控制</h2>
 <p>生产环境里，模型一般会暴露两个参数（Qwen-VL 系列的 <code>min_pixels</code> / <code>max_pixels</code> 是典型）：</p>
-<div class="codehilite"><pre><span></span><code>    max_pixels = 1,003,520   （≈ 1024×980）
-      ⟹ 图片超过这个像素数就等比缩小，保证 token 数有上限
-      ⟹ ★ 这是你控制多模态成本最直接的旋钮
+<div class="codehilite"><pre><span></span><code>    max_pixels = 1,003,520   （约 1024x980）
+      ==&gt; 图片超过这个像素数就等比缩小，保证 token 数有上限
+      ==&gt; ★ 这是你控制多模态成本最直接的旋钮
 
-    min_pixels = 3,136       （= 56×56）
-      ⟹ 太小的图也垫到这个尺寸，否则 token 太少模型看不出东西
+    min_pixels = 3,136       （= 56x56）
+      ==&gt; 太小的图也垫到这个尺寸，否则 token 太少模型看不出东西
 </code></pre></div>
 
+<p><strong>★ 把这两个像素数换算成 token 数，就看出它们为什么是这两个值了</strong>（patch 14×14 = 196 像素，之后 2×2 合并）：</p>
+<table>
+<thead>
+<tr>
+<th>设置</th>
+<th>像素数</th>
+<th>÷196 → patch 数</th>
+<th>÷4 → 视觉 token</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>min_pixels</code> 默认</td>
+<td>3,136</td>
+<td>16</td>
+<td><strong>4</strong></td>
+</tr>
+<tr>
+<td><code>max_pixels</code> 默认</td>
+<td>1,003,520</td>
+<td>5,120</td>
+<td><strong>1,280</strong></td>
+</tr>
+<tr>
+<td>把 <code>max_pixels</code> 调到 1/4</td>
+<td>250,880</td>
+<td>1,280</td>
+<td><strong>320</strong></td>
+</tr>
+<tr>
+<td>把 <code>max_pixels</code> 调到 4 倍</td>
+<td>4,014,080</td>
+<td>20,480</td>
+<td><strong>5,120</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>★★ <strong>这两个数字不是随手填的</strong>：<code>1,003,520 = 1280 × 4 × 196</code>，<code>3,136 = 4 × 4 × 196</code>。⟹ <strong>这个旋钮的真实含义是"每张图最多 1280 个视觉 token、最少 4 个"</strong>，像素数只是它换算过去的样子。⟹ 🔑 <strong>调这个参数时，心里默算的应该是 token 数，不是像素数。</strong></p>
 <p>🔑 <strong>实操建议（⚠️ 我的经验判断，不是论文结论）</strong>：<br />
 - <strong>看图说话、判断氛围</strong> → 低分辨率足够，别浪费钱<br />
 - <strong>读表格、发票、PDF、代码截图</strong> → 一定要拉满，<strong>这是省不得的钱</strong><br />
-- <strong>一张大图不如裁成关键区域的小图</strong>——你自己知道该看哪，模型不知道</p>
+- <strong>一张大图不如裁成关键区域的小图</strong> —— 你自己知道该看哪，模型不知道<br />
+- ⚠️ <strong>按量计费时先拿一张典型图量一下 token 数</strong>：4.3.1 那张表能给你量级，但<strong>各家的 patch 大小和合并倍数不同，账单会差 2~9 倍</strong>（03 章 3.3.2 节那张表）。</p>
 </blockquote>
 <hr />
 <h2 id="45-token">4.5 推理侧的另一条路：把已经生成的视觉 token 扔掉</h2>
 <p>前面都是"进模型前"少生成一点。还有一条路是<strong>"进了模型后再扔"</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    观察（有多篇工作报告过类似现象）：
       在 LLM 的【前几层】之后，绝大多数视觉 token 得到的注意力已经极低
-      ⟹ ⚠️ 意味着信息已经被&quot;吸收&quot;进少数几个 token 和文本 token 里了
-      ⟹ 那就在第 K 层之后，把注意力最低的一大半视觉 token 直接【删掉】
+      ==&gt; ⚠️ 意味着信息已经被&quot;吸收&quot;进少数几个 token 和文本 token 里了
+      ==&gt; 那就在第 K 层之后，把注意力最低的一大半视觉 token 直接【删掉】
 
     ✅ 收益：后续所有层的开销直接砍半，几乎不掉分
     ⚠️ 风险：删错了就是永久性失明，而且【你无法从输出看出它删错了】
 </code></pre></div>
 
+<p><strong>和前面那些手段的根本区别</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>在哪一步省</th>
+<th>省掉的是什么</th>
+<th>可逆吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>降分辨率</td>
+<td>进视觉塔之前</td>
+<td><strong>视觉塔 + LLM 的开销都省</strong></td>
+<td>不可逆（信息根本没进来）</td>
+</tr>
+<tr>
+<td>2×2 / 3×3 合并</td>
+<td>视觉塔之后、LLM 之前</td>
+<td>只省 LLM 的开销</td>
+<td>不可逆（但 concat 那步无损）</td>
+</tr>
+<tr>
+<td><strong>token 剪枝</strong></td>
+<td><strong>LLM 的第 K 层之后</strong></td>
+<td>只省<strong>第 K 层以后</strong>的开销</td>
+<td>不可逆，且<strong>是推理期的动态决策</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>⚠️ <strong>这条路线（FastV 等一类工作）在学术上很热，在生产上要谨慎</strong>：<br />
-它对"通用看图问答"友好，对"找图里那一行小字"是灾难——<br />
-<strong>因为那一行小字对应的 token，在早期层的注意力可能恰好就很低。</strong></p>
+<p>⚠️ <strong>第三行那个"K 层之后"是它所有麻烦的来源</strong>：前 K 层的钱已经花了，而且<strong>哪些 token 该删是按当前这个问题的注意力分布临时决定的</strong> —— 同一张图，换个问题，删掉的就是另一批。</p>
+<p>⚠️ <strong>这条路线（FastV 等一类工作）在学术上很热，在生产上要谨慎</strong>：它对"通用看图问答"友好，对"找图里那一行小字"是灾难 —— <strong>因为那一行小字对应的 token，在早期层的注意力可能恰好就很低。</strong></p>
 </blockquote>
 <hr />
 <h2 id="46">4.6 ⚠️ 一个反直觉的现象：分辨率不是越高越好</h2>
 <div class="codehilite"><pre><span></span><code>    实践中常见的一条曲线：
-      分辨率 ↑  ⟹  分数 ↑↑  ⟹  分数 ↑  ⟹  ★ 分数【持平甚至下降】
+      分辨率 ↑  ==&gt;  分数 ↑↑  ==&gt;  分数 ↑  ==&gt;  ★ 分数【持平甚至下降】
 
     ⚠️ 可能的原因（我的解读，不同工作给的归因不完全一致）：
       ① token 太多，稀释了注意力：真正有用的那几个 token 被淹没
-      ② 训练数据里根本没有那么高分辨率的样本 ⟹ 推理时超出了训练分布
+      ② 训练数据里根本没有那么高分辨率的样本 ==&gt; 推理时超出了训练分布
       ③ 高分辨率下的位置编码要外推，外推得不好就乱（05 章）
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>所以"支持 4K 输入"这种宣传要打个问号</strong>：<strong>问它是不是真的在 4K 数据上训过。</strong><br />
-支持 ≠ 训过 ≠ 有效。</p>
+<p>✅ <strong>第②条有一手证据支持</strong>：DeepSeek-ViT 的两阶段训练里，<strong>对比预训练阶段把分辨率限死在 224×224</strong>，报告明说"更高分辨率在这阶段收益不大，白费算力"；高分辨率（544² ~ 1344²）只在<strong>第二阶段的自回归微调</strong>里出现。⟹ <strong>这说明"在什么分辨率上训过"是厂商自己也在精确控制的变量</strong>，不是开到最大就好。</p>
+<p>🔑 <strong>所以"支持 4K 输入"这种宣传要打个问号</strong>：<strong>问它是不是真的在 4K 数据上训过。</strong> 支持 ≠ 训过 ≠ 有效。</p>
 </blockquote>
 <hr />
-<h2 id="47">4.7 🔑 这一章的五句话</h2>
+<h2 id="47">4.7 🔑 这一章的六句话</h2>
 <ol>
 <li>2023 年多模态"看不懂文档"的根因是 <strong>CLIP 224×224 的历史包袱</strong>，不是模型笨。</li>
-<li>三代解法：<strong>插值高清 → 切块 AnyRes（+缩略图）→ 原生变长分辨率</strong>。2026 年的旗舰走的是第三代。</li>
-<li><strong>一张 1080p 截图，从 576 token 涨到 2600+ token</strong>——<strong>贵了 4.6 倍，但"能不能读字"是 0/1 的差别。</strong></li>
-<li>✅ <strong>"2×2 合并"是所有方案的公共底座</strong>（K3、M3 都用），因为它无损、便宜、直接把注意力开销除以 16。</li>
-<li>⚠️ <strong>分辨率不是越高越好</strong>，也<strong>不要相信"支持 XX 分辨率"的宣传</strong>——要问它在什么分辨率上<strong>训过</strong>。</li>
+<li>三代解法：<strong>插值高清 → 切块 AnyRes（+缩略图）→ 原生变长分辨率</strong>。2026 年的旗舰走的是第三代，上限从 1344² 到 3584² ✅。</li>
+<li>★★ <strong>4.3.1 那张扫描表是本章的全部</strong>：一张 1024² 的图 = <strong>5329 个 patch = 1332 个视觉 token ≈ 930 个汉字</strong>；一张 3584² 的图 = <strong>16384 个 token ≈ 16 页 A4</strong>。</li>
+<li>★★ <strong>接到上下文窗口就得到硬约束</strong>：3584² 的图，<strong>1M 窗口不压缩只放 16 张，2×2 合并后放 64 张</strong> —— 这就是 K3 那句"让 3584² 在 1M 上下文里放得下" ✅ 的实际含义。128K 窗口配 1024² 输入，上限是 <strong>98 张</strong>。</li>
+<li>⚠️ <strong>边长翻倍 = patch 数 4 倍 = token 数 4 倍 = 注意力开销 16 倍。</strong> "支持 2 倍分辨率"在预算上从来不是 2 倍代价。</li>
+<li>⚠️ <strong>分辨率不是越高越好</strong>，也<strong>不要相信"支持 XX 分辨率"的宣传</strong> —— 要问它在什么分辨率上<strong>训过</strong>。✅ DeepSeek 自己的两阶段训练就是这条规律的反面教材式证据：它的对比预训练阶段<strong>故意只用 224²</strong>。</li>
 </ol>
 <hr />
 <blockquote>

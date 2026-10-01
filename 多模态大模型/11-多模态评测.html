@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,9 +256,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="11">11 · ⭐ 多模态评测：这个领域最缺的是尺子</h1>
 <blockquote>
-<p>📖 <strong>前置</strong>：评测的通用方法论（few-shot、答案抽取、污染、LLM 当裁判）在<br />
-<a href="../harness评测框架/评测入门/">../harness评测框架/评测入门/</a>。<strong>本章只讲多模态特有的坑。</strong><br />
-⚠️ <strong>先给结论</strong>：<strong>多模态分数目前几乎无法跨模型比较。</strong> 这不是我的偏见，下面有一手实证。</p>
+<p>📖 <strong>前置，而且分工很清楚</strong>：评测的<strong>通用方法论</strong>（few-shot、答案抽取、污染、LLM 当裁判、怎么读一张榜单）全部在 <a href="../harness评测框架/评测入门/">../harness评测框架/评测入门/</a>。<br />
+<strong>本章只讲多模态特有的五件事</strong>：图文对齐怎么判、OCR 类任务的抽取规则、视频抽帧会不会把答案改掉、主观题（以及"根本没有真值"的对话自然度）怎么判、<strong>图像为什么去污染不了</strong>。<strong>凡是通用部分，本章只给链接，不重复。</strong><br />
+⚠️ <strong>先给结论</strong>：<strong>多模态分数目前几乎无法跨模型比较。</strong> 这不是我的偏见，11.7 有一手实证。</p>
+<p>📖 <strong>三个缩写先说清</strong>：<strong>OCR</strong>（Optical Character Recognition，光学字符识别）= 把图里的文字认出来。<strong>VQA</strong>（Visual Question Answering，视觉问答）= 看图回答问题，多模态最主流的题型。<strong>pp</strong>（percentage point，百分点）= 两个百分比相减的单位，⚠️ 不是"百分比"，见 <a href="../harness评测框架/评测入门/04-few-shot与提示词.html">../harness评测框架/评测入门/04-few-shot与提示词.md</a>。</p>
 </blockquote>
 <hr />
 <h2 id="111">11.1 榜单家族速览</h2>
@@ -304,7 +310,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>GUI / agent</td>
 <td>ScreenSpot、OSWorld 类</td>
-<td>看屏幕、点对位置</td>
+<td>看屏幕、点对位置（GUI = Graphical User Interface，图形界面）</td>
 </tr>
 <tr>
 <td>生成</td>
@@ -314,26 +320,68 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ <strong>本表的 arXiv 编号凭记忆写出，撰写时 arxiv.org 抓取被网络策略拦截，未能逐一回溯核对</strong><br />
-（对比：<a href="../后训练/">../后训练/</a> 那份教程的 38 个编号是逐个核过的）。<strong>引用前请自行核实。</strong></p>
+<p>⚠️ <strong>本表的 arXiv 编号凭记忆写出，撰写时 arxiv.org 抓取被网络策略拦截，未能逐一回溯核对</strong>（对比：<a href="../后训练/">../后训练/</a> 那份教程的 38 个编号是逐个核过的，它自己在 README 里写明了核对口径）。<strong>引用前请自行核实。</strong></p>
 </blockquote>
 <hr />
 <h2 id="112-1">11.2 ★★ 陷阱①：一半的题不看图也能做对</h2>
 <p><strong>这是多模态评测最严重、也最容易被忽略的问题。</strong></p>
-<div class="codehilite"><pre><span></span><code>    题目： &quot;图中这位穿白大褂的人最可能的职业是？
-            A. 医生  B. 宇航员  C. 消防员  D. 厨师&quot;
+<div class="codehilite"><pre><span></span><code>    题目：
+      &quot;图中这位穿白大褂的人最可能的职业是？
+       A. 医生   B. 宇航员   C. 消防员   D. 厨师&quot;
 
     ⚠️ 一个【纯文本模型】、【完全不给图】，也能答对
     ⟹ 因为常识 + 题干 + 选项的分布，本身就泄露了答案
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>所以任何一份多模态评测报告，都应该给出【盲测基线】</strong>：<br />
-<strong>把图去掉、只给文字，同一个模型能得多少分？</strong><br />
+<p>🔑 <strong>所以任何一份多模态评测报告，都应该给出【盲测基线】（blind baseline）</strong>：<strong>把图去掉、只给文字，同一个模型能得多少分？</strong><br />
 ⟹ ⚠️ <strong>绝大多数榜单和技术报告不给这个数。</strong><br />
 ⟹ <strong>不给盲测基线的多模态分数，你无法知道其中有多少是"看图"挣来的。</strong></p>
 </blockquote>
 <p><strong>推论</strong>：模型 A 比模型 B 高 3 分，可能只是因为 <strong>A 的语言能力更强</strong>，和视觉毫无关系。</p>
+<blockquote>
+<p>★ <strong>这一条是多模态独有的</strong>。纯文本评测里没有"把输入拿掉还能不能做对"这个问题——拿掉题干就没有题了。⟹ 而多模态的题<strong>天然有两个输入通道</strong>，于是才有"另一个通道单独能贡献多少"这个必须回答的问题。</p>
+</blockquote>
+<h3 id="pope-f1-667">★★ 一个能背下来的数字：POPE 的盲猜基线是 F1 66.7%</h3>
+<p><strong>08 章已经把这笔账算完了，这里只借结论</strong>，因为它是"分数必须带基线"最干净的一个例子：</p>
+<table>
+<thead>
+<tr>
+<th>一个<strong>完全不看图、一律答 yes</strong> 的"模型"在 POPE 上</th>
+<th>得分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Accuracy（题目 yes/no 各一半）</td>
+<td><strong>50%</strong></td>
+</tr>
+<tr>
+<td>Recall（所有 yes 题都答对了）</td>
+<td><strong>100%</strong></td>
+</tr>
+<tr>
+<td>Precision</td>
+<td><strong>50%</strong></td>
+</tr>
+<tr>
+<td><strong>F1</strong> = 2 × 0.5 × 1.0 ÷ (0.5 + 1.0)</td>
+<td>★★ <strong>66.7%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 所以看到&quot;我们 POPE 刷到 85 分&quot;，先在脑子里减掉 66.7
+    ⟹ ★★ 那个 85 里只有一小截是【看图】挣来的
+
+    ⟹ ★ 该看的是另外两项，而不是总分：
+      ① 【答 yes 的比例】—— 远超 50% 就是在猜
+      ② 【Precision 和 Recall 的不对称】
+         Recall 高、Precision 低 ⟹ yes 偏置（在编）
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>为什么要专门记这个数</strong>：<strong>它是唯一一个"盲猜基线"已经被算出来、可以直接拿来减的多模态指标。</strong> ⚠️ 其它榜单（MMMU、MathVista……）的盲测基线<strong>没人公布</strong>，所以你连该减多少都不知道。⟹ 完整推导见 <a href="08-幻觉与多模态后训练.html">08 章</a>。</p>
+</blockquote>
 <hr />
 <h2 id="113-2">11.3 陷阱②：选择题的老毛病，在这里更严重</h2>
 <div class="codehilite"><pre><span></span><code>    · 选项顺序偏置：把正确答案挪到 D，分数会变
@@ -343,117 +391,503 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>⟹ 通用机制见 <a href="../harness评测框架/评测入门/05-答案抽取与打分.html">../harness评测框架/评测入门/05-答案抽取与打分.md</a>。</p>
+<p>⟹ 通用机制见 <a href="../harness评测框架/评测入门/05-答案抽取与打分.html">../harness评测框架/评测入门/05-答案抽取与打分.md</a>。那里有一个极端例子：同一批输出，只换抽取规则，分数在 25.0% 和 75.0% 之间跳。<br />
+⚠️ <strong>"指令遵循弱一截"是我的判断，没有一手对照数据支撑</strong>——没有任何报告公开过"同一个模型加视觉前后，答案抽取失败率变了多少"。</p>
 </blockquote>
 <hr />
-<h2 id="114-3">11.4 ★ 陷阱③：同一个模型，两次评测能差很多分</h2>
-<p><strong>因为多模态评测有一堆"你不说我不知道"的口径</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ① 分辨率给了多少？   ✅ 04 章那张表：576 token vs 2637 token，是两个模型
-    ② 视频抽了几帧？     ✅ GLM-5.3 报告披露的口径是【1 fps，超限均匀采样】，
-                          但别家可能是&quot;固定 8 帧&quot;&quot;固定 64 帧&quot;
-    ③ 图放在 prompt 的哪个位置？前面还是后面？
-    ④ 用了什么提示词模板？CoT 提示给不给？
-    ⑤ 单图还是允许多次&quot;看&quot;（8.5 节的 agentic 视觉）？
+<h2 id="114-3">11.4 ★★ 陷阱③：多模态的"对不对"本身就难以定义</h2>
+<p><strong>这一节是本章最该细看的地方。</strong> 纯文本评测里"对不对"大多有明确答案；多模态有一大类题，<strong>判分规则本身就是个设计决定</strong>。</p>
+<h3 id="1-ocr">① OCR 与文档类：抽取规则决定分数</h3>
+<div class="codehilite"><pre><span></span><code>    图里印着：  ¥1,234.56
+    模型输出：  1234.56      ⟹ 算对还是算错？
+               ￥1234.56     ⟹ 全角符号，算对还是算错？
+               1,234.56      ⟹ 少了货币符号
+               一千二百三十四元五角六分   ⟹ 语义完全正确
 
-    ⟹ ⚠️ 这五项任何一项不同，分数都能差好几个点
-    ⟹ ⟹ 🔑 而技术报告里【几乎从不完整披露这五项】
+    ⟹ ★★ 这四个答案的判分结果，取决于评测脚本里那几行正则
+    ⟹ 🔑 而【没有一家会把这几行正则写进技术报告】
 </code></pre></div>
 
-<hr />
-<h2 id="115-4">11.5 ★★ 陷阱④：本仓库的一手实证——各家根本没在同一把尺子上</h2>
-<p>这一节不是推断，是本仓库已核对的事实：</p>
 <blockquote>
-<p>✅ <strong>五份 2026 年一手报告的多模态评测口径</strong>（出处<br />
-<a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a>）：</p>
+<p>★ <strong>所以 OCR 类基准的分数尤其不可跨报告比较</strong>：它不只受模型影响，还受<strong>归一化规则</strong>影响——要不要去掉千分位逗号、要不要统一全角半角、要不要容忍大小写、数字容差给多少。<br />
+⟹ ⚠️ <strong>一条实操建议</strong>：自己跑 OCR 评测时，<strong>把归一化前后的分数都报出来</strong>。两者的差值就是"判分规则贡献了多少分"，这个数通常大得惊人。</p>
+</blockquote>
+<h3 id="2">② 图文对齐 / 描述类：没有唯一正确答案</h3>
+<div class="codehilite"><pre><span></span><code>    任务：&quot;描述这张图&quot;
+    参考答案：&quot;一只橘猫趴在窗台上晒太阳&quot;
+    模型输出：&quot;窗边有只猫在睡觉&quot;
+
+    ⟹ 字面重合度很低（BLEU/ROUGE 这类 n-gram 指标会打很低的分）
+    ⟹ 但语义上它【没说错任何东西】
+</code></pre></div>
+
+<p><strong>三种判法，三种性格</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>判法</th>
+<th>优点</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>n-gram 重合度</strong>（BLEU / CIDEr 一类）</td>
+<td>便宜、可复现</td>
+<td>⚠️ 惩罚"说法不同但意思对"，<strong>越详细的描述罚得越狠</strong></td>
+</tr>
+<tr>
+<td><strong>LLM 当裁判</strong></td>
+<td>贴近人类判断</td>
+<td>⚠️ 引入裁判模型自己的偏好（位置/冗长/自我偏好），见 <a href="../harness评测框架/评测入门/09-LLM当裁判.html">../harness评测框架/评测入门/09-LLM当裁判.md</a></td>
+</tr>
+<tr>
+<td>★ <strong>拆成可判的子问题</strong></td>
+<td><strong>唯一能客观判分的路</strong></td>
+<td>问不了"整体好不好"，只能问"有猫吗 / 猫什么颜色"</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>所以你会看到一个规律：多模态基准都在往"选择题 / 存在性判断 / 坐标框"这类可机器判分的形式上退</strong>（POPE 就是这么构造的）。⚠️ 我的判断：<strong>这不是因为那些形式更能反映能力，而是因为别的形式判不动。</strong></p>
+</blockquote>
+<h3 id="3">③ 主观题：换成"可验证的产物"</h3>
+<blockquote>
+<p>⟹ <strong>GLM-5.3 的那套做法值得记</strong>：✅ 它不去判"渲染出来的界面好不好看"，而是让模型<strong>与环境交互、检查自己的输出、迭代改进</strong>，判分落在<strong>功能正确性和渲染后的可交互产物</strong>上（出处 <a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a>，该文 §六）。<br />
+⟹ ★★ <strong>这是把主观题换成客观题的正解</strong>：不问"图画得好不好"，问"按这张图做出来的东西能不能跑通"。⚠️ 这是我对那段材料的读法，报告没有把它表述成一条评测方法论。</p>
+</blockquote>
+<h3 id="4">④ ★★ 语音与对话：有一类指标根本没有客观真值</h3>
+<p><strong>这一格和前三格性质不同，必须单独拎出来。</strong></p>
+<table>
+<thead>
+<tr>
+<th>问的是什么</th>
+<th>有客观真值吗</th>
+<th>怎么判</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"图里有没有这只猫"</td>
+<td>✅ <strong>有</strong>，拿物体标注比一下就行</td>
+<td>机器判，可复现</td>
+</tr>
+<tr>
+<td>"发票上的金额是多少"</td>
+<td>✅ 有（归一化规则要说清，见 ①）</td>
+<td>机器判</td>
+</tr>
+<tr>
+<td>"这段描述说错了什么"</td>
+<td>⚠️ 半有（拆成子问题才有，见 ②）</td>
+<td>拆题 / LLM 裁判</td>
+</tr>
+<tr>
+<td><strong>"它打断得是不是时候"</strong></td>
+<td>❌ <strong>没有</strong></td>
+<td>只能人听</td>
+</tr>
+<tr>
+<td><strong>"这段沉默是 0.4 秒还是 0.8 秒更自然"</strong></td>
+<td>❌ <strong>没有</strong></td>
+<td>只能人听</td>
+</tr>
+<tr>
+<td><strong>"它接话自然吗"</strong></td>
+<td>❌ <strong>没有</strong></td>
+<td>只能人听</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ★★ 同一个&quot;多模态&quot;领域里，既有全领域【最可判】的指标，
+       也有全领域【最不可判】的指标：
+
+       最可判：物体存在性（POPE 那一类）
+                ⟹ 有标注、能算 Precision/Recall、连盲猜基线都算得出来
+       最不可判：对话自然度（打断时机、沉默时长、接话）
+                ⟹ 没有标注，没有&quot;正确答案&quot;，连&quot;更好&quot;都要靠人投票
+
+    ⟹ ⚠️ 所以别把&quot;多模态评测很难&quot;当成一句笼统的抱怨：
+       ★ 视觉侧的难点是【口径没说清】（说清了就能判）
+       ★ 语音对话侧的难点是【真值不存在】（说清了也判不了）
+       ⟹ 🔑 两种难，解法完全不同：前者靠纪律，后者只能靠人 + 大样本。
+</code></pre></div>
+
+<blockquote>
+<p>⟹ 全双工、打断、backchannel 这些概念本身见 <a href="10-语音与实时全双工.html">10 章</a>。本节只说一件事：<strong>那一类指标进不了"客观判分"这条路，所以也进不了榜单</strong>——⚠️ 这正是语音类能力至今没有一张公认榜单的原因（我的判断）。</p>
+</blockquote>
+<hr />
+<h2 id="115-4">11.5 ★★ 陷阱④：视频评测——抽帧会不会把答案改掉</h2>
+<p><strong>视频是多模态评测里最失控的一块，因为"喂进去的到底是什么"完全由抽帧策略决定。</strong></p>
+<div class="codehilite"><pre><span></span><code>    一段 1 分钟、30 fps（frames per second，每秒帧数）的视频 = 1800 帧
+
+    ⚠️ 全喂：  1800 帧 × 每帧 256 token = 460800 token   &lt;- 根本放不进去
+    ★ 抽 1 fps：  60 帧 × 256 = 15360 token              &lt;- 只剩 1/30
+    ⟹ 再做 2 帧时间合并：30 × 256 = 7680 token           &lt;- 又少一半
+
+    ⚠️ token 账的算法见 12.2 和附录速查表，这里只看一件事：
+       ★★ 【有 29/30 的帧根本没进模型】
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>于是出现一个纯文本评测里不存在的问题：抽帧策略会改变题目的答案。</strong></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>问题类型</th>
+<th>1 fps 抽帧够不够</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"视频里出现了几个人"</td>
+<td>⚠️ 不一定</td>
+<td>只出现半秒的人会被整帧跳过</td>
+</tr>
+<tr>
+<td>"主角最后做了什么"</td>
+<td>✅ 基本够</td>
+<td>持续几秒的动作，抽到的概率高</td>
+</tr>
+<tr>
+<td>"他按了哪个按钮"</td>
+<td>❌ 经常不够</td>
+<td>按键动作常常只有两三帧</td>
+</tr>
+<tr>
+<td>"这段视频在讲什么主题"</td>
+<td>✅ 够</td>
+<td>全局语义对少几帧不敏感</td>
+</tr>
+<tr>
+<td>"字幕第 3 行写了什么"</td>
+<td>❌ 看运气</td>
+<td>字幕出现窗口短，而且还叠加 OCR 的抽取问题</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ ★★ 结论很硬：【同一道题，抽帧策略不同，正确答案的可达性就不同】
+    ⟹ 🔑 所以&quot;模型 A 的 Video-MME 比 B 高 3 分&quot;这句话，
+       ★ 在不知道两家各自抽了几帧之前，【是没有内容的】
+</code></pre></div>
+
+<blockquote>
+<p>✅ <strong>一手口径，而且只有一家给了</strong>：GLM-5.3 报告披露的视频输入策略是——<strong>原生支持视频的模型直接喂原视频，不支持的按 1 fps 抽帧、超限则均匀采样</strong>（出处同上，该文 §六）。<br />
+⟹ ⚠️ <strong>别家可能是"固定 8 帧""固定 64 帧""均匀 32 帧"，而且大多不写。</strong> 固定帧数和固定 fps 是两种完全不同的口径：<strong>固定 32 帧时，1 分钟视频抽 0.53 fps，1 小时视频抽 0.0089 fps</strong>——同一个数字，后者等于什么都没看。</p>
+<p>★ <strong>还有一个更隐蔽的</strong>：✅ K3 和 M3 都把<strong>时间维做了合并/池化</strong>（K3 是注意力分解后时间维池化，M3 是 2 帧时间 merge）。⟹ ⚠️ 这意味着即使"抽了 60 帧"，模型实际分辨的时间粒度也不是 60 份。<strong>报告里的"支持 N 帧"和"能分辨 N 个时刻"不是一回事。</strong></p>
+</blockquote>
+<hr />
+<h2 id="116-5">11.6 ★ 陷阱⑤：同一个模型，两次评测能差很多分</h2>
+<p><strong>多模态有一堆"你不说我不知道"的口径。</strong> 下面这张表，⚠️ <strong>每一行不同都能让分数差好几个 pp，而技术报告几乎从不完整披露</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>必须披露的口径</th>
+<th>不说会怎样</th>
+<th>五家报告里有人说吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数据集版本</strong></td>
+<td>Video-MME 和 Video-MME-v2 是不同的题</td>
+<td>⚠️ 只写名字，版本常缺</td>
+</tr>
+<tr>
+<td><strong>分辨率上限 / token 预算</strong></td>
+<td>576 token 和 2637 token 是两个不同的模型</td>
+<td>❌ 没有一家给评测时的设置</td>
+</tr>
+<tr>
+<td><strong>视频抽帧策略</strong></td>
+<td>见 11.5，能决定答案可不可达</td>
+<td>✅ 只有 GLM-5.3 给了</td>
+</tr>
+<tr>
+<td><strong>图在 prompt 里的位置</strong></td>
+<td>图在前还是在后，注意力分布不同</td>
+<td>❌ 无</td>
+</tr>
+<tr>
+<td><strong>提示词模板 / 要不要 CoT</strong></td>
+<td>CoT（Chain-of-Thought，思维链）提示能大幅改变多模态分数</td>
+<td>❌ 无</td>
+</tr>
+<tr>
+<td><strong>答案抽取规则</strong></td>
+<td>见 11.3、11.4①</td>
+<td>❌ 无</td>
+</tr>
+<tr>
+<td><strong>判分器</strong>（是否 LLM 当裁判、哪个模型）</td>
+<td>换裁判就换了尺子</td>
+<td>❌ 无</td>
+</tr>
+<tr>
+<td><strong>允许看几次</strong>（是否 agentic 视觉）</td>
+<td>能主动放大再看一眼，等于换了题型（见 08 章）</td>
+<td>⚠️ 只在架构章提过</td>
+</tr>
+<tr>
+<td><strong>shot 数</strong></td>
+<td>0-shot 和 4-shot 不可比</td>
+<td>❌ 无</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>一条可以直接用的纪律</strong>（借自 <a href="../harness评测框架/评测入门/11-怎么读懂一张榜单.html">../harness评测框架/评测入门/11-怎么读懂一张榜单.md</a>）：<strong>分数必须带口径。</strong> 一个多模态分数至少要能回答上表的前五行，否则它只是一个数字，不是一次测量。</p>
+</blockquote>
+<hr />
+<h2 id="117-6">11.7 ★★ 陷阱⑥：本仓库的一手实证——各家根本没在同一把尺子上</h2>
+<p>这一节不是推断，是本仓库已回溯过一手报告的事实。出处统一是 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> 与各家单模型解析文。</p>
+<blockquote>
+<p>✅ <strong>五家 2026 年旗舰各自报的视觉 benchmark</strong>：</p>
 <table>
 <thead>
 <tr>
 <th>模型</th>
-<th>用的视觉 benchmark</th>
+<th>报的视觉 benchmark</th>
+<th>哪个阶段的模型</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>Kimi K3</strong></td>
-<td>OmniDocBench / Video-MME / PerceptionBench</td>
+<td>OmniDocBench <strong>91.1</strong> / Video-MME <strong>90.0</strong> / PerceptionBench</td>
+<td>后训练模型</td>
 </tr>
 <tr>
 <td><strong>MiniMax M3</strong></td>
-<td>MMMU_Pro 78.1 / Video-MME-v2 85.4 / claw-eval</td>
+<td>MMMU_Pro <strong>78.1</strong> / Video-MME-v2 <strong>85.4</strong> / claw-eval 74.5</td>
+<td>后训练模型（模型卡）</td>
 </tr>
 <tr>
 <td><strong>GLM-5.3</strong></td>
 <td>BabyVision / Treasury Bulletin PDF / MVBench / MMVU</td>
+<td>后训练模型，⚠️ <strong>分数是图片，无法文本核对</strong></td>
 </tr>
 <tr>
-<td>DeepSeek-V4</td>
-<td>—（纯文本）</td>
+<td><strong>DeepSeek-V4.1-Flash</strong></td>
+<td>MMMU-Pro <strong>56.5</strong> / DocVQA <strong>95.6</strong></td>
+<td>⚠️ <strong>只有 Base 模型</strong>；后训练那张表里<strong>一个视觉基准都没有</strong></td>
 </tr>
 <tr>
 <td>openPangu-2.0-Pro</td>
 <td>—（纯文本，报告明说只评非多模态子集）</td>
+<td>—</td>
 </tr>
 </tbody>
 </table>
-<p>✅ <strong>原文结论</strong>：<em>"K3 和 M3 之间</em><em>零个共享的视觉 benchmark</em><em>……<br />
-</em><em>多模态这一维目前完全无法横向比较</em><em>。"</em></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 注意 K3 和 M3 都测了&quot;Video-MME&quot;，看起来像共享的 ——
-       但 M3 测的是 【Video-MME-v2】，是不同版本的题
-    ⟹ ★★ 这正是多模态评测的典型状态：连&quot;看起来一样&quot;的都不一样
+<div class="codehilite"><pre><span></span><code>    ⚠️ 先看最像能比的一组：M3 的 MMMU_Pro 78.1 vs V4.1-Flash 的 MMMU-Pro 56.5
+
+    ★★ 这两个数【不能比】，原因是口径不同而不是能力不同：
+       · M3 的 78.1 是【后训练模型】
+       · V4.1 的 56.5 是【Base 模型】——V4.1 的后训练表里没有任何视觉基准
+
+    ⟹ 🔑 而一个模型从 Base 到后训练，分数涨几十 pp 是常事
+    ⟹ ★★ 所以&quot;五家里唯一一组同名的视觉 benchmark&quot;，恰好也是不能比的那一组
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>对比一下纯文本</strong>：五家至少都测 MMLU-Pro、GPQA、AIME、SWE-bench、LiveCodeBench，<br />
-有一张<strong>互相可桥接的网</strong>（见 <a href="../业界模型技术报告/模型技术对比.html">模型技术对比</a> §5）。<br />
-<strong>多模态这张网根本不存在。</strong><br />
-⟹ ⚠️ 我的判断：<strong>这不完全是技术问题，也是选择问题</strong>——<br />
-<strong>每家都倾向于报告自己强的那几个 benchmark，而多模态的 benchmark 足够多，<br />
-多到人人都能找到自己赢的那几个。</strong></p>
+<p>✅ <strong>再看 K3 和 M3，本仓库的原文结论</strong>：<em>"K3 和 M3 之间</em><em>零个共享的视觉 benchmark</em><em>……</em><em>多模态这一维目前完全无法横向比较</em><em>。"</em></p>
+<p><code>⚠️ 注意 K3 和 M3 都测了"Video-MME"，看起来像共享的 ——
+       但 M3 测的是 【Video-MME-v2】，是不同版本的题
+    ⟹ ★★ 这正是多模态评测的典型状态：连"看起来一样"的都不一样</code></p>
+<p>🔑 <strong>对比一下纯文本</strong>：五家至少都测 MMLU-Pro、GPQA、AIME、SWE-bench、LiveCodeBench，有一张<strong>互相可桥接的网</strong>（见 <a href="../业界模型技术报告/模型技术对比.html">模型技术对比.md</a> 该文 §五）。<strong>多模态这张网根本不存在。</strong><br />
+⟹ ⚠️ <strong>我的判断：这不完全是技术问题，也是选择问题</strong>——<strong>每家都倾向于报告自己强的那几个 benchmark，而多模态的 benchmark 足够多，多到人人都能找到自己赢的那几个。</strong><br />
+⟹ ★ <strong>V4.1-Flash 给了这个判断一个新佐证</strong>：它是原生多模态的，却<strong>在后训练模型的成绩单里一个视觉基准都不报</strong>，只在 Base 表里给两个。⚠️ 报告没解释为什么。</p>
 </blockquote>
 <hr />
-<h2 id="116-5">11.6 陷阱⑤：图像污染查不出来</h2>
-<p>已经在 <a href="07-多模态数据.html">07 章 7.5 节</a>说过，这里再强调一次它对榜单的后果：</p>
-<div class="codehilite"><pre><span></span><code>    文本污染：字符串/n-gram 匹配，能查出个八九不离十
-    图像污染：★ 同一张图【重新压缩一次】，哈希就完全不同，
-              但模型看到的内容一模一样
+<h2 id="118-7-n-gram">11.8 ★★ 陷阱⑦：图像没有 n-gram，所以去污染这件事根本做不干净</h2>
+<p><strong>这是"多模态评测比文本评测更难"最根本的原因之一。</strong> 07 章讲它对训练数据的影响，这里讲它对<strong>榜单可信度</strong>的后果。</p>
+<h3 id="_1">为什么文本能查、图像不能</h3>
+<div class="codehilite"><pre><span></span><code>    文本去污染：  把测试集的句子切成 n-gram（比如连续 13 个词），
+                 到训练语料里做字符串匹配
+                 ⟹ ★ 能查出个八九不离十，因为【文字是离散符号，
+                    一模一样就是一模一样】
 
-    ⟹ ⚠️ 意味着：多模态榜单的分数【被污染的概率更高，而且更难自证清白】
-    ⟹ 通用背景见 ../harness评测框架/评测入门/06-数据污染.md
+    图像去污染：  ⚠️ 图像【没有 n-gram 这种东西】。
+                 像素是连续值，没有&quot;词&quot;可以切、没有字符串可以匹配
+                 ⟹ 只能退而求其次：对整张图算哈希，比哈希
 </code></pre></div>
 
+<p><strong>而哈希一碰就碎。</strong> 下面每一种变换都让<strong>哈希完全改变，但模型看到的内容几乎没变</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>对测试集里的图做什么</th>
+<th>像素变了吗</th>
+<th>精确哈希（MD5 等）</th>
+<th>感知哈希（pHash）</th>
+<th>模型看到的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>换个 JPEG 质量重新编码</strong></td>
+<td>⚠️ 微变</td>
+<td>❌ 完全不同</td>
+<td>✅ 还能认出</td>
+<td><strong>一模一样</strong></td>
+</tr>
+<tr>
+<td><strong>改分辨率</strong>（1024² → 896²）</td>
+<td>⚠️ 变</td>
+<td>❌ 完全不同</td>
+<td>✅ 还能认出</td>
+<td><strong>一模一样</strong></td>
+</tr>
+<tr>
+<td><strong>裁掉边上一刀</strong></td>
+<td>✅ 变</td>
+<td>❌ 完全不同</td>
+<td>⚠️ <strong>经常认不出</strong></td>
+<td>基本一样</td>
+</tr>
+<tr>
+<td><strong>加水印 / 换配色</strong></td>
+<td>✅ 变</td>
+<td>❌ 完全不同</td>
+<td>⚠️ <strong>经常认不出</strong></td>
+<td>基本一样</td>
+</tr>
+<tr>
+<td><strong>用同一份数据重新渲染一遍</strong></td>
+<td>✅ 全变</td>
+<td>❌ 完全不同</td>
+<td>❌ <strong>认不出</strong></td>
+<td>★★ <strong>同一道题</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 ★★★ 最后一行是最要命的：
+       【重新渲染】恰好是多模态合成数据最常见的生产方式（07 章那张王牌）
+    ⟹ 所以一个很现实的场景是：
+       某个榜单的题目来自某份公开数据集 ⟹ 有人拿同一份数据重新渲染成训练图
+       ⟹ 两边【没有任何一个字节相同】，连 pHash 都对不上
+       ⟹ ★★ 但对模型来说，它在训练时已经做过这道题了
+
+    ⟹ ⚠️ 结论：多模态榜单的分数【被污染的概率更高，
+       而且厂商【连自证清白的手段都没有】——
+       ★ 因为&quot;我查过了&quot;这句话在图像上是查不动的
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>所以这一格的正确做法不是"查得更狠"，而是换思路</strong>：<br />
+⟹ ① <strong>自己造私有测试集</strong>（11.10 ④）——没被污染是它最大的价值，比分布贴合还重要。<br />
+⟹ ② <strong>看"模型在同一道题的变体上表现一致吗"</strong>：11.10 ③ 的扰动测试顺带就是一个污染探针——⚠️ <strong>一个背过答案的模型，对原图答得特别好，对旋转/裁剪后的同一张图就露馅。</strong><br />
+⟹ 通用背景（文本侧的 n-gram 去污染怎么做、为什么也不完美）见 <a href="../harness评测框架/评测入门/06-数据污染.html">../harness评测框架/评测入门/06-数据污染.md</a>。</p>
+</blockquote>
 <hr />
-<h2 id="117">11.7 ★ 那怎么办：自己评的五条实操建议</h2>
+<h2 id="119">11.9 ⚠️ 差多少才算真有差别：先把噪声算出来</h2>
+<p><strong>这是从 <a href="../harness评测框架/评测入门/11-怎么读懂一张榜单.html">../harness评测框架/评测入门/11-怎么读懂一张榜单.md</a> 借来的纪律，但它在多模态里更要紧。</strong></p>
+<div class="codehilite"><pre><span></span><code>    ★★★ 把&quot;答对一道题&quot;看成抛硬币，正确率的标准误有闭式解：
+
+        SE = √( p × (1 − p) ÷ n )
+
+      SE = standard error（标准误），指&quot;同一套设置重跑一遍，分数大概晃动多少&quot;
+      p  = 正确率，n = 题数
+      ⟹ 约 95% 的重跑结果落在【真值 ± 1.96 × SE】之内
+      ⟹ ⚠️ p 取 0.5 时 SE 最大，所以拿不准就取 0.5，这是最保守的算法
+</code></pre></div>
+
+<p>⚠️ <strong>代几个题数算一遍</strong>（p 一律取 0.5）：</p>
+<table>
+<thead>
+<tr>
+<th>题数 n</th>
+<th>SE</th>
+<th>95% 区间 ≈ ±1.96·SE</th>
+<th>读法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>30</td>
+<td><strong>9.1 pp</strong></td>
+<td>±17.9 pp</td>
+<td>⚠️ 多对一道题 = 3.3 pp，分数基本是噪声</td>
+</tr>
+<tr>
+<td>100</td>
+<td><strong>5.0 pp</strong></td>
+<td>±9.8 pp</td>
+<td>⚠️ 差 5 pp 以内毫无意义</td>
+</tr>
+<tr>
+<td><strong>500</strong></td>
+<td>★ <strong>2.2 pp</strong></td>
+<td>±4.4 pp</td>
+<td>🔑 <strong>这是最该记住的一行</strong></td>
+</tr>
+<tr>
+<td>1000</td>
+<td>1.6 pp</td>
+<td>±3.1 pp</td>
+<td></td>
+</tr>
+<tr>
+<td>5000</td>
+<td>0.7 pp</td>
+<td>±1.4 pp</td>
+<td>✅ 到这个量级小数点才开始有意义</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ⟹ 🔑🔑 记住 500 题这一行：★★ n=500、p=0.5 时 SE ≈ 2.2 个百分点
+    ⟹ ★★ 所以&quot;我们比对手高 2 个点&quot;这句话，在一个 500 题的基准上
+       【连一个标准误都没超过】
+
+    ⚠️ 而且这只算了【题目抽样】一种噪声，没算温度采样、提示词模板、抽取规则
+    ⟹ 它是一个【下限】：真实抖动只会更大
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>为什么这一条在多模态里更要紧</strong>：⚠️ <strong>我的判断——多模态基准普遍比纯文本的小</strong>。原因很具体：<strong>图要人工采集和标注，一道图文题的成本远高于一道纯文本题</strong>。⟹ 于是大家常用的是 validation 或 testmini 这类几百到一两千题的子集，正好落在上表 SE 还有 1.6~5.0 pp 的区间里。<br />
+⟹ 🔑 <strong>两条可以立刻用的规矩</strong>：① <strong>报分数时必须报题数</strong>，否则读者算不出噪声；② <strong>比较两个模型时，差值要和 1.41 × SE 比</strong>（两个独立分数之差的标准误约 √2 倍），500 题时这个门槛是 <strong>≈3.2 pp</strong>。</p>
+<p>⟹ <strong>另外两个单位陷阱</strong>（百分比 vs 百分点、"耗时减少 X%" ≠ "加速 X%"）放在 <a href="附-速查表.html">附-速查表</a> §B.7，那里有换算表。</p>
+</blockquote>
+<hr />
+<h2 id="1110">11.10 ★ 那怎么办：自己评的五条实操建议</h2>
 <div class="codehilite"><pre><span></span><code> ① 必做盲测基线
     同一套题，把图去掉跑一遍。⟹ 差值才是【视觉真正贡献的分数】
     ★ 这一条只要做了，你的评测就比大多数技术报告严谨。
 
  ② 对齐口径再比较
-    比两个模型时，把分辨率上限、抽帧策略、prompt 模板【显式对齐】，
-    并把这些参数写进结果表。
+    把 11.6 那张表的前五行【显式对齐】，并把这些参数写进结果表。
+    ★ 对不齐的那几行，就直接在表里标&quot;不可比&quot;，别硬比。
 
  ③ 加扰动测稳健性
     同一张图：旋转 90°、加噪、改亮度、换 JPEG 质量 ⟹ 答案变不变？
     ★ 一个稳健的模型不该因为压缩率变了就改口。
+    ⟹ 视频就换抽帧策略（8 帧 / 1 fps / 2 fps）各跑一遍，看分数飘多少。
 
  ④ 自己造一小份【私有】测试集
-    用你自己业务里的真实图（发票、工单截图、监控画面），100 张就够。
+    用你自己业务里的真实图（发票、工单截图、监控画面）。
+    ⚠️ 但看一眼 11.9：100 张题的 SE 是 5 pp。
+       ⟹ ★ 100 张够用来【发现模型完全不行】，不够用来【比较两个差不多的模型】
+       ⟹ 要比较，至少 500 张。
     ★★ 它有两个不可替代的价值：没被污染 + 分布贴合你的场景。
     ⟹ 造法参考 ../harness评测框架/评测入门/12-自己搭一套评测.md
 
  ⑤ 人工抽查，而且要【逐字核对数字】
-    ⟹ 8.6 节的结论：多模态最危险的错是&quot;看起来完全合理的错&quot;，
+    ⟹ 08 章的结论：多模态最危险的错是&quot;看起来完全合理的错&quot;，
        只看总分永远发现不了。
 </code></pre></div>
 
 <hr />
-<h2 id="118">11.8 🔑 这一章的五句话</h2>
+<h2 id="1111">11.11 🔑 这一章的六句话</h2>
 <ol>
-<li><strong>多模态榜单最大的问题是"不看图也能答对"</strong> ⟹ <strong>没有盲测基线的分数是不可解释的。</strong></li>
-<li><strong>分辨率、抽帧数、prompt 模板任何一项不同，分数就差几个点</strong>，而报告几乎从不完整披露。</li>
-<li>✅ <strong>一手实证：K3 和 M3 之间零个共享的视觉 benchmark</strong> ⟹ <strong>2026 年的多模态分数客观上无法横向比较。</strong></li>
-<li>⚠️ <strong>图像污染比文本污染更难查</strong>，重压一次哈希就变了。</li>
-<li><strong>自己评的四件事：盲测基线、对齐口径、加扰动、造一份私有小测试集。</strong> 做到第一条你就赢过多数报告了。</li>
+<li><strong>多模态榜单最大的问题是"不看图也能答对"</strong> ⟹ <strong>没有盲测基线的分数是不可解释的。</strong> 这是多模态独有的问题，纯文本评测里不存在。</li>
+<li>★★ <strong>OCR 和描述类任务的"对不对"由判分规则决定</strong>，而判分规则<strong>从不写进技术报告</strong>；于是多模态基准都在往"选择题 / 存在性 / 坐标框"退。</li>
+<li>★★ <strong>视频评测里，抽帧策略能决定一道题的答案是否可达</strong>——"固定 32 帧"对 1 分钟和 1 小时的视频是两个完全不同的口径。</li>
+<li>✅ <strong>一手实证：K3 和 M3 之间零个共享的视觉 benchmark</strong>；而唯一一组同名的（M3 78.1 vs V4.1-Flash 56.5 的 MMMU-Pro）一个是后训练、一个是 Base，⟹ <strong>2026 年的多模态分数客观上无法横向比较。</strong></li>
+<li>★★ <strong>图像没有 n-gram，所以去污染根本做不干净</strong>：重编码、改分辨率、裁一刀、重新渲染都能让哈希全变而内容不变 ⟹ ⚠️ <strong>厂商连自证清白的手段都没有</strong>。</li>
+<li>★★ <strong>先算噪声再比分数</strong>：<code>SE = √(p(1−p)/n)</code>，n=500、p=0.5 时 <strong>≈2.2 pp</strong>。⟹ <strong>高 2 个点通常什么都没说明。</strong></li>
 </ol>
 <hr />
 <blockquote>

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,104 +256,351 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="12">12 · 推理与训练工程：多模态是怎么把系统搞乱的</h1>
 <blockquote>
-<p>📖 <strong>前置</strong>：<a href="../推理框架/推理优化入门/">../推理框架/推理优化入门/</a> 和<br />
-<a href="../训练框架/分布式训练入门/">../训练框架/分布式训练入门/</a>。<br />
-<strong>本章只讲"加了视觉之后，那些干净的假设是怎么被打破的"。</strong></p>
+<p>📖 <strong>前置</strong>：<a href="../推理框架/推理优化入门/">../推理框架/推理优化入门/</a> 和 <a href="../训练框架/分布式训练入门/">../训练框架/分布式训练入门/</a>。<br />
+<strong>本章只讲"加了视觉之后，那些干净的假设是怎么被打破的"</strong>，KV cache、连续批处理、TP/PP/DP 这些通用机制在上面两个目录里有基础讲解。<br />
+⚠️ <strong>本章几乎全是估算</strong>。所有数字都标了 ⚠️ 并写出了算式，<strong>你应该拿计算器复算一遍</strong>，而不是引用它们。</p>
+<p>📖 <strong>三个缩写先摆在这里，后面反复用</strong>：<br />
+<strong>KV cache</strong>（Key-Value cache，键值缓存）= 模型生成文字时把"已读过的每个 token 算出的注意力中间量"存下来复用的那块显存。<br />
+<strong>ViT</strong>（Vision Transformer，视觉 Transformer）= 把图切成方格当 token 喂进 Transformer 的视觉编码器，也叫视觉塔。<br />
+<strong>EPD</strong>（Encode–Prefill–Decode，编码–预填充–解码）= 本章 12.1 要讲的三段分离部署形态。</p>
 </blockquote>
 <hr />
 <h2 id="121">12.1 ★★ 推理：从两段变三段</h2>
 <p>纯文本推理只有两个阶段（见 <a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">../推理框架/推理优化入门/03-Prefill与Decode两阶段.md</a>）：</p>
-<div class="codehilite"><pre><span></span><code>    Prefill（吃进 prompt，算力密集）  →  Decode（一个一个吐字，访存密集）
+<div class="codehilite"><pre><span></span><code>    Prefill（吃进 prompt，算力密集）  -&gt;  Decode（一个一个吐字，访存密集）
 </code></pre></div>
 
 <p><strong>多模态凭空多出一段，而且它的性格和前两段都不一样</strong>：</p>
-<div class="codehilite"><pre><span></span><code> ┌────────────┬──────────────┬──────────────┬─────────────────┐
- │            │   Encode     │   Prefill    │    Decode       │
- │            │  （视觉编码） │              │                 │
- ├────────────┼──────────────┼──────────────┼─────────────────┤
- │ 瓶颈       │ ★ 纯算力     │ 算力，且产 KV │ ★ 访存带宽      │
- │ 要不要 KV  │ 不要         │ 要写          │ 要读            │
- │ batch 特性 │ 图多才划算   │ 长序列        │ 大 batch 才划算 │
- │ 时长       │ 每图 ~25 ms  │ 长            │ 每 token 几十 ms │
- └────────────┴──────────────┴──────────────┴─────────────────┘
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Encode</strong>（视觉编码）</th>
+<th><strong>Prefill</strong>（预填充）</th>
+<th><strong>Decode</strong>（解码）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>在干什么</strong></td>
+<td>图/视频过视觉塔</td>
+<td>吃进整条 prompt</td>
+<td>一个一个吐字</td>
+</tr>
+<tr>
+<td><strong>瓶颈资源</strong></td>
+<td>★ 纯算力</td>
+<td>算力，<strong>且要写 KV</strong></td>
+<td>★ 访存带宽</td>
+</tr>
+<tr>
+<td><strong>要不要 KV cache</strong></td>
+<td><strong>不要</strong>（算完就扔）</td>
+<td>要写</td>
+<td>要读</td>
+</tr>
+<tr>
+<td><strong>batch 怎么才划算</strong></td>
+<td>图够多才划算</td>
+<td>长序列</td>
+<td>大 batch 才划算</td>
+</tr>
+<tr>
+<td><strong>单次耗时量级</strong></td>
+<td>⚠️ 每张图 25 ms ~ 1.5 s<br>（看分辨率，见 12.2）</td>
+<td>随 prompt 长度线性涨</td>
+<td>⚠️ 每 token 几十 ms</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>看"要不要 KV cache"这一行</strong>：Encode 是三段里唯一<strong>不产生、也不消耗 KV cache</strong> 的阶段——它的输出是一堆向量，交给 Prefill 之后自己就可以释放。⟹ ★ 这一条正是它能被单独拆出去的根本原因。</p>
+<p>✅ <strong>一手证据（GLM-5.3 的 EPD 分离）</strong>：<br />
+<em>"视觉编码是纯计算密集的（过 24 层 ViT），prefill 是计算密集但要 KV，decode 是访存密集。</em><em>三者的硬件需求完全不同。挤在一起的话，一张图片的编码会把 decode 的卡堵住。</em><em> 拆开后每一段可以独立扩缩容。"</em><br />
+出处：<a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a>，该文 §7.2（⚠️ 这是本仓库解析文的节号，不是 GLM 官方报告的节号）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>    传统 PD 分离（纯文本，两段）
+        Prefill 池  -&gt;  Decode 池
+
+    GLM-5.3-Flash 的 EPD（三段）
+        Encode 池  -&gt;  Prefill 池  -&gt;  Decode 池
+        ^^^^^^^^^
+        多模态编码（图/视频过视觉塔）单独成池，独立扩缩容
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>一手证据（GLM-5.3 的 EPD 分离）</strong>：<br />
-<em>"视觉编码是纯计算密集的（过 24 层 ViT），prefill 是计算密集但要 KV，decode 是访存密集。<br />
-</em><em>三者的硬件需求完全不同。挤在一起的话，一张图片的编码会把 decode 的卡堵住。</em><em><br />
-拆开后每一段可以独立扩缩容。"</em><br />
-出处：<a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a> §7.2</p>
-<p><code>GLM-5.3-Flash 的 EPD：Encode 池 → Prefill 池 → Decode 池
-                            ↑
-                       多模态编码（图/视频过视觉塔）单独成池</code></p>
-<p>🔑 <strong>这是纯文本世界 PD 分离（Prefill/Decode）的直接延伸</strong>：<br />
-见 <a href="../推理框架/推理优化入门/10-PD分离.html">../推理框架/推理优化入门/10-PD分离.md</a>。<br />
+<p>🔑 <strong>这是纯文本世界 PD 分离（Prefill/Decode disaggregation，预填充–解码分离）的直接延伸</strong>：见 <a href="../推理框架/推理优化入门/10-PD分离.html">../推理框架/推理优化入门/10-PD分离.md</a>。<br />
 ⟹ <strong>规律：只要一类负载的瓶颈资源和别人不同，它迟早会被拆成独立的池。</strong></p>
 </blockquote>
 <hr />
-<h2 id="122-kv">12.2 算一笔显存账：一张图的 KV 有多大</h2>
-<div class="codehilite"><pre><span></span><code>    ⚠️ 我的估算（假设：60 层、GQA 4 个 KV 头、head_dim 128、bf16）：
-
-      每 token 每层 KV = 2(K和V) × 4 × 128 × 2 字节 = 2048 字节
-      每 token 全模型  = 2048 × 60 层 ≈ 120 KB
-
-      一张图 1521 个视觉 token ⟹ ★ 约 178 MB 的 KV cache
-      ⟹ 一个 80GB 的卡，光是【450 张图】的 KV 就满了
-      ⟹ 而这还没算模型权重
+<h2 id="122">12.2 ★★ 先把"一张图顶多少文本"这笔账算死</h2>
+<p><strong>这一节是后面所有工程问题的源头。</strong> 一张图进模型要走两道换算，两道都是平方关系：</p>
+<div class="codehilite"><pre><span></span><code>    ① 边长 -&gt; patch 数：      patch 数 = (边长 ÷ patch 边长)²       &lt;- 平方
+    ② patch 数 -&gt; 视觉 token：token 数 = patch 数 ÷ 合并倍数         &lt;- 线性
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>这就是为什么多模态服务的并发数远低于纯文本服务。</strong><br />
-⟹ 也是为什么 <a href="../业界模型技术报告/大模型架构入门/07-MHA到MLA.html">MLA 这类压缩 KV 的注意力</a><br />
-在多模态场景下<strong>收益比纯文本更大</strong>——⚠️ 这一条是我的推断，报告里没有直接对比。</p>
+<p>⚠️ <strong>下表的三组口径，先摆清楚</strong>：<br />
+① <strong>token</strong>：patch 14×14、2×2 合并（相邻四个 patch 并成一个 token）。<br />
+② <strong>视觉塔前向 FLOPs</strong>：用 02 章那条式子 <code>27 层 × (24·n·d² + 4·n²·d)</code>，n = patch 数、d = 1152；耗时按"一张 H100 有效 400 TFLOPS"折算。<br />
+③ <strong>KV cache</strong>：按 12.3 算出的每 token 120 KiB。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>patch 数 = (边长/14)²</th>
+<th>视觉 token（÷4）</th>
+<th>⚠️ 视觉塔前向</th>
+<th>⚠️ 这张图的 KV</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>336²</td>
+<td>24×24 = <strong>576</strong></td>
+<td>144</td>
+<td>0.5 TFLOPs / 1.3 ms</td>
+<td>17 MiB</td>
+</tr>
+<tr>
+<td>448²</td>
+<td>32×32 = <strong>1024</strong></td>
+<td>256</td>
+<td>1.0 TFLOPs / 2.5 ms</td>
+<td>30 MiB</td>
+</tr>
+<tr>
+<td>672²</td>
+<td>48×48 = <strong>2304</strong></td>
+<td>576</td>
+<td>2.6 TFLOPs / 6.6 ms</td>
+<td>68 MiB</td>
+</tr>
+<tr>
+<td>1092²（00 章的例子）</td>
+<td>78×78 = <strong>6084</strong></td>
+<td>1521</td>
+<td>9.8 TFLOPs / 25 ms</td>
+<td>178 MiB</td>
+</tr>
+<tr>
+<td>1344²（V4.1-Flash 上限）</td>
+<td>96×96 = <strong>9216</strong></td>
+<td>2304</td>
+<td>18.5 TFLOPs / 46 ms</td>
+<td>270 MiB</td>
+</tr>
+<tr>
+<td>1920×1080</td>
+<td>137×77 = <strong>10549</strong></td>
+<td>2637</td>
+<td>22.9 TFLOPs / 57 ms</td>
+<td>309 MiB</td>
+</tr>
+<tr>
+<td>2016²（M3 上限）</td>
+<td>144×144 = <strong>20736</strong></td>
+<td>5184</td>
+<td>71 TFLOPs / 178 ms</td>
+<td>608 MiB</td>
+</tr>
+<tr>
+<td>3584²（K3 上限）</td>
+<td>256×256 = <strong>65536</strong></td>
+<td>16384</td>
+<td>591 TFLOPs / <strong>1.5 s</strong></td>
+<td><strong>1.9 GiB</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>这张表最该带走的三句话</strong>：<br />
+① <strong>边长翻倍 = token 数 4 倍</strong>（336²→672² 是 144→576）。⟹ 🔑 所以"我们支持 2 倍分辨率"在预算上是 <strong>4 倍代价</strong>，不是 2 倍。<br />
+② <strong>视觉塔的耗时涨得比 token 数还快</strong>：<code>4·n²·d</code> 那一项是 patch 数的平方，而 patch 数本身又是边长的平方 ⟹ ★ <strong>边长翻倍，注意力那一项涨 16 倍</strong>。<br />
+③ <strong>一张 K3 上限分辨率的图，光 KV 就要 1.9 GiB</strong>，80 GiB 的卡只装得下 ⚠️ <strong>约 42 张</strong>。</p>
+<p>📖 <strong>这张表的"视觉塔前向"一列，和 <a href="02-视觉编码器.html">02 章</a>那笔计算量的账是同一笔</strong>（那里有完整的分档阶梯和"矩阵乘项 vs 注意力项"的拆分，数字一致，可以互相复核）。<br />
+★★ <strong>02 章还顺带算出一个更狠的结论</strong>：<strong>一张 3584² 的图，视觉塔烧的算力和一个 18 B 激活的 LLM 把那 16384 个 token 过一遍一样多（591 对 590 TFLOP）</strong>——而这座塔只有 0.4 B 参数。⟹ 🔑 <strong>"视觉塔很小所以不重要"是错的：它参数小，但算力不小。</strong></p>
+<p>⚠️ <strong>最后一行的 1.5 s 不要当成 K3 的实际延迟</strong>。这条式子假设视觉塔对 65536 个 patch 做<strong>全局注意力</strong>，而真到这个量级没人这么做：K3 的 MoonViT-V2 ✅ 把注意力<strong>分解成帧内空间 + 帧间时间两趟</strong>，AnyRes 一类做法则是切块后各块独立算。⟹ 🔑 <strong>这个"算出来大得离谱的数"本身就是那些窗口化、分解式注意力存在的理由。</strong></p>
+<p>🔑 <strong>换成文本的量感</strong>（按 00 章"1 个汉字 ≈ 1.4 个 token"的口径折算）：<br />
+⟹ 一张 <strong>1092²</strong> 的截图 = 1521 视觉 token ≈ <strong>1100 个汉字</strong> ≈ 一页半 A4。<br />
+⟹ 一张 <strong>2016²</strong> 的图 = 5184 token ≈ <strong>3700 个汉字</strong>。<br />
+⟹ ★★ <strong>一张高分辨率图顶几千个文本 token，这不是夸张，是上面这张表的直接后果。</strong> 下面两节讲的全是它的账单。</p>
 </blockquote>
 <hr />
-<h2 id="123">12.3 ★ 一个立刻能用的优化：缓存视觉编码结果</h2>
+<h2 id="123-token-kv-cache">12.3 ★ 显存账：视觉 token 吃掉了 KV cache 的九成</h2>
+<p>先把"每个 token 的 KV 有多大"算出来。⚠️ 以下是我的估算，假设一个 60 层、GQA（Grouped-Query Attention，分组查询注意力）4 个 KV 头、head_dim 128、用 bf16（bfloat16，16 位脑浮点，每个数 2 字节）存的模型：</p>
+<div class="codehilite"><pre><span></span><code>    每 token 每层 KV = 2（K 和 V 各一份） × 4（KV 头） × 128（head_dim） × 2（字节）
+                     = 2048 字节
+
+    每 token 全模型  = 2048 × 60 层 = 122880 字节 = 120 KiB
+
+    一张 1092² 的图 = 1521 个视觉 token
+                     ⟹ 1521 × 120 KiB = 182520 KiB ≈ ★ 178 MiB
+
+    ⟹ 一张 80 GiB 的卡：81920 MiB ÷ 178 MiB ≈ ⚠️ 460 张图的 KV 就把卡填满了
+    ⟹ 而这还没算模型权重，也没算文本部分的 KV
+</code></pre></div>
+
+<p><strong>但更要紧的不是绝对值，是占比</strong>。⚠️ 同样按 120 KiB/token 算：</p>
+<table>
+<thead>
+<tr>
+<th>一次请求</th>
+<th>视觉 token</th>
+<th>文本 token</th>
+<th>视觉占 KV 的比例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 张 336² 缩略图 + 100 字提问</td>
+<td>144</td>
+<td>≈140</td>
+<td>51%</td>
+</tr>
+<tr>
+<td>1 张 1092² 截图 + 100 字提问</td>
+<td>1521</td>
+<td>≈140</td>
+<td><strong>92%</strong></td>
+</tr>
+<tr>
+<td>4 张 1092² 截图 + 500 字对话</td>
+<td>6084</td>
+<td>≈700</td>
+<td><strong>90%</strong></td>
+</tr>
+<tr>
+<td>1 张 2016² 图 + 100 字提问</td>
+<td>5184</td>
+<td>≈140</td>
+<td><strong>97%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>所以"多模态服务的并发数远低于纯文本"这句话可以说得更准确</strong>：不是"多模态更吃显存"这么笼统，而是 🔑 <strong>在带图的请求里，KV cache 的九成以上是视觉 token 占的，文本几乎不占地方</strong>。<br />
+⟹ ★ 这条结论直接决定了优化该往哪使劲：<strong>压 KV 的手段（更少的 KV 头、潜在压缩、量化）在多模态场景下作用在那 90% 上，而不是那 10% 上。</strong><br />
+⟹ 比如 <a href="../业界模型技术报告/大模型架构入门/07-MHA到MLA.html">MLA（Multi-head Latent Attention，多头潜在注意力）这类压缩 KV 的注意力</a>，⚠️ <strong>我的推断是它在多模态场景下收益比纯文本更大</strong>——但要说清楚：<strong>五份报告里没有任何一家做过"同一模型、纯文本 vs 多模态、换不换 MLA"的对照实验，所以这是推断，不是结论。</strong></p>
+<p>⚠️ <strong>口径提醒</strong>：上面所有"80 GiB"都按 2 的幂算（81920 MiB）。如果厂商标的 80 GB 是十进制（76294 MiB），同一笔账的答案是 <strong>≈430 张</strong>而不是 460 张。⟹ 🔑 这类 7% 的差异在容量规划里会反复咬人，<strong>写方案时必须说清是 GB 还是 GiB</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="124">12.4 ★ 一个立刻能用的优化：缓存视觉编码结果</h2>
 <div class="codehilite"><pre><span></span><code>    典型场景：用户上传一张图，然后连问五个问题
-    ⚠️ 天真实现：每一轮都把图重新过一遍视觉塔 ⟹ 每轮白烧 25 毫秒 + 算力
 
-    ★ 正确做法：用图片的哈希做 key，把【连接器输出的那 1521 个向量】缓存起来
-      ⟹ 第 2~5 轮直接命中，Encode 阶段耗时归零
+    ⚠️ 天真实现：每一轮都把图重新过一遍视觉塔
+       ⟹ 1092² 的图每轮白烧 25 毫秒 + 10 TFLOPs
+       ⟹ 2016² 的图每轮白烧 178 毫秒 + 71 TFLOPs   &lt;- ★ 分辨率越高，这个浪费越离谱
 
-    ⟹ ★★ 更进一步：如果 prompt 的前缀（含图）完全一样，
-       连 KV cache 都可以复用 —— 这就是普通的前缀缓存
+    ★ 正确做法：用图片内容的哈希做 key，把【连接器输出的那一批向量】缓存起来
+       ⟹ 第 2~5 轮直接命中，Encode 阶段耗时归零
+
+    ⟹ ★★ 更进一步：如果 prompt 的前缀（含图）完全一样，连 KV cache 都可以复用
+       —— 这就是普通的前缀缓存（prefix cache）
        见 ../推理框架/推理优化入门/05-PagedAttention与前缀缓存.md
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>陷阱</strong>：前缀缓存的 key 通常是<strong>文本 token 序列的哈希</strong>。<br />
-图像走的是"占位符 token + 外部向量"这条路，<strong>如果实现时没有把图片内容一起算进 key，<br />
-就会出现"换了图但命中了旧缓存"的严重 bug</strong>。<br />
-⟹ 这类 bug 的表现是"模型回答的是上一张图的内容"——<strong>看起来像幻觉，其实是缓存错了</strong>。</p>
+<p>⚠️ <strong>陷阱</strong>：前缀缓存的 key 通常是<strong>文本 token 序列的哈希</strong>。图像走的是"占位符 token + 外部向量"这条路，<strong>如果实现时没有把图片内容一起算进 key，就会出现"换了图但命中了旧缓存"的严重 bug</strong>。<br />
+⟹ 这类 bug 的表现是"模型回答的是上一张图的内容"——★★ <strong>看起来像幻觉，其实是缓存错了</strong>。<br />
+⟹ 🔑 <strong>怎么区分</strong>：幻觉会随温度和重试变化，缓存串图<strong>稳定复现</strong>，而且换个新会话就好了。</p>
 </blockquote>
 <hr />
-<h2 id="124-batching">12.4 变长：多模态把 batching 搞乱了</h2>
+<h2 id="125-batching-padding">12.5 变长：多模态把 batching 和 padding 都搞乱了</h2>
 <div class="codehilite"><pre><span></span><code>    纯文本的连续批处理（continuous batching）假设：
       每个请求每一步生成 1 个 token ⟹ 步长整齐 ⟹ 可以随时插拔请求
       见 ../推理框架/推理优化入门/04-连续批处理与调度.md
 
     ⚠️ 多模态打破了它：
       · 请求 A：纯文本，prompt 50 token
-      · 请求 B：带 1 张图，prompt 1571 token
-      · 请求 C：带 1 段视频，prompt 76800 token   ← ★ 这一个能把整批卡住
+      · 请求 B：带 1 张 1092² 的图，prompt ≈1571 token
+      · 请求 C：带 1 段 5 分钟视频，prompt ≈76800 token   &lt;- ★ 这一个能把整批卡住
       ⟹ 调度器要处理【三个数量级】的 prompt 长度差异
-      ⟹ 一个视频请求进来，其它请求的 TTFT（首字延迟）全被拖垮
+      ⟹ 一个视频请求进来，其它请求的 TTFT（Time To First Token，首 token 延迟）全被拖垮
+</code></pre></div>
+
+<h3 id="padding">⚠️ 变长的第二笔账：padding 浪费</h3>
+<p>视觉塔侧如果按"batch 里最长的那张图"对齐（最天真的实现），浪费大到不可接受。⚠️ 算一个 8 张图的 batch：</p>
+<table>
+<thead>
+<tr>
+<th>图</th>
+<th>输入边长</th>
+<th>视觉 token</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>336²</td>
+<td>144</td>
+</tr>
+<tr>
+<td>2</td>
+<td>672²</td>
+<td>576</td>
+</tr>
+<tr>
+<td>3</td>
+<td>1024²</td>
+<td>1332</td>
+</tr>
+<tr>
+<td>4</td>
+<td>1092²</td>
+<td>1521</td>
+</tr>
+<tr>
+<td>5</td>
+<td>1344²</td>
+<td>2304</td>
+</tr>
+<tr>
+<td>6</td>
+<td>1920×1080</td>
+<td>2637</td>
+</tr>
+<tr>
+<td>7</td>
+<td>2016²</td>
+<td>5184</td>
+</tr>
+<tr>
+<td>8</td>
+<td>3584²</td>
+<td><strong>16384</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    有效 token 合计 = 144+576+1332+1521+2304+2637+5184+16384 = 30082
+    按最长对齐    = 8 × 16384 = 131072
+
+    ⟹ ⚠️ 利用率 = 30082 ÷ 131072 = 23%
+    ⟹ ★★ 也就是说【77% 的算力花在 padding 上】
+    ⟹ 而这个浪费完全由&quot;batch 里有一张超大图&quot;这一件事造成
 </code></pre></div>
 
 <p><strong>常见对策</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ① ★ EPD 分离（12.1）—— 从架构上隔离
-    ② 分块 prefill（chunked prefill）：把超长 prompt 切成小块，
-       和别人的 decode 交错着算 ⟹ 不让一个巨型请求独占
-    ③ 按&quot;带不带图 / 带不带视频&quot;分队列，甚至分集群
+<div class="codehilite"><pre><span></span><code>    ① ★ EPD 分离（12.1）—— 从架构上把 Encode 隔离出去，不让它和 decode 抢卡
+    ② 分块 prefill（chunked prefill）：把超长 prompt 切成小块，和别人的 decode 交错着算
+       ⟹ 不让一个巨型请求独占
+    ③ patch packing：不 padding，把多张图的 patch 打包成一条变长序列，用掩码隔开
+       ⟹ ★ 这是上面那笔 77% 浪费的正解，把利用率拉回接近 100%
+    ④ 按&quot;带不带图 / 带不带视频&quot;分队列，甚至分集群
+       ⟹ 让长短请求不互相伤害，是最笨但最有效的一招
 </code></pre></div>
 
+<blockquote>
+<p>🔑 <strong>②③ 的区别值得分清</strong>：分块 prefill 解决的是<strong>单个巨型请求堵住别人</strong>，patch packing 解决的是<strong>一批图长短不齐浪费算力</strong>。两个问题都来自"变长"，但对策不互相替代。</p>
+</blockquote>
 <hr />
-<h2 id="125">12.5 训练侧的三个麻烦</h2>
+<h2 id="126">12.6 训练侧的三个麻烦</h2>
 <h3 id="1">麻烦① 变长样本 → 负载不均</h3>
 <div class="codehilite"><pre><span></span><code>    一个 batch 里：样本 1 有 0 张图、样本 2 有 3 张图、样本 3 有 1 段视频
-    ⟹ 各个 DP rank 的实际计算量差好几倍
-    ⟹ ★ 快的 rank 干等慢的 rank（木桶效应）⟹ MFU 掉
+    ⟹ 各个 DP（Data Parallel，数据并行）rank 的实际计算量差好几倍
+    ⟹ ★ 快的 rank 干等慢的 rank（木桶效应）
+       ⟹ MFU（Model FLOPs Utilization，模型算力利用率）掉
 
     对策：按【总 token 数】而不是【样本数】来组 batch（token-based batching）
          + patch packing（把多张图打包进一条序列，用掩码隔开）
@@ -356,29 +608,47 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        ../数据格式和数据处理/13-打包与文档掩码.md
 </code></pre></div>
 
+<blockquote>
+<p>🔑 <strong>注意这和 12.5 的 padding 浪费是同一件事的训练侧版本</strong>：推理侧表现为"77% 算力喂给了 padding"，训练侧表现为"MFU 掉"。<strong>同一个病因，两张账单。</strong></p>
+</blockquote>
 <h3 id="2">麻烦② 视觉塔不好切</h3>
-<div class="codehilite"><pre><span></span><code>    LLM：2.78T 参数，必须切（TP + PP + EP）
-    视觉塔：0.4B 参数 ⟹ ★ 太小了，切了通信开销比计算还大
+<div class="codehilite"><pre><span></span><code>    LLM 主干：✅ K3 是 2.78T 总参数 ⟹ 必须切
+              TP（Tensor Parallel，张量并行）+ PP（Pipeline Parallel，流水线并行）
+              + EP（Expert Parallel，专家并行）
+    视觉塔：  ✅ K3 的 MoonViT-V2 只有 ≈0.4B 参数
+              ⟹ ★ 太小了，切了通信开销比计算还大
+
     ⟹ 常见做法：视觉塔【每个 rank 各存一份（DP 复制）】，只切 LLM
-    ⟹ ⚠️ 但这样一来，流水线并行（PP）的第一段就多背了一个 ViT
+    ⟹ ⚠️ 但这样一来，流水线并行的第一段就多背了一个 ViT
        ⟹ ★ PP 的各段负载又不均了，需要手工调整层的划分
     ⟹ 并行策略基础见 ../训练框架/分布式训练入门/12-并行策略组合与MFU.md
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>"视觉塔只能复制不能切"是本文的工程常识性推断，不是报告结论</strong>：五份报告都没有披露视觉塔的并行策略。能确定的只有两个参数——✅ K3 的 LLM 是 2.78T 总参数、视觉塔 ≈0.4B（出处 <a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a>，该文 §一与 §六）。<strong>0.4B 对 2.78T 是 1 : 7000 的量级差，这个比例本身就说明了问题。</strong></p>
+</blockquote>
 <h3 id="3">麻烦③ 两个部件的"训练性格"不一样</h3>
-<div class="codehilite"><pre><span></span><code>    ✅ K3 的实证：SigLIP 初始化的视觉塔【梯度范数持续更高且频繁 spike】
+<div class="codehilite"><pre><span></span><code>    ✅ K3 的实证：SigLIP（Sigmoid Loss for Language-Image Pre-training）初始化的视觉塔
+       【梯度范数持续更高且频繁 spike】，而从零训的 MoonViT-V2 全程平稳（报告给了曲线图）
+
     ⟹ 混合精度、梯度裁剪的阈值，对视觉塔和 LLM【应该不一样】
     ⟹ ⚠️ 但多数框架是全局设一个阈值 ⟹ 要么裁得太狠、要么防不住 spike
-    ⟹ K3 的应对是【从零训 + 移除视觉塔所有 bias 项】（见 02、06 章）
+    ⟹ ✅ K3 的应对是【从零训 + 移除视觉塔所有 bias 项】（见 02、06 章）
 </code></pre></div>
 
+<blockquote>
+<p>🔑 <strong>这一条还有一个 2026 年的新佐证，而且方向不同</strong>：✅ DeepSeek-V4.1-Flash 把视觉塔的 <strong>patch 嵌入从卷积换成线性投影，理由明写是"为了兼容 Muon 优化器"</strong>（出处 <a href="../业界模型技术报告/DeepSeek-V4.1-Flash.html">../业界模型技术报告/DeepSeek-V4.1-Flash.md</a>，该文 §十一）。<br />
+⟹ ★★ 两家各自改了视觉塔的结构，<strong>改的地方不同，但理由同一个：让视觉塔的优化行为向 LLM 主干靠拢</strong>。⟹ ⚠️ 我的读法：这说明"视觉塔和 LLM 性格不同"已经不是调参问题，而是<strong>要动结构</strong>的问题。</p>
+</blockquote>
 <hr />
-<h2 id="126">12.6 🔑 这一章的四句话</h2>
+<h2 id="127">12.7 🔑 这一章的六句话</h2>
 <ol>
-<li>✅ <strong>多模态推理从两段变三段：Encode / Prefill / Decode，性格完全不同 ⟹ 必然被拆成独立的池</strong>（GLM-5.3 的 EPD）。</li>
-<li>⚠️ <strong>一张图约 178 MB 的 KV cache</strong>（我的估算）⟹ 多模态服务的并发天然远低于纯文本。</li>
-<li>★ <strong>最容易拿到的优化是缓存视觉编码结果</strong>；但要小心"缓存 key 没算图片内容"这个会伪装成幻觉的 bug。</li>
-<li><strong>训练侧的核心矛盾是"变长"和"两个部件性格不同"</strong>：token-based batching + packing 解决前者，分别调优解决后者。</li>
+<li>✅ <strong>多模态推理从两段变三段：Encode / Prefill / Decode。</strong> Encode 是唯一不碰 KV cache 的一段，所以它迟早被拆成独立的池（GLM-5.3 的 EPD）。</li>
+<li>★★ <strong>两道平方关系决定一切</strong>：边长 → patch 数是平方，patch 数 → 视觉塔注意力耗时又是平方。⟹ <strong>"支持 2 倍分辨率"= 4 倍 token、16 倍注意力算力。</strong></li>
+<li>⚠️ <strong>带图请求的 KV cache 里，九成以上是视觉 token</strong>（估算，算式见 12.3）⟹ 压 KV 的手段在多模态场景下作用在那 90% 上。</li>
+<li>⚠️ <strong>一张 3584² 的图光 KV 就要 1.9 GiB</strong>，80 GiB 的卡装 42 张——这就是多模态服务并发天然低的原因。</li>
+<li>★ <strong>最容易拿到的优化是缓存视觉编码结果</strong>；但要小心"缓存 key 没算图片内容"这个会伪装成幻觉的 bug（区分办法：缓存串图<strong>稳定复现</strong>）。</li>
+<li><strong>训练和推理侧的核心矛盾是同一个——"变长"</strong>：推理侧是 77% 的 padding 浪费，训练侧是 MFU 掉；正解都是 packing。</li>
 </ol>
 <hr />
 <blockquote>

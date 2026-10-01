@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,17 +256,16 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="03">03 · 连接器：怎么把视觉向量"翻译"给语言模型</h1>
 <blockquote>
-<p>三大件的第二件，<strong>也是最小的一件</strong>（几千万参数），<br />
+<p>三大件的第二件，<strong>也是最小的一件</strong>（两三千万参数），<br />
 但它决定了两件大事：<strong>视觉 token 占多少上下文</strong>、<strong>信息在这里丢多少</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="31">3.1 它到底要解决什么</h2>
-<p>视觉塔吐出来的是 6084 个 <strong>1152 维</strong>向量，LLM 要的是 <strong>4096 维</strong>向量。<br />
-所以最起码得做一次形状转换。但真正的问题有三个：</p>
-<div class="codehilite"><pre><span></span><code>    问题① 形状不对    1152 维  ⟹  4096 维              ← 一个矩阵就能解决
-    问题② 数量太多    6084 个 token 塞进上下文太贵       ← ★ 真正的难点
+<p>视觉塔吐出来的是 6084 个 <strong>1152 维</strong>向量，LLM 要的是 <strong>4096 维</strong>向量。所以最起码得做一次形状转换。但真正的问题有三个：</p>
+<div class="codehilite"><pre><span></span><code>    问题① 形状不对    1152 维  ==&gt;  4096 维              &lt;- 一个矩阵就能解决
+    问题② 数量太多    6084 个 token 塞进上下文太贵       &lt;- ★ 真正的难点
     问题③ 分布不对    视觉塔的向量【长得不像】文字 embedding
-                     ⟹ LLM 会&quot;读不懂&quot;，需要学一个映射把它拉进同一片空间
+                     ==&gt; LLM 会&quot;读不懂&quot;，需要学一个映射把它拉进同一片空间
 </code></pre></div>
 
 <blockquote>
@@ -274,27 +278,29 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h3 id="aprefix-decoder-only">流派 A：输入端拼接（prefix / decoder-only 式）</h3>
 <div class="codehilite"><pre><span></span><code>    视觉 token 直接【混进输入序列】，和文字 token 平起平坐
 
-    序列：[图1][图2]...[图1521][「这][「个][「报][「错]...
-           └──── 视觉 ────┘  └──── 文字 ────┘
-                    ↓
-              一个标准 LLM，什么都不用改
+    序列 = [视觉 1..1521] + [这][个][报][错][怎][么][修]
+                 |
+                 v
+           一个标准 LLM，什么都不用改
 
     ✅ 优点：LLM 一个字都不用改；图文可以任意交错；实现极简
     ⚠️ 缺点：★ 视觉 token 吃掉上下文预算，而且参与全部注意力计算（平方开销）
 </code></pre></div>
 
-<p><strong>代表</strong>：LLaVA 系列、Qwen-VL 系列、InternVL、以及<strong>本仓库里 K3 / M3 / GLM-5.3-Flash 三家 2026 年模型</strong><br />
-（⚠️ 后者是我从"2×2 merge 后投影进主干"这个描述反推的，报告没有明说流派归属）。</p>
+<p><strong>代表</strong>：LLaVA 系列、Qwen-VL 系列、InternVL，以及<strong>本仓库里 K3 / M3 / GLM-5.3-Flash / DeepSeek-V4.1-Flash 四家 2026 年模型</strong>（⚠️ 后四家是我从"合并后投影进主干"这个描述反推的流派归属，报告没有明说）。</p>
 <h3 id="bcross-attention">流派 B：交叉注意力（cross-attention 式）</h3>
 <div class="codehilite"><pre><span></span><code>    视觉 token 【不进序列】，而是挂在旁边当&quot;资料库&quot;
     在 LLM 的某些层之间，插入新的一层：让文字 token 去【查阅】视觉 token
 
-    序列：[「这][「个][「报][「错]...       ← 序列里只有文字
-                  ↕ 第 4、12、20... 层插入 cross-attention
-            [图1][图2]...[图6084]        ← 视觉在&quot;外面&quot;
+    序列里只有文字：  [这][个][报][错]...
+                        ^
+                        |  在第 4、12、20... 层插入 cross-attention
+                        |
+    视觉在&quot;外面&quot;：    [视觉 1..6084]
 
-    ✅ 优点：★ 视觉 token 不占上下文；6084 个也无所谓；开销是 n_text × n_image（线性，不是平方）
-    ⚠️ 缺点：必须【改 LLM 结构、加新层】⟹ 新层要从零训 ⟹ 需要多得多的训练数据
+    ✅ 优点：★ 视觉 token 不占上下文；6084 个也无所谓
+             开销是 n_text x n_image（线性，不是平方）
+    ⚠️ 缺点：必须【改 LLM 结构、加新层】==&gt; 新层要从零训 ==&gt; 需要多得多的训练数据
              图文交错的位置关系表达起来别扭
 </code></pre></div>
 
@@ -343,63 +349,233 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </table>
 <blockquote>
 <p>⚠️ <strong>为什么流派 A 赢了？</strong> 我的判断是三条：<br />
-① <strong>生态惯性</strong>——不用改 LLM，意味着能直接蹭所有现成的推理框架（vLLM/SGLang）和训练框架；<br />
-② <strong>数据效率</strong>——学术界和创业公司拿不出 Flamingo 那个量级的数据；<br />
-③ <strong>长上下文变便宜了</strong>——2023 年 4K 上下文时"视觉 token 占位置"是致命的，<br />
-2026 年动辄 1M 上下文，<strong>这个缺点被硬件和算法进步稀释掉了</strong>。</p>
-<p>⟹ 🔑 <strong>一个通用规律：当某个资源变便宜时，为省它而设计的复杂架构就会被淘汰。</strong><br />
-这和 <a href="../推理框架/">../推理框架/</a> 里 KV cache 相关设计的演化是同一个逻辑。</p>
+① <strong>生态惯性</strong> —— 不用改 LLM，意味着能直接蹭所有现成的推理框架（vLLM / SGLang）和训练框架；<br />
+② <strong>数据效率</strong> —— 学术界和创业公司拿不出 Flamingo 那个量级的数据；<br />
+③ <strong>长上下文变便宜了</strong> —— 2023 年 4K 上下文时"视觉 token 占位置"是致命的，2026 年动辄 1M 上下文，<strong>这个缺点被硬件和算法进步稀释掉了</strong>。</p>
+<p>⟹ 🔑 <strong>一个通用规律：当某个资源变便宜时，为省它而设计的复杂架构就会被淘汰。</strong> 这和 <a href="../推理框架/">../推理框架/</a> 里 KV cache 相关设计的演化是同一个逻辑。</p>
 </blockquote>
 <hr />
-<h2 id="33-a">3.3 流派 A 内部的三种具体做法</h2>
-<h3 id="1-mlp">做法① 线性层 / MLP —— ★ 现在的主流</h3>
+<h2 id="33-scaling">3.3 ★★ 四种具体做法，以及它们的 scaling 完全不同</h2>
+<h3 id="331">3.3.1 先看四种做法本身</h3>
+<p><strong>做法① 线性层 / MLP —— ★ 现在的主流</strong></p>
 <div class="codehilite"><pre><span></span><code>    每个视觉向量【独立地】过一个小网络：
-      1152 ──[Linear]──→ 4096 ──[GELU]──→ [Linear] ──→ 4096
+      1152 --[Linear]--&gt; 4096 --[GELU]--&gt; [Linear] --&gt; 4096
 
-    参数量：1152×4096 + 4096×4096 ≈ 2150 万  ← 整个模型里可以忽略不计
+    参数量：1152x4096 + 4096x4096 = 4,718,592 + 16,777,216 ≈ 2150 万
     token 数：★ 【不变】。进来几个，出去几个
 </code></pre></div>
 
-<p><strong>LLaVA（2023）用的是单个线性层；LLaVA-1.5 换成两层 MLP，分数明显上涨。</strong><br />
-就这么简单的改动 ⟹ ⚠️ 说明这一层的<strong>表达能力确实是瓶颈之一</strong>，但也就到两层为止，再深收益很小。</p>
-<h3 id="2-pixel-shuffle-patch-merge-2026">做法② 空间合并（pixel shuffle / patch merge）—— ★ 2026 年标配</h3>
-<p><strong>这是目前砍 token 最主流、也最粗暴有效的手段</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    把相邻 2×2 = 4 个 patch 的向量【直接拼起来】，当成一个 token
+<p><strong>LLaVA（2023）用的是单个线性层；LLaVA-1.5 换成两层 MLP，分数明显上涨。</strong> 就这么简单的改动 ⟹ ⚠️ 说明这一层的<strong>表达能力确实是瓶颈之一</strong>，但也就到两层为止，再深收益很小。</p>
+<p><strong>做法② 空间合并（pixel shuffle / patch merge）—— ★ 2026 年标配</strong></p>
+<div class="codehilite"><pre><span></span><code>    把相邻 2x2 = 4 个 patch 的向量【直接拼起来】，当成一个 token
 
       [a][b]          a,b,c,d 各 1152 维
-      [c][d]   ⟹   拼接成 4608 维 ⟹ 过 MLP ⟹ 4096 维
+      [c][d]   ==&gt;  拼接成 4608 维 ==&gt; 过 MLP ==&gt; 4096 维
 
-    ⟹ token 数除以 4，信息【一点没丢】（只是换了个装法，由后面的 MLP 去消化）
-    ⟹ ★★ 注意力开销直接除以 16
+    参数量：4608x4096 + 4096x4096 ≈ 3570 万
+    ==&gt; token 数除以 4
+    ==&gt; ★★ 注意力开销直接除以 16
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>三家 2026 年模型全用了这一招</strong>（本仓库一手报告）：<br />
-- <strong>Kimi K3</strong>：投影前用 <strong>2×2 pixel shuffle</strong> 把视觉 token 数降 4 倍，<br />
-<em>"让 3584×3584 的输入在 1M 上下文里放得下"</em><br />
-- <strong>MiniMax M3</strong>：<strong>2×2 空间 + 2 帧时间</strong> patch merge<br />
-- ⟹ 出处：<a href="../业界模型技术报告/Kimi-K3.html">../业界模型技术报告/Kimi-K3.md</a> §六、<a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §多模态行</p>
-<p>🔑 <strong>"2×2 合并"在 2026 年已经不算技术，算常识了。</strong> 看到某个模型没做，反而要问为什么。</p>
+<p>✅ <strong>四家 2026 年模型全用了这一招，但压缩倍数不同</strong>（本仓库一手报告）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>压缩法</th>
+<th>token 数</th>
+<th>报告原话 / 出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td><strong>2×2 pixel shuffle</strong></td>
+<td>÷4</td>
+<td><em>"让 3584×3584 的输入在 1M 上下文里放得下"</em>，报告 §六</td>
+</tr>
+<tr>
+<td><strong>MiniMax M3</strong></td>
+<td><strong>2×2 空间 + 2 帧时间</strong></td>
+<td>÷4（图）/ ÷8（视频）</td>
+<td><a href="../业界模型技术报告/模型技术对比.html">模型技术对比.md</a> 报告 §二 多模态行</td>
+</tr>
+<tr>
+<td><strong>GLM-5.3-Flash</strong></td>
+<td>⚠️ 未披露</td>
+<td>—</td>
+<td>只披露了视觉塔 24 层 / 0.30 B</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4.1-Flash</strong></td>
+<td>★ <strong>3×3 pixel-unshuffle</strong></td>
+<td><strong>÷9</strong></td>
+<td>报告 §十一，支持到约 1344×1344</td>
+</tr>
+</tbody>
+</table>
+<p>🔑 <strong>"2×2 合并"在 2026 年已经不算技术，算常识了。</strong> 看到某个模型没做，反而要问为什么。<br />
+★ 而 <strong>DeepSeek 的 3×3 是目前公开模型里压得最狠的一档</strong> ✅ —— 业界常见 4 合 1，它做 9 合 1。</p>
 </blockquote>
-<h3 id="3-q-former-perceiver-resampler">做法③ Q-Former / Perceiver Resampler —— ★ 已退潮，但必须认识</h3>
+<p><strong>做法③ Q-Former / Perceiver Resampler —— ★ 已退潮，但必须认识</strong></p>
 <blockquote>
-<p>📖 <strong>Q-Former</strong>（BLIP-2，2023，arXiv 2301.12597）/ <strong>Perceiver Resampler</strong>（Flamingo）：<br />
-准备 <strong>固定数量</strong>（比如 32 个）的"提问向量"（learnable query），<br />
-让它们用交叉注意力去"采访"那 6084 个视觉 token，最后只输出这 32 个。</p>
+<p>📖 <strong>Q-Former</strong>（BLIP-2，2023，arXiv 2301.12597）/ <strong>Perceiver Resampler</strong>（Flamingo）：准备 <strong>固定数量</strong>（比如 32 个）的"提问向量"（learnable query，可学习查询），让它们用交叉注意力去"采访"那 6084 个视觉 token，最后只输出这 32 个。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    32 个 query  ──cross-attn──→  6084 个视觉 token
-         ↓
+<div class="codehilite"><pre><span></span><code>    32 个 query  --cross-attn--&gt;  6084 个视觉 token
+         |
+         v
     输出【永远是 32 个】token —— 不管原图多大
 
+    参数量：⚠️ 1 亿量级（BLIP-2 的 Q-Former 大致是 BERT-base 规模 + 交叉注意力层）
+            ★ 注意它比前两种做法大 3~5 倍，是连接器里最重的一种
     ✅ 优点：token 数【完全可控且极小】，一张图只占 32 个位置
-    ⚠️ 致命缺点：★ 6084 → 32 是一个【硬信息瓶颈】
+    ⚠️ 致命缺点：★ 6084 -&gt; 32 是一个【硬信息瓶颈】
                  普通照片够用，但文档、表格、小字直接死掉
     ⚠️ 缺点二：这个模块要单独训，训练不稳定、收敛慢
 </code></pre></div>
 
+<p><strong>做法④ 交叉注意力插层（流派 B）</strong> —— 3.2 节已经讲过，这里只补一句参数量：它要在 LLM 的若干层里各加一套交叉注意力，<strong>参数量跟着 LLM 的宽度和层数走，是四种做法里唯一会随 LLM 一起变大的</strong>。</p>
+<h3 id="332-token">3.3.2 ★★ 关键区别：token 数是"正比"还是"常数"</h3>
+<p><strong>这是本章最该算一遍的一张表。</strong> 同一座视觉塔（patch 14），把输入分辨率一档一档往上推，看四种做法分别输出多少个 token：</p>
+<table>
+<thead>
+<tr>
+<th>输入边长</th>
+<th>patch 数</th>
+<th>① MLP 直通</th>
+<th>② 2×2 合并</th>
+<th>② 3×3 合并</th>
+<th>③ Q-Former</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>224²</td>
+<td>256</td>
+<td>256</td>
+<td>64</td>
+<td>28</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>336²</td>
+<td>576</td>
+<td>576</td>
+<td>144</td>
+<td>64</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>672²</td>
+<td>2304</td>
+<td>2304</td>
+<td>576</td>
+<td>256</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>1024²</td>
+<td>5329</td>
+<td>5329</td>
+<td>1332</td>
+<td>592</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>1344²</td>
+<td>9216</td>
+<td>9216</td>
+<td>2304</td>
+<td>1024</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>2016²</td>
+<td>20736</td>
+<td>20736</td>
+<td>5184</td>
+<td>2304</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td>3584²</td>
+<td>65536</td>
+<td>65536</td>
+<td>16384</td>
+<td>7281</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td><strong>随分辨率怎么长</strong></td>
+<td>—</td>
+<td><strong>线性正比</strong></td>
+<td>正比（÷4）</td>
+<td>正比（÷9）</td>
+<td>★ <strong>常数</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★ <strong>为什么它退潮了</strong>：2024 年之后，<strong>文档 / 截图 / 表格成了主要应用场景</strong>，<br />
-而这些场景恰恰是"32 个 token 装不下"的。<br />
+<p>⚠️ <strong>表里的除法是理想值</strong>：要整齐地做 2×2 或 3×3 合并，patch 网格的边长必须能被 2 或 3 整除。<code>224÷14 = 16</code> 不是 3 的倍数，<code>1024÷14 ≈ 73</code> 既不是 2 也不是 3 的倍数 —— 真实实现会先把图<strong>垫（pad）到合适的尺寸</strong>再切，所以实际 token 数会比表里略多几个。<strong>量级不受影响，但别拿表里的数去对账单。</strong></p>
+<p>★★ <strong>这两种 scaling 根本不是一回事</strong>：①②是"<strong>正比</strong>"（边长翻倍 → token 数 ×4），③是"<strong>常数</strong>"。从 224² 到 3584²，①的 token 数涨了 <strong>256 倍</strong>，③<strong>一个都没涨</strong>。</p>
+<p>⚠️ <strong>"③ 不涨"听起来是优点，实际上是它的死因。</strong> 下一小节把这件事换成数字。</p>
+</blockquote>
+<h3 id="333">3.3.3 ★ 把"信息损失"算成一个数</h3>
+<p><strong>信息能丢多少，看"每个输出 token 要替多少个 patch 说话"，以及"进来多少个数、出去多少个数"：</strong></p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>每个输出 token 背后有几个 patch</th>
+<th>进来多少个数</th>
+<th>出去多少个数</th>
+<th><strong>信息通道宽度</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① MLP 直通</td>
+<td>1</td>
+<td>1 × 1152 = 1152</td>
+<td>4096</td>
+<td><strong>356 %</strong>（升维，无损）</td>
+</tr>
+<tr>
+<td>② 2×2 合并 + MLP</td>
+<td>4</td>
+<td>4 × 1152 = 4608</td>
+<td>4096</td>
+<td><strong>89 %</strong></td>
+</tr>
+<tr>
+<td>② 3×3 合并 + MLP</td>
+<td>9</td>
+<td>9 × 1152 = 10368</td>
+<td>4096</td>
+<td><strong>40 %</strong></td>
+</tr>
+<tr>
+<td>③ Q-Former（<strong>224²</strong> 输入）</td>
+<td>256 ÷ 32 = 8</td>
+<td>8 × 1152 = 9216</td>
+<td>4096</td>
+<td><strong>44 %</strong></td>
+</tr>
+<tr>
+<td>③ Q-Former（<strong>3584²</strong> 输入）</td>
+<td>65536 ÷ 32 = <strong>2048</strong></td>
+<td>2048 × 1152 = 2,359,296</td>
+<td>4096</td>
+<td>★ <strong>0.17 %</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>看③的两行</strong>：<strong>同一个 Q-Former，什么都没改，只是输入分辨率从 224² 换到 3584²，信息通道就从 44% 掉到 0.17% —— 窄了 256 倍。</strong></p>
+<p>🔑 <strong>这就是 Q-Former 退潮的机制层面的原因</strong>，而不是"感觉它不好"：<strong>它的输出容量是写死的，而输入容量随分辨率平方增长。</strong> 分辨率一进入 2024 年的高清时代，这个模块就必然被挤爆。</p>
+<p>⚠️ <strong>顺手纠正一个本目录早先版本的错误说法</strong>：我以前写过"2×2 合并<strong>信息一点没丢</strong>"。<strong>严格说不对。</strong> 拼接（concat）那一步确实是纯 reshape、一个数都没少，<strong>但紧跟的那个 MLP 把 4608 维压成 4096 维，这是一次降维，一般来说是有损的</strong>（上表第二行的 89%）。<strong>真正"无损"的只有 concat 本身。</strong> 对 3×3 来说这件事更明显：10368 → 4096，<strong>通道只剩 40%</strong> —— DeepSeek 那条路线省 token 不是白省的，⚠️ 但报告没给对照实验，<strong>代价有多大目前无法核对。</strong></p>
+<p>★★ <strong>为什么业界还是选了②而不是③</strong>：2024 年之后，<strong>文档 / 截图 / 表格成了主要应用场景</strong>，而这些场景恰恰是"32 个 token 装不下"的。<br />
 ⟹ 🔑 <strong>业界的选择是：宁可多花 token，也不要丢信息。</strong><br />
 ⟹ 这个转折是理解 2023→2026 多模态演进的一条关键线索（<a href="14-演进主线与开放问题.html">14 章</a>）。</p>
 </blockquote>
@@ -407,46 +583,104 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="34">3.4 ★ 一个容易被忽略的细节：特殊标记</h2>
 <p>视觉 token 塞进序列时，两边要加标记：</p>
 <div class="codehilite"><pre><span></span><code>    ... 用户说：&lt;|image_start|&gt; v1 v2 ... v1521 &lt;|image_end|&gt; 这个报错怎么修？ ...
-                └── 这两个是【真正的文本 token】，在词表里有编号 ──┘
+                ^^^^^^^^^^^^^^^                 ^^^^^^^^^^^^^
+                这两个是【真正的文本 token】，在词表里有编号
 </code></pre></div>
 
 <p><strong>为什么需要</strong>：</p>
 <div class="codehilite"><pre><span></span><code>    ① 让模型知道&quot;这一段是图，不是文字&quot;
     ② 多图时能分清哪些 token 属于哪张图
     ③ ★ 有的模型还会插入行分隔符（每行 patch 结束插一个 &lt;|row_end|&gt;）
-       ⟹ 帮助模型建立【二维空间感】—— 因为序列本身是一维的（05 章）
+       ==&gt; 帮助模型建立【二维空间感】—— 因为序列本身是一维的（05 章）
 </code></pre></div>
 
+<p><strong>第 ③ 条的代价要算一下</strong>，它不是可以忽略的零头：</p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>视觉 token</th>
+<th>额外标记</th>
+<th>合计</th>
+<th>多花</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只加首尾两个标记</td>
+<td>1521</td>
+<td>2</td>
+<td>1523</td>
+<td>0.1 %</td>
+</tr>
+<tr>
+<td><strong>再给每行 patch 加一个行尾标记</strong></td>
+<td>1521</td>
+<td>2 + <strong>39 行</strong></td>
+<td>1562</td>
+<td><strong>2.7 %</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>⚠️ <strong>实操陷阱</strong>：这些特殊 token 的数量会被算进你的账单，而且不同模型的模板完全不同。<br />
-<strong>自己拼 prompt 时把模板拼错，是多模态调用最常见的低级错误。</strong></p>
+<p>⚠️ 1521 个 token 是 39×39 的网格（78÷2 = 39），所以行尾标记是 39 个，不是 78 个 —— <strong>合并之后行数也减半了</strong>，这一步很容易算错。</p>
+<p>⚠️ <strong>实操陷阱</strong>：这些特殊 token 的数量会被算进你的账单，而且不同模型的模板完全不同。<strong>自己拼 prompt 时把模板拼错，是多模态调用最常见的低级错误。</strong></p>
 </blockquote>
 <hr />
 <h2 id="35">3.5 训练时谁冻谁</h2>
 <p>连接器是唯一必须从零训的部件，所以训练流程一般这样安排（细节见 <a href="06-训练流程三阶段.html">06 章</a>）：</p>
-<div class="codehilite"><pre><span></span><code>    阶段一 对齐        视觉塔 ❄️冻   连接器 🔥训   LLM ❄️冻
-                      ⟹ 只学&quot;翻译&quot;，几百万图文对，几十卡·天
-                      ⟹ ★ 这一阶段冻住 LLM 是为了【不破坏它的语言能力】
-
-    阶段二 联合训练     视觉塔 🔥     连接器 🔥     LLM 🔥
-                      ⟹ 真正长本事的阶段，也是最贵的阶段
-
-    阶段三 指令微调     视觉塔 ❄️/🔥小lr  连接器 🔥   LLM 🔥
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>视觉塔</th>
+<th>连接器</th>
+<th>LLM</th>
+<th>数据量级</th>
+<th>这么安排的理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一 · 对齐</strong></td>
+<td>冻结</td>
+<td><strong>训</strong></td>
+<td>冻结</td>
+<td>几百万图文对<br>几十卡·天</td>
+<td>★ 冻住 LLM 是为了<strong>不破坏它的语言能力</strong>；只学"翻译"这一件事</td>
+</tr>
+<tr>
+<td><strong>二 · 联合训练</strong></td>
+<td>训</td>
+<td>训</td>
+<td>训</td>
+<td>真正长本事的阶段<br><strong>也是最贵的阶段</strong></td>
+<td>视觉要变成模型世界观的一部分</td>
+</tr>
+<tr>
+<td><strong>三 · 指令微调</strong></td>
+<td>冻结 或 很小的学习率</td>
+<td>训</td>
+<td>训</td>
+<td>几十万~几百万条指令</td>
+<td>保住已经长出来的视觉能力，别被少量指令数据带偏</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>⚠️ <strong>"阶段一必须冻住 LLM"是 LLaVA 时代的经验</strong>，前提是数据少。<br />
-<strong>原生多模态路线（如 GLM-5.3-Flash 的 30T 多模态语料）根本没有"阶段一"这回事</strong>——<br />
-它从第 0 步就是全部一起训的。<strong>别把小规模微调的经验直接套到大规模预训练上。</strong></p>
+<p>⚠️ <strong>"阶段一必须冻住 LLM"是 LLaVA 时代的经验</strong>，前提是<strong>数据少</strong>。<br />
+<strong>原生多模态路线根本没有"阶段一"这回事</strong> —— 它从第 0 步就是全部一起训的。✅ DeepSeek-V4.1-Flash 的报告把这件事说得最明白：<strong>"预训练一开始就有图"</strong>，而它的视觉塔是在<strong>另一条独立的两阶段流程</strong>里单独训好的（对比预训练 → 接一个 4 B 的 MoE LLM 做自回归微调 → <strong>把那个 LLM 扔掉只留编码器</strong>），然后才进主干的预训练。</p>
+<p>⚠️ <strong>一处必须更正的旧说法</strong>：本目录早先版本写过"GLM-5.3-Flash 的 30T 多模态语料"。<strong>这个数字在 GLM-5.3 报告里只出现在一句归档者自己的概括里，原文紧跟着就标了"⚠️ 但没有可核对的数字支撑"。</strong> 官方博客只有一句定性的 <em>"a richer multimodal pre-training corpus"</em>。⟹ <strong>别把"本文的推断"写成"报告的结论"。</strong></p>
+<p>🔑 <strong>别把小规模微调的经验直接套到大规模预训练上。</strong></p>
 </blockquote>
 <hr />
-<h2 id="36">3.6 🔑 这一章的四句话</h2>
+<h2 id="36">3.6 🔑 这一章的五句话</h2>
 <ol>
-<li>连接器要干三件事：<strong>换形状、降数量、对齐分布</strong>。参数很少，但它是信息瓶颈的所在。</li>
+<li>连接器要干三件事：<strong>换形状、降数量、对齐分布</strong>。参数只有两三千万，但它是信息瓶颈的所在。</li>
 <li><strong>两大流派：拼进序列（主流）vs 挂旁边做交叉注意力（少数派）。</strong> 主流赢在生态和数据效率，而不是赢在原理更优。</li>
-<li><strong>2026 年的标配组合是"2×2 空间合并 + 两层 MLP"</strong> ✅——K3、M3 都是这一套。够用、无信息损失、极简。</li>
-<li>⚠️ <strong>Q-Former 那种"压到固定 32 个 token"的路线已经退潮</strong>，因为文档和截图场景装不下。<br />
-<strong>这是"宁可贵也不丢信息"这个价值取向的胜利</strong>，也是下一章的引子。</li>
+<li>★★ <strong>两种 scaling 必须分清</strong>：MLP / patch merge 的输出 token 数<strong>正比于 patch 数</strong>，Q-Former 的输出 token 数是<strong>写死的常数</strong>。从 224² 到 3584²，前者涨 256 倍，后者一个不涨。</li>
+<li>⚠️ <strong>而"一个不涨"正是 Q-Former 的死因</strong>：它的信息通道宽度从 44% 掉到 <strong>0.17%</strong>（3.3.3 节那张表）。<strong>业界的取向是"宁可贵也不丢信息"。</strong></li>
+<li>✅ <strong>2026 年的标配组合是"空间合并 + 两层 MLP"</strong>：K3 / M3 做 2×2（÷4），<strong>DeepSeek-V4.1-Flash 做 3×3（÷9）</strong>。⚠️ 但"合并无损"只对 concat 那一步成立，紧跟的降维是有损的 —— 3×3 的通道只剩 40%。</li>
 </ol>
 <hr />
 <blockquote>

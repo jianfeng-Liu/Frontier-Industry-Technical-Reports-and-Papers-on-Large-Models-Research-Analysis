@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,41 +257,231 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="04-bin-idx">04 · ⭐ 训练格式：<code>.bin</code> + <code>.idx</code> 与三个索引</h1>
 <blockquote>
 <p><strong>这是全教程工程性最强的一章，也是最有实用价值的一章。</strong><br />
-训练时 GPU 真正读的就是这两个文件。<strong>读懂这一章，你就能看懂 Megatron-LM / NeMo 的整个数据模块。</strong></p>
+训练时 GPU 真正读的就是这两个文件。<strong>读懂这一章，你就能看懂 Megatron-LM / NeMo 的整个数据模块。</strong><br />
+<strong>本章会把 <code>.idx</code> 的二进制布局逐字段列出来，并用一个 3 篇文档的例子把里面每一个数都写出来</strong>（§4.3），你可以拿计算器自己数一遍。</p>
 </blockquote>
 <hr />
-<h2 id="41">4.1 先想清楚：训练时的访问模式有多苛刻</h2>
-<div class="codehilite"><pre><span></span><code>训练一步要什么？
-   &quot;给我第 8,231,904 号样本&quot;      ← 一个随机的下标
+<h2 id="41">4.1 ★★ 先算清楚：训练时的访问模式到底有多苛刻</h2>
+<p>这一节不讲格式，先把"DataLoader 每秒要干多少活"算成具体数字。<strong>不算这笔账，后面所有设计都像是过度工程。</strong></p>
+<h3 id="token">第一步：一个 token 要花多少算力</h3>
+<p>训练算力的标准估算式（<a href="11-喂多少-ScalingLaw.html">11 章</a> 有推导）：</p>
+<div class="codehilite"><pre><span></span><code>每个 token 的训练 FLOP ≈ 6N + 12 · L · s · h
 
-一步要几条？   B = 512（全局 batch）
-一秒几步？     ~ 2 步
-几千张卡？     每张卡各要各的
-
-  ⟹  ★ 每秒几万次【完全随机】的读，而且必须比 GPU 算得还快
-      否则 GPU 就在等数据（叫 &quot;data starvation&quot;，数据饥饿）
+N = 参数量        L = 层数
+s = 序列长度      h = 隐藏层维度
 </code></pre></div>
 
-<p>而 <a href="03-存储格式.html">03 章</a>那些格式全都做不到：</p>
-<div class="codehilite"><pre><span></span><code>JSONL     → 想要第 800 万条？从头数 800 万个 \n。❌
-Parquet   → 要解压 + 解码 + 反序列化。每条几十微秒。❌
-WebDataset→ tar，纯顺序，根本没有&quot;第 n 条&quot;这个概念。❌
-</code></pre></div>
-
+<p><strong><code>6N</code> 这个 6 是哪来的</strong>，必须说清楚，因为它经常被记错：</p>
+<table>
+<thead>
+<tr>
+<th>组成</th>
+<th>FLOP</th>
+<th>怎么来的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前向传播</td>
+<td><strong>2N</strong></td>
+<td>每个参数对每个 token 做 1 次乘 + 1 次加 = 2 次浮点运算</td>
+</tr>
+<tr>
+<td>反向传播</td>
+<td><strong>4N</strong></td>
+<td>★ 大约是前向的 2 倍：要同时算"对输入的梯度"和"对权重的梯度"</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>6N</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️⚠️ <strong>三件关于 <code>6N</code> 的事必须记住</strong>：</p>
+<p>① <strong><code>6N</code> 不含优化器</strong>。AdamW 更新参数的那些乘加（动量、二阶矩、权重衰减）<strong>不在这 6N 里</strong>。它们相对很小（每参数十几次运算，而 6N 是"每参数每 token 6 次"，乘上几千个 token 就完全盖过去了），所以估算时忽略——<strong>但"忽略"和"不存在"是两回事</strong>。</p>
+<p>② <strong><code>6N</code> 不含注意力矩阵的那部分</strong>。<code>6N</code> 只数了"参数参与的乘加"，而 <code>QKᵀ</code> 和 <code>(softmax)V</code> 这两个矩阵乘<strong>不含任何参数</strong>，所以要单独补上 <code>12 · L · s · h</code>。</p>
+<p>③ <strong>补全式才是 <code>6N + 12·L·s·h</code></strong>。序列越长，第二项占比越大——所以长上下文训练不能只用 <code>6N</code> 估。</p>
+</blockquote>
+<h3 id="_1">第二步：代入一个具体的集群，算出吞吐</h3>
+<p><strong>给定</strong>：70 B 参数模型（<code>N = 7×10¹⁰</code>，<code>L = 80</code> 层，<code>h = 8192</code>，<code>s = 4096</code>），跑在 <strong>1024 张 H100</strong> 上。</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 稠密项</td>
+<td><code>6N = 6 × 7×10¹⁰</code></td>
+<td><strong>4.200×10¹¹</strong> FLOP/token</td>
+</tr>
+<tr>
+<td>② 注意力补正项</td>
+<td><code>12 · L · s · h = 12 × 80 × 4096 × 8192</code></td>
+<td><strong>3.221×10¹⁰</strong> FLOP/token</td>
+</tr>
+<tr>
+<td>③ 补正项占比</td>
+<td>3.221 ÷ (42.00 + 3.221)</td>
+<td><strong>7.1%</strong> ★ 不算也不致命，但别忘了它存在</td>
+</tr>
+<tr>
+<td>④ 每 token 合计</td>
+<td>① + ②</td>
+<td><strong>4.522×10¹¹</strong> FLOP/token</td>
+</tr>
+<tr>
+<td>⑤ 单卡峰值（BF16 稠密）</td>
+<td>✅ H100 SXM 规格书</td>
+<td><strong>989×10¹²</strong> FLOP/s</td>
+</tr>
+<tr>
+<td>⑥ 集群实效算力</td>
+<td><code>1024 × 989×10¹² × 40%</code> ⚠️ MFU 取 40%</td>
+<td><strong>4.051×10¹⁷</strong> FLOP/s</td>
+</tr>
+<tr>
+<td>⑦ <strong>token 吞吐</strong></td>
+<td>⑥ ÷ ④</td>
+<td><strong>8.96×10⁵ ≈ 90 万 token/s</strong></td>
+</tr>
+<tr>
+<td>⑧ 样本吞吐（<code>s = 4096</code>）</td>
+<td>896,000 ÷ 4096</td>
+<td><strong>219 样本/s</strong></td>
+</tr>
+<tr>
+<td>⑨ 步吞吐（全局 batch = 512）</td>
+<td>219 ÷ 512</td>
+<td><strong>0.43 步/s</strong>，即 <strong>2.34 秒一步</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>MFU</strong>（<strong>M</strong>odel <strong>F</strong>LOPs <strong>U</strong>tilization，模型算力利用率）= 实际达到的 FLOP/s ÷ 理论峰值。⚠️ 40% 是千卡级大模型训练的一个<strong>较好</strong>的量级，不是保证值；实测 30 ~ 50% 都常见。</p>
+<p>⚠️ <strong>本章旧版在这里写了"一秒约 2 步"，那是错的。</strong> 上表第 ⑨ 行算出来是 <strong>0.43 步/s</strong>——70 B 模型在千卡上就是 <strong>2.3 秒一步</strong>，差了约 5 倍。"一秒 2 步"只在小模型上成立，见下表。</p>
+</blockquote>
+<h3 id="dataloader">第三步：把吞吐翻译成"DataLoader 每秒要做多少次随机读"</h3>
+<p><a href="03-存储格式.html">03 章</a> §3.6 的规范记录是"2000 个汉字的中文网页 ≈ 1143 token"。样本长 4096，所以**一条样本平均跨 <code>4096 ÷ 1143 ≈ 3.58 篇文档**。每取一篇文档要查</code>.idx<code>两次（长度 + 偏移）、在</code>.bin` 上切一刀。</p>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>70 B 模型（L=80, h=8192）</th>
+<th>7 B 模型（L=32, h=4096）</th>
+<th>怎么算的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每 token FLOP</td>
+<td>4.52×10¹¹</td>
+<td><strong>4.84×10¹⁰</strong></td>
+<td><code>6N + 12·L·s·h</code></td>
+</tr>
+<tr>
+<td>token 吞吐</td>
+<td>90 万/s</td>
+<td><strong>836 万/s</strong></td>
+<td>4.051×10¹⁷ ÷ 上一行</td>
+</tr>
+<tr>
+<td>样本吞吐</td>
+<td>219/s</td>
+<td><strong>2042/s</strong></td>
+<td>÷ 4096</td>
+</tr>
+<tr>
+<td><strong>文档取数</strong></td>
+<td><strong>784 次/s</strong></td>
+<td><strong>7316 次/s</strong></td>
+<td>× 3.58</td>
+</tr>
+<tr>
+<td><strong><code>.idx</code> 查询</strong></td>
+<td><strong>1567 次/s</strong></td>
+<td><strong>14,632 次/s</strong></td>
+<td>× 2</td>
+</tr>
+<tr>
+<td><strong>从 <code>.bin</code> 读的带宽</strong></td>
+<td><strong>3.6 MB/s</strong></td>
+<td><strong>33 MB/s</strong></td>
+<td>token 吞吐 × 4 字节</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★★ <strong>这张表给出了全章最重要的两个结论：</strong></p>
+<p><strong>① "每秒几百到几千次完全随机的读"</strong> —— 70 B 模型约 800 次/s，7 B 模型约 7300 次/s。<strong>模型越小，数据侧压力越大</strong>（因为算得快）。</p>
+<p>⚠️ <strong>本章旧版写的"每秒几万次"偏高了约一个数量级。</strong> 它偏高有两个叠加的原因：(a) 旧版假设"一秒 2 步"（实际 0.43 步/s）；(b) 旧版隐含的平均文档长度偏短。<strong>这个数对不对很重要——它直接决定你要不要上更复杂的数据栈。</strong></p>
+<p><strong>② 带宽需求小得离谱：只有 3.6 ~ 33 MB/s。</strong> 一块十年前的机械硬盘都够。</p>
+<p>⟹ <strong>所以数据侧的难点从来不是带宽，是两件别的事</strong>：<strong>(a) 每次取数的延迟</strong>（几千次/秒 × 每次几毫秒，就把时间吃光了）；<strong>(b) CPU 上的解析 / 解压开销</strong>（几千次/秒 × 每条几十微秒解析 = 占满一个核，而 DataLoader 只有几个 worker）。</p>
+</blockquote>
+<h3 id="03">第四步：于是 03 章那些格式全都不行</h3>
+<p>用 <a href="03-存储格式.html">03 章</a> §3.6 算出来的随机读代价，对着上面那个 <strong>784 次/s</strong>（70 B 模型）看：</p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>随机读一条的代价</th>
+<th>784 次/s 需要多少 CPU 核</th>
+<th>行不行</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>JSONL</strong>（未压缩）</td>
+<td>2.6 s（从头数 <code>\n</code>）</td>
+<td><strong>2038 个 CPU 核</strong>不停扫盘</td>
+<td>❌ 荒谬</td>
+</tr>
+<tr>
+<td><strong>JSONL + zstd</strong></td>
+<td>0.5 s（解压整片）</td>
+<td><strong>392 个核</strong></td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong>Parquet</strong></td>
+<td>20 ms（解压整个 row group）</td>
+<td><strong>15.7 个核</strong></td>
+<td>❌ 也吃不消</td>
+</tr>
+<tr>
+<td><strong>WebDataset</strong></td>
+<td>不支持（tar 是纯顺序，没有"第 n 条"）</td>
+<td>—</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong><code>.bin</code> + <code>.idx</code></strong></td>
+<td>约 100 µs（冷页）／约 1 µs（页缓存命中）</td>
+<td><strong>0.08 个核</strong></td>
+<td>✅</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ "需要多少核"= 784 次/s × 每次耗时，意思是"要多少个 CPU 核不停干这件事才喂得上 GPU"。Parquet 那 15.7 个核看着不多，但 DataLoader 通常只有 <strong>4 ~ 16 个 worker</strong>，而且它们还要做 collate、padding、pin memory——<strong>所以 15.7 已经是吃不消了</strong>。</p>
 <p><strong>所以训练格式必须重新设计。</strong> 设计目标只有一条：</p>
 <blockquote>
 <p>★★ <strong>取第 n 条样本 = O(1) 次内存访问，零解析、零解压、零反序列化。</strong></p>
 </blockquote>
 <hr />
 <h2 id="42">4.2 ★ 核心思路：把整个语料变成一个巨大的一维数组</h2>
-<p>关键的观察是：<strong>tokenize 之后，数据不再是"文本"了，是一串整数。</strong></p>
-<p>而整数是<strong>定长</strong>的。定长的东西，可以直接当数组用。</p>
+<p>关键的观察是：<strong>tokenize 之后，数据不再是"文本"了，是一串整数。</strong> 而整数是<strong>定长</strong>的。定长的东西，可以直接当数组用。</p>
+<p>下面这三篇文档是本章的<strong>规范例子</strong>，后面每张表都会回来用它：</p>
 <div class="codehilite"><pre><span></span><code>【转换前】三篇文档，长度不一的文本
     doc0 = &quot;番茄炒蛋是家常菜&quot;
     doc1 = &quot;def f(): pass&quot;
     doc2 = &quot;The cat sat&quot;
 
-【tokenize】每篇变成一串整数，末尾加一个 &lt;eod&gt;（end of document，文档结束符）
+【tokenize】每篇变成一串整数，末尾加一个 &lt;eod&gt;（end of document，文档结束符，这里假设 id = 2）
     doc0 → [4521, 889, 15, 3204, 992,  2]        长度 6
     doc1 → [7712, 331, 88, 21,  2]               长度 5
     doc2 → [1103, 5540, 902, 2]                  长度 4
@@ -298,146 +493,635 @@ WebDataset→ tar，纯顺序，根本没有&quot;第 n 条&quot;这个概念。
 
 【问题】.bin 里已经没有&quot;文档边界&quot;这个信息了！
         → 所以要有第二个文件 .idx 专门记边界
-    .idx:  文档 i 的长度 = [6, 5, 4]
-           文档 i 的起始字节偏移 = [0, 12, 22]    （每个 token 2 字节时）
 </code></pre></div>
 
 <blockquote>
-<p>★★★ <strong>这就是 <code>.bin</code> + <code>.idx</code> 的全部思想：</strong><br />
-<strong><code>.bin</code> = 一根拍平的、没有任何结构的整数长条</strong><br />
-<strong><code>.idx</code> = 告诉你这根长条上哪里到哪里是一篇文档</strong></p>
+<p>★★★ <strong>这就是 <code>.bin</code> + <code>.idx</code> 的全部思想：</strong></p>
+<p><strong><code>.bin</code> = 一根拍平的、没有任何结构的整数长条</strong></p>
+<p><strong><code>.idx</code> = 告诉你这根长条上哪里到哪里是一篇文档</strong></p>
 </blockquote>
-<p><strong>取第 n 篇文档 = 查 <code>.idx</code> 拿到 (offset, length) → 在 <code>.bin</code> 上切一刀。两次内存访问，结束。</strong></p>
+<p><strong>取第 n 篇文档 = 查 <code>.idx</code> 拿到 (偏移, 长度) → 在 <code>.bin</code> 上切一刀。两次内存访问，结束。</strong></p>
 <hr />
-<h2 id="43">4.3 两个文件的具体内容</h2>
+<h2 id="43">4.3 ★★★ 两个文件的二进制布局，逐字段数出来</h2>
 <h3 id="bin"><code>.bin</code> —— 纯数据，没有任何头部</h3>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────┐
-│  就是一个 numpy 数组直接 dump 到磁盘。没有魔数、没有头。   │
-│  等价于：   np.array(all_tokens, dtype=T).tofile(&quot;x.bin&quot;) │
-└──────────────────────────────────────────────────────────┘
-
-★ dtype T 由【词表大小】决定，Megatron 里是自动选的：
-      词表 ≤ 65535        →  uint16   每个 token 2 字节
-      词表  &gt; 65535        →  int32    每个 token 4 字节
-✅ Megatron 源码里这个函数叫 DType.optimal_dtype(tokenizer.vocab_size)
-
-⚠️ 这个自动选择很重要，算一笔账（我的估算）：
-      15 T token × 2 字节 =  30 TB
-      15 T token × 4 字节 =  60 TB
-   ★ 词表从 65535 涨到 65537，你的数据集存储费直接【翻倍】
-   而现在的大模型词表普遍 15 万左右 → 只能用 int32 → 只能认这个 60 TB
+<div class="codehilite"><pre><span></span><code>就是一个 numpy 数组直接 dump 到磁盘。没有魔数、没有头、没有分隔符。
+等价于：  np.array(all_tokens, dtype=T).tofile(&quot;x.bin&quot;)
 </code></pre></div>
 
-<h3 id="idx"><code>.idx</code> —— 元数据，很小</h3>
-<div class="codehilite"><pre><span></span><code>┌─ 文件头 ────────────────────────────────────────────────┐
-│  魔数 magic   b&quot;MMIDIDX\x00\x00&quot;   ← 用来认格式和版本    │
-│  版本号                                                  │
-│  dtype 编码   （告诉你 .bin 里是 uint16 还是 int32）     │
-│  序列条数 S                                              │
-│  文档篇数 D                                              │
-├─ 数组区 ────────────────────────────────────────────────┤
-│  sequence_lengths[S]    每条序列有多少个 token   int32   │
-│  sequence_pointers[S]   每条序列在 .bin 里的字节偏移 int64│
-│  document_indices[D+1]  文档 ↔ 序列 的分界        int64  │
-└─────────────────────────────────────────────────────────┘
+<p><code>dtype T</code> 由<strong>词表大小</strong>决定，Megatron 里是自动选的：</p>
+<table>
+<thead>
+<tr>
+<th>词表大小 V</th>
+<th>dtype</th>
+<th>每个 token 占</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V 能被 16 位表示</td>
+<td><code>uint16</code></td>
+<td><strong>2 字节</strong></td>
+<td><code>uint16</code> 的范围是 0 ~ 65535</td>
+</tr>
+<tr>
+<td>否则</td>
+<td><code>int32</code></td>
+<td><strong>4 字节</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ Megatron 源码里这个函数叫 <code>DType.optimal_dtype(vocab_size)</code>。⚠️ <strong>它的判据是 <code>&lt; 65500</code>，不是 <code>≤ 65535</code></strong>——✅ 源码原文 <code>megatron/core/datasets/indexed_dataset.py:116</code>：<code>if cardinality is not None and cardinality &lt; 65500:</code>，给特殊 token 留了余量。所以 <strong>V=65535 和 V=65536 都会落到 <code>int32</code></strong>，存储直接翻倍。⚠️ 65500 是某个版本的常量，以你用的那版源码为准。</p>
+</blockquote>
+<p><strong>这个自动选择值多少钱，算一笔账</strong>（容量口径：1 TB = 10¹² 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>算式</th>
+<th><code>.bin</code> 体积</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>15 T token × <code>uint16</code></td>
+<td>15×10¹² × 2</td>
+<td><strong>30 TB</strong> = 27 TiB</td>
+</tr>
+<tr>
+<td>15 T token × <code>int32</code></td>
+<td>15×10¹² × 4</td>
+<td><strong>60 TB</strong> = 55 TiB</td>
+</tr>
+<tr>
+<td><strong>差额</strong></td>
+<td>—</td>
+<td><strong>+30 TB，整整翻倍</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>词表从 65000 涨到 66000，你的数据集存储费直接翻倍。</strong> 而现在的大模型词表普遍 <strong>13 万 ~ 15 万</strong>（✅ 见 <a href="09-Tokenizer与词表.html">09 章</a>：openPangu-2.0 是 149,600，DeepSeek-V4 是 128 K），<strong>全都越过了这条线，只能用 <code>int32</code>，只能认这 60 TB</strong>。⚠️ 所以 <a href="09-Tokenizer与词表.html">09 章</a> §9.4 那个"扩词表"的决定，代价里有一项是存储翻倍——这常常被忽略。</p>
+</blockquote>
+<h3 id="idx"><code>.idx</code> —— 元数据，逐字段布局</h3>
+<p>⚠️ <strong>下面的字段名、顺序、字节数是我依据 Megatron-LM <code>_IndexWriter</code> 的写入顺序整理的，请以你用的版本的 <code>megatron/core/datasets/indexed_dataset.py</code> 源码为准（这个布局改过）。</strong> ✅ 但"两个文件分工（<code>.bin</code> 存数据 / <code>.idx</code> 存元数据）"和"靠 9 字节魔数识别实现"是 Megatron 官方文档明确写的。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>字段</th>
+<th>dtype</th>
+<th>占几字节</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>魔数</strong> magic</td>
+<td>原始字节</td>
+<td><strong>9</strong></td>
+<td><code>b"MMIDIDX\x00\x00"</code>，用来认格式</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>版本号</strong> version</td>
+<td><code>uint64</code> 小端</td>
+<td><strong>8</strong></td>
+<td>目前是 <code>1</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>dtype 编码</strong></td>
+<td><code>uint8</code></td>
+<td><strong>1</strong></td>
+<td>一个数字代表 <code>.bin</code> 里是什么类型（见下表）</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>序列条数 S</strong></td>
+<td><code>uint64</code> 小端</td>
+<td><strong>8</strong></td>
+<td><code>sequence_lengths</code> 数组的长度</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>文档索引长度</strong></td>
+<td><code>uint64</code> 小端</td>
+<td><strong>8</strong></td>
+<td>⚠️ <strong>是 D+1，不是 D</strong>（见下面的说明）</td>
+</tr>
+<tr>
+<td>—</td>
+<td><strong>头部合计</strong></td>
+<td>—</td>
+<td><strong>34</strong></td>
+<td>固定开销，与数据量无关</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>sequence_lengths[S]</code></td>
+<td><code>int32</code></td>
+<td><strong>4 × S</strong></td>
+<td>每条序列有多少个 <strong>token</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>sequence_pointers[S]</code></td>
+<td><code>int64</code></td>
+<td><strong>8 × S</strong></td>
+<td>每条序列在 <code>.bin</code> 里的<strong>字节</strong>偏移（★ 不是 token 偏移）</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>document_indices[D+1]</code></td>
+<td><code>int64</code></td>
+<td><strong>8 × (D+1)</strong></td>
+<td>文档 ↔ 序列 的分界点</td>
+</tr>
+<tr>
+<td>(9)</td>
+<td><code>sequence_modes[S]</code></td>
+<td><code>int8</code></td>
+<td>1 × S，⚠️ <strong>可选</strong></td>
+<td>仅多模态等特殊场景写入</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第 3 个字段那个 dtype 编码</strong>（⚠️ 同样以源码为准）：</p>
+<table>
+<thead>
+<tr>
+<th>编码</th>
+<th>1</th>
+<th>2</th>
+<th>3</th>
+<th>4</th>
+<th>5</th>
+<th>6</th>
+<th>7</th>
+<th>8</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>dtype</td>
+<td><code>uint8</code></td>
+<td><code>int8</code></td>
+<td><code>int16</code></td>
+<td><code>int32</code></td>
+<td><code>int64</code></td>
+<td><code>float64</code></td>
+<td><code>float32</code></td>
+<td><code>uint16</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️⚠️ <strong>第 5 个字段为什么是 D+1，这一点旧版写错了（旧版写的是"文档篇数 D"）。</strong> 原因是 <code>document_indices</code> 是一个<strong>分界数组</strong>，不是计数：它从 <code>[0]</code> 开始，每结束一篇文档就追加一个"到目前为止的序列条数"。所以 D 篇文档对应 <strong>D+1 个分界点</strong>——和"n 段栅栏需要 n+1 根柱子"是同一回事。第 D 篇文档的序列范围是 <code>document_indices[D]</code> 到 <code>document_indices[D+1]</code>。</p>
+<p>★ <strong>为什么要分"序列"和"文档"两层？</strong> 纯文本预训练里<strong>一篇文档就是一条序列</strong>（S = D），这两层看起来是多余的。但在多模态、或者一篇文档被切成几段分别存的场景下，一篇文档会对应<strong>多条序列</strong>，这时 <code>document_indices</code> 才起作用。⚠️ <strong>初学时可以先把 S = D 记住，不影响理解。</strong></p>
+</blockquote>
+<h3 id="42-idx">把 §4.2 那三篇文档的 <code>.idx</code> 全部写出来</h3>
+<p>设 <code>dtype = uint16</code>（每 token 2 字节），一篇文档一条序列（S = D = 3）：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>值</th>
+<th>怎么算的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>魔数</td>
+<td><code>b"MMIDIDX\x00\x00"</code></td>
+<td>固定</td>
+</tr>
+<tr>
+<td>版本号</td>
+<td><code>1</code></td>
+<td>固定</td>
+</tr>
+<tr>
+<td>dtype 编码</td>
+<td><code>8</code></td>
+<td><code>uint16</code> 的编码是 8</td>
+</tr>
+<tr>
+<td>序列条数 S</td>
+<td><code>3</code></td>
+<td>三篇文档各一条序列</td>
+</tr>
+<tr>
+<td>文档索引长度</td>
+<td><code>4</code></td>
+<td>= D + 1 = 3 + 1</td>
+</tr>
+<tr>
+<td><code>sequence_lengths</code></td>
+<td><code>[6, 5, 4]</code></td>
+<td>三篇的 token 数</td>
+</tr>
+<tr>
+<td><code>sequence_pointers</code></td>
+<td><code>[0, 12, 22]</code></td>
+<td>★ <strong>字节</strong>偏移：doc0 从 0 开始占 6×2=12 字节 → doc1 从 <strong>12</strong> 开始占 5×2=10 → doc2 从 <strong>22</strong> 开始占 4×2=8 → 总 30</td>
+</tr>
+<tr>
+<td><code>document_indices</code></td>
+<td><code>[0, 1, 2, 3]</code></td>
+<td>第 i 篇文档占序列 <code>[i, i+1)</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>两个文件的体积，逐项加出来</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>组成</th>
+<th>字节</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.bin</code></td>
+<td>(6+5+4) token × 2 字节</td>
+<td><strong>30</strong></td>
+</tr>
+<tr>
+<td><code>.idx</code> 头部</td>
+<td>9 + 8 + 1 + 8 + 8</td>
+<td><strong>34</strong></td>
+</tr>
+<tr>
+<td><code>.idx</code> <code>sequence_lengths</code></td>
+<td>3 × 4</td>
+<td><strong>12</strong></td>
+</tr>
+<tr>
+<td><code>.idx</code> <code>sequence_pointers</code></td>
+<td>3 × 8</td>
+<td><strong>24</strong></td>
+</tr>
+<tr>
+<td><code>.idx</code> <code>document_indices</code></td>
+<td>4 × 8</td>
+<td><strong>32</strong></td>
+</tr>
+<tr>
+<td><strong><code>.idx</code> 合计</strong></td>
+<td>34 + 12 + 24 + 32</td>
+<td><strong>102</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>注意这个小例子里 <code>.idx</code>（102 字节）比 <code>.bin</code>（30 字节）还大 3.4 倍。</strong> 这不是写错了——<strong>索引的开销是"每篇文档 20 字节"的固定成本，和文档多长无关。</strong> 文档短，索引就显得贵。</p>
+</blockquote>
+<h3 id="1">验算一遍"取第 1 篇文档"</h3>
+<div class="codehilite"><pre><span></span><code>目标：取 doc1，应该得到 [7712, 331, 88, 21, 2]
 
-⚠️ 上面的字段名与顺序是我依据 Megatron-LM 的 IndexedDataset 实现整理的，
-   ✅ 但&quot;两个文件（.bin 存数据 / .idx 存元数据）&quot;与&quot;靠 8 字节魔数识别实现&quot;
-      是 Megatron 官方文档明确写的。
-   ★ 字节级布局请以 megatron/core/datasets/indexed_dataset.py 源码为准，
-     不同版本改过。
-
-体积感：.idx 通常只有 .bin 的 千分之一 量级 ⚠️（我的估算）
-        → 所以 .idx 可以整个读进内存，.bin 用 mmap
+① 查 .idx：sequence_pointers[1] = 12      ← 字节偏移
+② 查 .idx：sequence_lengths[1]  = 5       ← token 个数
+③ 字节偏移 → token 下标：12 ÷ 2 = 6       ← 除以 itemsize
+④ 在 .bin 的 mmap 上切片：bin[6 : 6+5]
+     .bin 下标:  0    1   2    3    4  5    6    7   8   9  10 ...
+     .bin 值:  4521 889  15 3204  992  2  7712 331  88  21   2 ...
+                                          ^^^^^^^^^^^^^^^^^^^^^   &lt;- 取的就是这 5 个
+⑤ 结果：[7712, 331, 88, 21, 2]   ✓
 </code></pre></div>
 
-<h3 id="_1">路径约定：只给"前缀"</h3>
+<p><strong>全程两次数组下标访问 + 一次切片，没有任何循环、解析、解压。这就是 O(1)。</strong></p>
+<h3 id="idx-bin"><code>.idx</code> 到底占 <code>.bin</code> 的几分之一</h3>
+<blockquote>
+<p>⚠️ <strong>旧版说"<code>.idx</code> 通常只有 <code>.bin</code> 的千分之一量级"——这个数偏小了一个数量级。</strong> 算一遍：<code>.idx</code> 每条固定 <strong>20 字节</strong>（4 + 8 + 8，S = D 时），<code>.bin</code> 每条是 <code>平均文档 token 数 × itemsize</code>。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>平均文档长度</th>
+<th><code>.bin</code> 每条（<code>uint16</code>）</th>
+<th><code>.idx</code> 每条</th>
+<th><strong><code>.idx</code> / <code>.bin</code></strong></th>
+<th><code>int32</code> 时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5 token（§4.2 的小例子）</td>
+<td>10</td>
+<td>20</td>
+<td><strong>200%</strong></td>
+<td>100%</td>
+</tr>
+<tr>
+<td>100 token</td>
+<td>200</td>
+<td>20</td>
+<td><strong>10%</strong></td>
+<td>5%</td>
+</tr>
+<tr>
+<td>500 token</td>
+<td>1000</td>
+<td>20</td>
+<td><strong>2.0%</strong></td>
+<td>1.0%</td>
+</tr>
+<tr>
+<td><strong>1143 token</strong>（<a href="03-存储格式.html">03 章</a> §3.6 规范数据）</td>
+<td>2286</td>
+<td>20</td>
+<td><strong>0.87%</strong></td>
+<td><strong>0.44%</strong></td>
+</tr>
+<tr>
+<td>5000 token</td>
+<td>10000</td>
+<td>20</td>
+<td><strong>0.2%</strong></td>
+<td>0.1%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>所以典型值是"千分之四到百分之二"</strong>（取决于平均文档长度和 dtype），<strong>只有在平均文档长达上万 token 时才真的到千分之一</strong>。⚠️ 旧版那个"千分之一"在 1143 token / int32 的规范数据上偏小 4 倍多。<strong>估算时取 1% 这个量级比较安全。</strong></p>
+<p>⚠️ <strong>而"<code>.idx</code> 可以整个读进内存"这句话，在大规模下也不成立</strong>：15 T token ÷ 1143 token 每篇 = <strong>131 亿篇文档</strong>，<code>.idx</code> 就是 131 亿 × 20 字节 = <strong>262 GB</strong>。⚠️ 实践中靠两件事绕过：<strong>(a) 语料一定是分成成百上千个 <code>.bin</code>/<code>.idx</code> 对的</strong>（按快照、按语言、按领域），每个 <code>.idx</code> 几百 MB；<strong>(b) Megatron 对 <code>.idx</code> 同样用 mmap</strong>（在 memmap 上做 numpy 视图），不是 <code>read()</code> 整个读进来——⚠️ 这一点请以源码确认。</p>
+</blockquote>
+<h3 id="_2">路径约定：只给"前缀"</h3>
 <div class="codehilite"><pre><span></span><code>你的磁盘上：   /data/zh_web_text_document.bin
               /data/zh_web_text_document.idx
 
 配置里写的：   --data-path /data/zh_web_text_document
                             ↑ ★ 不带 .bin / .idx 后缀
-✅ Megatron 官方文档原话：the path should be a basename to which
-   both .idx and .bin can be appended.
-
-⚠️ 这是新手最常见的报错之一：写了带后缀的路径 → 找不到文件。
 </code></pre></div>
 
+<p>✅ Megatron 官方文档原话：<em>the path should be a basename to which both <code>.idx</code> and <code>.bin</code> can be appended.</em></p>
+<p>⚠️ 这是新手最常见的报错之一：写了带后缀的路径 → 找不到文件。</p>
 <hr />
-<h2 id="44-n">4.4 三个索引：从"一根长条"到"第 n 号训练样本"</h2>
-<p><code>.bin/.idx</code> 解决的是<strong>"取第 n 篇文档"</strong>。但训练要的不是文档，是<strong>定长 4096 的样本</strong>。</p>
-<p>一篇文档可能 300 token，也可能 50000 token。怎么把它们变成整整齐齐的 4096？</p>
+<h2 id="44-n">4.4 ★★★ 三个索引：从"一根长条"到"第 n 号训练样本"</h2>
+<p><code>.bin/.idx</code> 解决的是<strong>"取第 n 篇文档"</strong>。但训练要的不是文档，是<strong>定长 4096 的样本</strong>。一篇文档可能 300 token，也可能 50000 token。怎么把它们变成整整齐齐的 4096？</p>
 <p>✅ Megatron 的 <code>GPTDataset</code> 用<strong>三个索引数组</strong>来做这件事。这是本章最需要理解的部分。</p>
-<h3 id="_2">先看它要满足的四个约束</h3>
-<div class="codehilite"><pre><span></span><code>① 样本必须【定长 L】（比如 4096）
-② 要能训【E 个 epoch】——数据不够就重复用
-③ 每个 epoch 内文档顺序要【随机】，且每个 epoch 的随机顺序【不同】
-④ ★★ 必须【完全确定】：给定随机种子，第 n 号样本永远是同一批 token
-   （否则断点续训就废了，见 14 章）
+<h3 id="_3">先看它要满足的四个约束</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>约束</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>样本必须<strong>定长 L</strong>（比如 4096）</td>
+<td>GPU 吃的是定长张量</td>
+</tr>
+<tr>
+<td>②</td>
+<td>要能训 <strong>E 个 epoch</strong>——数据不够就重复用</td>
+<td>预算大于语料时必须重复（<a href="11-喂多少-ScalingLaw.html">11 章</a>）</td>
+</tr>
+<tr>
+<td>③</td>
+<td>每个 epoch 内文档顺序要<strong>随机</strong>，且每个 epoch 的随机顺序<strong>不同</strong></td>
+<td>否则模型会学到"顺序"这个假信号</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★★ 必须<strong>完全确定</strong>：给定随机种子，第 n 号样本永远是同一批 token</td>
+<td>否则断点续训就废了（<a href="14-采样-shuffle-与断点续训.html">14 章</a>）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">三个索引各管一件事</h3>
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>全名</th>
+<th>它是什么</th>
+<th>管哪件事</th>
+<th>长度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① <code>Do_idx</code></strong></td>
+<td><code>document_index</code>（文档索引）</td>
+<td>一串<strong>文档编号</strong></td>
+<td>管<strong>顺序</strong>和<strong>重复几轮</strong></td>
+<td>E × 文档总数</td>
+</tr>
+<tr>
+<td><strong>② <code>Sa_idx</code></strong></td>
+<td><code>sample_index</code>（样本索引）</td>
+<td>一串 <strong>(在 <code>Do_idx</code> 里的下标 i, 该文档内的 token 偏移 off)</strong></td>
+<td>管<strong>从哪切到哪</strong></td>
+<td>N + 1</td>
+</tr>
+<tr>
+<td><strong>③ <code>Sh_idx</code></strong></td>
+<td><code>shuffle_index</code>（打乱索引）</td>
+<td><code>[0 .. N-1]</code> 的一个<strong>随机排列</strong></td>
+<td>管<strong>样本的呈现顺序</strong></td>
+<td>N</td>
+</tr>
+</tbody>
+</table>
+<p><strong>① <code>Do_idx</code> —— 顺序与重复</strong>：把所有文档编号列一遍，每个 epoch 内部<strong>各自独立打乱</strong>，然后首尾接起来。✅ Megatron 文档原话：<em>E is the minimum number of epochs such that E × |indexed_indices| &gt;= N</em>（E 是能凑够 N 个样本的最小 epoch 数）。</p>
+<p><strong>② <code>Sa_idx</code> —— 切刀位置</strong>：把 <code>Do_idx</code> 指定的文档<strong>首尾相接</strong>成一条无限长的 token 流，每 L 个 token 切一刀，记下每一刀的位置。★ 一个样本可能<strong>跨越好几篇文档</strong>，也可能<strong>切在一篇文档中间</strong>。</p>
+<p><strong>③ <code>Sh_idx</code> —— 再打乱一次</strong>：</p>
+<blockquote>
+<p>★ <strong>为什么 ② 之后还要 ③？</strong> 因为 ② 切出来的样本<strong>在语料里是连续的</strong>——样本 100 和样本 101 很可能来自同一篇长文档。不打乱的话，一个 batch 里全是同一个主题，<strong>梯度有偏</strong>。</p>
+</blockquote>
+<h3 id="42_1">用 §4.2 那三篇文档，把三个索引全部写出来</h3>
+<p><strong>给定</strong>：3 篇文档，长度 <code>[6, 5, 4]</code>（共 15 token），样本长度 <strong>L = 4</strong>，要 <strong>7 个样本</strong>。</p>
+<p><strong>① 先算 E 和 <code>Do_idx</code></strong>：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个 epoch 有多少 token</td>
+<td>6 + 5 + 4</td>
+<td><strong>15</strong></td>
+</tr>
+<tr>
+<td>一个 epoch 能切几个样本</td>
+<td>⌊15 ÷ 4⌋</td>
+<td><strong>3</strong></td>
+</tr>
+<tr>
+<td>要 7 个样本需要几个 epoch</td>
+<td>⌈7 ÷ 3⌉</td>
+<td><strong>E = 2</strong></td>
+</tr>
+<tr>
+<td><code>Do_idx</code> 长度</td>
+<td>E × 3</td>
+<td><strong>6</strong></td>
+</tr>
+</tbody>
+</table>
+<p>假设两个 epoch 各自打乱成 <code>[2, 0, 1]</code> 和 <code>[1, 2, 0]</code>：</p>
+<div class="codehilite"><pre><span></span><code>Do_idx = [ 2, 0, 1,   1, 2, 0 ]
+  下标 i:  0  1  2    3  4  5
+          └ epoch 0 ┘ └ epoch 1 ┘
 </code></pre></div>
 
-<h3 id="_3">三个索引各管一件事</h3>
-<div class="codehilite"><pre><span></span><code>┌─ ① document_index（文档索引） ── 管&quot;顺序&quot;和&quot;重复几轮&quot; ────────┐
-│                                                               │
-│   Do_idx = [文档编号, 文档编号, ...]                           │
-│   长度 = E × 文档总数，E = 让样本数够用的最小 epoch 数          │
-│                                                               │
-│   例：3 篇文档，要训 2 个 epoch                                 │
-│       Do_idx = [ 2, 0, 1,   1, 2, 0 ]                         │
-│                 └epoch 0┘  └epoch 1┘                          │
-│                 ↑ 每个 epoch 内部各自独立打乱                   │
-│   ✅ Megatron 文档：E is the minimum number of epochs such      │
-│      that E × |indexed_indices| &gt;= N                           │
-└───────────────────────────────────────────────────────────────┘
-
-┌─ ② sample_index（样本索引） ── 管&quot;从哪切到哪&quot; ────────────────┐
-│                                                               │
-│   把 Do_idx 指定的文档【首尾相接】成一条无限长的流，            │
-│   每 L 个 token 切一刀。记下每一刀的位置：                     │
-│                                                               │
-│   Sa_idx[j] = (在 Do_idx 里的下标 i,  该文档内的字符偏移 off)  │
-│                                                               │
-│   ★ 一个样本可能【跨越好几篇文档】，也可能【切在一篇文档中间】  │
-└───────────────────────────────────────────────────────────────┘
-
-┌─ ③ shuffle_index（打乱索引） ── 管&quot;样本的呈现顺序&quot; ───────────┐
-│                                                               │
-│   Sh_idx = [0..N-1] 的一个随机排列                             │
-│   训练第 j 步要的是第 Sh_idx[j] 号样本                         │
-│                                                               │
-│   ★ 为什么②之后还要③？                                        │
-│     因为②切出来的样本【在语料里是连续的】——                   │
-│     样本 100 和样本 101 很可能来自同一篇长文档。                │
-│     不打乱的话，一个 batch 里全是同一个主题 → 梯度有偏。       │
-└───────────────────────────────────────────────────────────────┘
+<p><strong>② 把 token 流拍平，看每一刀切在哪</strong>：</p>
+<table>
+<thead>
+<tr>
+<th><code>Do_idx</code> 下标 i</th>
+<th>是哪篇文档</th>
+<th>长度</th>
+<th>在拼接流里的区间</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>doc2</td>
+<td>4</td>
+<td><code>[0, 4)</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td>doc0</td>
+<td>6</td>
+<td><code>[4, 10)</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>doc1</td>
+<td>5</td>
+<td><code>[10, 15)</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>doc1</td>
+<td>5</td>
+<td><code>[15, 20)</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>doc2</td>
+<td>4</td>
+<td><code>[20, 24)</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>doc0</td>
+<td>6</td>
+<td><code>[24, 30)</code></td>
+</tr>
+</tbody>
+</table>
+<p>每 4 个 token 切一刀，得到 <code>Sa_idx</code>（★ 注意是 <strong>N+1 = 8</strong> 条，因为第 j 个样本的范围由第 j 和第 j+1 条<strong>共同</strong>界定）：</p>
+<table>
+<thead>
+<tr>
+<th>样本 j</th>
+<th>流区间</th>
+<th><code>Sa_idx[j]</code> = (i, off)</th>
+<th>这个样本由什么拼成</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>[0, 4)</code></td>
+<td><strong>(0, 0)</strong></td>
+<td>doc2 整篇（恰好 4 个）</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>[4, 8)</code></td>
+<td><strong>(1, 0)</strong></td>
+<td>doc0 的前 4 个</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>[8, 12)</code></td>
+<td><strong>(1, 4)</strong></td>
+<td>doc0 的后 2 个 + doc1 的前 2 个</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>[12, 16)</code></td>
+<td><strong>(2, 2)</strong></td>
+<td>doc1 的后 3 个 + doc1（下一轮）的前 1 个</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>[16, 20)</code></td>
+<td><strong>(3, 1)</strong></td>
+<td>doc1 的第 1~4 个</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>[20, 24)</code></td>
+<td><strong>(4, 0)</strong></td>
+<td>doc2 整篇</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>[24, 28)</code></td>
+<td><strong>(5, 0)</strong></td>
+<td>doc0 的前 4 个</td>
+</tr>
+<tr>
+<td>（哨兵）</td>
+<td>—</td>
+<td><strong>(5, 4)</strong></td>
+<td>★ 第 7 条只用来界定样本 6 的终点</td>
+</tr>
+</tbody>
+</table>
+<p>★ 流里的 <code>[28, 30)</code> 这 2 个 token <strong>被丢掉了</strong>——凑不满一个样本。⚠️ 这就是 <a href="13-打包与文档掩码.html">13 章</a> 要讲的"打包利用率"的来源之一。</p>
+<p><strong>③ <code>Sh_idx</code> 随便给一个排列</strong>：<code>Sh_idx = [4, 0, 6, 2, 5, 1, 3]</code>。</p>
+<h3 id="0">一张图串起来：训练第 0 步到底读了什么</h3>
+<div class="codehilite"><pre><span></span><code>  训练第 j = 0 步
+       │
+       ▼
+  ③ Sh_idx[0] = 4                  &quot;我要第 4 号样本&quot;
+       │
+       ▼
+  ② Sa_idx[4] = (i=3, off=1)       起点
+    Sa_idx[5] = (i=4, off=0)       终点
+       │   ★ 这两条一起界定本样本的范围
+       ▼
+  ① Do_idx[3] = 1（doc1）
+    Do_idx[4] = 2（doc2）
+       │
+       ▼
+  .idx → 查 doc1 的 (字节偏移 12, 长度 5)
+       │
+       ▼
+  .bin → mmap 上切片：
+         doc1[1:]  = [331, 88, 21, 2]     ← 第一篇的尾巴（跳过 off=1 个）
+         中间整篇    = 无（i+1 到 i_next 之间没有文档）
+         doc2[:0]  = []                   ← 最后一篇取 off_next=0 个，即不取
+       │
+       ▼
+     [331, 88, 21, 2]   恰好 4 个 token  ★
 </code></pre></div>
 
-<h3 id="_4">一张图串起来</h3>
-<div class="codehilite"><pre><span></span><code>  训练第 j 步
-       │
-       ▼
-  ③ Sh_idx[j] = 8231904            &quot;我要第 8231904 号样本&quot;
-       │
-       ▼
-  ② Sa_idx[8231904]   = (i=4021, off=173)
-    Sa_idx[8231905]   = (i=4023, off=2044)   ← 下一个样本的起点
-       │  ★ 这两条一起，界定了本样本的范围
-       ▼
-  ① Do_idx[4021] = 88123   Do_idx[4022] = 51    Do_idx[4023] = 7742
-       │           └ 文档编号 ┘
-       ▼
-  .idx → 查这三篇文档各自的 (offset, length)
-       │
-       ▼
-  .bin → mmap 上切三刀，拼接：
-         doc88123[173:] + doc51[全部] + doc7742[:2044]
-       │
-       ▼
-     恰好 4096 个 token 的 numpy 数组  ★
-</code></pre></div>
-
-<p>✅ Megatron 官方文档对这一步的描述与上图一致：<br />
-<code>sample += indexed_dataset[Do_idx[i]][offset:]</code>，然后是中间的整篇文档，最后 <code>indexed_dataset[Do_idx[i_next]][:offset_next]</code>。</p>
+<p>✅ Megatron 官方文档对这一步的描述与上图一致：<code>sample += indexed_dataset[Do_idx[i]][offset:]</code>，然后是中间的整篇文档，最后 <code>indexed_dataset[Do_idx[i_next]][:offset_next]</code>。</p>
+<blockquote>
+<p>⚠️ <strong>一个实现细节，初学时容易被绕晕</strong>：Megatron 实际切出来的样本长度是 <strong>L + 1</strong>，不是 L。因为语言模型的训练目标是"预测下一个 token"，输入取 <code>sample[:-1]</code>、标签取 <code>sample[1:]</code>，两者都是 L 个。<strong>所以配置 <code>--seq-length 4096</code> 时，<code>.bin</code> 上真正切下来的是 4097 个 token。</strong> 上面的小例子为了好数，忽略了这个 +1。</p>
+</blockquote>
 <h3 id="_5">索引的构建与缓存</h3>
 <div class="codehilite"><pre><span></span><code>✅ Megatron 的做法（官方文档原话的意思）：
    ① 三个索引在【一个 rank 上顺序构建】，然后落盘缓存
@@ -451,20 +1135,59 @@ WebDataset→ tar，纯顺序，根本没有&quot;第 n 条&quot;这个概念。
 ⚠️ 而且：如果你【只加了一个新的数据文件】，整个索引也要重建。
 </code></pre></div>
 
+<p><strong>三个索引自己要占多少内存？</strong> 按 15 T token、平均文档 1143 token、L = 4096 估：</p>
+<table>
+<thead>
+<tr>
+<th>索引</th>
+<th>元素个数</th>
+<th>每元素字节</th>
+<th>体积</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Do_idx</code></td>
+<td><strong>131 亿</strong>（E=1 时的文档数）</td>
+<td>4（<code>int32</code>）</td>
+<td>⚠️ <strong>52 GB</strong></td>
+</tr>
+<tr>
+<td><code>Sa_idx</code></td>
+<td>36.6 亿（15 T ÷ 4096）</td>
+<td>4 + 4 = 8</td>
+<td>⚠️ <strong>29 GB</strong></td>
+</tr>
+<tr>
+<td><code>Sh_idx</code></td>
+<td>36.6 亿</td>
+<td>8（<code>int64</code>）</td>
+<td>⚠️ <strong>29 GB</strong></td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td>—</td>
+<td>—</td>
+<td>⚠️ <strong>约 110 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️⚠️ <strong>这就是为什么语料一定要分片。</strong> 单个 <code>.bin</code> 做成 15 T token，光三个索引就要 <strong>110 GB</strong> 内存，而且构建它们的那个"单 rank 顺序构建"会跑上几个小时。<strong>实践中是几百个 <code>.bin</code>/<code>.idx</code> 对 + <code>BlendedDataset</code> 混起来</strong>（§4.5），每个分片的索引才几百 MB。⚠️ 上表是我的估算，Megatron 实际用的 dtype 和是否 mmap 请以源码为准。</p>
+</blockquote>
 <hr />
 <h2 id="45-blendeddataset">4.5 多路数据混合：<code>BlendedDataset</code></h2>
-<p>真实训练不会只有一个 <code>.bin</code>，而是几十个（网页、代码、数学、多语言……），要按配比混（<a href="10-数据配比.html">10 章</a>讲配比怎么定，这里只讲<strong>怎么实现</strong>）。</p>
+<p>真实训练不会只有一个 <code>.bin</code>，而是几十上百个（网页、代码、数学、多语言……），要按配比混（<a href="10-数据配比.html">10 章</a>讲配比怎么定，这里只讲<strong>怎么实现</strong>）。</p>
 <div class="codehilite"><pre><span></span><code>配置长这样（Megatron 的 --data-path 或 blend 字段）：
     0.70  /data/web_text_document
     0.20  /data/code_text_document
     0.10  /data/math_text_document
-    └权重┘ └────── 前缀（不带后缀）──────┘
-
-✅ 官方文档：BlendedDataset is parameterized by the underlying
-   MegatronDataset instances D, the weights W, and the size S;
-   it draws samples from contributing datasets in proportion to the weights.
+    ^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+     (a)           (b)
 </code></pre></div>
 
+<p><strong>(a) = 权重</strong>；<strong>(b) = 文件前缀，★ 不带 <code>.bin</code> / <code>.idx</code> 后缀</strong>（§4.3 讲过这个约定）。</p>
+<p>✅ 官方文档：<em>BlendedDataset is parameterized by the underlying MegatronDataset instances D, the weights W, and the size S; it draws samples from contributing datasets in proportion to the weights.</em></p>
 <p>实现上，它又是一层索引：</p>
 <div class="codehilite"><pre><span></span><code>  BlendedDataset 也预先算好两个数组：
       dataset_index[j]        第 j 个混合样本来自【哪个】数据集
@@ -473,31 +1196,111 @@ WebDataset→ tar，纯顺序，根本没有&quot;第 n 条&quot;这个概念。
   取第 j 条：
       d = dataset_index[j]                 # 比如 = 1（code）
       k = dataset_sample_index[j]          # 比如 = 55231
-      return datasets[d][k]                # 转给 GPTDataset 走 4.4 那套
+      return datasets[d][k]                # 转给 GPTDataset 走 §4.4 那套
 
   ★ 同样是【完全确定】的：给定种子和权重，第 j 条永远来自同一处
 </code></pre></div>
 
+<h3 id="_6">⚠️ 权重的口径：先纠正一个常见说法</h3>
 <blockquote>
-<p>⚠️ <strong>一个很容易踩的坑</strong>：权重是<strong>按 token 数</strong>还是<strong>按样本数</strong>？<br />
-Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数据集的<strong>平均文档长度不同</strong>——<br />
-如果你以为"代码权重 0.2 = 代码占 20% 的 token"，在文档长度差异大时会有偏差。<br />
-★ <strong>稳妥做法：先统计每个 <code>.bin</code> 的实际 token 总数（<code>.idx</code> 里就有），再反推权重。</strong></p>
+<p>⚠️⚠️ <strong>本章旧版写过"blend 权重生效在样本层面，所以不同数据集平均文档长度不同时，<code>代码权重 0.2</code> 不等于 <code>代码占 20% 的 token</code>"。这句话站不住。</strong> 推一遍就清楚了：</p>
 </blockquote>
-<h3 id="_6">三个配置项，先解释清楚</h3>
-<div class="codehilite"><pre><span></span><code>--split 9999,8,2
-   把数据按 99.99% / 0.08% / 0.02% 切成 train / valid / test
-   ★ 是按【文档】切的连续区间，不是随机抽
-
---reset-position-ids  /  --reset-attention-mask
-   ★ 这两个就是 13 章要讲的【文档掩码】开关：
-     开了之后，一条样本里跨文档的位置编码会重置、注意力不能跨文档
-     默认【关闭】—— 也就是说默认情况下文档之间是会&quot;串味&quot;的
-
---eod-mask-loss
-   要不要在 &lt;eod&gt; 那个位置上算损失。通常关掉
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>推理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <code>BlendedDataset</code> 按权重分配的是<strong>样本数</strong>：权重 0.2 → 20% 的样本来自 code</td>
+<td>✅ 官方文档</td>
+</tr>
+<tr>
+<td>② 而 <code>GPTDataset</code> 产出的<strong>每一条样本都恰好 L 个 token</strong>（§4.4：首尾相接后每 L 个切一刀）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>③ ⟹ 20% 的样本 × 每条 L 个 token = <strong>20% 的 token</strong></td>
+<td><strong>平均文档长度完全不影响这个比例</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>所以"权重 = token 占比"是成立的。</strong> 文档长短只影响"一条样本里塞了几篇文档"，不影响一条样本有多少 token。⚠️ 不同 fork（Megatron-DeepSpeed 等）和不同版本的 <code>--data-path</code> / <code>--blend</code> 语义有差别，<strong>以你用的版本为准</strong>，但主线 Megatron-Core 是上面这个逻辑。</p>
+<h3 id="_7">★ 真正的坑在另一个地方：每个数据集被重复了几遍</h3>
+<p>权重算对了，但它<strong>不会告诉你小数据集被重复用了多少次</strong>。算一笔账：</p>
+<p><strong>给定</strong>：总预算 15 T token，<code>L = 4096</code>，三路配比 <code>0.70 / 0.20 / 0.10</code>。</p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>权重</th>
+<th>分到多少 token</th>
+<th>⚠️ 这个数据集本身有多大</th>
+<th><strong>被重复几遍</strong></th>
+<th>判断</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>web</td>
+<td>0.70</td>
+<td>15 T × 0.70 = <strong>10.5 T</strong></td>
+<td>12 T</td>
+<td><strong>0.88 遍</strong></td>
+<td>✅ 还没用完一遍</td>
+</tr>
+<tr>
+<td>code</td>
+<td>0.20</td>
+<td>15 T × 0.20 = <strong>3.0 T</strong></td>
+<td>0.1 T（100 B）</td>
+<td><strong>30 遍</strong></td>
+<td>❌ 严重超了</td>
+</tr>
+<tr>
+<td>math</td>
+<td>0.10</td>
+<td>15 T × 0.10 = <strong>1.5 T</strong></td>
+<td>0.05 T（50 B）</td>
+<td><strong>30 遍</strong></td>
+<td>❌ 严重超了</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★★ <strong>Megatron 不会为这件事报错，也不会警告。</strong> 它只会老老实实地把 code 数据集翻来覆去读 30 遍。而 <a href="11-喂多少-ScalingLaw.html">11 章</a> 的结论是「<strong>重复 4 遍几乎不亏，超过之后收益快速衰减</strong>」——<strong>30 遍已经远在悬崖之外</strong>。</p>
+<p>★ <strong>所以配比不能只写权重，必须同时检查"重复次数"</strong>：<code>重复遍数 = 总预算 × 权重 ÷ 该数据集的 token 总数</code>。<strong>而该数据集的 token 总数，<code>.idx</code> 里就有</strong>（把 <code>sequence_lengths</code> 加起来即可，§4.6 有代码）。</p>
+<p>★ <strong>稳妥做法</strong>：先把每个 <code>.bin</code> 的实际 token 总数统计出来，算一遍上面那张表，再回头调权重或者补数据。<strong>这是 20 行脚本的事，但几乎没人做。</strong></p>
+</blockquote>
+<h3 id="_8">三个配置项，先解释清楚</h3>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>作用</th>
+<th>⚠️ 要注意什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--split 9999,8,2</code></td>
+<td>把数据按 99.99% / 0.08% / 0.02% 切成 train / valid / test</td>
+<td>★ 是按<strong>文档</strong>切<strong>连续区间</strong>的，不是随机抽。⚠️ 如果你的语料是按来源排序的，valid 集可能全是同一个站点</td>
+</tr>
+<tr>
+<td><code>--reset-position-ids</code><br><code>--reset-attention-mask</code></td>
+<td>★ 这两个就是 <a href="13-打包与文档掩码.html">13 章</a> 要讲的<strong>文档掩码</strong>开关：开了之后，一条样本里跨文档的位置编码会重置、注意力不能跨文档</td>
+<td>⚠️ <strong>默认关闭</strong>——也就是说默认情况下文档之间会"串味"</td>
+</tr>
+<tr>
+<td><code>--eod-mask-loss</code></td>
+<td>要不要在 <code>&lt;eod&gt;</code> 那个位置上算损失</td>
+<td>通常关掉</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="46">4.6 完整的伪代码</h2>
 <div class="codehilite"><pre><span></span><code><span class="c1"># ============ 离线：写 .bin / .idx ============</span>
@@ -506,21 +1309,28 @@ Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数�
         <span class="bp">self</span><span class="o">.</span><span class="n">bin</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="n">prefix</span> <span class="o">+</span> <span class="s2">&quot;.bin&quot;</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">dtype</span> <span class="o">=</span> <span class="n">dtype</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">pointers</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">doc_indices</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">]</span>                     <span class="c1"># ★ 从 0 开始，所以最后长度是 D+1</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">offset</span> <span class="o">=</span> <span class="mi">0</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">add_document</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">token_ids</span><span class="p">):</span>
         <span class="n">arr</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">token_ids</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">dtype</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">bin</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">arr</span><span class="o">.</span><span class="n">tobytes</span><span class="p">(</span><span class="n">order</span><span class="o">=</span><span class="s2">&quot;C&quot;</span><span class="p">))</span>     <span class="c1"># ★ 直接追加到长条末尾</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">arr</span><span class="p">))</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">pointers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">offset</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">pointers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">offset</span><span class="p">)</span>          <span class="c1"># ★ 记的是【字节】偏移</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">offset</span> <span class="o">+=</span> <span class="n">arr</span><span class="o">.</span><span class="n">nbytes</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">doc_indices</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">))</span> <span class="c1"># ★ 一篇文档结束 → 追加一个分界点</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">finalize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">prefix</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">bin</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
         <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">prefix</span> <span class="o">+</span> <span class="s2">&quot;.idx&quot;</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-            <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">MAGIC</span><span class="p">);</span> <span class="n">write_header</span><span class="p">(</span><span class="n">f</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">))</span>
-            <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">,</span>  <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span><span class="o">.</span><span class="n">tofile</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
-            <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pointers</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span><span class="o">.</span><span class="n">tofile</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="sa">b</span><span class="s2">&quot;MMIDIDX</span><span class="se">\x00\x00</span><span class="s2">&quot;</span><span class="p">)</span>                      <span class="c1"># 9 字节魔数</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">pack</span><span class="p">(</span><span class="s2">&quot;&lt;Q&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">))</span>                    <span class="c1"># 8 字节版本号</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">pack</span><span class="p">(</span><span class="s2">&quot;&lt;B&quot;</span><span class="p">,</span> <span class="n">code_of</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">dtype</span><span class="p">)))</span>  <span class="c1"># 1 字节 dtype 编码</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">pack</span><span class="p">(</span><span class="s2">&quot;&lt;Q&quot;</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">)))</span>    <span class="c1"># 8 字节 序列条数 S</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">pack</span><span class="p">(</span><span class="s2">&quot;&lt;Q&quot;</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">doc_indices</span><span class="p">)))</span><span class="c1"># 8 字节 ★ D+1</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">,</span>     <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span><span class="o">.</span><span class="n">tofile</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>   <span class="c1"># 4×S</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">pointers</span><span class="p">,</span>    <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span><span class="o">.</span><span class="n">tofile</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>   <span class="c1"># 8×S</span>
+            <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">doc_indices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int64</span><span class="p">)</span><span class="o">.</span><span class="n">tofile</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>   <span class="c1"># 8×(D+1)</span>
 
 <span class="c1"># 用法</span>
 <span class="n">b</span> <span class="o">=</span> <span class="n">IndexedDatasetBuilder</span><span class="p">(</span><span class="s2">&quot;train&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
@@ -539,7 +1349,7 @@ Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数�
         <span class="bp">self</span><span class="o">.</span><span class="n">item_size</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">dtype</span><span class="p">(</span><span class="n">dtype</span><span class="p">)</span><span class="o">.</span><span class="n">itemsize</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">doc_id</span><span class="p">):</span>                  <span class="c1"># ★ O(1)</span>
-        <span class="n">start</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">pointers</span><span class="p">[</span><span class="n">doc_id</span><span class="p">]</span> <span class="o">//</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_size</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">pointers</span><span class="p">[</span><span class="n">doc_id</span><span class="p">]</span> <span class="o">//</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_size</span>   <span class="c1"># ★ 字节偏移 → token 下标</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">bin</span><span class="p">[</span><span class="n">start</span> <span class="p">:</span> <span class="n">start</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">lengths</span><span class="p">[</span><span class="n">doc_id</span><span class="p">]]</span>
 
 
@@ -547,7 +1357,7 @@ Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数�
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">indexed</span><span class="p">,</span> <span class="n">num_samples</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">seed</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">ds</span> <span class="o">=</span> <span class="n">indexed</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">Do_idx</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">Sa_idx</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">Sh_idx</span> <span class="o">=</span> <span class="n">build_indices</span><span class="p">(</span>
-            <span class="n">indexed</span><span class="p">,</span> <span class="n">num_samples</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">seed</span><span class="p">)</span>      <span class="c1"># ← 4.4 那三个</span>
+            <span class="n">indexed</span><span class="p">,</span> <span class="n">num_samples</span><span class="p">,</span> <span class="n">seq_len</span><span class="p">,</span> <span class="n">seed</span><span class="p">)</span>      <span class="c1"># ← §4.4 那三个</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">j</span><span class="p">):</span>
         <span class="n">j</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">Sh_idx</span><span class="p">[</span><span class="n">j</span><span class="p">]</span>                            <span class="c1"># ③ 打乱</span>
@@ -561,32 +1371,83 @@ Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数�
                       <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">i_next</span><span class="p">)]</span>
             <span class="n">parts</span> <span class="o">+=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">ds</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">Do_idx</span><span class="p">[</span><span class="n">i_next</span><span class="p">]][:</span><span class="n">off_next</span><span class="p">]]</span>  <span class="c1"># 最后一篇的头</span>
             <span class="n">sample</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span>
-        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;tokens&quot;</span><span class="p">:</span> <span class="n">sample</span><span class="p">}</span>                     <span class="c1"># 长度恰好 seq_len(+1)</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;tokens&quot;</span><span class="p">:</span> <span class="n">sample</span><span class="p">}</span>                     <span class="c1"># 长度恰好 seq_len + 1</span>
+</code></pre></div>
+
+<p><strong>顺手给一个该跑却几乎没人跑的脚本</strong>：统计一个 <code>.bin</code> 的真实 token 总数，用来做 §4.5 那张"重复几遍"的表。</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">total_tokens</span><span class="p">(</span><span class="n">prefix</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;只读 .idx，不碰 .bin —— 几百 MB 的事，秒级返回&quot;&quot;&quot;</span>
+    <span class="n">lengths</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">read_idx</span><span class="p">(</span><span class="n">prefix</span> <span class="o">+</span> <span class="s2">&quot;.idx&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">lengths</span><span class="o">.</span><span class="n">sum</span><span class="p">()),</span> <span class="nb">len</span><span class="p">(</span><span class="n">lengths</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">&quot;/data/web_text_document&quot;</span><span class="p">,</span>
+          <span class="s2">&quot;/data/code_text_document&quot;</span><span class="p">,</span>
+          <span class="s2">&quot;/data/math_text_document&quot;</span><span class="p">]:</span>
+    <span class="n">tok</span><span class="p">,</span> <span class="n">ndoc</span> <span class="o">=</span> <span class="n">total_tokens</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">p</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">tok</span><span class="o">/</span><span class="mf">1e9</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> B token, </span><span class="si">{</span><span class="n">ndoc</span><span class="o">/</span><span class="mf">1e6</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> M 篇, &quot;</span>
+          <span class="sa">f</span><span class="s2">&quot;平均 </span><span class="si">{</span><span class="n">tok</span><span class="o">/</span><span class="n">ndoc</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2"> token/篇&quot;</span><span class="p">)</span>
 </code></pre></div>
 
 <hr />
-<h2 id="47">4.7 ⚠️ 五个真实会踩的坑</h2>
-<div class="codehilite"><pre><span></span><code>① 路径带了后缀
-   --data-path /d/train.bin  ❌     --data-path /d/train  ✅
-
-② 换 tokenizer 忘了重跑 preprocess
-   .bin 里是整数 id，换词表后同一个 id 指向【完全不同的词】
-   ★ 现象：loss 从头就是随机水平，且不下降。这个坑非常隐蔽。
-
-③ 索引 hash 失效导致重建
-   改 seq_len / seed / 加一个数据文件 → 索引全部重建，TB 级要几十分钟
-   ★ 建议：预处理产物和索引缓存都放共享存储，别放本机 /tmp
-
-④ 所有 rank 都要参与构建
-   ✅ 官方文档明确警告：all ranks should attempt to build the dataset
-      via the builder or the program will hang（不然会挂死）
-   ★ 现象：训练启动后卡住不动、没有报错。这是典型的集合通信死锁。
-
-⑤ 混合权重的口径
-   blend 权重作用在【样本】层面；你以为的是【token】占比
-   → 各数据集平均文档长度差异大时会跑偏。先统计 token 数再反推权重
-</code></pre></div>
-
+<h2 id="47">4.7 ⚠️ 六个真实会踩的坑</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>坑</th>
+<th>现象</th>
+<th>为什么</th>
+<th>怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>路径带了后缀</strong></td>
+<td>启动就报"找不到文件"</td>
+<td><code>--data-path</code> 要的是前缀，程序自己拼 <code>.bin</code> / <code>.idx</code></td>
+<td><code>--data-path /d/train</code>（❌ 不是 <code>/d/train.bin</code>）</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>换 tokenizer 忘了重跑 preprocess</strong></td>
+<td>★ <strong>loss 从头就是随机水平，且不下降</strong></td>
+<td><code>.bin</code> 里是整数 id，换词表后同一个 id 指向<strong>完全不同的词</strong></td>
+<td>⚠️ 这个坑非常隐蔽，因为程序不会报错。把 tokenizer 的 hash 写进数据目录名</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>索引 hash 失效导致重建</strong></td>
+<td>启动要等几十分钟</td>
+<td>改 <code>--seq-length</code> / <code>--seed</code> / 加一个数据文件 → hash 变了 → 索引全部重建</td>
+<td>★ 预处理产物和索引缓存都放<strong>共享存储</strong>，别放本机 <code>/tmp</code></td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>不是所有 rank 都参与构建</strong></td>
+<td>★ <strong>训练启动后卡住不动、没有任何报错</strong></td>
+<td>典型的集合通信死锁</td>
+<td>✅ 官方文档明确警告：<em>all ranks should attempt to build the dataset via the builder or the program will hang</em></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>小数据集被静默重复几十遍</strong></td>
+<td>验证集上该领域的 loss 异常低，泛化却差</td>
+<td>§4.5：权重算对了，但 <code>总预算×权重 ÷ 数据集大小</code> 可能是 30</td>
+<td>★ 跑一遍 §4.6 那个 <code>total_tokens</code> 脚本，把"重复遍数"打出来</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong><code>.idx</code> 比想象的大</strong></td>
+<td>索引构建吃光内存 / OOM</td>
+<td>§4.3：<code>.idx</code> 是 <code>.bin</code> 的 <strong>千分之四 ~ 百分之二</strong>，不是千分之一；15 T 语料的 <code>.idx</code> 合计 <strong>262 GB</strong>；§4.4 的三个索引再加 <strong>约 110 GB</strong></td>
+<td>★ 语料必须分成几百个 <code>.bin</code>/<code>.idx</code> 对，用 <code>BlendedDataset</code> 混</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>②、④、⑤ 三个坑的共同点：程序不报错。</strong> 这是数据侧 bug 的典型形态——<strong>错误不会崩，只会让曲线"看起来还行"</strong>。所以每次改数据配置，都应该<strong>打印一组可核对的数字</strong>（token 总数、重复遍数、各数据集的样本占比），而不是看它跑起来了就算过。</p>
+</blockquote>
 <hr />
 <h2 id="48">4.8 挂回真实系统</h2>
 <table>
@@ -610,18 +1471,18 @@ Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数�
 </tr>
 <tr>
 <td><strong>Megatron-DeepSpeed</strong></td>
-<td>同上（有 <code>lazy</code>/<code>cached</code>/<code>mmap</code> 三种后端）</td>
-<td>✅ 靠 8 字节魔数识别用的是哪种</td>
+<td>同上（有 <code>lazy</code> / <code>cached</code> / <code>mmap</code> 三种后端）</td>
+<td>✅ 靠魔数识别用的是哪种</td>
 </tr>
 <tr>
 <td><strong>MosaicML LLM Foundry</strong></td>
 <td>MDS</td>
-<td>见 <a href="03-存储格式.html">03 章</a></td>
+<td>见 <a href="03-存储格式.html">03 章</a> §3.5</td>
 </tr>
 <tr>
 <td><strong>HuggingFace <code>Trainer</code></strong></td>
 <td>Arrow / 在线 tokenize</td>
-<td>⚠️ 小规模够用，大规模会成为瓶颈</td>
+<td>⚠️ 小规模够用，大规模会成为瓶颈——按 §4.1 的账，在线 tokenize 每条几十微秒 × 几千次/秒就吃掉好几个核</td>
 </tr>
 <tr>
 <td><strong>torchtitan</strong></td>
@@ -635,28 +1496,67 @@ Megatron 的 blend 权重生效在<strong>样本层面</strong>。而不同数�
 </blockquote>
 <hr />
 <h2 id="49">4.9 小结</h2>
-<div class="codehilite"><pre><span></span><code>① 训练时的访问模式：每秒几万次【完全随机】读，必须快过 GPU
+<div class="codehilite"><pre><span></span><code>① ★★ §4.1 的账（70 B 模型 / 1024 张 H100 / MFU 40%，可验算）：
+   每 token FLOP = 6N + 12·L·s·h = 4.20e11 + 3.22e10 = 4.52e11
+       ★ 6N = 2N 前向 + 4N 反向，⚠️ 不含优化器，也不含注意力矩阵
+       ★ 注意力补正项占 7.1%，序列越长占比越大
+   吞吐 = 4.05e17 ÷ 4.52e11 = 90 万 token/s = 219 样本/s = 0.43 步/s
+       ⚠️ 旧版写的&quot;一秒 2 步&quot;是错的，那是小模型的量级
+   ⟹ 文档取数 784 次/s（70 B）～ 7316 次/s（7 B）
+       ⚠️ 旧版说&quot;每秒几万次&quot;偏高约一个数量级（它假设一秒 2 步）
+   ⟹ ★★★ 但带宽只要 3.6 ～ 33 MB/s
+       数据侧的难点从来不是带宽，是【取数延迟】和【CPU 解析开销】
+
+② 把 §3.6 的随机读代价代进去，03 章那些格式全都不行：
+   JSONL 2.6 s/条 → 要 2038 个核；Parquet 20 ms/条 → 要 15.7 个核
+   .bin+.idx 100 µs/条 → 0.08 个核  ✅
+   ★ 15.7 个核看着不多，但 DataLoader 只有 4~16 个 worker，还要干别的
    ⟹ 目标：取第 n 条 = O(1) 内存访问，零解析零解压
 
-② ★★ 核心思想：tokenize 后数据变成【定长整数】→ 可以当数组用
+③ ★★ 核心思想：tokenize 后数据变成【定长整数】→ 可以当数组用
      .bin = 所有文档首尾相接拍平成的一根整数长条（无头无结构）
      .idx = 记录&quot;哪里到哪里是一篇文档&quot;的边界表
-     取文档 = 查 .idx 拿 (offset,len) → 在 .bin 上切一刀
+     取文档 = 查 .idx 拿 (字节偏移, 长度) → 字节偏移 ÷ itemsize → 在 .bin 上切一刀
 
-③ dtype 由词表大小自动决定：≤65535 用 uint16，否则 int32
-   ★ 现在词表普遍 15 万 → 只能 int32 → 15 T token 要 60 TB
+④ ★ .idx 的二进制布局（§4.3，三篇文档的例子里每个数都写出来了）：
+     头部 34 字节 = 魔数 9 + 版本 8 + dtype 编码 1 + 序列条数 8 + 文档索引长度 8
+     + sequence_lengths  4×S （token 个数）
+     + sequence_pointers 8×S （★ 字节偏移，不是 token 偏移）
+     + document_indices  8×(D+1)  ⚠️ 是 D+1 不是 D —— 栅栏柱子比栅栏段多一根
+     ⚠️ 旧版把第 5 个字段写成&quot;文档篇数 D&quot;，已改
+     ⚠️ 字节级布局以 megatron/core/datasets/indexed_dataset.py 源码为准
 
-④ ★ 三个索引把&quot;长条&quot;变成&quot;第 n 号定长样本&quot;：
-     ① document_index  —— 顺序 + 重复几个 epoch（每 epoch 独立打乱）
-     ② sample_index    —— 每 L 个 token 切一刀，记 (文档下标, 偏移)
-     ③ shuffle_index   —— 再打乱样本的呈现顺序（因为②切出来是连续的）
+⑤ .idx 每条固定 20 字节（4+8+8）⟹ .idx / .bin 的比值只看平均文档长度：
+     100 token/篇 → 10%；1143 token/篇 → 0.87%（uint16）/ 0.44%（int32）；
+     5000 token/篇 → 0.2%
+   ⚠️ 旧版说的&quot;千分之一&quot;偏小 4 倍多，典型是【千分之四到百分之二】
+   ⚠️ 15 T token 的 .idx 要 262 GB —— &quot;整个读进内存&quot;在大规模下不成立
+      靠两件事绕过：语料分成几百个 .bin/.idx 对 + 对 .idx 也用 mmap
+
+⑥ dtype 由词表大小自动决定：16 位装得下用 uint16，否则 int32
+   ★ 15 T token：uint16 = 30 TB，int32 = 60 TB，差额整整翻倍
+   ★ 现在词表普遍 13～15 万 → 全都只能 int32 → 只能认这 60 TB
+
+⑦ ★ 三个索引把&quot;长条&quot;变成&quot;第 n 号定长样本&quot;（§4.4 有完整的 3 篇文档例子）：
+     ① Do_idx (document_index) —— 顺序 + 重复几个 epoch（每 epoch 独立打乱）
+     ② Sa_idx (sample_index)   —— 每 L 个 token 切一刀，记 (Do_idx 下标, 偏移)
+                                  ★ 有 N+1 条，第 j 条和第 j+1 条共同界定样本 j
+     ③ Sh_idx (shuffle_index)  —— 再打乱样本的呈现顺序（因为②切出来是连续的）
    全部【确定性】：给定种子，第 n 条永远一样 → 断点续训才成立
+   ⚠️ 实际切下来是 L+1 个 token（输入取 [:-1]，标签取 [1:]）
 
-⑤ BlendedDataset 是再上一层索引：(来自哪个数据集, 是它的第几条)
-   ⚠️ 权重作用在【样本】而非 token 层面，长度差异大时要先统计再反推
+⑧ BlendedDataset 是再上一层索引：(来自哪个数据集, 是它的第几条)
+   ⚠️ 旧版说&quot;权重作用在样本而非 token 层面&quot;——站不住：
+      样本都是定长 L ⟹ 样本占比 = token 占比，文档长度不影响
+   ★ 真正的坑是【重复遍数】：重复遍数 = 总预算 × 权重 ÷ 数据集 token 总数
+      例：code 权重 0.2、总预算 15 T、数据集只有 100 B ⟹ 重复 30 遍
+      而 11 章的结论是&quot;重复 4 遍几乎不亏&quot;⟹ 30 遍远在悬崖外，且不报错
+      ⟹ 配比表旁边必须放一列&quot;重复遍数&quot;（.idx 里就能算，§4.6 有脚本）
 
-⑥ 五个坑：路径带后缀 / 换 tokenizer 没重跑 / 索引 hash 失效重建 /
-          不是所有 rank 都 build 会挂死 / 混合权重口径
+⑨ 六个坑：路径带后缀 / 换 tokenizer 没重跑 / 索引 hash 失效重建 /
+          不是所有 rank 都 build 会挂死 / 小数据集被静默重复几十遍 /
+          .idx 和三个索引比想象的大
+   ★ 其中三个【程序不报错】—— 所以每次改数据配置都要打印可核对的数字
 </code></pre></div>
 
 <hr />

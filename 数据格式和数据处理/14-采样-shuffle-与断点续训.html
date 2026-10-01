@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -321,27 +326,110 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="143-shuffle">14.3 大规模下真正的做法：两级 shuffle</h2>
 <p>⚠️ <strong>一个残酷的现实</strong>：<code>shuffle_index</code> 是一个覆盖<strong>全体样本</strong>的随机排列。</p>
-<div class="codehilite"><pre><span></span><code>15 T token / 4096 = 约 36.6 亿条样本
-→ shuffle_index 用 int64 存 = ★ 约 29 GB 的一个数组
+<div class="codehilite"><pre><span></span><code>15 T token / 4096 = 3.662 × 10⁹ 条 ≈ 36.6 亿条样本
+→ shuffle_index 用 int64（8 字节）存
+  = 3.662e9 × 8 = 2.93 × 10¹⁰ 字节
+
+★ 写成两种单位（⚠️ 这两个差 7.4%，别混着说）：
+    十进制 GB（10⁹ 字节）  → ★ 29.3 GB
+    二进制 GiB（2³⁰ 字节） →   27.3 GiB
+  ⟹ 本章此后一律用【十进制 GB】，所以说&quot;约 29 GB&quot;。
 
 ⟹ 单机内存能扛，但每一次取样本都是【完全随机的磁盘位置】
    ★★ 随机读 = 磁盘吞吐掉到几十分之一
 </code></pre></div>
 
-<p><a href="03-存储格式.html">03 章</a>提过的<strong>两级 shuffle</strong>就是为解决这个而生的：</p>
-<div class="codehilite"><pre><span></span><code>┌─ 第一级：★ 文件级/分片级 shuffle（粗粒度）───────────────┐
-│    语料被切成几千个 shard 文件（每个几 GB）              │
-│    每个 epoch 开始时，★ 把 shard 的【顺序】随机打乱      │
-│    → 只打乱几千个元素，成本可以忽略                      │
-└─────────────────────────────────────────────────────────┘
-                          ↓
-┌─ 第二级：★★ 缓冲区 shuffle（细粒度）─────────────────────┐
-│    维护一个容量 K（比如 10 万条）的内存缓冲区：          │
-│      · 顺序读入样本填满缓冲区                            │
-│      · 每次【从缓冲区里随机取一条】输出                  │
-│      · 立刻顺序读一条新的补进来                          │
-│    ⟹ ★ 磁盘上是【顺序读】，输出是【局部随机】           │
-└─────────────────────────────────────────────────────────┘
+<h3 id="1431-shuffle">14.3.1 ★★★ 先把 shuffle 的几种做法摊在一张表上</h3>
+<blockquote>
+<p>★ 这张表是本节的核心。<strong>纵向比的不是"哪个更随机"，而是"随机性、内存、能不能精确续训"三者怎么换"。</strong></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>怎么做</th>
+<th>内存开销</th>
+<th>随机性</th>
+<th>★★ 能否 O(1) 精确续训</th>
+<th>磁盘访问</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 不 shuffle</strong></td>
+<td>按语料原顺序喂</td>
+<td>0</td>
+<td>无</td>
+<td>✅ 能（记 offset 即可）</td>
+<td>顺序读（最快）</td>
+</tr>
+<tr>
+<td><strong>② 全局 shuffle</strong><br>（Megatron <code>shuffle_index</code>）</td>
+<td>对<strong>全体样本</strong>生成一个随机排列，<strong>存成数组</strong></td>
+<td>★★ 排列数组本身<br>（36.6 亿条 → <strong>29 GB</strong>）</td>
+<td>★★★ 真·全局</td>
+<td>✅★★ <strong>能</strong>：<code>shuffle_index[consumed]</code> 一次查表</td>
+<td>★★ <strong>全随机读</strong>（最慢）</td>
+</tr>
+<tr>
+<td><strong>③ 分片内 shuffle</strong><br>（shard-local）</td>
+<td>只在<strong>每个 shard 内部</strong>打乱，shard 顺序不变</td>
+<td>一个 shard 的索引（几 MB）</td>
+<td>★ <strong>弱</strong>：同 shard 的样本永远挨着出现</td>
+<td>✅ 能（记 shard 号 + 片内 offset）</td>
+<td>★ 顺序读</td>
+</tr>
+<tr>
+<td><strong>④ 窗口 / 缓冲区 shuffle</strong><br>（buffer / reservoir）</td>
+<td>维护容量 K 的缓冲区，每次从里面随机取一条，再顺序补一条进来</td>
+<td>★ <strong>K 条样本</strong>（K=10 万 × 4096 token × 2 B ≈ <strong>0.8 GB</strong>）</td>
+<td>★★ 局部随机，窗口越大越像全局</td>
+<td>⚠️⚠️ <strong>不能</strong>：缓冲区内容 + RNG 状态都是隐藏状态，<br>要么存下来，要么<strong>从头空转 N 条</strong>重放</td>
+<td>★★ 顺序读</td>
+</tr>
+<tr>
+<td><strong>⑤ 两级 = ① shard 顺序打乱 + ④ 缓冲区</strong></td>
+<td>见下</td>
+<td>★ 同 ④</td>
+<td>★★★ 接近全局</td>
+<td>⚠️ 同 ④</td>
+<td>★★ 顺序读</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表最该带走的一行是【④ 的续训那一格】：
+
+   缓冲区 shuffle 便宜、随机性也够，★ 但它是【有状态的流】——
+   &quot;我现在吐到第 N 条了&quot;这一个数字，★ 根本不足以还原它的内部状态。
+   ⟹ 想精确续训只有两条路：
+       a) 把缓冲区里那 K 条样本的 id + RNG 状态一起存进 checkpoint
+       b) ★ 重放：从头再消费 N 条、扔掉，纯粹为了把状态走到位（O(N) 空转）
+
+⚠️⚠️ 这里有一个【本章内部必须说清的张力】，很多教程会前后矛盾：
+   · 14.3 推荐的是【④/⑤ 缓冲区方案】（为了磁盘顺序读）
+   · 14.5 会说【只存 consumed_samples 就够了】
+   ★★★ 这两句话只有在【② 全局 shuffle 数组】方案下【同时成立】！
+   ⟹ 所以 Megatron 选了 ②：它宁可吃 29 GB 内存和随机读，
+        ★ 换来&quot;断点续训是 O(1) 查表&quot;这个性质。
+   ⟹ ★ 而你如果用 WebDataset / MDS 那类 ④ 式流水线，
+        14.5 那套&quot;只存 consumed_samples&quot;就【不够用】，必须另外处理。
+        （14.5 末尾会把这一条单列出来）
+</code></pre></div>
+
+<h3 id="1432-shuffle">14.3.2 两级 shuffle 具体长什么样</h3>
+<p><a href="03-存储格式.html">03 章</a>提过的<strong>两级 shuffle</strong>就是为了在"顺序读"的前提下拿到"接近全局"的随机性：</p>
+<div class="codehilite"><pre><span></span><code>第一级：★ 文件级 / 分片级 shuffle（粗粒度）
+  ├── 语料被切成几千个 shard 文件（每个几 GB）
+  ├── 每个 epoch 开始时，★ 把 shard 的【顺序】随机打乱
+  └── 只打乱几千个元素，成本可以忽略
+        │
+        ▼
+第二级：★★ 缓冲区 shuffle（细粒度）
+  ├── 维护一个容量 K（比如 10 万条）的内存缓冲区
+  ├── 顺序读入样本填满缓冲区
+  ├── 每次【从缓冲区里随机取一条】输出
+  ├── 立刻顺序读一条新的补进来
+  └── ⟹ ★ 磁盘上是【顺序读】，输出是【局部随机】
 
 ★★ 两级合起来的效果 ≈ 全局随机，而磁盘访问模式 ≈ 顺序读。
 </code></pre></div>
@@ -399,10 +487,74 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>Megatron 的做法值得学</strong>：它把索引数组<strong>存成文件</strong>，文件名里带一个<strong>由 (数据集路径、seed、样本数、split、seq_len) 算出来的哈希</strong>。<br />
-<code>⟹ 参数完全一样 → 命中缓存 → ★ 顺序必然一致
-⟹ 任何一个参数变了 → 哈希变 → ★ 重新构建，且你能从文件名看出变了
-★ 这等于把"确定性"这件事变成了文件系统上可见的事实，而不是一个口头约定。</code></p>
+<p>★★ <strong>Megatron 的做法值得学</strong>：它把索引数组<strong>存成文件</strong>，文件名里带一个<strong>参数哈希</strong>。</p>
+</blockquote>
+<p>✅ 我把这一段核对到了本仓库里的 Megatron-LM 源码（<code>megatron/core/datasets/megatron_dataset.py</code>），<strong>哈希的输入是这些</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>✅ 参与哈希的东西</th>
+<th>来源</th>
+<th>改了会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据集自身的标识（<code>.bin</code> 前缀等）</td>
+<td><code>unique_identifiers</code></td>
+<td>换数据集 → 索引重建</td>
+</tr>
+<tr>
+<td><code>num_samples</code>（总样本数）</td>
+<td><code>unique_identifiers["num_samples"]</code></td>
+<td>★★ 改 <code>--train-iters</code> 或 GBS → 它变 → <strong>整个 shuffle 顺序变</strong></td>
+</tr>
+<tr>
+<td><code>index_split</code>（train / valid / test）</td>
+<td><code>unique_identifiers["index_split"]</code></td>
+<td>划分变 → 重建</td>
+</tr>
+<tr>
+<td><code>random_seed</code></td>
+<td><code>_key_config_attributes()</code></td>
+<td>换 seed → 重建</td>
+</tr>
+<tr>
+<td><code>sequence_length</code></td>
+<td>同上</td>
+<td>改 seq_len → 重建</td>
+</tr>
+<tr>
+<td><code>split</code> / <code>split_matrix</code></td>
+<td>同上</td>
+<td>改 998,1,1 这类比例 → 重建</td>
+</tr>
+<tr>
+<td><code>tokenizer</code></td>
+<td>同上</td>
+<td>★ 换 tokenizer → 重建</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>✅ 源码里是一行 MD5：
+     unique_description_hash = hashlib.md5(json.dumps(unique_identifiers))
+
+✅ 然后三个索引各存成一个文件，★ 文件名前缀就是这个哈希：
+     {hash}-GPTDataset-train-document_index.npy
+     {hash}-GPTDataset-train-sample_index.npy
+     {hash}-GPTDataset-train-shuffle_index.npy
+   ⟹ ★ 正好对应 14.2 讲的那三个数组。
+
+⟹ 参数完全一样 → 命中缓存 → ★ 顺序必然一致
+⟹ 任何一个参数变了 → 哈希变 → ★ 重新构建，且你能从文件名【看出】变了
+★★ 这等于把&quot;确定性&quot;这件事变成了【文件系统上可见的事实】，而不是口头约定。
+
+★★★ 顺手记住上表里最毒的那一行：num_samples 也在哈希里。
+   ⟹ 这就是 14.5 ① 那个坑的根因 —— &quot;我只是想多训一会儿&quot;
+      会改掉 num_samples → 哈希变 → ★ 连【已经训过那段】的顺序都变了。
+</code></pre></div>
+
+<blockquote>
 <p>⚠️ <a href="04-训练格式-Megatron索引.html">04 章</a>提过的那个坑在这里要再说一遍：<br />
 <strong>索引只在一个 rank 上真正构建，但【所有 rank 都必须走进那段代码】</strong>（其他 rank 在屏障上等）。<br />
 ★ 如果你写了个 <code>if rank == 0:</code> 把整段包起来，<strong>程序会静默挂死</strong>——不报错，就是不动。</p>
@@ -411,7 +563,90 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 <h2 id="145">14.5 ★★★ 断点续训：数据侧到底要存什么</h2>
 <p>千卡训练几个月，<strong>中途一定会挂</strong>（硬件故障、网络抖动、OOM（Out Of Memory，显存耗尽）、有人碰了电源）。<br />
 模型权重和优化器状态大家都知道要存。<strong>但数据的进度也是状态。</strong></p>
-<h3 id="_1">错误做法与正确做法</h3>
+<h3 id="1451">14.5.1 ★★★ 先把"要恢复什么"列全</h3>
+<blockquote>
+<p>★ 这张表是本章最该贴在墙上的东西。<strong>每一行漏掉，都会产生一种"不报错的 bug"。</strong></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要恢复的状态</th>
+<th>存在哪</th>
+<th>⚠️ 漏掉它会怎样</th>
+<th>症状</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>数据顺序本身</strong><br>（三个索引数组）</td>
+<td>不用存：★ 用<strong>相同参数</strong>重建即可（14.4 的哈希保证一致）</td>
+<td>换了 seed / 改了 <code>num_samples</code> 或 GBS → 重建出的顺序完全不同</td>
+<td>★ "续训"实际是一次新训练；loss 曲线有个说不清的小台阶</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>已消费的样本数</strong><br><code>consumed_train_samples</code></td>
+<td>✅ checkpoint 里（Megatron 真的存了这个字段）</td>
+<td>★★ <strong>从头重新遍历数据</strong> → 前面看过的又看一遍</td>
+<td>⚠️ <strong>完全不报错</strong>。那部分数据被多训一个 epoch，配比和重复次数全乱</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>数据侧 RNG 状态</strong><br>（缓冲区 shuffle 用）</td>
+<td>⚠️ 只有 ④/⑤ 式流水线需要（14.3.1 的表）</td>
+<td>缓冲区里那 K 条、以及下一次抽谁，全都丢了</td>
+<td>★ 续训后局部顺序和原本不同；<strong>数组式方案（Megatron）不受影响</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>模型侧 RNG 状态</strong><br>（dropout、数据增强）</td>
+<td>checkpoint 的 <code>rng_state</code></td>
+<td>dropout 掩码序列变了</td>
+<td>★ 不是错误，但<strong>破坏逐 bit 可复现</strong>，A/B 实验失去可比性</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>优化器状态</strong><br>（Adam 的 m / v）</td>
+<td>checkpoint</td>
+<td>动量从零重启</td>
+<td>★★ 续训后头几百步 loss <strong>明显抬头</strong>，然后慢慢爬回来</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong>学习率调度器的位置</strong><br>（<code>num_steps</code>）</td>
+<td>checkpoint；✅ Megatron 还会拿它和 <code>consumed_train_samples</code> <strong>对账</strong></td>
+<td>学习率跳回高位或提前衰减到底</td>
+<td>★★ loss 阶跃式变差或训练提前"冻住"</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td><strong>micro-batch / GBS 的 ramp-up 进度</strong></td>
+<td>由 <code>consumed_train_samples</code> 推出</td>
+<td>batch size 曲线对不上</td>
+<td>★ 有效 batch 与原计划不符，梯度噪声水平变了</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 把最常见的两种错法对照一下，就知道为什么 ② 是重灾区：
+
+❌ 错法 A：只恢复【step 数】，数据从头读
+   → 第 8 万步继续记 step，但数据迭代器回到了第 0 条
+   → ★★ 前 8 万步的数据【被完整看第二遍】
+   → ⚠️ 不报任何错。你只会看到那段数据对应的 loss 异常低（它见过了），
+        以及最终模型对&quot;语料前段&quot;过拟合。
+
+❌ 错法 B：数据位置对了，但【优化器状态】没恢复（只 load 了权重）
+   → ★★ Adam 的动量和二阶矩从零开始
+   → 现象：续训头几百步 loss 先涨一截再回落 —— ★ 这是最经典的&quot;续训毛刺&quot;
+
+✅ 正确做法 = 上表七行【全部】就位。
+   ★ 其中只有 ② 是&quot;数据侧必须显式写进 checkpoint&quot;的那一个，
+     ①③ 靠&quot;参数一致 + 重建&quot;，④⑤⑥⑦ 是训练框架本来就该存的。
+</code></pre></div>
+
+<h3 id="1452">14.5.2 错误做法与正确做法</h3>
 <div class="codehilite"><pre><span></span><code>❌ 最常见的错误：挂了之后【从头开始遍历数据】
    → 前 8 万步看过的数据又看一遍
    → ★ 相当于对那部分数据多训了一个 epoch，配比和重复次数全乱了
@@ -430,7 +665,8 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 <div class="codehilite"><pre><span></span><code><span class="c1"># 保存</span>
 <span class="n">ckpt</span> <span class="o">=</span> <span class="p">{</span>
     <span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span> <span class="s2">&quot;optimizer&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
-    <span class="s2">&quot;consumed_train_samples&quot;</span><span class="p">:</span> <span class="n">consumed</span><span class="p">,</span>   <span class="c1"># ★★ 数据侧唯一必须存的东西</span>
+    <span class="s2">&quot;consumed_train_samples&quot;</span><span class="p">:</span> <span class="n">consumed</span><span class="p">,</span>   <span class="c1"># ★★ 数据侧唯一【必须显式存】的东西</span>
+    <span class="c1">#                                   （前提是走数组式索引，见 14.3.1 表的 ②）</span>
     <span class="s2">&quot;data_seed&quot;</span><span class="p">:</span> <span class="n">args</span><span class="o">.</span><span class="n">seed</span><span class="p">,</span>               <span class="c1"># ★ 存下来是为了续训时能自检</span>
     <span class="s2">&quot;data_config_hash&quot;</span><span class="p">:</span> <span class="n">cfg_hash</span><span class="p">,</span>         <span class="c1"># ★ 配比/split/seq_len 的哈希</span>
 <span class="p">}</span>
@@ -448,7 +684,8 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 没有它们，"改了配比之后从旧 checkpoint 续训"这种事会<strong>悄无声息地发生</strong>，<br />
 而事后你完全无法解释模型为什么怪。</p>
 </blockquote>
-<h3 id="_2">⚠️ 几个会让"续训不等价"的隐形因素</h3>
+<p>✅ <strong>这不是我编的字段名</strong>：我在本仓库的 Megatron-LM 源码里核对过，<code>megatron/training/checkpointing.py</code> 里确实有 <code>args.consumed_train_samples</code>，而且 <code>--override-ckpt-iteration</code> 这条路径就是用 <code>consumed_train_samples = iteration × global_batch_size</code> 反算出来的——★ 这恰好从反面印证了下面 ① 那条：<strong>GBS 变了，这个换算就全错了</strong>。</p>
+<h3 id="_1">⚠️ 几个会让"续训不等价"的隐形因素</h3>
 <div class="codehilite"><pre><span></span><code>① ★★ 改了 --train-iters 或 global batch size
    → 总样本数变了 → ★ 索引数组要重建 → shuffle 顺序整个变了
    ⚠️ 这是最反直觉的一个：你只是想&quot;多训一会儿&quot;，
@@ -466,6 +703,18 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 
 ④ ⚠️ 预取（prefetch）的样本在崩溃时已被读出但没进梯度
    → 严格来说会丢几个 batch。★ 通常可以接受，但要知道它存在
+
+⑤ ⚠️⚠️ 你用的不是【数组式索引】，而是【缓冲区式流水线】
+   （WebDataset / MDS / 自己写的 IterableDataset —— 14.3.1 表里的 ④⑤）
+   → ★★ 此时 consumed_train_samples【不够】：缓冲区内容和 RNG 状态
+     也是隐藏状态，它们没进 checkpoint，续训就不等价
+   ★ 三条可选的出路（按工程代价从低到高）：
+       a) 承认不精确，★ 只保证&quot;不重看已消费的 shard&quot;（代价：顺序对不上）
+       b) ★ 把 (shard 游标 + 缓冲区里的 id 列表 + RNG state) 一起存进 ckpt
+       c) ★★ 干脆换成数组式索引（Megatron 路线）——
+          用 29 GB 内存和随机读，换 O(1) 的精确续训
+   ⚠️ 实践里最常见的是 a)，★ 但一定要【在实验记录里写清楚】
+      它不是严格续训，否则后人复现不出来还以为是自己错了。
 </code></pre></div>
 
 <hr />
@@ -502,8 +751,9 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 </code></pre></div>
 
 <hr />
-<h2 id="147">14.7 ⚠️ 五个坑</h2>
+<h2 id="147">14.7 ⚠️ 七个坑</h2>
 <div class="codehilite"><pre><span></span><code>① ★★ 挂了从头重新遍历数据（14.5）—— 不报错，配比悄悄变了
+   ★ 症状：那段数据对应的 loss 异常低（模型见过了）
 
 ② ★★ 数据随机流和模型随机流共用一个全局 seed
    → 改 dropout 顺带改了数据顺序 → ★ A/B 实验全部作废
@@ -517,7 +767,18 @@ K 太大 → 内存吃紧、启动时要等很久才填满
 
 ⑤ ⚠️ 中途加数据集 / 改 train-iters 后直接续训
    → 索引重建 → 顺序全变 → ★ &quot;续训&quot;实际上是一次新的训练
+   ✅ 根因已查实：num_samples 在 Megatron 的索引哈希输入里（14.4 的表）
    ★ 正确姿势：当成 10 章的一个新阶段来对待，并在实验记录里写清楚
+
+⑥ ⚠️⚠️ 只 load 了模型权重、没恢复【优化器状态】
+   → ★ Adam 的动量/二阶矩从零重启
+   ★ 症状：续训头几百步 loss 先涨一截再回落 —— 经典的&quot;续训毛刺&quot;
+   ⚠️ 这一条不属于数据侧，但它和 ① 的症状容易被混为一谈，所以列在这里
+
+⑦ ⚠️⚠️ 用缓冲区式流水线（WebDataset/MDS/自写 IterableDataset）
+   却照抄&quot;只存 consumed_samples&quot;这一招
+   → ★★ 缓冲区内容和 RNG 状态没进 checkpoint ⟹ 续训不等价
+   ★ 见 14.5 隐形因素 ⑤ 的三条出路
 </code></pre></div>
 
 <hr />
@@ -533,25 +794,44 @@ K 太大 → 内存吃紧、启动时要等很久才填满
    ★★★ 关键性质：它们是【预先算好的数组】⟹ 取第 i 条是 O(1) 查表
       ⟹ 这是 ⑤ 断点续训能做干净的前提
 
-③ ★★ 大规模下用【两级 shuffle】：
-   一级 = 打乱 shard 顺序（几千个元素，成本忽略）
-   二级 = 容量 K 的缓冲区随机取（磁盘顺序读、输出局部随机）
-   ⟹ 效果≈全局随机，访问模式≈顺序读
-   ⚠️ K 至少要比一个 global batch 大一到两个数量级
+③ ★★ shuffle 有五种做法（14.3.1 一张表对齐三个维度）：
+   ① 不 shuffle ② 全局 shuffle 数组 ③ 分片内 ④ 缓冲区 ⑤ 两级
+   ★ 关键取舍：
+     ② 全局数组 → 随机性最好 + ★★ 能 O(1) 精确续训，
+        代价是 36.6 亿条样本要 **29.3 GB（= 27.3 GiB）** 的 int64 数组
+        ⚠️ 外加【全随机磁盘读】
+     ④/⑤ 缓冲区 → 顺序读、内存只要 K 条（K=10 万 ≈ 0.8 GB），
+        ⚠️⚠️ 但它是【有状态的流】，★ 不能靠一个 consumed 数字精确续训
+   ⟹ ★★★ Megatron 选 ②，就是拿内存和随机读换&quot;续训是查表&quot;
+   ⚠️ 用 ④ 的话 K 至少要比一个 global batch 大一到两个数量级
 
 ④ ★★ 确定性四条规矩：
    显式 seed 派生 / ★ 数据 seed 与模型 seed 分开 /
    不依赖 listdir 与字典顺序（一律 sorted）/ worker seed 也要确定
    ★ Megatron 把索引存成【文件名带参数哈希】的缓存 —— 
      把确定性变成了文件系统上可见的事实
+     ✅ 哈希输入已核对源码：数据集标识 / num_samples / index_split /
+        random_seed / sequence_length / split / split_matrix / tokenizer
+     ✅ 产物就是那三个 .npy（document_index / sample_index / shuffle_index）
    ⚠️ 索引只在一个 rank 构建，但所有 rank 都要进那段代码，否则★静默挂死
 
-⑤ ★★★ 断点续训数据侧只需存一个东西：consumed_train_samples
-   续训时用相同 seed 重建索引 → 直接跳到 shuffle_index[consumed]
+⑤ ★★★ 断点续训要恢复【七件事】（14.5.1 整张表）：
+   ① 数据顺序（靠参数一致重建）② consumed_train_samples ③ 数据侧 RNG
+   ④ 模型侧 RNG ⑤ 优化器状态 ⑥ LR 调度器位置 ⑦ batch ramp-up 进度
+   ★ 其中只有 ② 是【数据侧必须显式写进 checkpoint】的
+     ✅ Megatron 的 checkpointing.py 里确实有这个字段
+   ⚠️ 两种最典型的错法，★ 症状完全不同但都不报错：
+     · 只恢复 step 数、数据从头读 → ★ 前 8 万步数据被看两遍，
+       那段的 loss 异常低
+     · 只 load 权重、优化器状态归零 → ★ 续训头几百步 loss 先涨再落
    ★ 一定要加两行 assert：seed 一致、数据配置哈希一致
    ⚠️ 会让&quot;续训不等价&quot;的隐形因素：改 train-iters / 改 GBS / 改配比 /
       改 num_workers ⟹ 都会重建索引、改变顺序
+      ✅ 根因查实：num_samples / seed / seq_len / split / tokenizer
+         全都在 Megatron 的索引哈希输入里（14.4 的表）
       ★ 中途加数据请当成一个【新阶段】，别假装是连续的
+   ⚠️⚠️ 而且&quot;只存 consumed&quot;这一招【只在数组式索引下成立】——
+      用缓冲区式流水线时必须额外存缓冲区内容 + RNG 状态
 
 ⑥ ★★★ 多机多卡铁律：同 DP 组内（TP/PP 各卡）数据必须【完全相同】，
    不同 DP rank 之间必须【完全不重叠】

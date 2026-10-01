@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,115 +256,471 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="02">02 · 数据源与文本抽取</h1>
 <blockquote>
-<p><strong>这一章回答两个问题：训练数据到底是从哪弄来的？抓下来的东西长什么样、怎么变成能用的文本？</strong></p>
+<p><strong>这一章回答两个问题：训练数据到底是从哪弄来的？抓下来的东西长什么样、怎么变成能用的文本？</strong><br />
+<strong>容量口径沿用 <a href="01-鸟瞰全景.html">01 章</a></strong>：1 TB = 10¹² 字节，1 TiB = 2⁴⁰ 字节，差 9.95%；凡给容量都注明<strong>压缩 / 未压缩</strong>。</p>
 </blockquote>
 <hr />
 <h2 id="21">2.1 五个数据源，各自的角色</h2>
 <p>大模型的训练语料不是一个东西，是<strong>五类来源按配比拌起来</strong>的（配比怎么定见 <a href="10-数据配比.html">10 章</a>）：</p>
-<div class="codehilite"><pre><span></span><code>┌─ ① 网页（web） ─────────────────────────────────── 占 60~90% ─┐
-│    来源：Common Crawl（免费）或自建爬虫（大厂几乎都自建）      │
-│    特点：量最大、最脏、多样性最好                              │
-│    角色：★ 语言能力和世界常识的主体                            │
-└────────────────────────────────────────────────────────────┘
-┌─ ② 代码（code） ──────────────────────────────── 占 5~20% ──┐
-│    来源：GitHub 公开仓库（The Stack、StarCoder 数据集）        │
-│    特点：结构严格、噪声低、许可证问题复杂                      │
-│    角色：★ 不只是&quot;会写代码&quot;——公认能显著提升【推理能力】        │
-└────────────────────────────────────────────────────────────┘
-┌─ ③ 学术与书籍 ───────────────────────────────── 占 2~10% ──┐
-│    来源：arXiv、PubMed、开放获取图书                          │
-│    特点：长文档、逻辑连贯、密度高                              │
-│    角色：★ 长上下文能力和专业知识                              │
-└────────────────────────────────────────────────────────────┘
-┌─ ④ 精选高质量 ────────────────────────────────── 占 1~5% ──┐
-│    来源：维基百科、StackExchange、教科书                       │
-│    特点：量小但质量极高，常被【重复采样多次】                  │
-└────────────────────────────────────────────────────────────┘
-┌─ ⑤ 合成（synthetic） ───────────────────────── 占 0~30% ──┐
-│    来源：用别的模型生成或改写                                  │
-│    ★ 2024 年后增长最快的一类，见 12 章                        │
-└────────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>⚠️ 典型占比</th>
+<th>从哪来</th>
+<th>特点</th>
+<th>★ 它负责模型的什么能力</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 网页</strong>（web）</td>
+<td><strong>60 ~ 90%</strong></td>
+<td>Common Crawl（免费）或自建爬虫（大厂几乎都自建）</td>
+<td>量最大、最脏、多样性最好</td>
+<td>★ 语言能力和世界常识的<strong>主体</strong></td>
+</tr>
+<tr>
+<td><strong>② 代码</strong>（code）</td>
+<td><strong>5 ~ 20%</strong></td>
+<td>GitHub 公开仓库（The Stack、StarCoder 数据集）</td>
+<td>结构严格、噪声低、<strong>许可证问题复杂</strong></td>
+<td>★ 不只是"会写代码"——公认能显著提升<strong>推理能力</strong></td>
+</tr>
+<tr>
+<td><strong>③ 学术与书籍</strong></td>
+<td><strong>2 ~ 10%</strong></td>
+<td>arXiv、PubMed、开放获取图书</td>
+<td>长文档、逻辑连贯、信息密度高</td>
+<td>★ <strong>长上下文</strong>能力和专业知识</td>
+</tr>
+<tr>
+<td><strong>④ 精选高质量</strong></td>
+<td><strong>1 ~ 5%</strong></td>
+<td>维基百科、StackExchange、教科书</td>
+<td>量小但质量极高</td>
+<td>常被<strong>重复采样多次</strong>（up-sampling）</td>
+</tr>
+<tr>
+<td><strong>⑤ 合成</strong>（synthetic）</td>
+<td><strong>0 ~ 30%</strong></td>
+<td>用别的模型生成或改写</td>
+<td>可控、但有"模型自产自销"的风险</td>
+<td>★ 2024 年后增长最快的一类，见 <a href="12-合成数据.html">12 章</a></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>⚠️ 上面的百分比区间是我从各家公开语料配比里归纳的<strong>量级区间</strong>，不是任何一家的官方数字。真实配比往往是各家最不愿意公开的东西之一。</p>
+<p>⚠️ <strong>"典型占比"那一列是我从各家公开语料配比里归纳的量级区间，不是任何一家的官方数字。</strong> 真实配比往往是各家最不愿意公开的东西之一。注意区间加起来远超 100%——因为它们是<strong>不同家</strong>的取值范围，不是同一家的一组配比。</p>
 </blockquote>
 <hr />
 <h2 id="22-common-crawl">2.2 Common Crawl：这个领域的地基</h2>
 <p><strong>Common Crawl（CC）</strong> 是一个非营利组织，<strong>每一两个月对全网做一次爬取，并把结果免费公开</strong>。几乎所有开源语料（C4、RefinedWeb、Dolma、FineWeb、DCLM、Nemotron-CC）都是从它出发的。</p>
-<div class="codehilite"><pre><span></span><code>一次快照（一个 &quot;dump&quot;，如 CC-MAIN-2024-10）
-   ≈ 25~30 亿个网页
-   ≈ 90 TB 压缩后的数据
-
-截至现在积累了 100 个左右的快照（2008 年至今）
-   ★ 但快照之间【重复度极高】——同一个网页会在几十个快照里出现
-      → 所以&quot;用 100 个快照 = 100 倍数据&quot;是错的，见 06 章去重
-</code></pre></div>
-
+<p>一次快照（一个 <strong>dump</strong>，如 <code>CC-MAIN-2024-10</code>）的量级：</p>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>数值</th>
+<th>口径说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>网页数</td>
+<td>约 <strong>25 ~ 30 亿</strong></td>
+<td>✅ CC 的 dump 公告逐次给出</td>
+</tr>
+<tr>
+<td>未压缩内容</td>
+<td>约 <strong>400 TiB</strong> = <strong>440 TB</strong></td>
+<td>✅ CC 公告里报的就是这个量（"uncompressed content"）</td>
+</tr>
+<tr>
+<td>压缩后的 WARC 文件</td>
+<td>约 <strong>90 TiB</strong> = <strong>99 TB</strong></td>
+<td>⚠️ 量级；就是大家口口相传的"90 TB"</td>
+</tr>
+<tr>
+<td>隐含的压缩比</td>
+<td>440 ÷ 99 = <strong>4.44 倍</strong></td>
+<td>⚠️ 我的除法。HTML 重复标签多，压得特别狠</td>
+</tr>
+<tr>
+<td>累计快照数</td>
+<td>约 100 个（2008 年至今）</td>
+<td>★ 但快照之间<strong>重复度极高</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>"90 TB" 和 "400 TiB" 是同一批网页。</strong> 这是本章第一个必须钉死的口径：⚠️ 看到任何 CC 相关的容量数字，先问"压没压"。差 4.44 倍，足以让留存率算错好几倍（<a href="01-鸟瞰全景.html">01 章</a> §1.4 演示了这个坑）。</p>
+<p>★ 快照之间重复度极高——同一个网页会在几十个快照里出现，所以<strong>"用 100 个快照 = 100 倍数据"是错的</strong>，见 <a href="06-去重.html">06 章</a>。FineWeb 用了 96 个快照才得到 15 T token，平均每快照只贡献约 1560 亿 token。</p>
+</blockquote>
 <h3 id="cc">CC 提供三种文件格式</h3>
 <p>这是初学者第一个容易踩的坑：<strong>同一批网页，CC 提供三种加工程度不同的文件</strong>。</p>
-<div class="codehilite"><pre><span></span><code>┌─────────┬──────────────────────────┬─────────────┬─────────────┐
-│ 格式    │ 里面装的是什么            │ 体积（单快照）│ 什么时候用   │
-├─────────┼──────────────────────────┼─────────────┼─────────────┤
-│ WARC    │ ★ 完整的原始 HTTP 响应    │  ~90 TB     │ 想自己抽正文 │
-│         │   （HTTP 头 + 完整 HTML）  │             │ ★ 前沿做法   │
-├─────────┼──────────────────────────┼─────────────┼─────────────┤
-│ WAT     │ 元数据（链接、标题、头）  │  ~20 TB     │ 分析链接图   │
-│         │   不含正文                │             │             │
-├─────────┼──────────────────────────┼─────────────┼─────────────┤
-│ WET     │ CC 帮你抽好的纯文本        │  ~9 TB      │ 图省事       │
-│         │                          │             │ ★ 但质量差   │
-└─────────┴──────────────────────────┴─────────────┴─────────────┘
-
-WARC = Web ARChive         网页归档
-WAT  = Web Archive Transformation  （元数据提取）
-WET  = WARC Encapsulated Text      （纯文本提取）
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>全称</th>
+<th>里面装的是什么</th>
+<th>⚠️ 单快照体积（压缩后）</th>
+<th>占 WARC 的</th>
+<th>什么时候用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>WARC</strong></td>
+<td><strong>W</strong>eb <strong>ARC</strong>hive（网页归档）</td>
+<td>★ <strong>完整的原始 HTTP 响应</strong>：HTTP 头 + 完整 HTML</td>
+<td>约 <strong>90 TiB</strong> = 99 TB</td>
+<td>100%</td>
+<td>想自己抽正文。★ <strong>前沿做法</strong></td>
+</tr>
+<tr>
+<td><strong>WAT</strong></td>
+<td><strong>W</strong>eb <strong>A</strong>rchive <strong>T</strong>ransformation（元数据提取）</td>
+<td>元数据：链接、标题、HTTP 头。<strong>不含正文</strong></td>
+<td>约 <strong>22 TiB</strong> = 24 TB</td>
+<td>24%</td>
+<td>分析链接图、做站点级统计</td>
+</tr>
+<tr>
+<td><strong>WET</strong></td>
+<td><strong>W</strong>ARC <strong>E</strong>ncapsulated <strong>T</strong>ext（纯文本提取）</td>
+<td>CC 帮你抽好的纯文本</td>
+<td>约 <strong>9 TiB</strong> = 9.9 TB</td>
+<td><strong>10%</strong></td>
+<td>图省事。★ 但质量差</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★ <strong>这是一个真实存在的、影响很大的决策点。</strong><br />
-<strong>WET 的抽取质量很差</strong>——它基本上就是"把所有 HTML 标签删掉"，所以导航栏、"登录 / 注册"、Cookie 提示、页脚版权全都留在正文里。</p>
+<p>⚠️ 三行体积都是<strong>压缩后</strong>的量级数字，逐快照浮动，<strong>以你要用的那个 dump 的 CC 公告为准</strong>。但 <strong>WET ≈ WARC 的 10%</strong> 这个比值相当稳定，§2.3 会用它反推一件事。</p>
+<p>★★ <strong>WET 还是 WARC，是一个真实存在、影响很大的决策点。</strong></p>
+<p><strong>WET 的抽取质量很差</strong>——它基本上就是"把所有 HTML 标签删掉"，所以导航栏、"登录 / 注册"、Cookie 提示、页脚版权全都留在正文里。</p>
 <p>✅ <strong>RefinedWeb 论文</strong>（<a href="https://arxiv.org/abs/2306.01116">arXiv:2306.01116</a>）明确报告：他们<strong>从 WARC 出发用 <code>trafilatura</code> 自己抽正文，而不是用 WET</strong>，并把这作为 RefinedWeb 质量领先的原因之一。<strong>FineWeb 也走 WARC 路线。</strong> 而更早的 <strong>C4 用的是 WET</strong>。</p>
 <p>⚠️ 我的归纳：<strong>"从 WET 换成 WARC + 好抽取器"，大概是 2020→2023 这几年数据质量提升里性价比最高的单点改动</strong>——因为它不需要任何模型，只是换一个开源库。</p>
 </blockquote>
 <hr />
-<h2 id="23">2.3 ★ 文本抽取：为什么这一步决定了上限</h2>
+<h2 id="23">2.3 ★★★ 文本抽取：为什么这一步决定了上限</h2>
 <h3 id="_1">直觉类比</h3>
 <p>想象你要从一份报纸上"只把新闻内容剪下来"。</p>
 <ul>
 <li><strong>WET 的做法</strong>：把整版纸拿去，<strong>把所有图片撕掉，剩下的字全留着</strong>——包括报头、日期、广告、"第 3 版转下页"、订阅电话。</li>
 <li><strong>好抽取器的做法</strong>：认出"这一块是正文，那一块是广告栏"，<strong>只剪正文那一块</strong>。</li>
 </ul>
-<h3 id="_2">一个网页的字节都花在哪了</h3>
-<div class="codehilite"><pre><span></span><code>一个典型的现代网页（8 KB ~ 200 KB）：
-
-  &lt;script&gt;  JS 代码            ████████████████████  ~40%
-  &lt;style&gt; / class 属性          ██████████           ~20%
-  导航 / 侧边栏 / 页脚          ████████             ~15%
-  广告与追踪代码                ████                  ~8%
-  ★ 正文                        ██████               ~12%
-  其他标签                      ██                    ~5%
-
-★ 也就是说，正文往往只占网页字节的 10~15%
-   —— 这就是 01 章那张图里&quot;抽取后剩 15%&quot;的由来
+<h3 id="_2">一个具体网页：把每一个字节都数出来</h3>
+<p>光说"正文占一小部分"没有用。下面是一个<strong>完整的、可以自己数的</strong>小网页。它刻意保留了真实网页的全部成分：脚本、样式、标题、导航、正文、侧栏、页脚。</p>
+<div class="codehilite"><pre><span></span><code><span class="cp">&lt;!DOCTYPE html&gt;</span><span class="p">&lt;</span><span class="nt">html</span><span class="p">&gt;&lt;</span><span class="nt">head</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">script</span> <span class="na">src</span><span class="o">=</span><span class="s">&quot;ga.js&quot;</span><span class="p">&gt;&lt;/</span><span class="nt">script</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">style</span><span class="p">&gt;.</span><span class="nc">nav</span><span class="p">{</span><span class="k">color</span><span class="p">:</span><span class="mh">#333</span><span class="p">}&lt;/</span><span class="nt">style</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">title</span><span class="p">&gt;</span>番茄炒蛋的做法 - 美食网<span class="p">&lt;/</span><span class="nt">title</span><span class="p">&gt;&lt;/</span><span class="nt">head</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">body</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">div</span> <span class="na">class</span><span class="o">=</span><span class="s">&quot;nav&quot;</span><span class="p">&gt;</span>首页/菜谱/视频/登录/注册<span class="p">&lt;/</span><span class="nt">div</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">div</span> <span class="na">class</span><span class="o">=</span><span class="s">&quot;content&quot;</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">h1</span><span class="p">&gt;</span>番茄炒蛋<span class="p">&lt;/</span><span class="nt">h1</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">p</span><span class="p">&gt;</span>番茄炒蛋是一道家常菜。先把鸡蛋打散，加一小勺盐。<span class="p">&lt;/</span><span class="nt">p</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">p</span><span class="p">&gt;</span>油热后下蛋液，半凝固时盛出；再炒番茄，倒回鸡蛋翻两下即可。<span class="p">&lt;/</span><span class="nt">p</span><span class="p">&gt;</span>
+<span class="p">&lt;/</span><span class="nt">div</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">div</span> <span class="na">class</span><span class="o">=</span><span class="s">&quot;sidebar&quot;</span><span class="p">&gt;&lt;</span><span class="nt">a</span> <span class="na">href</span><span class="o">=</span><span class="s">&quot;/1&quot;</span><span class="p">&gt;</span>红烧肉<span class="p">&lt;/</span><span class="nt">a</span><span class="p">&gt;&lt;</span><span class="nt">a</span> <span class="na">href</span><span class="o">=</span><span class="s">&quot;/2&quot;</span><span class="p">&gt;</span>糖醋排骨<span class="p">&lt;/</span><span class="nt">a</span><span class="p">&gt;&lt;/</span><span class="nt">div</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">div</span> <span class="na">class</span><span class="o">=</span><span class="s">&quot;footer&quot;</span><span class="p">&gt;</span>版权所有 © 2024 美食网 - 京ICP备12345678号<span class="p">&lt;/</span><span class="nt">div</span><span class="p">&gt;</span>
+<span class="p">&lt;</span><span class="nt">script</span><span class="p">&gt;</span><span class="nx">ga</span><span class="p">(</span><span class="s1">&#39;send&#39;</span><span class="p">,</span><span class="s1">&#39;pageview&#39;</span><span class="p">);&lt;/</span><span class="nt">script</span><span class="p">&gt;</span>
+<span class="p">&lt;/</span><span class="nt">body</span><span class="p">&gt;&lt;/</span><span class="nt">html</span><span class="p">&gt;</span>
 </code></pre></div>
 
-<h3 id="_3">三种抽取路线</h3>
-<div class="codehilite"><pre><span></span><code>① 规则/启发式（快，糙）
-   删掉 &lt;script&gt; &lt;style&gt;，取 &lt;p&gt; 里的文字
-   → WET 就是这一类
-
-② 基于 DOM 密度的启发式（现在的主流）
-   核心思想：★ 正文块的【文字/标签 比值】明显高于导航块
-             正文块里逗号句号多，导航块里全是短词
-   → trafilatura、resiliparse、jusText、Boilerpipe
-
-③ 模型抽取（最准，最贵）
-   训一个小模型判断每个 DOM 节点是不是正文
-   → 大厂内部方案，⚠️ 公开细节很少
-</code></pre></div>
-
-<p><strong>②的核心指标写成公式</strong>，对一个 HTML 节点：</p>
+<p>把它的每个<strong>文本节点</strong>逐项数出来（字符数 = 肉眼能数的字数；字节数 = UTF-8 编码后，一个汉字 3 字节、一个 ASCII 字符 1 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>成分</th>
+<th>内容</th>
+<th>字符数</th>
+<th>UTF-8 字节</th>
+<th>算它是正文吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;title&gt;</code></td>
+<td>番茄炒蛋的做法 - 美食网</td>
+<td>13</td>
+<td>33</td>
+<td>不是（但有时有用）</td>
+</tr>
+<tr>
+<td><code>&lt;style&gt;</code> 里的 CSS</td>
+<td><code>.nav{color:#333}</code></td>
+<td>16</td>
+<td>16</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><code>&lt;script&gt;</code> 里的 JS</td>
+<td><code>ga('send','pageview');</code></td>
+<td>22</td>
+<td>22</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>导航 <code>div.nav</code></td>
+<td><code>首页/菜谱/视频/登录/注册</code></td>
+<td>14</td>
+<td>34</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>★ 标题 <code>h1</code></td>
+<td>番茄炒蛋</td>
+<td>4</td>
+<td>12</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>★ 正文第 1 段 <code>p</code></td>
+<td>番茄炒蛋是一道家常菜。先把鸡蛋打散，加一小勺盐。</td>
+<td>24</td>
+<td>72</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>★ 正文第 2 段 <code>p</code></td>
+<td>油热后下蛋液，半凝固时盛出；再炒番茄，倒回鸡蛋翻两下即可。</td>
+<td>29</td>
+<td>87</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>侧栏 <code>div.sidebar</code></td>
+<td>两个 <code>&lt;a&gt;</code>：<code>红烧肉</code> + <code>糖醋排骨</code>，拼起来 <code>红烧肉糖醋排骨</code></td>
+<td>7</td>
+<td>21</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>页脚 <code>div.footer</code></td>
+<td><code>版权所有 © 2024 美食网 - 京ICP备12345678号</code></td>
+<td>32</td>
+<td>53</td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong>所有文本节点合计</strong></td>
+<td>—</td>
+<td><strong>161</strong></td>
+<td><strong>350</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>★ 其中真正的正文</strong></td>
+<td><code>h1</code> + 两段 <code>p</code></td>
+<td><strong>57</strong></td>
+<td><strong>171</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>整个 HTML 文件</strong></td>
+<td>含全部标签、属性、换行</td>
+<td><strong>465</strong></td>
+<td><strong>654</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>两个可以直接验算的比值：</p>
+<table>
+<thead>
+<tr>
+<th>比值</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正文占<strong>全部文本节点</strong></td>
+<td>57 ÷ 161</td>
+<td><strong>35%</strong></td>
+</tr>
+<tr>
+<td>正文占<strong>整个 HTML 字节</strong></td>
+<td>171 ÷ 654</td>
+<td><strong>26%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这个玩具页面的 26% 比真实网页高一个数量级，原因必须说清楚</strong>：它的 <code>&lt;script src="ga.js"&gt;</code> 只是一行引用，真实网页会内联几十 KB 的 JS、几十 KB 的 CSS、一大堆 <code>data-*</code> 属性和内联 SVG。<strong>真实网页的正文字节占比是百分之几，不是四分之一。</strong> 下面用 CC 自己公布的体积把这个数推出来。</p>
+</blockquote>
+<h3 id="cc_1">用 CC 公布的体积反推"真实网页正文占几成"</h3>
+<p>这是一条<strong>只用两个官方数字</strong>就能走完的推理链：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+<th>依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 未压缩 HTML</td>
+<td>CC 公告</td>
+<td><strong>400 TiB</strong></td>
+<td>✅ CC dump 公告</td>
+</tr>
+<tr>
+<td>② 压缩 WET（CC 抽的纯文本）</td>
+<td>CC 发布体积</td>
+<td><strong>9 TiB</strong></td>
+<td>⚠️ 量级</td>
+</tr>
+<tr>
+<td>③ WET 解压后</td>
+<td>9 TiB × 3.0（纯文本 gzip 约 3 倍）</td>
+<td><strong>27 TiB</strong></td>
+<td>⚠️ 纯文本比 HTML 难压，取 3 倍</td>
+</tr>
+<tr>
+<td>④ <strong>WET 文本占未压缩 HTML</strong></td>
+<td>27 ÷ 400</td>
+<td><strong>6.75%</strong></td>
+<td>⚠️ 我的推演</td>
+</tr>
+<tr>
+<td>⑤ WET 比主正文多留多少</td>
+<td>上面玩具页面：123 ÷ 57</td>
+<td><strong>2.16 倍</strong></td>
+<td>⚠️ 见下表</td>
+</tr>
+<tr>
+<td>⑥ <strong>主正文占未压缩 HTML</strong></td>
+<td>6.75% ÷ 2.16</td>
+<td><strong>约 3.1%</strong></td>
+<td>⚠️ 我的推演</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>所以"正文只占网页的百分之几"这句话，有两个很不一样的版本</strong>：</p>
+<p><strong>WET 式抽取</strong>（删标签留全部文字）→ 约 <strong>6.75%</strong>；<strong>主正文抽取</strong>（trafilatura 这类）→ 约 <strong>3.1%</strong>。</p>
+<p>⚠️ 这也是 <a href="01-鸟瞰全景.html">01 章</a> §1.4 漏斗表里 ② 抽正文那一步给 <code>3 ~ 7%</code> 区间的来历。该表取了 6%，是为了让五步连乘落在出口锚点上——<strong>单独这一步的真值我说不准</strong>。</p>
+<p>⚠️ 本章旧版写的"正文占网页字节 10~15%"<strong>偏高了</strong>，已按上面的推演改掉。</p>
+</blockquote>
+<h3 id="_3">三条抽取路线：同一个页面各抽一遍</h3>
+<p>还是上面那个玩具页面。三种做法抽出来的东西完全不同：</p>
+<table>
+<thead>
+<tr>
+<th>抽取路线</th>
+<th>怎么做的</th>
+<th>抽出字符</th>
+<th>是正文的几倍</th>
+<th>带不带导航 / 页脚</th>
+<th>丢了什么</th>
+<th>代表实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 裸正则删标签</strong></td>
+<td><code>re.sub(r'&lt;[^&gt;]+&gt;', '', html)</code>，三行代码</td>
+<td><strong>161</strong></td>
+<td><strong>2.82 倍</strong></td>
+<td>★ 全带，连 CSS 和 JS 源码都当成正文</td>
+<td>什么都没丢，但混进了 104 个字符的垃圾</td>
+<td>自己手写的脚本</td>
+</tr>
+<tr>
+<td><strong>② WET 式</strong></td>
+<td>先删 <code>script</code> / <code>style</code>，再取<strong>全部</strong>文本节点</td>
+<td><strong>123</strong></td>
+<td><strong>2.16 倍</strong></td>
+<td>★ 带 title、导航、侧栏、页脚</td>
+<td>只丢了 CSS + JS（38 字符）</td>
+<td>CC 的 <code>.wet</code> 文件</td>
+</tr>
+<tr>
+<td><strong>③ 主正文抽取</strong></td>
+<td>按 DOM 密度 + 链接密度<strong>打分选块</strong></td>
+<td><strong>57</strong></td>
+<td><strong>1.00 倍</strong> ✓</td>
+<td>★ 全不带</td>
+<td>丢了 <code>&lt;title&gt;</code>（13 字符，⚠️ 有时是有用的信息）</td>
+<td><code>trafilatura</code>、<code>resiliparse</code>、<code>jusText</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>逐项验算</strong>（这三行数字可以互相对上）：</p>
+<table>
+<thead>
+<tr>
+<th>验算</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 比 ② 多的部分</td>
+<td>CSS 16 + JS 22</td>
+<td><strong>38</strong> → 161 − 123 = 38 ✓</td>
+</tr>
+<tr>
+<td>② 比 ③ 多的部分</td>
+<td>title 13 + 导航 14 + 侧栏 7 + 页脚 32</td>
+<td><strong>66</strong> → 123 − 57 = 66 ✓</td>
+</tr>
+<tr>
+<td>③ 占 ① 的比例</td>
+<td>57 ÷ 161</td>
+<td><strong>35%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>上表是按三种路线的"设计目标"手工推演的，不是真的跑了 <code>trafilatura</code> 和 <code>resiliparse</code>。</strong> 同一个页面，这两个库的实际输出会有几个字符的差别（比如 <code>h1</code> 算不算正文、<code>&lt;title&gt;</code> 要不要单独放一个字段），而且会随页面结构浮动。<strong>结论的量级可靠，具体字符数不要当实测引用。</strong></p>
+</blockquote>
+<h3 id="trafilatura-resiliparse"><code>trafilatura</code> 和 <code>resiliparse</code> 怎么选</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>trafilatura</code></th>
+<th><code>resiliparse</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>实现语言</td>
+<td>Python（底层 <code>lxml</code>）</td>
+<td><strong>Rust / C++</strong>（Chatnoir 工具链）</td>
+</tr>
+<tr>
+<td>卖点</td>
+<td>★ <strong>准确率</strong>，它自己的基准里 F1 领先</td>
+<td>★ <strong>吞吐</strong>，⚠️ 通常快一个数量级</td>
+</tr>
+<tr>
+<td>谁在用</td>
+<td>✅ <strong>RefinedWeb、FineWeb</strong></td>
+<td>✅ <strong>DCLM</strong></td>
+</tr>
+<tr>
+<td>什么时候选它</td>
+<td>快照数不多、想要最好的正文</td>
+<td>要扫几十个快照、CPU 小时是主要成本</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ "快一个数量级"是我按两者的实现语言和公开说法给的量级判断，<strong>不是跑分</strong>。真要选，拿你自己的几千个页面各跑一遍，比任何基准都准。</p>
+<p>实践里<strong>不要自己写抽取器</strong>，直接用上面这两个。✅ FineWeb 用的是 <code>trafilatura</code>。</p>
+</blockquote>
+<h3 id="2">②的核心指标写成公式</h3>
 <div class="codehilite"><pre><span></span><code>文本密度(node) = 该节点子树里的【纯文本字符数】
                 ────────────────────────────────
                  该节点子树里的【标签数量】
@@ -371,6 +732,61 @@ WET  = WARC Encapsulated Text      （纯文本提取）
                               ↑ 导航栏的特征就是&quot;全是链接、每条几个字&quot;
 </code></pre></div>
 
+<p>用上面那个页面算一遍，看这两个信号有多好分：</p>
+<table>
+<thead>
+<tr>
+<th>节点</th>
+<th>纯文本字符</th>
+<th>标签数</th>
+<th>文本密度</th>
+<th><code>&lt;a&gt;</code> 内字符</th>
+<th>链接密度</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>div.content</code></td>
+<td>57</td>
+<td>4（<code>div</code>+<code>h1</code>+2×<code>p</code>）</td>
+<td><strong>14.3</strong></td>
+<td>0</td>
+<td><strong>0.00</strong></td>
+<td>✅ 正文</td>
+</tr>
+<tr>
+<td><code>div.nav</code></td>
+<td>14</td>
+<td>1</td>
+<td>14.0</td>
+<td>0</td>
+<td>0.00</td>
+<td>⚠️ 密度骗过了，要靠别的信号（文本太短、无句读）</td>
+</tr>
+<tr>
+<td><code>div.sidebar</code></td>
+<td>7</td>
+<td>3（<code>div</code>+2×<code>a</code>）</td>
+<td>2.3</td>
+<td><strong>7</strong></td>
+<td><strong>1.00</strong></td>
+<td>❌ 导航：链接密度顶格</td>
+</tr>
+<tr>
+<td><code>div.footer</code></td>
+<td>32</td>
+<td>1</td>
+<td>32.0</td>
+<td>0</td>
+<td>0.00</td>
+<td>⚠️ 密度也骗过了，靠"版权所有 ©"这类关键词兜</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>这张表顺手揭掉了一层滤镜：两个密度指标并不万能。</strong> <code>div.nav</code> 和 <code>div.footer</code> 的链接密度都是 0、文本密度还不低，光看公式<strong>判不出来</strong>。真实的抽取器还要叠一堆信号：<strong>文本长度下限</strong>（14 个字符太短）、<strong>句读比例</strong>（正文有句号逗号，导航没有）、<strong>常见 class 名黑名单</strong>（<code>nav</code>/<code>footer</code>/<code>sidebar</code>/<code>comment</code>）、<strong>标签位置</strong>。⚠️ 这就是为什么"自己写一个"几乎一定写不好——真正的工作量全在这些补丁里。</p>
+</blockquote>
 <h3 id="_4">伪代码</h3>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extract_main_text</span><span class="p">(</span><span class="n">html</span><span class="p">):</span>
     <span class="n">dom</span> <span class="o">=</span> <span class="n">parse_html</span><span class="p">(</span><span class="n">html</span><span class="p">)</span>
@@ -395,7 +811,7 @@ WET  = WARC Encapsulated Text      （纯文本提取）
 </code></pre></div>
 
 <blockquote>
-<p>实践里<strong>不要自己写这个</strong>，直接用 <code>trafilatura</code>（Python）或 <code>resiliparse</code>（更快，Rust/C++ 实现）。FineWeb 用的是 <code>trafilatura</code>。✅</p>
+<p>⚠️ 拿上面那个玩具页面跑这段伪代码，<strong>一个候选块都选不出来</strong>——因为 <code>len(text) &gt; 100</code> 这个门槛，整个页面的正文才 57 个字符。真实网页的正文通常几百到几千字符，这个门槛是按真实网页定的。<strong>这正好说明：抽取器的每个阈值都是统计意义上的，对单个短页面经常失效。</strong></p>
 </blockquote>
 <hr />
 <h2 id="24">2.4 网页以外的四类源，各有各的坑</h2>
@@ -403,12 +819,48 @@ WET  = WARC Encapsulated Text      （纯文本提取）
 <div class="codehilite"><pre><span></span><code>来源：GitHub 公开仓库（The Stack v1/v2、StarCoder Data）
 坑：
   ① 许可证 —— 不是所有公开仓库都允许训练。要按 SPDX 许可证白名单过滤
+     SPDX = Software Package Data Exchange，一套许可证标识符的标准写法
+     （如 MIT、Apache-2.0、GPL-3.0-only）
   ② 自动生成的文件 —— .min.js、protobuf 生成的代码、lock 文件
      ★ 这些体积巨大且完全没有学习价值，必须按文件名和特征剔除
   ③ 一个仓库被 fork 一万次 —— 去重的重灾区
   ④ 二进制和大文件 —— 通常按&quot;行平均长度&quot;&quot;字母比例&quot;过滤
 </code></pre></div>
 
+<p>⚠️ <strong>代码的字节/token 比值和自然语言完全不同，估容量时别套用网页的数字</strong>。原因是变量名千奇百怪、缩进和符号极多：</p>
+<table>
+<thead>
+<tr>
+<th>语料类型</th>
+<th>⚠️ 字符/token</th>
+<th>⚠️ 每 token 的源文本字节</th>
+<th>这个数可靠吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代码</strong></td>
+<td><strong>2.6 ~ 2.8</strong></td>
+<td><strong>约 2.7 字节</strong></td>
+<td>✅ 较可靠。★ 代码几乎全是 ASCII，所以"字符"和"字节"这两种口径<strong>在这里是同一个数</strong>，不受 <a href="09-Tokenizer与词表.html">09 章</a> §9.5 那条口径矛盾影响（数字取自 openPangu-2.0 报告 Table 4 的代码一列）</td>
+</tr>
+<tr>
+<td><strong>英文</strong></td>
+<td>约 <strong>4</strong></td>
+<td>约 <strong>4.2 字节</strong></td>
+<td>⚠️ 经验区间（约 0.75 单词/token）</td>
+</tr>
+<tr>
+<td><strong>中文</strong></td>
+<td>⚠️ <strong>1.5 ~ 2 个汉字</strong></td>
+<td><strong>约 5.25 字节</strong>（一个汉字 3 字节）</td>
+<td>⚠️ 只能用经验区间。<strong>不要</strong>用 Table 4 的"中文 3.82"做绝对换算，见 <a href="09-Tokenizer与词表.html">09 章</a> §9.5</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 同样 1 GB 的源文件，<strong>代码能切出的 token 数大约是英文的 1.5 倍</strong>（4.2 ÷ 2.7）、<strong>是中文的 1.9 倍</strong>（5.25 ÷ 2.7）。所以"代码占 20%"这句话，按<strong>字节</strong>算和按<strong>token</strong>算差出一截——<a href="04-训练格式-Megatron索引.html">04 章</a> §4.5 讲 <code>BlendedDataset</code> 权重时会专门算这笔账。</p>
+</blockquote>
 <h3 id="arxiv-pubmed">学术论文（arXiv / PubMed）</h3>
 <div class="codehilite"><pre><span></span><code>来源：arXiv 提供 LaTeX 源码和 PDF 两种
 ★ 关键选择：用 LaTeX 源码，不要用 PDF
@@ -429,6 +881,39 @@ WET  = WARC Encapsulated Text      （纯文本提取）
 坑：Wiki 的模板、信息框（infobox）、引用标记 [1][2] 要清掉
 </code></pre></div>
 
+<p>⚠️ <strong>"量小"小到什么程度，值得算一下</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>值</th>
+<th>怎么来的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>英文维基百科正文体积</td>
+<td>⚠️ 约 <strong>6 ~ 20 GB</strong> 未压缩</td>
+<td>区间这么宽，是因为"算不算讨论页/模板/重定向"口径差别极大</td>
+</tr>
+<tr>
+<td>折成 token（⚠️ 英文 4.2 字节/token）</td>
+<td>⚠️ 约 <strong>14 ~ 48 亿</strong></td>
+<td>除法是我做的</td>
+</tr>
+<tr>
+<td>所有语言版本加起来</td>
+<td>⚠️ <strong>百亿（10 B）token</strong> 量级</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>占 15 T 总预算</strong></td>
+<td>1×10¹⁰ ÷ 1.5×10¹³ = <strong>0.067%</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>★ 这就解释了为什么高质量源<strong>一定要重复采样</strong>：按原始体积，维基百科在 15 T 的预算里<strong>根本就看不见</strong>。要让它占到 1%，得重复采样 <strong>15 遍</strong>（0.01 ÷ 0.00067）。⚠️ 实践中一般只重复 2 ~ 5 遍，因为再多就开始明显地"背下来"了（<a href="11-喂多少-ScalingLaw.html">11 章</a>）。</p>
 <hr />
 <h2 id="25">2.5 ⚠️ 一件很少被讲、但很重要的事：自建爬虫</h2>
 <p>上面全在讲 Common Crawl，但<strong>几乎所有前沿闭源模型都不只用 CC</strong>。原因很实在：</p>
@@ -499,22 +984,41 @@ WET  = WARC Encapsulated Text      （纯文本提取）
 <h2 id="27">2.7 小结</h2>
 <div class="codehilite"><pre><span></span><code>① 五类数据源：网页（主体）/ 代码（提推理）/ 学术书籍（长文档）
               / 精选高质量（重复采样）/ 合成（增长最快）
+   ⚠️ 占比区间是各家取值的范围，不是同一家的一组配比（所以加起来超 100%）
 
-② Common Crawl 是地基。三种格式必须分清：
-   WARC = 完整原始 HTML  ← ★ 前沿做法从这里出发
-   WAT  = 元数据
-   WET  = CC 帮你抽的纯文本  ← 图省事，但质量差（C4 用的这个）
+② Common Crawl 是地基。单快照的两个口径要分清：
+   未压缩内容 ~400 TiB = 440 TB   ← ✅ CC 公告报的是这个
+   压缩 WARC  ~90 TiB  = 99 TB    ← 大家口口相传的&quot;90 TB&quot;
+   隐含压缩比 4.44 倍 ⟹ ★ 看到 CC 的容量数字，先问&quot;压没压&quot;
 
-③ ★ 正文只占一个网页字节的 10~15%，其余是 JS、CSS、导航、广告
-   好抽取器的核心信号：文本密度高 + 链接密度低 = 正文
+③ 三种文件格式必须分清（体积都是压缩后）：
+   WARC ~90 TiB = 完整原始 HTML        ← ★ 前沿做法从这里出发
+   WAT  ~22 TiB = 元数据，不含正文
+   WET  ~9 TiB  = CC 帮你抽的纯文本    ← 图省事，但质量差（C4 用的这个）
+   ★ WET / WARC ≈ 10%，这个比值能用来反推正文占比
 
-④ 实践建议：别自己写抽取器，用 trafilatura / resiliparse
+④ ★ 正文到底占网页多少（§2.3 两条推演）：
+   WET 式抽取（删标签留全部文字）→ 约 6.75% 的未压缩 HTML 字节
+   主正文抽取（trafilatura 这类）→ 约 3.1%
+   ⚠️ 旧版写的&quot;10~15%&quot;偏高，已改
 
-⑤ 非网页源各有各的坑：
-   代码 → 许可证 + 自动生成文件；论文 → 用 LaTeX 别用 PDF
-   书籍 → 版权；Wiki → 量小质高，通常重复采样
+⑤ ★ 同一个玩具页面，三种路线抽出来的字符数：
+   裸正则 161（连 CSS/JS 源码都当正文） &gt; WET 式 123 &gt; 主正文 57
+   差值能逐项对上：161−123 = CSS16+JS22；123−57 = title13+导航14+侧栏7+页脚32
 
-⑥ ⚠️ CC 的可用内容在逐年缩水（robots.txt 拒绝 AI 爬虫），
+⑥ 好抽取器的核心信号：文本密度高 + 链接密度低 = 正文
+   ⚠️ 但这两个信号判不出 nav 和 footer（§2.3 那张表算过）
+      真实抽取器还要叠：长度下限 + 句读比例 + class 名黑名单
+   ⟹ 别自己写，用 trafilatura（准）或 resiliparse（快）
+
+⑦ 非网页源各有各的坑：
+   代码 → 许可证 + 自动生成文件
+          ⚠️ 字节/token：代码 2.7 / 英文 4.2 / 中文 5.25，相差到 1.9 倍
+          ⚠️ 中文那个数只能用经验区间（1.5~2 汉字/token），见 09 章 §9.5
+   论文 → 用 LaTeX 别用 PDF
+   书籍 → 版权；Wiki → ⚠️ 只有约 10 亿 token = 总预算的 0.007%，必须重复采样
+
+⑧ ⚠️ CC 的可用内容在逐年缩水（robots.txt 拒绝 AI 爬虫），
    且人人都用同一份 → 前沿团队几乎都自建爬虫
 </code></pre></div>
 

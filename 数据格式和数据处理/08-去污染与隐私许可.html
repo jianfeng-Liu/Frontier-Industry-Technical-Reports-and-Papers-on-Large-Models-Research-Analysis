@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>08 · 去污染、隐私与许可</title>
+<title>08 · ⭐ 去污染、隐私与许可</title>
 <style>
     :root {
       --bg:        oklch(97% 0.005 250);
@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -249,166 +254,987 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><a href="07-质量过滤.html">← 07 质量过滤</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-Tokenizer与词表.html">09 Tokenizer 与词表</a></p>
 </blockquote>
-<h1 id="08">08 · 去污染、隐私与许可</h1>
+<h1 id="08">08 · ⭐ 去污染、隐私与许可</h1>
 <blockquote>
-<p><strong>前面三章删数据，理由都是"这数据不好"。</strong><br />
-<strong>这一章删数据，理由是"这数据好，但不能要"。</strong></p>
-<p>★ 这是唯一一章里，<strong>删错了不会让模型变差，但会让你的评测分数变成废纸</strong>（去污染），<br />
-<strong>或者让你上不了线</strong>（隐私与许可）。</p>
+<p><strong>前面三章删数据，理由都是"这数据不好"。这一章删数据，理由是"这数据好，但不能要"。</strong></p>
+<p>★ 这是唯一一章里，<strong>删错了不会让模型变差，但会让你的评测分数变成废纸</strong>（去污染），<strong>或者让你上不了线</strong>（隐私与许可）。</p>
+<p>⚠️ <strong>本章数字口径</strong>（与 <a href="05-语言识别与启发式过滤.html">05 章</a>、<a href="06-去重.html">06 章</a> 一致）：容量一律<strong>十进制</strong>（1 GB = 10⁹ 字节、1 TB = 10¹² 字节；⚠️ GB 与 GiB 差 7.4%、TB 与 TiB 差 10%）。凡出现百分比，★ <strong>一定写清分母</strong>是文档篇数、字节数还是 token 数——<a href="06-去重.html">06 章</a> §6.1 已经用 Lee et al. 的两张表钉死过这件事：同一篇论文里 NearDup 删掉 C4 的 <strong>3.04%（分母 = 文档数）</strong>、ExactSubstr 删掉 <strong>7.18%（分母 = token 数）</strong>，<strong>这两个数不可比</strong>。本章的污染率和 PII 命中率同样如此。</p>
 </blockquote>
 <hr />
-<h2 id="81">8.1 评测污染：为什么它是最危险的一种脏</h2>
-<h3 id="_1">一句话说清楚</h3>
-<div class="codehilite"><pre><span></span><code>你训练时用了 100 T 网页数据。
+<h2 id="81-vs">8.1 这一章站在哪个位置：建库侧 vs 评测侧</h2>
+<p>先把分工说清楚，否则你会以为本章和隔壁的评测教程重复了。</p>
+<div class="codehilite"><pre><span></span><code>你现在站在【建库侧】：
+   手上有训练语料（几百 TB 的文本），★ 但模型【还没有训】。
+   ⟹ 你能做的事：把评测题从语料里删掉，让分数一开始就是干净的。
+
+隔壁 [harness 评测框架 / 评测入门 06 数据污染] 站在【评测侧】：
+   模型已经训好了，★ 甚至是别人家的闭源模型，你只能调 API。
+   ⟹ 它能做的事：判断&quot;这个分数里有多少是背出来的&quot;。
+
+⟹ ★★ 同一个问题、两个位置，能用的工具【完全不同】。
+   本节末尾那张表就是这条分界线。
+</code></pre></div>
+
+<blockquote>
+<p>📘 评测侧那一章在这里：<a href="../harness评测框架/评测入门/06-数据污染.html"><code>../harness评测框架/评测入门/06-数据污染.md</code></a>。本章<strong>不重复</strong>它的内容——它的 §6.3.2 已经逐步推演过"改一个词就能绕过 n-gram"，§6.3.2b 讲过中文和短题面的结构性盲区，§6.3.3 给了五种检测法的假阳假阴全表。<strong>本章只写建库侧</strong>：你手上有什么、能做什么、代价是多少。</p>
+</blockquote>
+<h3 id="_1">一句话说清污染是什么</h3>
+<div class="codehilite"><pre><span></span><code>你训练时用了 100 T token 的网页数据。
 而 MMLU、GSM8K、HumanEval 这些评测题，★ 全都公开挂在网上。
-   （MMLU = 57 学科选择题 / GSM8K = Grade School Math 8K，小学应用题 8000 道
-     / HumanEval = OpenAI 的 164 道 Python 编程题）
-   → 它们大概率【已经在你的训练数据里了】
+   （MMLU = Massive Multitask Language Understanding，57 学科选择题
+     GSM8K = Grade School Math 8K，小学应用题 8000 道
+     HumanEval = OpenAI 的 164 道 Python 编程题）
+   ⟹ 它们大概率【已经在你的训练数据里了】
 
 于是评测的时候：
    模型不是在&quot;推理&quot;，而是在【回忆】它见过的答案
-   → 分数虚高，而且【你完全不知道虚高了多少】
+   ⟹ 分数虚高，而且【你完全不知道虚高了多少】
 </code></pre></div>
 
-<p>✅ 这不是理论担忧。<a href="06-去重.html">06 章</a>引的 Lee et al.（<a href="https://arxiv.org/abs/2107.06499">2107.06499</a>）明确报告：<strong>标准数据集的验证集里，超过 4% 的内容能在训练集里找到。</strong></p>
+<p>✅ <strong>这不是理论担忧。</strong> <a href="06-去重.html">06 章</a> §6.1 引的 Lee et al.（<a href="https://arxiv.org/abs/2107.06499">arXiv:2107.06499</a>）在论文 Table 2 里报了精确值：</p>
+<table>
+<thead>
+<tr>
+<th>语料</th>
+<th>验证集中<strong>能在训练集里找到</strong>的占比</th>
+<th>分母</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C4</strong></td>
+<td>✅ <strong>4.60%</strong></td>
+<td>文档（样本）数</td>
+</tr>
+<tr>
+<td><strong>RealNews</strong></td>
+<td>✅ <strong>14.35%</strong></td>
+<td>文档（样本）数</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>⚠️ <strong>口径必须说清</strong>：这两个数来自论文 Table 2，判据是 <strong>NearDup（近似文档去重）</strong>，<strong>分母是样本数</strong>。论文正文里常被引用的那句话是 "more than 4% of examples"，✅ 精确到小数就是上表这两个值。⚠️ 同一篇论文 Table 3 的 ExactSubstr 口径下，C4 验证集能在训练集找到的只有 <strong>1.38%</strong>，<strong>分母是 token 数</strong>——<strong>同一件事两个口径差 3.3 倍</strong>。所以"验证集有 4% 被污染"这句话，必须跟上"按什么算的"。</p>
 <p>★★ <strong>为什么说它比"数据脏"更危险？</strong></p>
-<p>```<br />
-数据脏 → 模型变差 → ★ 你的评测分会告诉你<br />
-数据污染 → 模型没变好，但评测分【涨了】<br />
-         → ★★ 你的仪表盘在骗你，而你无从察觉</p>
-<p>更糟的是：你会据此做出错误决策<br />
-  "这个数据配方 MMLU 涨了 3 分，采纳！"<br />
-  —— 实际上只是这个配方多混进了一些 MMLU 的题<br />
-```</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>数据脏     ⟹ 模型变差 ⟹ ★ 你的评测分【会告诉你】
+数据污染   ⟹ 模型没变好，但评测分【涨了】
+           ⟹ ★★ 你的仪表盘在骗你，而你无从察觉
+
+更糟的是：你会据此做出错误决策——
+  &quot;这个数据配方 MMLU 涨了 3 分，采纳！&quot;
+  ⚠️ 实际上只是这个配方多混进了一些 MMLU 的题。
+</code></pre></div>
+
+<blockquote>
+<p>★ 这正是 <a href="07-质量过滤.html">07 章</a> §7.6 列的风险之一：<strong>一个只会让分数涨、不会让分数跌的 bug，在数据流水线里可以存活好几个月。</strong></p>
 </blockquote>
 <h3 id="_2">三种污染，一种比一种难查</h3>
 <div class="codehilite"><pre><span></span><code>① 逐字污染（verbatim）
    训练数据里出现了一模一样的题目和答案
-   → ★ 可以查，本章 8.2 讲怎么查
+   ⟹ ★ 可以查，本章 8.2 讲怎么查
 
 ② 改写污染（paraphrased）
    题目被翻译成中文、被改写成另一种问法后出现在训练集里
-   → ⚠️ n-gram 匹配【完全查不到】，需要语义匹配
+   ⟹ ⚠️ n-gram 匹配【完全查不到】，需要语义匹配
 
 ③ ★ 间接污染（indirect / 分布污染）
    训练数据里没有原题，但有大量【专门针对这个评测写的题解和练习题】
    （比如各种 &quot;MMLU 备考题库&quot;、&quot;GSM8K 风格数学题集&quot;）
-   → ⚠️ 这个几乎【无法定义边界】：
+   ⟹ ⚠️ 这个几乎【无法定义边界】：
       &quot;刷了很多同类型的题&quot;和&quot;学会了这个能力&quot;到底怎么区分？
-   ★ 而 7.4 讲的质量分类器，会【主动把这类内容筛出来】——因为它们&quot;像好数据&quot;
+   ⟹ ★★ 而 [07 章] §7.4 讲的质量分类器，会【主动把这类内容筛进来】
+      —— 因为它们&quot;长得像好数据&quot;：有题有解、结构工整、知识密度高。
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>我的判断</strong>：现在公开报告的评测分数，<strong>基本都受 ② 和 ③ 不同程度的影响</strong>，只是没人能量化。这也是为什么业界越来越依赖 <strong>私有测试集</strong>、<strong>发布日期晚于模型截止日期的新题</strong>（比如 LiveBench 类做法）和 <strong>人工对战评测</strong>。</p>
+<p>⚠️ <strong>我的判断</strong>（不是论文结论）：现在公开报告的评测分数，<strong>基本都受 ② 和 ③ 不同程度的影响</strong>，只是没人能量化。这也是为什么业界越来越依赖<strong>私有测试集</strong>、<strong>发布日期晚于模型训练截止日的新题</strong>（LiveBench / LiveCodeBench 这类做法）和<strong>人工对战评测</strong>。✅ 这三条缓解手段的代价对照，harness 06 章 §6.4 有一张完整的表。</p>
 </blockquote>
-<hr />
-<h2 id="82-n-gram">8.2 怎么做去污染：n-gram 匹配</h2>
-<p>最标准的做法，✅ <strong>GPT-3 论文用的是 13-gram</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① 把所有评测集（MMLU / GSM8K / HumanEval / MATH / ...）的题目和答案收集起来
-② 切成 n-gram（n 通常取 8~13）
-③ 建一个巨大的哈希集合
-④ 扫训练语料，★ 任何文档只要撞上一个 n-gram，整篇丢掉
+<h3 id="_3">★★★ 建库阶段，五种检测法里只有两种能做</h3>
+<p>这是本章最该先记住的一张表。harness 06 章 §6.3.3 按"能查出什么 / 假阳假阴"组织了同样的五种方法；<strong>这里换一个轴：你现在只有语料、还没有模型，哪些做得了？</strong></p>
+<table>
+<thead>
+<tr>
+<th>检测法</th>
+<th>★ 建库阶段能不能做</th>
+<th>需要什么</th>
+<th>对语料的代价</th>
+<th>假阳 / 假阴（详见 harness 06 章 §6.3.3）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① n-gram / 字符串重叠</strong></td>
+<td>✅ <strong>能做</strong>，而且是唯一能定位到"哪一篇语料脏"的方法</td>
+<td>评测集全文 + 一次全量扫描（成本见 8.2 末）</td>
+<td>⚠️ 会删掉语料（整篇或段落，取决于你怎么实现）</td>
+<td>n 太小则常见套话误报；改一个词、换一种语言就漏</td>
+</tr>
+<tr>
+<td><strong>② 困惑度对比</strong></td>
+<td>❌ <strong>不能</strong></td>
+<td>★ 要一个<strong>已经训好</strong>的模型，还要能拿 logprob</td>
+<td>不删语料，只给结论</td>
+<td>模板化题面易误报；模型见过大量同类数据时整体困惑度都低</td>
+</tr>
+<tr>
+<td><strong>③ canary string（金丝雀串）</strong></td>
+<td>✅ <strong>能做</strong>，但只能做"遵守"这一半</td>
+<td>★★ 评测集<strong>发布时就埋好了</strong>串，你只负责见到就删</td>
+<td>极小：一条字符串匹配，近乎免费</td>
+<td>几乎不误报（随机串）；⚠️ 但清洗流程常把怪行删掉、题却留下，漏检很高</td>
+</tr>
+<tr>
+<td><strong>④ 成员推断（MIA = Membership Inference Attack，成员推断攻击）</strong></td>
+<td>❌ <strong>不能</strong></td>
+<td>★ 要训好的模型 + 一批<strong>确定不在</strong>训练集里的对照样本</td>
+<td>不删语料</td>
+<td>只能给整体统计倾向，⚠️ 不适合给单条下判断</td>
+</tr>
+<tr>
+<td><strong>⑤ 黑盒行为测试（扰动 + 时间切分）</strong></td>
+<td>❌ <strong>不能</strong></td>
+<td>★ 要能调用模型</td>
+<td>不删语料</td>
+<td>能看出污染的整体规模，⚠️ 定位不到是哪一条</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 把这张表压成一句话：
+
+   ② ④ ⑤ 全都要【先有一个训好的模型】。
+   ⟹ 它们在你这个阶段【物理上做不了】——那是评测侧的事。
+
+   ⟹ 🔑 所以建库侧的去污染工作，实际上只有两件：
+        ① 把评测集切成 n-gram，扫一遍语料；
+        ③ 见到 canary 串就整文件删掉。
+
+   ⚠️ 而这两件事【都不能保证干净】：
+        ① 对改写和翻译无效（三种污染里的 ② ③ 它都抓不到）；
+        ③ 完全依赖评测集作者事先埋了串。
+   ⟹ ★ 所以&quot;我们做了去污染&quot;这句话的真实含义是：
+        &quot;我们删掉了逐字照抄、且评测集我们当时知道的那部分。&quot;
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code><span class="n">N</span> <span class="o">=</span> <span class="mi">13</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">build_eval_ngrams</span><span class="p">(</span><span class="n">eval_texts</span><span class="p">):</span>
+<hr />
+<h2 id="82-n-gram">8.2 ★★ 怎么做去污染：n-gram 匹配</h2>
+<p>最标准的做法，✅ <strong>GPT-3 论文用的是 13-gram</strong>（n-gram = 连续 n 个词组成的片段）。整个流程只有四步：</p>
+<div class="codehilite"><pre><span></span><code>① 把所有评测集（MMLU / GSM8K / HumanEval / MATH / C-Eval / ...）
+   的【题目和答案】收集起来
+   │
+② 归一化（转小写、去标点、压空白），切成 n-gram
+   │
+③ 建一个哈希集合   ← ★ 只存 8 字节哈希，不存原文（成本见 8.2 末）
+   │
+④ 扫训练语料：任何文档只要撞上【一个】n-gram
+   ⟹ 丢掉（丢整篇还是只丢那一段，是一个要专门决定的事，见下）
+</code></pre></div>
+
+<h3 id="bug">一段能跑的实现（★ 以及一个必须修掉的 bug）</h3>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span><span class="o">,</span><span class="w"> </span><span class="nn">re</span>
+
+<span class="n">N</span> <span class="o">=</span> <span class="mi">13</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">normalize</span><span class="p">(</span><span class="n">t</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">t</span> <span class="o">=</span> <span class="n">t</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="n">t</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[^\w\s]&quot;</span><span class="p">,</span> <span class="s2">&quot; &quot;</span><span class="p">,</span> <span class="n">t</span><span class="p">)</span>           <span class="c1"># 去标点</span>
+    <span class="k">return</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\s+&quot;</span><span class="p">,</span> <span class="s2">&quot; &quot;</span><span class="p">,</span> <span class="n">t</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>    <span class="c1"># 压空白</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_h</span><span class="p">(</span><span class="n">s</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
+    <span class="c1"># ★★ 必须用【稳定】哈希。绝不能用内置 hash()，理由见下面那一段。</span>
+    <span class="k">return</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">blake2b</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">),</span> <span class="n">digest_size</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span><span class="o">.</span><span class="n">digest</span><span class="p">()</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">ngrams</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">N</span><span class="p">):</span>
+    <span class="n">w</span> <span class="o">=</span> <span class="n">normalize</span><span class="p">(</span><span class="n">text</span><span class="p">)</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="o">-</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">_h</span><span class="p">(</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="n">n</span><span class="p">]))</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">build_eval_ngrams</span><span class="p">(</span><span class="n">eval_texts</span><span class="p">,</span> <span class="n">n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">N</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">set</span><span class="p">:</span>
     <span class="n">s</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
     <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">eval_texts</span><span class="p">:</span>
-        <span class="n">w</span> <span class="o">=</span> <span class="n">normalize</span><span class="p">(</span><span class="n">t</span><span class="p">)</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
-        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="o">-</span> <span class="n">N</span> <span class="o">+</span> <span class="mi">1</span><span class="p">):</span>
-            <span class="n">s</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="n">N</span><span class="p">])))</span>     <span class="c1"># 只存哈希，省内存</span>
+        <span class="n">s</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">ngrams</span><span class="p">(</span><span class="n">t</span><span class="p">,</span> <span class="n">n</span><span class="p">))</span>               <span class="c1"># 只存哈希，省内存</span>
     <span class="k">return</span> <span class="n">s</span>
 
-<span class="n">EVAL</span> <span class="o">=</span> <span class="n">build_eval_ngrams</span><span class="p">(</span><span class="n">all_benchmark_texts</span><span class="p">)</span>
-
-<span class="k">def</span><span class="w"> </span><span class="nf">is_contaminated</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
-    <span class="n">w</span> <span class="o">=</span> <span class="n">normalize</span><span class="p">(</span><span class="n">text</span><span class="p">)</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
-    <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="nb">hash</span><span class="p">(</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="n">N</span><span class="p">]))</span> <span class="ow">in</span> <span class="n">EVAL</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="o">-</span> <span class="n">N</span> <span class="o">+</span> <span class="mi">1</span><span class="p">))</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">is_contaminated</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">eval_ngrams</span><span class="p">:</span> <span class="nb">set</span><span class="p">,</span> <span class="n">n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">N</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">g</span> <span class="ow">in</span> <span class="n">eval_ngrams</span> <span class="k">for</span> <span class="n">g</span> <span class="ow">in</span> <span class="n">ngrams</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">n</span><span class="p">))</span>
 </code></pre></div>
 
-<h3 id="n">★ n 怎么选：一个真实的权衡</h3>
-<div class="codehilite"><pre><span></span><code>n 小（比如 5）：
-   → 灵敏，但【误杀严重】
-   ★ &quot;the quick brown fox jumps&quot; 这种常见短语会撞上无数正常文档
+<blockquote>
+<p>⚠️⚠️⚠️ <strong>这一段的重点不是算法，是那个 <code>_h</code>。本教程此前的版本在这里写的是内置 <code>hash()</code>，那是一个会静默出错的 bug。</strong> ✅ 我在本机跑了一遍：</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>$ for i in 1 2 3; do python3 -c &quot;print(hash(&#39;at sixty kilometres per hour&#39;))&quot;; done
+-8851492295212081839
+490494123140038673
+1662192923934921210
 
-n 大（比如 20）：
-   → 几乎不误杀，但【改一个词就漏】
-
-⚠️ 业界常用 8~13。★ 但要注意：这个选择【本身就是一个未经充分研究的旋钮】，
-   各家取值不同，导致各家报的&quot;已去污染&quot;根本不是一回事。
+$ for i in 1 2; do python3 -c \
+    &quot;import hashlib;print(hashlib.blake2b(b&#39;at sixty kilometres per hour&#39;,digest_size=8).hexdigest())&quot;; done
+077f3b6ad02cf055
+077f3b6ad02cf055
 </code></pre></div>
 
-<h3 id="_3">更麻烦的：什么时候做去污染</h3>
-<div class="codehilite"><pre><span></span><code>★★ 一个关键的时序问题：
+<div class="codehilite"><pre><span></span><code>★ 同一个字符串，三个进程，内置 hash() 给出【三个不同的值】。
 
-  评测集是【不断增加】的。
-  你 2024 年训模型时做了去污染，2025 年出了新评测 —— 
-  它的题目可能早就在你 2024 年的训练数据里了。
+原因：Python 3.3 起（PEP 456），str 和 bytes 的 hash()
+      带一个【进程级随机盐】，由环境变量 PYTHONHASHSEED 控制。
+      这是为了防哈希碰撞拒绝服务攻击，是有意设计。
 
-  ⟹ ★ &quot;已去污染&quot;只对【当时已知的评测集】成立，
-       对未来的评测集完全不成立。
+⚠️⚠️ 它为什么是&quot;静默&quot;出错的：
+   建集合跑在进程 A（比如一个 build 脚本），
+   扫语料跑在进程 B（比如 Spark / Ray / multiprocessing 的 worker），
+   ⟹ 进程 B 算出的哈希【永远不可能】出现在进程 A 建的集合里，
+   ⟹ is_contaminated() 恒返回 False，
+   ⟹ 报表上写着【污染率 0.00%】，而且不报任何错。
+
+★★★ 而 0.00% 看起来像好消息 —— 这就是它能活几个月的原因。
+   （⟹ 完全对应 8.1 那条：只会让指标变好看的 bug 最难发现。）
 </code></pre></div>
 
-<p><strong>两个业界做法</strong>（⚠️ 我的整理）：</p>
-<div class="codehilite"><pre><span></span><code>① Canary string（金丝雀字符串）
-   ★ BIG-bench 这类评测在自己的文件里塞一个独一无二的 GUID 字符串。
-     如果一个模型能背出这个 GUID，就【证明】它训练时吃过这个文件。
-   ★ 同时它也给数据方一个明确的信号：看到这个字符串就把整个文件删掉。
+<blockquote>
+<p>★ <strong>一条可以直接抄的自检</strong>：把评测集的 n-gram 集合<strong>落盘</strong>，然后<strong>另起一个进程</strong>把其中随机 100 条读出来查一遍，必须 100 条全中。⚠️ 这个检查只要 5 行代码，却能挡住上面这整类 bug。同样的要求也适用于 <a href="17-最小流水线走查.html">17 章</a> Step 6 那段流水线代码——它直接调用的就是本节这两个函数。</p>
+</blockquote>
+<h3 id="n">★★★ n 怎么选：一个能自己验算的推演</h3>
+<p>教科书只会说"n 小了误杀、n 大了漏检"。下面把它算出来。✅ <strong>下面每一个数字我都在本机跑过</strong>（脚本就是上面那段代码）。</p>
+<p><strong>测试题</strong>（24 个词）：</p>
+<div class="codehilite"><pre><span></span><code>A train leaves the station at nine in the morning and travels at
+sixty kilometres per hour for three hours before stopping for lunch
+</code></pre></div>
 
-② 事后检测（membership inference / 成员推断）
-   不看训练数据，只看模型行为：
-   把题目喂给模型，看它对【正确答案】的概率是不是异常地高，
-   或者看它能不能补全出题目的后半句。
-   ⚠️ 这类方法只能给出统计倾向，不能给出确证。
+<p><strong>三篇训练文档</strong>，代表三种真实情况：</p>
+<table>
+<thead>
+<tr>
+<th>文档</th>
+<th>内容</th>
+<th>它到底是不是污染</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>D1</strong></td>
+<td>论坛帖子<strong>原文转载</strong>了整道题，还附了答案</td>
+<td>✅ <strong>是真污染</strong>，必须删</td>
+</tr>
+<tr>
+<td><strong>D2</strong></td>
+<td>一篇热身题，<strong>只抄了前 10 个词</strong>（"A train leaves the station at nine in the morning."）</td>
+<td>❌ <strong>不是污染</strong>，删掉就是误杀</td>
+</tr>
+<tr>
+<td><strong>D3</strong></td>
+<td>一篇讲城际列车的文章，含常见短语 "at sixty kilometres per hour for three hours"</td>
+<td>❌ <strong>不是污染</strong>，这是英语里的大路话</td>
+</tr>
+</tbody>
+</table>
+<p>✅ <strong>实测命中数</strong>（命中 = 该文档的 n-gram 里有多少个落在评测集的哈希集合里）：</p>
+<table>
+<thead>
+<tr>
+<th>n</th>
+<th>评测题能切出的窗口数</th>
+<th>D1（真污染）</th>
+<th>D2（只抄 10 词）</th>
+<th>D3（含常见短语）</th>
+<th>判定结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>5</strong></td>
+<td>20</td>
+<td><strong>20</strong></td>
+<td><strong>6</strong></td>
+<td><strong>4</strong></td>
+<td>⚠️ 三篇全判污染 —— D2、D3 都是<strong>误杀</strong></td>
+</tr>
+<tr>
+<td><strong>8</strong></td>
+<td>17</td>
+<td><strong>17</strong></td>
+<td><strong>3</strong></td>
+<td><strong>1</strong></td>
+<td>⚠️ 仍然三篇全判污染</td>
+</tr>
+<tr>
+<td><strong>13</strong></td>
+<td>12</td>
+<td><strong>12</strong></td>
+<td><strong>0</strong></td>
+<td><strong>0</strong></td>
+<td>✅ <strong>只有 D1 被判 —— 这就是 13 的理由</strong></td>
+</tr>
+<tr>
+<td><strong>20</strong></td>
+<td>5</td>
+<td><strong>5</strong></td>
+<td>0</td>
+<td>0</td>
+<td>✅ 也只判 D1，⚠️ 但窗口数掉到 5</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 这张表的每一个数都能用一个减法验算出来：
+   一段 L 个词的文本，能切出的 n-gram 窗口数 = max(0, L − n + 1)
+
+   D2 只抄了 10 个词 ⟹ n=13 时 10 − 13 + 1 = −2 ⟹ 0 个窗口
+   D3 的常见短语 8 个词 ⟹ n=13 时 8 − 13 + 1 = −4 ⟹ 0 个窗口
+   ⟹ 🔑 n=13 能挡住它们，不是因为算法聪明，
+        ★★ 而是因为【它们根本凑不出 13 个连续词的重合】。
+
+⚠️ 而这也立刻说明了 n 大的代价：
+   n=20 时评测题自己只剩 5 个窗口（24 − 20 + 1）。
+   ⟹ 改掉题目里任意一个词，就会打断它所在的全部 20 个窗口，
+      5 个窗口里能被打断好几个 ⟹ ★ 抗改写能力急剧下降。
+   ⟹ n=21 时这道 24 词的题只剩 4 个窗口；n=25 时【一个都没有】。
+
+🔑 所以 8~13 这个区间不是魔法数字，是一个夹出来的结果：
+     下界由【常见短语有多长】定（英语大路话常在 5~8 个词）
+     上界由【题目有多长】定（题目越短，n 必须越小才有窗口）
+⚠️ 而这意味着：各家取不同的 n，报出来的&quot;已去污染&quot;根本不是一回事，
+   ★ 而且【短题目的评测集，天生比长题目的更难去污染】。
 </code></pre></div>
 
 <hr />
-<h2 id="83-pii">8.3 隐私：PII 的识别与处理</h2>
+<h3 id="_4">⚠️⚠️ 中文的结构性盲区：同一道题，两种切分口径，一个能检一个彻底失效</h3>
+<p>上面整套推演有一个隐含前提：<strong><code>normalize(t).split()</code> 能把文本切成词。</strong> 对英文成立，★ <strong>对中文完全不成立</strong>——中文不打空格。</p>
+<p>✅ <strong>拿一道中文小学应用题实测</strong>（<code>小明有十二盒饼干，每盒六块，一共多少块？</code>，去掉标点后 17 个汉字）：</p>
+<table>
+<thead>
+<tr>
+<th>切分口径</th>
+<th>切出多少个单元</th>
+<th>13-gram 窗口数 = max(0, L − 13 + 1)</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>按空白切</strong>（<code>split()</code>，即上面代码的默认行为）</td>
+<td><strong>1</strong></td>
+<td>0</td>
+<td>⚠️⚠️ <strong>整道题检不出任何东西</strong></td>
+</tr>
+<tr>
+<td><strong>按字切</strong>（每个汉字一个单元）</td>
+<td><strong>17</strong></td>
+<td><strong>5</strong></td>
+<td>✅ 能检</td>
+</tr>
+<tr>
+<td><strong>按词切</strong>（分词后：小明 / 有 / 十二 / 盒 / 饼干 / 每 / 盒 / 六 / 块 / 一共 / 多少 / 块）</td>
+<td><strong>12</strong></td>
+<td><strong>0</strong></td>
+<td>⚠️ <strong>完全检不出</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 请把这张表读两遍：【同一道题，三种口径，两种结论。】
+
+  按空白切 ⟹ 0 个窗口 ⟹ 返回&quot;干净&quot;
+  按词切   ⟹ 0 个窗口 ⟹ 返回&quot;干净&quot;
+  按字切   ⟹ 5 个窗口 ⟹ 能查出来
+
+⟹ 🔑 对建库侧来说，这【不是一个 bug 报告，是一个你必须自己做的决定】：
+     你要先选定中文的切分口径，★ 然后把 n 跟着改掉。
+  ⚠️ 直接把英文那套（空白切 + n=13）套到中文语料上，
+     ⟹ 它不是&quot;效果差&quot;，是【一个窗口都产生不了】，
+     ⟹ 于是对每一道中文题都返回&quot;干净&quot;，污染率报 0.00%。
+     ★★ 又是一个&quot;只会让指标变好看&quot;的静默失败。
+
+★ 一个能用的中文起点（⚠️ 我的建议，不是论文结论）：
+     按【字】切，n 取 20~30 个汉字。
+  理由：13 个汉字约等于 6~9 个中文词，相当于英文的 n=6~9，偏误杀；
+        而 20~30 个汉字约 10~15 个词，量级上才和英文 n=13 可比。
+  ⚠️ 代价：短题面（像&quot;中国的首都是哪里&quot;7 个字）照样一个窗口都没有。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ 评测侧看这件事是另一个角度——"看到'我们做了 n-gram 去污染'这句话，对 C-Eval / CMMLU 这类中文集它等于什么都没做"。✅ 那一段的完整论证在 harness 06 章 §6.3.2b。<strong>本章关心的是你这一侧的动作</strong>：换切分、改 n、并且<strong>把中文和英文的污染率分开报</strong>。★ 如果两者混在一个数字里，中文那部分的 0% 会被英文的几个百分点稀释掉，你永远看不出中文根本没被检查过。</p>
+</blockquote>
+<h3 id="615-1">★★ 丢整篇还是只丢命中的那一段：一个 615 比 1 的账</h3>
+<p>原始流程的第 ④ 步写的是"整篇丢掉"。先算一下这件事有多贵：</p>
+<div class="codehilite"><pre><span></span><code>一篇 8000 词的优质长文（比如一篇完整的技术教程），
+   里面有【一段 13 个词】恰好和某道评测题重合。
+
+整篇丢：损失 8000 词
+只丢命中段落（假设那段 13 词所在的段落约 13 词）：损失 13 词
+
+⟹ 损失比 = 8000 ÷ 13 ≈ 615 : 1
+
+★★ 也就是说，为了删掉 13 个有问题的词，你扔掉了 615 倍的好内容。
+⚠️ 而且这不是罕见情况：n=13 的命中【本来就应该是稀疏的】
+   —— 一篇长文越长，它凑出某个 13-gram 的机会就越多（见 8.2 末的窗口数：
+      8000 词的文档有 7988 个窗口，而一篇 500 词的只有 488 个）。
+   ⟹ 🔑 整篇丢这个策略，【系统性地偏向于删掉长文档】，
+        而长文档恰好是 [13 章] 的打包和 [19 章] §19.9 的长上下文最缺的那种数据。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>删掉多少</th>
+<th>实现难度</th>
+<th>⚠️ 风险</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>整篇丢</strong></td>
+<td>命中文档的全部内容</td>
+<td>最简单，一个布尔判断</td>
+<td>⚠️ 损失比可达 615 : 1；系统性偏向删长文</td>
+</tr>
+<tr>
+<td><strong>只丢命中的段落</strong></td>
+<td>命中段落</td>
+<td>中等：要按段落切、按段落建索引</td>
+<td>⚠️ 文档被切开后语义断裂，上下文不连贯</td>
+</tr>
+<tr>
+<td><strong>只丢命中的句子 / 把那一段改写</strong></td>
+<td>最少</td>
+<td>★ 最高</td>
+<td>⚠️ 改写本身要调模型，成本量级完全不同</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>业界的实际做法是"两级都做"。</strong> ✅ <a href="06-去重.html">06 章</a> §6.9 那张表里 <strong>Dolma 的 Bloom filter 就同时跑文档级和段落级</strong>（✅ 段落级删掉约 70% 的段落）。<strong>既然去重已经建好了段落级的索引，去污染就应该复用它</strong>——这正好是下一段要讲的事。</p>
+</blockquote>
+<h3 id="_5">★★★ 去重和去污染在工程上是同一套机制</h3>
+<p>这是 ✅ <strong>Dolma</strong>（<a href="https://arxiv.org/abs/2402.00159">arXiv:2402.00159</a>）披露的一个很漂亮的工程事实。✅ 我从 <a href="papers/">papers/Dolma-Open-Corpus-of-Three-Trillion-Tokens-arXiv-2402.00159.pdf</a> 核对过原文：</p>
+<blockquote>
+<p>✅ "We also implement a Bloom filter (Bloom, 1970) compatible with our mixer which enables linear-time probabilistic detection of duplicates. <strong>We can repurpose this for test set decontamination by first seeding the Bloom filter with test examples</strong>, then flagging any detected duplicates when mixing the pre-training data."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★ 把这句话翻成大白话：
+
+  去重在问：  &quot;这段文字，我【以前见过】吗？&quot;
+  去污染在问：&quot;这段文字，在【评测集】里出现过吗？&quot;
+
+  ⟹ 🔑 这是【同一个问题】，只是&quot;见过的东西&quot;那个集合不一样：
+       去重  ⟹ 集合 = 已经处理过的语料
+       去污染 ⟹ 集合 = 评测集（★ 一开始就预先塞进去，叫 &quot;seeding&quot;）
+
+⟹ ★★ 工程含义：你【不需要】为去污染单独写一套系统。
+     把评测集先 seed 进去重用的那个 Bloom filter，
+     再在混合（mix）训练数据时把命中的标出来，就做完了。
+  ★ 成本几乎为零：同一个数据结构、同一遍扫描、同一套段落级切分。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>但要注意 Bloom filter 带来的一个口径问题</strong>：Bloom filter 有<strong>假阳性</strong>（<a href="06-去重.html">06 章</a> §6.4 算过：每元素 10 位时约 0.82%），⟹ <strong>它会把一些干净文档误报成污染</strong>。在去重场景里，0.82% 的误删是可以接受的代价；⚠️ <strong>在去污染场景里，这 0.82% 会直接变成你报出来的"污染率"的底噪</strong>。★ 如果你测出来的污染率本身只有 0.1%，那你测到的东西<strong>基本全是 Bloom filter 的假阳性</strong>。🔑 <strong>报污染率之前，先算一遍你的假阳性率，确认信号比底噪大。</strong></p>
+</blockquote>
+<hr />
+<h3 id="_6">★★ 一个绕不过去的时序问题</h3>
+<div class="codehilite"><pre><span></span><code>★★ 评测集是【不断增加】的。
+
+  你 2024 年训模型时做了去污染，2025 年出了一个新评测集 ——
+  它的题目可能早就在你 2024 年抓的那批网页里了，
+  而你 2024 年做去污染时，★ 根本不知道这个评测集的存在。
+
+⟹ ★★★ &quot;已去污染&quot;这句话只对【当时已知的评测集】成立，
+     对未来的评测集【完全不成立】，而且永远补不回来
+     —— 模型已经训完了。
+</code></pre></div>
+
+<p><strong>建库侧只有两个动作能对冲这件事</strong>（⚠️ 我的整理）：</p>
+<table>
+<thead>
+<tr>
+<th>动作</th>
+<th>做法</th>
+<th>★ 它能换到什么</th>
+<th>⚠️ 它换不到什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 存住 n-gram 索引，而不是只存结论</strong></td>
+<td>把<strong>语料的</strong> n-gram 索引落盘并长期保留，而不是扫完就扔</td>
+<td>★★ 以后出了新评测集，可以<strong>事后回答</strong>"这批题在不在我的训练数据里"</td>
+<td>⚠️ 不能把模型里已经学到的东西取出来；只能告诉你污染了多少</td>
+</tr>
+<tr>
+<td><strong>② canary string（金丝雀字符串）</strong></td>
+<td>评测集作者在文件里埋一个独一无二的 GUID 串；★ 你这一侧的责任是<strong>见到这个串就把整个文件删掉</strong></td>
+<td>★ 一条字符串匹配，近乎免费，且<strong>跨语言、抗改写</strong>（串本身不会被翻译）</td>
+<td>⚠️ 完全依赖评测集作者事先埋了；⚠️ 清洗流程（<a href="05-语言识别与启发式过滤.html">05 章</a>的规则）常把这种"怪行"删掉，<strong>串没了、题留下了</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>① 那一行值得单独说</strong>，因为它常被省掉。✅ Dolma 的 PDF 里提到它的去污染是在 mixer 阶段做的——也就是说<strong>索引是流水线的一个持久产物，不是临时变量</strong>。★ 这条和 8.5 的数据溯源是同一个思路：<strong>可观测性要在事故发生之前就留下来。</strong> ⚠️ 代价是存储：按 8.2 末的算法，1e10 篇语料的全量 13-gram 索引是 4.88e12 个窗口 × 8 字节 ≈ <strong>39 TB</strong>，⟹ 实践中一般只对<strong>抽样</strong>或<strong>只对最终入库的那部分</strong>建长期索引。</p>
+<p>⚠️ <strong>② 的 canary 串还有一个容易被忽略的坑</strong>：如果你<strong>不删文件、只删那一行串</strong>，你就把"这个文件被污染过"的唯一证据毁掉了，而题目还留在语料里。🔑 <strong>见到 canary 串，删文件，不要删串。</strong></p>
+</blockquote>
+<h3 id="_7">★★★ 成本账：去污染该排在流水线的哪一步</h3>
+<p><a href="05-语言识别与启发式过滤.html">05 章</a> §5.1 定下了级联过滤（cascade）的原则：<strong>便宜的先跑，把量砍下来，贵的后跑。</strong> 那么去污染有多贵？分两头算，★ 结论会让人意外。</p>
+<p><strong>第一头：评测集侧的哈希集合有多大？</strong>（⚠️ 下面的规模假设是我的取值，不是某家的披露）</p>
+<div class="codehilite"><pre><span></span><code>假设：30 万条评测样本（★ 把目前常用的几十个评测集全加起来，大致是这个量级）
+      每条平均 120 个词 ⟹ 每条 120 − 13 + 1 = 108 个 13-gram 窗口
+
+哈希集合元素数 = 300,000 × 108 = 3240 万个 13-gram
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>存法</th>
+<th>每元素</th>
+<th>总量</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>扁平存 8 字节哈希</strong>（排序数组 / <code>numpy</code> / Bloom filter）</td>
+<td>8 字节</td>
+<td>✅ <strong>259 MB</strong>（= 247 MiB）</td>
+<td>★ 一台笔记本随便装得下</td>
+</tr>
+<tr>
+<td><strong>Python <code>set</code> of int</strong></td>
+<td>⚠️ 实测约 <strong>66 字节</strong></td>
+<td>⚠️ <strong>2.14 GB</strong>（= 1.99 GiB）</td>
+<td>★ <strong>贵 8.2 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⚠️ 那 66 字节是我在本机实测出来的，拆开看：
+     sys.getsizeof(set) ÷ 元素数 ≈ 34 字节   ← 哈希表的槽位（含为控制装载率留的空槽）
+   + 每个 64 位整数对象本身        32 字节   ← ★ Python 的 int 是堆上对象，不是 8 字节裸整数
+   ───────────────────────────────────────
+   ≈ 66 字节 / 元素
+
+⚠️ 如果按进程 RSS 量，还会更高（实测约 114 字节/元素），
+   因为 set 扩容时会反复重建哈希表、留下内存碎片。
+⟹ ★ 口径说明：上表取的是&quot;getsizeof + int 对象&quot;这个可解释的口径。
+     ⚠️ 三个口径（34 / 66 / 114 字节）差 3.4 倍，★ 报内存数字时必须说清量的是哪一个。
+     （⟹ 和 [06 章](06-去重.md) §6.4 讲 Python set 开销时是同一个坑。）
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>第一头的结论：评测集侧【小到可以忽略】。</strong> 259 MB 意味着这个集合可以<strong>整个塞进每一个 worker 的内存</strong>，不需要任何分布式查询、不需要 Redis、不需要分片。★ 初学者容易把工程复杂度想象在这一头，<strong>而它根本不在这一头。</strong></p>
+</blockquote>
+<p><strong>第二头：扫一遍训练语料要多久？</strong></p>
+<div class="codehilite"><pre><span></span><code>假设：1e10 篇文档（100 亿篇，和 [06 章] 的规模假设一致）
+      每篇平均 500 个词
+
+每篇的窗口数 = 500 − 13 + 1 = 488
+总窗口数     = 1e10 × 488 = 4.88e12 个
+
+每个窗口的成本 = 拼字符串 + 算一次 blake2b + 查一次哈希表
+⚠️ 取 1 μs / 窗口（★ 我的量级估算，不是实测；Python 实现会更慢，
+   Rust / C++ 实现可以做到几百纳秒）
+
+单核耗时 = 4.88e12 × 1 μs = 4.88e6 秒 = 56.5 天
+1000 核   = 4880 秒        = 1.36 小时
+折算每篇  = 488 μs ≈ 0.5 毫秒
+</code></pre></div>
+
+<p><strong>把它插进 <a href="05-语言识别与启发式过滤.html">05 章</a> §5.1 那张成本梯度表</strong>（⚠️ 该表的单篇耗时全是量级估算）：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>量级耗时 / 篇</th>
+<th>算力类型</th>
+<th>相对正则的倍数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正则 / 计数</td>
+<td>~ 10 μs</td>
+<td>CPU</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>语言识别 fastText</td>
+<td>~ 50 μs</td>
+<td>CPU</td>
+<td>5×</td>
+</tr>
+<tr>
+<td><strong>★ n-gram 去污染</strong></td>
+<td><strong>~ 490 μs</strong></td>
+<td><strong>CPU</strong></td>
+<td><strong>≈ 49×</strong></td>
+</tr>
+<tr>
+<td>MinHash 签名</td>
+<td>~ 1 ms</td>
+<td>CPU</td>
+<td>100×</td>
+</tr>
+<tr>
+<td>困惑度（小 n-gram 语言模型）</td>
+<td>~ 5 ms</td>
+<td>CPU</td>
+<td>500×</td>
+</tr>
+<tr>
+<td>轻量分类器（BERT 级）</td>
+<td>~ 20 ms</td>
+<td>GPU</td>
+<td>2000×</td>
+</tr>
+<tr>
+<td>大模型打标签</td>
+<td>~ 1 s</td>
+<td>GPU</td>
+<td>100000×</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 读这张表要小心，因为它会把人引向一个【错误的结论】：
+
+  &quot;去污染只有 490 μs，比分类器（20 ms）便宜 40 倍，
+   ⟹ 按级联原则，它应该排在分类器【前面】。&quot;
+
+⚠️ 这个推理对【单次运行】是对的，★ 但去污染不是只跑一次的步骤。
+</code></pre></div>
+
+<hr />
+<p><strong>把它放在漏斗的不同位置，重跑一次的成本差多少？</strong> 下面沿用 <a href="01-鸟瞰全景.html">01 章</a> §1.4 那条漏斗的每步留存率（⚠️ 那一列数字是量级示意，不是论文数据；⚠️ 而且 <strong>§1.4 的留存率分母是字节数，这里套用到文档篇数上只是粗略代理</strong>——去重砍掉的多是短文档，按篇数算的留存率通常更高）：</p>
+<div class="codehilite"><pre><span></span><code> 1e10 篇文档（已抽完正文）
+   │
+   │  ③ 语言识别 fastText ── 50 μs/篇 ── 留存约 43%
+   ▼
+ 4.3e9 篇
+   │
+   │  ③ 启发式规则 ── 10 μs/篇 ── 留存约 50%
+   ▼
+ 2.15e9 篇
+   │
+   │  ④ 精确去重 + MinHash ── 1 ms/篇 ── 留存约 20%（★ 砍得最狠的一刀）
+   ▼
+ 4.3e8 篇
+   │
+   │  ⑤ 质量分类器 ── 20 ms/篇 ── 留存约 60%
+   ▼
+ 2.58e8 篇
+   │
+   │  ⑥ n-gram 去污染 + PII 掩码 ── 490 μs/篇 ── 留存约 100%
+   ▼
+ 2.58e8 篇 ⟹ 入库
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>去污染放在哪</th>
+<th>要扫多少篇</th>
+<th>单核成本 / 次</th>
+<th>相对</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>放在最前面</strong>（紧跟抽正文）</td>
+<td>1e10</td>
+<td><strong>56.5 核日</strong></td>
+<td>38.8×</td>
+</tr>
+<tr>
+<td><strong>放在漏斗末尾</strong>（⑥ 的位置）</td>
+<td>2.58e8</td>
+<td><strong>35 核时（= 1.46 核日）</strong></td>
+<td>1×</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这 38.8 倍才是决定它位置的理由，而【不是】单篇耗时。
+
+  单篇耗时说&quot;它比分类器便宜 40 倍，应该排在分类器前面&quot;。
+  ⚠️ 但这个论证假设了【只跑一次】。
+
+  而 8.2 的时序问题说得很清楚：评测集会不断增加，
+  ⟹ ★ 去污染是整条流水线里【最需要反复重跑】的那一步：
+       每出一个新评测集，你就想重新问一遍&quot;它在不在我的语料里&quot;。
+  ⟹ 🔑 于是真正该优化的不是&quot;跑一次多少钱&quot;，
+       ★★ 而是【重跑一次多少钱】—— 而那取决于它前面砍掉了多少量。
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>但这里有一个必须说清的前提，否则上面的结论会用错地方。</strong> 之所以"顺序可以纯按成本决定"，是因为<strong>整篇丢</strong>的去污染是一个<strong>纯过滤器</strong>：它只决定一篇文档留不留，不改文档内容。⟹ 几个纯过滤器串起来，最终留下的集合<strong>和顺序无关</strong>（就是几个条件的交集），所以顺序只影响成本，不影响结果。</p>
+<p>⚠️⚠️ <strong>而一旦你改成"只丢命中的段落"（也就是 8.2 建议的那个 615 : 1 的优化），这个前提就没了。</strong> 挖掉一段会改变文档的长度、重复率、质量分——而这些正是 <a href="05-语言识别与启发式过滤.html">05 章</a> 的规则和 <a href="07-质量过滤.html">07 章</a> 的分类器赖以打分的输入。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>⟹ ★★★ 所以结论分成两种情况：
+
+  【整篇丢】 ⟹ 纯过滤器，顺序随便 ⟹ 放最后，重跑最便宜。
+
+  【丢段落】 ⟹ 它改变文档内容，顺序【不可交换】：
+      · 放在质量过滤【之后】：⚠️ 你打的质量分是基于&quot;还没被挖段落&quot;的
+        那一版文档算的，挖完以后那个分数已经不成立了。
+      · 放在质量过滤【之前】：★ 分数是基于最终文本算的，逻辑上更正确，
+        ⚠️ 代价是要扫 4.3e8 篇而不是 2.58e8 篇（贵 1.7 倍）。
+  ⟹ 🔑 我的建议：丢段落就放在质量过滤【之前】，多花那 1.7 倍。
+     ★ 理由是它顺带修掉了一个很难发现的不一致——
+       &quot;入库文档的质量分，和它实际的文本不匹配&quot;。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>还有第三个考虑，它建议把去污染和去重放在一起</strong>：8.2 末讲的 Dolma 做法——✅ 去污染复用去重的那个 Bloom filter，<strong>同一遍扫描、同一套段落切分，边际成本几乎为零</strong>。⟹ ⚠️ 这和"放最后"是一组<strong>真实的张力</strong>，没有唯一答案：</p>
+<table>
+<thead>
+<tr>
+<th>放法</th>
+<th>★ 好处</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>和去重合在一起</strong>（Dolma 的做法）</td>
+<td>复用 Bloom filter 和段落索引，边际成本≈0；只扫一遍</td>
+<td>⚠️ 重跑时要连去重一起跑，而去重是最贵的一步</td>
+</tr>
+<tr>
+<td><strong>放漏斗末尾，独立一步</strong></td>
+<td>★ 重跑便宜 38.8 倍；可以反复重跑</td>
+<td>⚠️ 要单独再扫一遍、单独维护一套索引</td>
+</tr>
+</tbody>
+</table>
+<p>🔑 <strong>我的读法</strong>：<strong>第一遍建库跟去重合着做</strong>（省一遍扫描），<strong>同时把去污染保留成一个能独立重跑的步骤</strong>，因为你一定会重跑它。</p>
+</blockquote>
+<hr />
+<h2 id="83-pii">8.3 ★★ 隐私：PII 的识别与处理</h2>
 <p><strong>PII</strong> = <strong>Personally Identifiable Information</strong>（个人可识别信息），指能定位到具体某个人的信息。</p>
 <div class="codehilite"><pre><span></span><code>典型的 PII：
    姓名、邮箱、手机号、身份证号、住址、
-   银行卡号、社保号、车牌、IP 地址、生物特征
+   银行卡号、社保号、车牌号、IP 地址、生物特征
 
-★ 为什么大模型场景下特别危险：
-   模型会【逐字背下】训练数据（06 章：去重前逐字复制率 &gt;1%）
-   → 有人在网上贴过自己的手机号 → 模型可能在对话里把它吐出来
-   → ★ 这已经不是&quot;数据质量问题&quot;，是【合规事故】
+★ 为什么在大模型场景下特别危险：
+   模型会【逐字背下】训练数据
+   （✅ [06 章] §6.1：不去重的 1.5B 模型，无提示生成的逐字复制率 1.926%）
+   ⟹ 有人在论坛贴过自己的手机号 ⟹ 模型可能在对话里把它吐出来
+   ⟹ ★★ 这已经不是&quot;数据质量问题&quot;，是【合规事故】
+      —— 它不会让你的分数掉，它会让你的产品下线。
 </code></pre></div>
 
-<h3 id="_4">两种识别手段</h3>
-<div class="codehilite"><pre><span></span><code>① 正则（快，覆盖结构化的）
-   邮箱、手机号、身份证号、银行卡、IP —— 这些都有明确格式
-   ★ 中国身份证号还能用【校验位】验证，误报率可以做到很低
+<h3 id="_8">★★★ 一张对照表：哪类数据、什么风险、业界怎么处理、代价是什么</h3>
+<table>
+<thead>
+<tr>
+<th>数据类型</th>
+<th>⚠️ 风险</th>
+<th>能不能用正则抓</th>
+<th>★ 业界怎么处理</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>邮箱</strong></td>
+<td>中：可被用来发垃圾邮件 / 关联身份</td>
+<td>✅ <strong>能</strong>，格式明确</td>
+<td>✅ <strong>Dolma 三类正则之一</strong>，替换成占位符</td>
+<td>几乎为零：句子结构保留</td>
+</tr>
+<tr>
+<td><strong>IP 地址</strong></td>
+<td>中：可定位到网络位置</td>
+<td>✅ <strong>能</strong>，但见下面那个版本号的坑</td>
+<td>✅ <strong>Dolma 三类正则之一</strong></td>
+<td>⚠️ 会误伤版本号、坐标串</td>
+</tr>
+<tr>
+<td><strong>电话号码</strong></td>
+<td>高：直接可拨</td>
+<td>✅ <strong>能</strong>（中国手机号还能用号段 + 长度卡）</td>
+<td>✅ <strong>Dolma 三类正则之一</strong></td>
+<td>⚠️ 不加数字边界会误伤订单号、时间戳</td>
+</tr>
+<tr>
+<td><strong>身份证号 / 社保号</strong></td>
+<td>★★ <strong>极高</strong>：唯一标识一个人</td>
+<td>✅ <strong>能</strong>，★ 中国身份证号还有<strong>校验位</strong>可验，误报率能压到很低</td>
+<td>正则 + 校验位；命中直接替换</td>
+<td>极低</td>
+</tr>
+<tr>
+<td><strong>银行卡号</strong></td>
+<td>★★ <strong>极高</strong></td>
+<td>✅ 能（Luhn 校验位）</td>
+<td>正则 + Luhn 校验</td>
+<td>极低</td>
+</tr>
+<tr>
+<td><strong>住址</strong></td>
+<td>高</td>
+<td>❌ <strong>不能</strong>，没有固定格式</td>
+<td>NER 模型（见下）</td>
+<td>⚠️ 贵（要跑模型）、召回率有限</td>
+</tr>
+<tr>
+<td><strong>姓名</strong></td>
+<td>⚠️ <strong>取决于是谁</strong></td>
+<td>❌ 不能</td>
+<td>⚠️ <strong>实践中一般【不删姓名】</strong>，见下面那段</td>
+<td>——</td>
+</tr>
+<tr>
+<td><strong>生物特征 / 医疗记录</strong></td>
+<td>★★★ 最高</td>
+<td>❌ 不能</td>
+<td>★ <strong>在数据源层面就不收</strong>（整站排除），不靠后期清洗</td>
+<td>⚠️ 损失整个数据源</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"姓名"那一行是这张表里唯一没有好答案的</strong>，原因是：★ <strong>正则和 NER 都无法区分公众人物和普通人。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>&quot;马云宣布……&quot;        ⟹ 该留（公开的、与公共事务相关的）
+&quot;张三的电话是……&quot;     ⟹ 该删
 
-② NER 模型（Named Entity Recognition，命名实体识别）
-   姓名、地址这类没有固定格式的，只能靠模型
-   ⚠️ 但姓名的问题在于：★【无法区分公众人物和普通人】
-      &quot;马云宣布……&quot; 该留，&quot;张三的电话是……&quot; 该删
-      → 实践中一般【不删姓名】，只删&quot;姓名 + 联系方式&quot;同时出现的段落
+⟹ ⚠️ 两者在文本形式上【完全一样】：都是&quot;中文姓名 + 谓语&quot;。
+⟹ ★ 所以实践中的妥协是：【不单独删姓名】，
+     只删&quot;姓名 + 联系方式【同时出现】&quot;的那一段。
+  🔑 也就是把判据从&quot;出现了 PII&quot;换成&quot;出现了【可关联】的 PII 组合&quot;
+     —— 一个名字本身不能定位到人，名字加电话就能。
 </code></pre></div>
 
-<h3 id="vs">处理方式：删除 vs 替换</h3>
-<div class="codehilite"><pre><span></span><code>★ 主流做法是【替换】而不是删除整篇：
+<h3 id="dolma">✅ Dolma 的真实做法：三类正则，两档阈值</h3>
+<p>这是目前披露最完整的一套开源语料 PII 处理方案。✅ 下面每一条我都从 <a href="papers/">papers/Dolma-Open-Corpus-of-Three-Trillion-Tokens-arXiv-2402.00159.pdf</a> 核对过原文（正文"Filtering Personally Identifiable Information"一段，细节在论文附录 §I）：</p>
+<div class="codehilite"><pre><span></span><code>★ 第一个决定：【不用模型，只用正则】
 
-   原文：请联系 zhangsan@example.com 或拨打 13812345678
-   替换：请联系 &lt;EMAIL&gt; 或拨打 &lt;PHONE&gt;
+  ✅ 论文原文：&quot;Dolma&#39;s size makes it impractical to use model-based
+     PII detectors like Presidio (Microsoft, 2018); instead, we rely on
+     carefully-crafted regular expressions that sacrifice some accuracy
+     for significant speed-up.&quot;
+     （Presidio 是微软开源的 PII 检测工具，基于 NER 模型）
 
-   ★ 为什么替换更好：
-     ① 保留了句子结构和语言信息（这段文字仍然是有效的语言样本）
-     ② 删整篇会损失大量正常内容（PII 常出现在正常文档的角落里）
-     ③ 模型反而学会了&quot;这个位置是个联系方式&quot;这个结构知识
+  ⟹ 🔑 翻译：★★ 在 3 T token 的规模上，&quot;准确&quot;输给了&quot;跑得完&quot;。
+     这是本教程反复出现的那个权衡（[05 章] §5.1 的级联原则）在 PII 上的又一次出现。
 
-⚠️ 但要小心【替换标记本身】被模型学成一个高频 token，
-   在生成时莫名其妙冒出 &lt;EMAIL&gt;。★ 通常会做随机化处理。
+★ 第二个决定：【只抓三类】
+  ✅ 论文原文：&quot;we focus on three kinds of PII that are detectable with
+     high precision: email addresses, IP addresses and phone numbers.&quot;
+  ⟹ ★ 注意它挑的标准是【高精确率（high precision）】，不是高召回率
+     —— 宁可漏掉一些，也不要误伤。
 </code></pre></div>
 
-<p>✅ <strong>Dolma</strong>（<a href="https://arxiv.org/abs/2402.00159">2402.00159</a>）是这方面披露最完整的开源语料——它把 PII 检测与掩码作为流水线的标准环节，并且<strong>整套工具链开源</strong>。⚠️ 具体规则请以其 PDF 与开源仓库为准。</p>
+<p>✅ <strong>两档阈值和各自影响的文档比例</strong>（✅ 全部来自论文；⚠️ <strong>分母务必看清</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>一篇文档里检出的 PII span 数</th>
+<th>✅ 怎么处理</th>
+<th>✅ 影响的文档占比</th>
+<th>⚠️ 分母是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>≤ 5 个</strong></td>
+<td><strong>替换</strong>成占位符（三竖线包起来的 <code>EMAIL_ADDRESS</code> / <code>PHONE_NUMBER</code> / <code>IP_ADDRESS</code>）</td>
+<td>✅ <strong>0.02%</strong></td>
+<td><strong>文档篇数</strong>，范围是那 25 个 Common Crawl 快照</td>
+</tr>
+<tr>
+<td><strong>≥ 6 个</strong></td>
+<td>★ <strong>整篇删除</strong></td>
+<td>✅ <strong>0.001%</strong></td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 为什么 ≥6 个就整篇删，而不是继续替换？
+  ✅ 论文给的理由：&quot;pages containing abundant phone numbers and email
+     addresses are likely to pose a greater risk of disclosing other
+     PII classes.&quot;
+  ⟹ 🔑 翻译：一个页面上有六个以上的电话和邮箱，
+       ★ 它大概率是【通讯录、名单、泄露的数据库导出】这类东西。
+       这时候你抓到的那三类只是冰山一角 ——
+       页面上还会有姓名、住址、职位，⚠️ 而那些你的正则抓不到。
+  ⟹ ★★ 所以这一档的判据不是&quot;PII 多&quot;，而是【&quot;PII 密度高&quot;是一个信号】：
+       它在提示你&quot;这一整篇的性质不对&quot;。
+       ★ 这是一个很值得学的设计：用能测的东西，去代理测不了的东西。
+
+⚠️ 把两个数字摆在一起看，先别被&quot;0.02%&quot;的小数点骗了：
+     0.02%  + 0.001%  = 0.021% 的文档被动过
+   ⟹ 按篇数算确实微不足道。
+   ⚠️ 但 Dolma 跨 40 亿+ 篇文档（[07 章] §7.7 那张表），
+      0.021% × 4e9 ≈ 【84 万篇】文档被改写或删除。
+   🔑 ★★★ 又是那条纪律：把比例换成绝对值再做判断。
+      （⟹ [06 章] §6.4 对 Bloom filter 的假阳性做过同一件事。）
+</code></pre></div>
+
+<hr />
+<h3 id="_9">✅ 一个可以自己验算的成本锚点</h3>
+<p>✅ 论文正文给了一个速率数字，⚠️ <strong>但它的口径必须说准</strong>：那 122 这个数<strong>不是 PII 过滤单独的速率</strong>，而是<strong>整套工具链复现 C4 配方时</strong>的整体过滤速率。</p>
+<div class="codehilite"><pre><span></span><code>✅ 论文原文：&quot;In internal tests to replicate C4 recipe, our toolkit
+   performed filtering at a rate of 122 CPU hours per TB; for reference,
+   processing the full &#39;raw&#39; Dolma files totaling 200 TB on a
+   c6a.48xlarge instance with 192 vCPUs would take 5 days.&quot;
+
+★ 自己把这句话验算一遍（这是检验自己有没有读懂口径的最好办法）：
+
+    200 TB × 122 CPU 小时/TB = 24400 CPU 小时
+    24400 CPU 小时 ÷ 192 vCPU = 127.1 小时 = 5.30 天
+
+  ✅ 和论文说的 &quot;would take 5 days&quot; 对得上。
+
+⟹ ★★ 这组数给你的量级直觉：
+     【把 200 TB 原始文本做完规则 + PII 过滤，一台 192 核的机器，一周之内。】
+   ★ 注意它是纯 CPU 的，不占 GPU —— 这正是 [05 章] §5.1 说的
+     &quot;便宜的那一档&quot;，PII 处理属于这一档。
+⚠️ 口径提醒：这里的 TB 是十进制（10¹² 字节）；若论文原意是 TiB，
+   折算差 10%，但不影响&quot;一周之内&quot;这个结论。
+</code></pre></div>
+
+<h3 id="pii">★★★ 一个很反直觉的实验结果：怎么处理 PII，对模型效果没有影响</h3>
+<div class="codehilite"><pre><span></span><code>✅ 论文原文：&quot;In data ablation experiments, we find that execution
+   details around PII (e.g., removal versus special token replacement)
+   had no effect on model performance, which is expected given the tiny
+   percentage of affected data.&quot;
+
+⟹ 🔑 ★★★ 这句话值一整节：
+     【&quot;删整篇&quot;还是&quot;替换成占位符&quot;，模型效果上测不出差别。】
+
+★ 为什么：因为被动到的只有 0.021% 的文档（上表），
+  ⚠️ 而 0.021% 的数据变化，在模型效果上本来就低于噪声。
+
+⟹ ★★ 那么选哪一种？既然【效果维度上这个选择是自由的】，
+     就应该完全按【其他维度】来选：
+
+       合规维度    ⟹ 删整篇更&quot;干净&quot;，但你删掉的 99% 是无辜内容
+       数据量维度  ⟹ 替换保留了句子结构，一个字都不浪费
+       审计维度    ⟹ ★★ 替换会在文本里【留下痕迹】
+                     （占位符本身就是&quot;这里曾有 PII&quot;的记录）
+                     而删整篇是【无痕的】：事后你无法知道
+                     某一篇到底是因为 PII 被删的，还是因为别的规则
+
+⟹ 🔑 所以本教程的建议是【替换 + 把命中计数落盘】，
+     ★ 理由不是效果（效果上没差别），★★ 而是【可审计】。
+     ⟹ 和 8.5 的数据溯源是同一条逻辑。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>但替换也有一个必须处理的副作用</strong>：占位符会变成一个<strong>高频 token</strong>，于是模型可能在生成时莫名其妙冒出 <code>|||EMAIL_ADDRESS|||</code>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★ 两个缓解办法（⚠️ 我的整理，不是论文结论）：
+  ① 用【不容易被 tokenizer 切成单个常用 token】的形式
+     —— ✅ Dolma 的 ||| 三竖线包裹就有这个效果（[09 章] 讲 tokenizer 时会更清楚）
+  ② 随机化：一部分替换成占位符，一部分直接删掉那几个字符
+     ⟹ 让模型学不到&quot;这个位置必定出现某个固定串&quot;
+⚠️ 代价：② 会让审计变难（因为不是每一处都留痕了）。★ 这是一个真实的取舍。
+</code></pre></div>
+
+<h3 id="_10">一段能跑的实现（★ 含一个无法用正则解决的坑）</h3>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
+
 <span class="n">PATTERNS</span> <span class="o">=</span> <span class="p">{</span>
-    <span class="s2">&quot;&lt;EMAIL&gt;&quot;</span><span class="p">:</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[\w.+-]+@[\w-]+\.[\w.-]+&quot;</span><span class="p">),</span>
-    <span class="s2">&quot;&lt;PHONE_CN&gt;&quot;</span><span class="p">:</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;(?&lt;!\d)1[3-9]\d</span><span class="si">{9}</span><span class="s2">(?!\d)&quot;</span><span class="p">),</span>
-    <span class="s2">&quot;&lt;IP&gt;&quot;</span><span class="p">:</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;(?&lt;!\d)(?:\d{1,3}\.)</span><span class="si">{3}</span><span class="s2">\d{1,3}(?!\d)&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;&lt;EMAIL&gt;&quot;</span><span class="p">:</span>     <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[\w.+-]+@[\w-]+\.[\w.-]+&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;&lt;PHONE_CN&gt;&quot;</span><span class="p">:</span>  <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;(?&lt;!\d)1[3-9]\d</span><span class="si">{9}</span><span class="s2">(?!\d)&quot;</span><span class="p">),</span>
+    <span class="c1"># ★ IP：加 0~255 范围校验，并把前后边界从 (?&lt;!\d) 放宽到 (?&lt;![\d.])</span>
+    <span class="s2">&quot;&lt;IP&gt;&quot;</span><span class="p">:</span>        <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span>
+        <span class="sa">r</span><span class="s2">&quot;(?&lt;![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.)</span><span class="si">{3}</span><span class="s2">&quot;</span>
+        <span class="sa">r</span><span class="s2">&quot;(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])&quot;</span><span class="p">),</span>
     <span class="s2">&quot;&lt;IDCARD_CN&gt;&quot;</span><span class="p">:</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;(?&lt;!\d)\d</span><span class="si">{17}</span><span class="s2">[\dXx](?!\d)&quot;</span><span class="p">),</span>
 <span class="p">}</span>
 
@@ -416,104 +1242,457 @@ n 大（比如 20）：
     <span class="n">hits</span> <span class="o">=</span> <span class="p">{}</span>
     <span class="k">for</span> <span class="n">tag</span><span class="p">,</span> <span class="n">pat</span> <span class="ow">in</span> <span class="n">PATTERNS</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
         <span class="n">text</span><span class="p">,</span> <span class="n">n</span> <span class="o">=</span> <span class="n">pat</span><span class="o">.</span><span class="n">subn</span><span class="p">(</span><span class="n">tag</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">n</span><span class="p">:</span> <span class="n">hits</span><span class="p">[</span><span class="n">tag</span><span class="p">]</span> <span class="o">=</span> <span class="n">n</span>
-    <span class="k">return</span> <span class="n">text</span><span class="p">,</span> <span class="n">hits</span>          <span class="c1"># ★ 一定要把命中统计留下来，用于审计</span>
+        <span class="k">if</span> <span class="n">n</span><span class="p">:</span>
+            <span class="n">hits</span><span class="p">[</span><span class="n">tag</span><span class="p">]</span> <span class="o">=</span> <span class="n">n</span>
+    <span class="k">return</span> <span class="n">text</span><span class="p">,</span> <span class="n">hits</span>        <span class="c1"># ★ 一定要把命中统计留下来，用于审计（见 8.5）</span>
+</code></pre></div>
+
+<p>✅ <strong>两个坑我都在本机跑过，下面是真实输出。</strong></p>
+<p><strong>坑一：手机号正则不加数字边界，会把长数字串里的一段切出来当手机号。</strong></p>
+<div class="codehilite"><pre><span></span><code>输入                             无边界 1[3-9]\d{9}           有边界 (?&lt;!\d)...(?!\d)
+订单号 2024113800138000123456    订单号 20241&lt;PHONE&gt;123456    订单号 2024113800138000123456
+时间戳 1738123456789             时间戳 &lt;PHONE&gt;89             时间戳 1738123456789
+手机 13812345678                 手机 &lt;PHONE&gt;                 手机 &lt;PHONE&gt;
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>⚠️ 看中间那一列：它把订单号【从中间劈开】，留下 &quot;20241&quot; 和 &quot;123456&quot; 两截垃圾。
+⟹ ★★ 这不只是误报，它还【破坏了原文】：
+     一篇正常的电商订单页，会被打得满篇是 &lt;PHONE&gt;。
+⟹ 🔑 在电商、物流、日志类语料上，这一条的误伤是灾难性的。
+   ★ 加上 (?&lt;!\d) 和 (?!\d) 两个边界断言，三行测试全部正确。
+</code></pre></div>
+
+<p><strong>坑二：⚠️ IP 地址和版本号，正则【原理上无法区分】。</strong></p>
+<div class="codehilite"><pre><span></span><code>输入                       原写法 (?&lt;!\d)...(?!\d)    加了范围校验的写法         修掉了吗
+请访问 10.0.0.1 查看       请访问 &lt;IP&gt; 查看           请访问 &lt;IP&gt; 查看           两种写法都对
+IP 是 999.1.1.1            IP 是 &lt;IP&gt;                 IP 是 999.1.1.1            修掉了
+protobuf 1.2.3.4.5 发布    protobuf &lt;IP&gt;.5 发布       protobuf 1.2.3.4.5 发布    修掉了
+升级到 1.2.3.4 版本        升级到 &lt;IP&gt; 版本           升级到 &lt;IP&gt; 版本           没修掉
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 范围校验（0~255）修掉了两个：
+   999.1.1.1   ⟹ 999 超过 255，不再匹配
+   1.2.3.4.5   ⟹ 把 (?!\d) 放宽成 (?![\d.])，五段的版本号不再被切出前四段
+               ⚠️ 原写法会输出 &quot;&lt;IP&gt;.5&quot; —— 这是上面那个&quot;破坏原文&quot;的同一类错误
+
+⚠️⚠️ 但最后一行【修不掉】，而且【永远修不掉】：
+   &quot;1.2.3.4&quot; 作为 IP 地址【完全合法】，作为版本号也【完全合法】。
+   ⟹ ★★★ 两者在【字符串层面是同一个东西】，
+        正则看不到上下文，所以它【原理上】无法区分。
+
+★ 三个能做的（⚠️ 我的整理）：
+  ① 接受它。把一个版本号替换成 &lt;IP&gt;，损失几乎为零
+     （⟹ 这恰好对应上面 Dolma 挑&quot;高精确率而非高召回率&quot;的那个取向的反面：
+        在这一类上宁可误伤，因为误伤的代价确实小）
+  ② 看上下文：前面紧挨着 &quot;v&quot; / &quot;version&quot; / &quot;版本&quot; / 在代码块里 ⟹ 跳过
+     ⚠️ 这是启发式，会有新的漏检
+  ③ 排除私有网段和保留网段以外的&quot;不像真实 IP&quot;的值
+     ⚠️ 但 1.2.3.4 是一个真实可路由的地址，这一招对它也无效
+
+⟹ 🔑 结论：★★ 正则能做到&quot;格式正确&quot;，做不到&quot;语义正确&quot;。
+     ★ 凡是 PII 的格式和正常内容的格式撞车的（IP vs 版本号、
+       身份证号 vs 18 位订单号、手机号 vs 11 位编号），
+       ⟹ 你只能在【误伤】和【漏检】之间选一个，选不出两全。
+     ⚠️ 而对 PII 来说，★★ 应该一律选【宁可误伤】——
+        因为误伤的代价是损失一点数据，漏检的代价是合规事故。
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>一个中文特有的坑</strong>：手机号正则如果不加 <code>(?&lt;!\d)</code> / <code>(?!\d)</code> 边界，会把<strong>长数字串（订单号、时间戳）里的一段</strong>误判成手机号，在电商类语料上误伤极大。</p>
+<p>⚠️ <strong>中文身份证号还有一个比正则更好的办法：校验位。</strong> 18 位身份证号的最后一位是前 17 位的加权模 11 校验码，⟹ ★ 一个随机的 18 位数字串通过校验的概率只有约 <strong>1/11 ≈ 9%</strong>。🔑 <strong>先用正则抓候选，再用校验位过一遍，误报率能降一个数量级</strong>，而且这一步几乎不花时间。★ 银行卡号的 Luhn 校验位同理。</p>
 </blockquote>
 <hr />
-<h2 id="84">8.4 许可与合规：不是技术问题，但会决定项目生死</h2>
-<h3 id="_5">三个已经发生过的真实事件</h3>
-<div class="codehilite"><pre><span></span><code>① Books3 下架
-   ★ Books3 是 The Pile（2101.00027）的一个组成部分，包含约 19.6 万本书。
-     因版权争议被下架。⚠️ 所有基于早期 Pile 训练的模型都受到牵连。
-   → 教训：★ 你用的开源语料，【它的合规风险是你的风险】
+<h2 id="84">8.4 ★★ 许可与合规：不是技术问题，但会决定项目生死</h2>
+<h3 id="_11">三个已经发生过的真实事件</h3>
+<table>
+<thead>
+<tr>
+<th>事件</th>
+<th>发生了什么</th>
+<th>★ 对你的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① Books3 下架</strong></td>
+<td>✅ Books3 是 The Pile（<a href="https://arxiv.org/abs/2101.00027">arXiv:2101.00027</a>）里占 <strong>12.07%</strong> 权重的书籍子集，✅ 原始体积 <strong>100.96 GiB</strong>。因版权争议被下架。⚠️ 所有基于早期 Pile 训练的模型都受到牵连</td>
+<td>★★ <strong>你用的开源语料，它的合规风险就是你的风险。</strong>"这是别人发布的公开数据集"不是免责理由</td>
+</tr>
+<tr>
+<td><strong>② robots.txt 收紧</strong></td>
+<td>越来越多站点在 <code>robots.txt</code> 里明确禁止 AI 爬虫（GPTBot、CCBot 等）</td>
+<td>⟹ <a href="02-数据源与文本抽取.html">02 章</a>提过：Common Crawl 的可用内容在<strong>逐年缩水</strong>。★ 详细趋势见 <a href="19-研究热点与未来方向.html">19 章</a> §19.11</td>
+</tr>
+<tr>
+<td><strong>③ 代码许可证</strong></td>
+<td>GitHub 上的公开代码<strong>不等于</strong>可以随便拿来训练。GPL 这类传染性许可证的代码用于训练，法律地位至今没有定论</td>
+<td>★ 实践：按 SPDX（Software Package Data Exchange，软件包数据交换格式）许可证白名单过滤，只留 MIT / Apache-2.0 / BSD 这一类</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>Books3 这一行顺手演示了本章开头那条口径纪律。</strong> 论文 Table 1 报的是 <strong>100.96 GiB</strong>（二进制），⚠️ 如果你把它当成 100.96 GB（十进制）去算，就少算了 <strong>7.4%</strong>——真实的十进制体积是 <strong>108.4 GB</strong>。</p>
+<p>✅ <strong>而论文 Table 1 还给了另一列，可以把"多少本书"直接算出来</strong>（★ 这个数常被二手文章引用，但很少有人说它是从哪来的）：</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>✅ 论文 Table 1 的 Books3 行：Raw Size = 100.96 GiB
+                             Mean Document Size = 538.36 KiB
 
-② robots.txt 的收紧
-   越来越多站点在 robots.txt 里明确禁止 AI 爬虫（GPTBot、CCBot 等）
-   → [02 章](02-数据源与文本抽取.md)提过：Common Crawl 的可用内容在逐年缩水
+★ 文档数 = 100.96 GiB ÷ 538.36 KiB
+         = 108,404,974,551 字节 ÷ 551,281 字节
+         ≈ 196,642
 
-③ 代码许可证
-   GitHub 上的公开代码【不等于】可以随便用来训练。
-   GPL 类传染性许可证的代码用于训练，法律地位至今没有定论。
-   ★ 实践：按 SPDX 许可证白名单过滤（MIT / Apache-2.0 / BSD 等）
+⟹ ✅ 约【19.66 万份文档】，而每份文档就是一本书
+     —— 这就是流传的&quot;约 19.6 万本书&quot;那个数字的出处。
+⟹ ★ 注意这是【我从论文两列数据相除推出来的】，不是论文直接写的数字，
+     ⚠️ 所以它受&quot;平均文档大小&quot;的四舍五入影响，只精确到千位。
+★★ 顺带也解释了 Books3 为什么特殊：538 KiB 的平均文档大小，
+   是 Pile-CC（4.33 KiB）的【124 倍】——书就是最长的那种文档。
 </code></pre></div>
 
-<h3 id="_6">现在的三条路线</h3>
-<div class="codehilite"><pre><span></span><code>① 照用不误 + 事后应对        —— ⚠️ 多数商业模型的实际做法
-② 只用明确开放许可的数据      —— Common Pile 是这条路线的代表
-                                ★ 代价：数据量小得多，能力有差距
-③ 买 / 签授权                —— 大厂与出版商、论坛、代码平台签独家协议
-                                ★ 这正是 02 章说的&quot;数据侧的真实差距&quot;
+<h3 id="_12">现在的三条路线</h3>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>做法</th>
+<th>★ 谁在走</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 照用不误 + 事后应对</strong></td>
+<td>先训，有纠纷再处理</td>
+<td>⚠️ 多数商业模型的实际做法</td>
+<td>⚠️ 法律尾部风险；一旦判决不利，<strong>模型本身可能要重训</strong></td>
+</tr>
+<tr>
+<td><strong>② 只用明确开放许可的数据</strong></td>
+<td>严格按许可证白名单收数据</td>
+<td>Common Pile 这类项目是代表</td>
+<td>★ <strong>数据量小得多，能力有可测量的差距</strong></td>
+</tr>
+<tr>
+<td><strong>③ 买 / 签授权</strong></td>
+<td>和出版商、论坛、代码平台签独家协议</td>
+<td>大厂</td>
+<td>★ 贵，而且<strong>是排他的</strong>——这正是 <a href="02-数据源与文本抽取.html">02 章</a>说的"数据侧的真实差距"</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 这三条路线为什么值得你关心（哪怕你不管法务）：
+
+  路线 ③ 的存在，意味着【数据差距是买出来的，不是爬出来的】。
+  ⟹ 于是一个你无法通过优化流水线弥补的差距出现了：
+     ★ 你的流水线再好，也爬不到签了独家协议的那部分内容。
+  ⟹ 🔑 这也是 [19 章] §19.11 把&quot;存量缩水&quot;列为十大热点之一的原因。
 </code></pre></div>
 
-<h3 id="_7">中文场景下必须额外注意的</h3>
-<p>⚠️ <strong>以下是我的整理，不构成法律意见，落地前请咨询法务：</strong></p>
-<div class="codehilite"><pre><span></span><code>① 《个人信息保护法》（PIPL）—— 对 PII 的要求比很多地区更严格
-② 《生成式人工智能服务管理暂行办法》—— 对训练数据来源合法性有明确要求
-③ 数据出境 —— 训练数据的跨境流动有单独的合规要求
-★ 实践含义：中文语料的 PII 处理和来源存证，通常要做得比英文语料更重
-   → ★ 一定要保留【每一条数据的来源、抓取时间、许可依据】，
-      这叫【数据溯源 / provenance】，是合规审计的唯一抓手
+<h3 id="_13">⚠️ 中文场景下必须额外注意的</h3>
+<p>⚠️ <strong>以下是我的整理，不构成法律意见，落地前请咨询法务。</strong></p>
+<table>
+<thead>
+<tr>
+<th>要求来源</th>
+<th>它管什么</th>
+<th>★ 对数据流水线的具体含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>《个人信息保护法》</strong>（PIPL = Personal Information Protection Law）</td>
+<td>个人信息的收集、处理、出境</td>
+<td>★★ 对 8.3 那套 PII 处理的要求<strong>比很多地区更严格</strong>；⚠️ "已公开的个人信息"也不是无条件可用</td>
+</tr>
+<tr>
+<td><strong>《生成式人工智能服务管理暂行办法》</strong></td>
+<td>训练数据来源的合法性</td>
+<td>★★ 要求能<strong>说明</strong>来源合法——⟹ 这直接把 8.5 的数据溯源从"工程最佳实践"变成了<strong>硬要求</strong></td>
+</tr>
+<tr>
+<td><strong>数据出境相关要求</strong></td>
+<td>训练数据的跨境流动</td>
+<td>⚠️ 如果你的语料存在境外、或者流水线跑在境外，这是一个<strong>单独的</strong>合规项</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 把上面三行压成两条可执行的结论：
+
+  ① 中文语料的 PII 处理，★ 要做得比英文语料【更重】：
+     不只抓邮箱/手机/IP 这三类（Dolma 的做法），
+     ★ 至少要把身份证号、银行卡号、车牌号加进去，
+     ⚠️ 并且对&quot;姓名 + 联系方式同时出现&quot;的段落采取更激进的策略。
+
+  ② ★★ 必须保留【每一条数据的来源、抓取时间、许可依据】。
+     ⟹ 这件事叫【数据溯源 / provenance】，
+        🔑 它是合规审计【唯一】的抓手 —— 下一节专门讲。
 </code></pre></div>
 
 <hr />
-<h2 id="85">8.5 ★ 数据溯源：一个被低估的工程要求</h2>
+<h3 id="pii_1">★★ 挂回真实系统：六份报告对 PII 和去污染到底披露了什么</h3>
+<p>✅ <strong>Dolma 论文附录 §C 专门做了这件事</strong>——它逐份读了当时最强的几个模型的技术报告，把"PII / 去污染 / 来源"这几格的披露情况列了出来。✅ 下面这张表我从 Dolma 的 PDF 原文逐条核对过。</p>
+<p>⚠️ <strong>但这张表的证据等级要说清</strong>：它是 <strong>✅ Dolma 作者对各家报告的阅读结论</strong>（我核对的是 Dolma 的原文），<strong>⚠️ 不是我直接回溯各家报告的一手 PDF</strong>；并且它是 <strong>2024-02 的快照</strong>，之后的报告披露得更多（本教程 <a href="16-五家报告的数据章节.html">16 章</a>读的那五份就是更新的一批）。</p>
+<table>
+<thead>
+<tr>
+<th>报告</th>
+<th>✅ PII 一格</th>
+<th>✅ 去污染一格</th>
+<th>★ 值得单独看的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>PaLM 2</strong></td>
+<td>说"做了过滤"，⚠️ 无任何细节</td>
+<td>⚠️ <strong>N/A</strong>（完全没提）</td>
+<td>——</td>
+</tr>
+<tr>
+<td><strong>GPT-4</strong></td>
+<td>⚠️ <strong>N/A</strong></td>
+<td>⚠️ 没有披露<strong>流程</strong>，但报了<strong>事后统计</strong>：判据是<strong>去掉空白后的精确子串匹配</strong>；✅ 报告了在 BIG-bench 上<strong>确实有污染</strong></td>
+<td>★ 注意它的判据是精确子串，<strong>不是 n-gram</strong> —— ⟹ 口径和本章 8.2 那套不可比</td>
+</tr>
+<tr>
+<td><strong>Claude</strong></td>
+<td>✅ Dolma 原文："we know next to nothing"</td>
+<td>同左</td>
+<td>——</td>
+</tr>
+<tr>
+<td><strong>Llama 2</strong></td>
+<td>✅ 说排除了<strong>已知 PII 含量高的站点</strong>，⚠️ 但没说是哪些站</td>
+<td>⚠️ <strong>这一格填的其实是去重方法</strong>（基于 Lee et al. 那个 n-gram 工具的改版）</td>
+<td>★★ 又一次印证 8.2 的论点：<strong>去重和去污染在工程上是同一套机制，连报告里都会写混</strong></td>
+</tr>
+<tr>
+<td><strong>LLaMA（第一代）</strong></td>
+<td>⚠️ <strong>N/A</strong></td>
+<td>⚠️ <strong>N/A</strong></td>
+<td>★★ 但它的<strong>来源</strong>是全表里最清楚的：✅ GitHub 代码<strong>只取 Apache / BSD / MIT 许可</strong>——⟹ 这正是 8.4 说的 SPDX 白名单做法的真实案例</td>
+</tr>
+<tr>
+<td><strong>OPT</strong></td>
+<td>✅ 明确说明<strong>没有讨论</strong>是否做过 PII、毒性、质量、去污染的处理</td>
+<td>同左</td>
+<td>★ 来源清楚（RoBERTa 数据集 + Pile 子集 + Pushshift Reddit），★ 去重披露了 MinHashLSH、Jaccard 阈值 <strong>0.95</strong></td>
+</tr>
+<tr>
+<td><strong>Dolma 自己</strong></td>
+<td>✅ 三类正则（邮箱 / IP / 电话）+ 两档阈值（0.02% 替换 / 0.001% 删除，分母 = 文档数）</td>
+<td>✅ 把评测集 seed 进去重用的 <strong>Bloom filter</strong></td>
+<td>★ <strong>目前披露最完整的一份</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 从这张表读出三件事：
+
+① 【去污染那一列几乎是空的。】
+   ⟹ 这不代表各家没做，★ 但确实意味着：
+      ⚠️ 你无法判断任何两家的分数在污染程度上可不可比。
+   ⟹ 🔑 这正是 8.1 说的&quot;仪表盘在骗你&quot;在【全行业尺度】上的版本。
+
+② 【GPT-4 那一格的做法值得学，也值得警惕。】
+   ★ 值得学：它至少报了【事后统计】—— 承认有污染，并量化了。
+   ⚠️ 值得警惕：它的判据是&quot;去掉空白后的精确子串匹配&quot;，
+      而本章 8.2 那套是 13-gram。★ 两个口径的严格程度完全不同，
+      ⟹ &quot;我们测到污染率 X%&quot;这句话，不说判据就没有信息量。
+
+③ 【LLaMA 那一行是唯一把&quot;许可&quot;做进流水线的。】
+   ★ 只取 Apache / BSD / MIT 的 GitHub 代码，
+     ⟹ 这是一个【在收数据时就执行】的决定，不是事后补救。
+   ⟹ 🔑 本章 8.4 的三条路线里，它走的是 ② 的一个局部版本：
+        对最容易出事的那一类数据（代码），走严格许可白名单。
+</code></pre></div>
+
+<hr />
+<h2 id="85">8.5 ★★ 数据溯源：一个被低估的工程要求</h2>
+<p>前面四节每一节都落到同一个要求上：<strong>你必须知道每一条数据是怎么来的、被谁动过。</strong> 这件事叫<strong>数据溯源（provenance）</strong>。</p>
 <div class="codehilite"><pre><span></span><code>在你的每条记录里，除了 text，至少还要有：
 
   {
     &quot;id&quot;: &quot;...&quot;,
     &quot;text&quot;: &quot;...&quot;,
-    &quot;source&quot;: &quot;commoncrawl/CC-MAIN-2024-10&quot;,   ← 哪来的
-    &quot;url&quot;: &quot;https://...&quot;,                       ← 原始地址
-    &quot;crawl_date&quot;: &quot;2024-03-01&quot;,                 ← 什么时候抓的
-    &quot;license&quot;: &quot;CC-BY-4.0&quot; | &quot;unknown&quot;,         ← 许可依据
-    &quot;pipeline_version&quot;: &quot;v3.2&quot;,                 ← ★ 哪一版流水线处理的
-    &quot;filters_passed&quot;: [&quot;lid&quot;, &quot;gopher&quot;, &quot;dedup&quot;, &quot;quality&gt;=3.5&quot;]
+    &quot;source&quot;: &quot;commoncrawl/CC-MAIN-2024-10&quot;,   &lt;- 哪来的
+    &quot;url&quot;: &quot;https://...&quot;,                       &lt;- 原始地址
+    &quot;crawl_date&quot;: &quot;2024-03-01&quot;,                 &lt;- 什么时候抓的
+    &quot;license&quot;: &quot;CC-BY-4.0&quot; | &quot;unknown&quot;,         &lt;- 许可依据（8.4）
+    &quot;pipeline_version&quot;: &quot;v3.2&quot;,                 &lt;- 哪一版流水线处理的
+    &quot;filters_passed&quot;: [&quot;lid&quot;, &quot;gopher&quot;, &quot;dedup&quot;, &quot;quality&gt;=3.5&quot;],
+    &quot;pii_hits&quot;: {&quot;&lt;EMAIL&gt;&quot;: 2, &quot;&lt;PHONE_CN&gt;&quot;: 1}, &lt;- ★ 8.3 的命中计数
+    &quot;decontam&quot;: {&quot;n&quot;: 13, &quot;eval_set_version&quot;: &quot;2024-03&quot;, &quot;hit&quot;: false}
   }
 
-★★ 为什么 pipeline_version 和 filters_passed 极其重要：
-   半年后你发现&quot;某条规则有 bug&quot;，
-   → 有这两个字段：直接定位受影响的数据，只重跑那部分
-   → 没有：★ 只能【整条流水线从头重跑】，几周时间 + 几十万成本
+★★ 后面那四个字段，每一个都是前面某一节逼出来的：
+   pipeline_version   &lt;- 规则有 bug 时，定位受影响的数据
+   filters_passed     &lt;- 想调某个阈值时，知道哪些数据会变
+   pii_hits           &lt;- 8.3：替换比删除更可审计，前提是你把计数留下来
+   decontam           &lt;- 8.2 的时序问题：
+                         ★ 记下【你是用哪一版评测集清单扫的】，
+                         ⟹ 半年后出了新评测集，你能回答&quot;这批题扫过没有&quot;
 </code></pre></div>
 
 <blockquote>
-<p>★ 这一条是我最想强调的工程建议之一，因为它<strong>在事故发生前看起来完全没必要</strong>，而在事故发生后是<strong>唯一的救命稻草</strong>。同样的逻辑在 <a href="05-语言识别与启发式过滤.html">05 章</a>（记录每条规则砍掉多少）和 <a href="07-质量过滤.html">07 章</a>（人工抽样看被删的）都出现过——<strong>可观测性是数据流水线里最容易被省掉、也最不该省的东西。</strong></p>
+<p>★★★ <strong>为什么 <code>pipeline_version</code> 和 <code>filters_passed</code> 极其重要</strong>，用一个具体场景说：</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>半年后你发现&quot;某条规则写错了&quot;（★ 比如 8.3 那个手机号正则没加数字边界，
+把电商语料打得满篇是 &lt;PHONE&gt;）。
+
+⟹ 有这两个字段：
+     查出哪些记录的 filters_passed 里带那条规则、
+     且 pipeline_version 落在出 bug 的那几版，
+     ★ 只重跑那一部分。
+
+⟹ 没有这两个字段：
+     ⚠️ 你无法区分&quot;哪篇是被那条规则动过的&quot;，
+     ★★ 只能【整条流水线从头重跑】。
+     按 8.2 那张成本表，重跑全量是 1e10 篇的量级
+     —— 几周时间 + 几十万的算力账单。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>而 <code>decontam.eval_set_version</code> 这一格是本章新加的、也最容易被省掉的一格</strong>：它让 8.2 那个"永远补不回来"的时序问题，至少变成一个<strong>能回答的问题</strong>。⚠️ 它不能让你把模型里学到的东西取出来，★ 但它能让你在新评测集出来时，<strong>在几小时内给出"这批题当年扫没扫过"的答案</strong>，而不是"不知道"。</p>
+<p>★★ 这一条是我最想强调的工程建议之一，因为它<strong>在事故发生前看起来完全没必要</strong>，而在事故发生后是<strong>唯一的救命稻草</strong>。同样的逻辑在 <a href="05-语言识别与启发式过滤.html">05 章</a>（记录每条规则砍掉多少）和 <a href="07-质量过滤.html">07 章</a>（人工抽样看被删的）都出现过——<strong>可观测性是数据流水线里最容易被省掉、也最不该省的东西。</strong></p>
+<p>⚠️ <strong>而在中文场景下它已经不是"建议"了</strong>：8.4 那张表里《生成式人工智能服务管理暂行办法》对训练数据来源合法性有明确要求，⟹ <strong>你得能说明来源</strong>。★ 没有 <code>source</code> / <code>url</code> / <code>crawl_date</code> / <code>license</code> 这四个字段，这件事无法说明。</p>
 </blockquote>
 <hr />
 <h2 id="86">8.6 小结</h2>
-<div class="codehilite"><pre><span></span><code>① ★★ 评测污染比&quot;数据脏&quot;危险，因为它【让指标骗你】：
-   数据脏 → 分数掉 → 你看得见
-   污染   → 分数涨 → ★ 你看不见，还会据此做出错误决策
-   ✅ Lee et al.：标准验证集有 &gt;4% 能在训练集里找到
+<div class="codehilite"><pre><span></span><code>① ★★★ 先记住你站在【建库侧】：有语料，没模型。
+   ⟹ 五种污染检测法里，只有两种在这个阶段做得了（8.1 那张表）：
+        ① n-gram 重叠   ⟹ ✅ 能做，唯一能定位&quot;哪一篇语料脏&quot;的
+        ③ canary 串     ⟹ ✅ 能做，但只能&quot;见到就删&quot;
+        ② 困惑度 / ④ 成员推断 / ⑤ 黑盒行为测试 ⟹ ❌ 都要先有模型
+   🔑 所以&quot;我们做了去污染&quot;的真实含义是：
+      &quot;我们删掉了逐字照抄、且评测集我们当时知道的那部分。&quot;
 
-② 三种污染，一种比一种难查：
-   逐字 → n-gram 能查
-   改写/翻译 → ⚠️ n-gram 查不到
-   ★ 间接（针对性题库）→ 几乎无法定义边界，
-     而质量分类器还会【主动把它们筛进来】
+② ★★ 污染比&quot;数据脏&quot;危险，因为它【让指标骗你】：
+   数据脏 ⟹ 分数掉 ⟹ 你看得见
+   污染   ⟹ 分数涨 ⟹ ★ 你看不见，还会据此做出错误决策
+   ✅ Lee et al. 论文 Table 2：C4 验证集 4.60%、RealNews 14.35%
+      能在训练集里找到 —— ⚠️ 分母是【文档数】。
+   ⚠️ 同一篇论文 Table 3 的 ExactSubstr 口径下 C4 只有 1.38%，
+      分母是【token 数】 —— ★ 同一件事两个口径差 3.3 倍。
 
-③ 去污染标准做法：n-gram 匹配，✅ GPT-3 用 13-gram
-   n 小 → 误杀；n 大 → 漏检；⚠️ 各家取值不同 → &quot;已去污染&quot;不是一回事
-   ★ 时序问题：&quot;已去污染&quot;只对当时已知的评测集成立
+③ 三种污染，一种比一种难查：
+   逐字      ⟹ n-gram 能查
+   改写/翻译 ⟹ ⚠️ n-gram 查不到
+   ★ 间接（针对性题库）⟹ 几乎无法定义边界，
+     ⚠️ 而 [07 章] §7.4 的质量分类器还会【主动把它们筛进来】
 
-④ PII = 个人可识别信息。危险在于模型会逐字背诵
-   正则抓结构化的（邮箱/手机/身份证），NER 抓姓名地址
-   ★ 主流是【替换成 &lt;EMAIL&gt; 这类标记】而非删整篇
-   ⚠️ 中文坑：手机号正则不加数字边界会误伤长数字串
+④ ★★★ n 为什么取 13：✅ 8.2 用三篇文档实测过（可自己验算）
+   窗口数 = max(0, 词数 − n + 1)
+     n=5  ⟹ D1 命中 20 / D2 命中 6 / D3 命中 4  ⟹ 两篇误杀
+     n=8  ⟹ 17 / 3 / 1                          ⟹ 仍然两篇误杀
+     n=13 ⟹ 12 / 0 / 0                          ⟹ ✅ 只判真污染那一篇
+     n=20 ⟹ 5 / 0 / 0                           ⟹ 也只判一篇，但窗口少一半多
+   🔑 8~13 不是魔法数字，是夹出来的：
+      下界由【常见短语有多长】定，上界由【题目有多长】定。
 
-⑤ 许可：Books3 下架 / robots.txt 收紧 / 代码许可证不明
+⑤ ⚠️⚠️ 中文有一个结构性盲区，★ 这是建库侧必须自己做的决定：
+   同一道 17 字的中文题（`小明有十二盒饼干，每盒六块，一共多少块？`）
+     按空白切 split() ⟹ 1 个单元  ⟹ 0 个 13-gram ⟹ ⚠️ 报&quot;干净&quot;
+     按词切（12 词）   ⟹ 0 个 13-gram            ⟹ ⚠️ 报&quot;干净&quot;
+     按字切（17 字）   ⟹ 5 个 13-gram            ⟹ ✅ 能查
+   🔑 把英文那套（空白切 + n=13）直接套到中文上，
+      ★★ 它不是&quot;效果差&quot;，是【一个窗口都产生不了】，污染率恒报 0.00%。
+   ★ 起点建议（⚠️ 我的建议）：按【字】切，n 取 20~30 个汉字；
+     ★★ 并且【中英文污染率分开报】，否则中文的 0% 会被英文稀释掉。
+
+⑥ ⚠️⚠️⚠️ 一个会静默出错的 bug：不要用 Python 内置 hash() 建 n-gram 集合。
+   ✅ 实测：同一个字符串，三个进程，三个不同的哈希值
+      （Python 3.3 起 str/bytes 的 hash 按进程加盐，PEP 456 / PYTHONHASHSEED）
+   ⟹ 建集合和扫语料跑在不同进程 ⟹ 永远查不中 ⟹ 污染率报 0.00% ⟹ 不报错
+   ★ 改用 hashlib.blake2b(s, digest_size=8)。
+   🔑 自检只要 5 行：把集合落盘，另起进程抽 100 条查回来，必须 100 条全中。
+
+⑦ ★★ 丢整篇还是只丢命中段落：一个 615 : 1 的账
+   8000 词的长文，因为 13 个词命中而被整篇丢 ⟹ 损失比 8000 ÷ 13 ≈ 615 : 1
+   ⚠️ 而且整篇丢【系统性偏向删长文档】（长文窗口多，命中机会多）
+   ★ 业界做法是文档级 + 段落级两级都做（✅ Dolma 的 Bloom filter 就是这样）
+
+⑧ ★★★ 去重和去污染在工程上是【同一套机制】
+   ✅ Dolma 原文：&quot;repurpose this for test set decontamination by
+      first seeding the Bloom filter with test examples&quot;
+   去重问&quot;我以前见过吗&quot;，去污染问&quot;评测集里有吗&quot; ⟹ 同一个问题，换个集合
+   ⚠️ 但 Bloom filter 有假阳性（[06 章] §6.4：每元素 10 位约 0.82%）
+      ⟹ 🔑 报污染率前先算假阳性率，★ 确认信号比底噪大。
+         如果你测出 0.1% 的污染率，那基本全是假阳性。
+
+⑨ ★★ 它该排在流水线哪一步：由【重跑成本】决定，不是单次成本
+   评测集侧极小：3240 万个 13-gram，扁平 8 字节存 ✅ 259 MB（= 247 MiB）
+      ⚠️ 而 Python set of int 实测约 66 字节/元素 ⟹ 2.14 GB，贵 8.2 倍
+   扫语料侧是全部成本：1e10 篇 × 488 窗口 = 4.88e12 个窗口
+      ⟹ 单核 56.5 天、1000 核 1.36 小时、折算 488 μs/篇（≈ 规则的 49 倍）
+   ★ 放最前要扫 1e10 篇（56.5 核日），放末尾只扫 2.58e8 篇（35 核时）
+      ⟹ 【重跑一次便宜 38.8 倍】，而评测集不断增加 ⟹ 你一定会重跑它
+   ⚠️ 但有一个前提：只有【整篇丢】是纯过滤器，顺序才可交换。
+      ★★ 改成【丢段落】就会改变文档内容 ⟹ 顺序不可交换
+      ⟹ 🔑 丢段落就放在质量过滤【之前】（贵 1.7 倍），
+           否则入库文档的质量分和它实际的文本不匹配。
+
+⑩ PII = Personally Identifiable Information（个人可识别信息）
+   危险不在于模型变差，★ 在于模型会【逐字背诵】 ⟹ 合规事故
+   ✅ Dolma 的真实做法（全部核对过原文）：
+      · 不用 Presidio 这类 NER 模型 —— ★ 3 T token 的规模上&quot;准确&quot;输给&quot;跑得完&quot;
+      · 只抓三类：邮箱 / IP / 电话，★ 挑选标准是【高精确率】而非高召回率
+      · ≤5 个 PII span ⟹ 替换成占位符，影响 ✅ 0.02% 的文档
+      · ≥6 个          ⟹ 整篇删除，      影响 ✅ 0.001% 的文档
+        ★★ ≥6 这一档的判据不是&quot;PII 多&quot;，是【&quot;PII 密度高&quot;是个信号】：
+           那大概率是通讯录、名单、泄露的数据库导出
+           ⟹ 你抓到的三类只是冰山一角。★ 用能测的代理测不了的。
+      · ⚠️ 分母是【文档篇数】，范围是那 25 个 Common Crawl 快照
+        ⟹ 0.021% × 40 亿篇 ≈ 【84 万篇】被改写或删除
+           🔑 把比例换成绝对值再做判断。
+      · ✅ 速率 122 CPU 小时/TB —— ⚠️ 口径是【整套工具链复现 C4 配方】，
+        不是 PII 单项。验算：200 TB × 122 ÷ 192 vCPU = 127 小时 = 5.3 天
+        ✅ 和论文说的 &quot;would take 5 days&quot; 对上。
+
+⑪ ★★★ 一个反直觉的结果：✅ Dolma 的消融实验发现
+   【&quot;删整篇&quot;还是&quot;替换成占位符&quot;，模型效果上测不出差别】
+   （因为只影响 0.021% 的数据，低于噪声）
+   ⟹ 🔑 既然效果维度上这个选择是自由的，就该按【可审计性】选：
+        ★ 替换会在文本里留下痕迹（占位符本身就是&quot;这里曾有 PII&quot;的记录），
+          而删整篇是【无痕的】—— 事后你无法知道一篇是因为什么被删的。
+   ⚠️ 代价：占位符会变高频 token，要做随机化；而随机化又会让审计变难。
+
+⑫ ⚠️ 正则的边界：能做到&quot;格式正确&quot;，做不到&quot;语义正确&quot;。✅ 两个坑都实测过
+   · 手机号不加 (?&lt;!\d) / (?!\d) ⟹ 把订单号【从中间劈开】成
+     &quot;20241&lt;PHONE&gt;123456&quot; —— ★ 这不只是误报，是【破坏了原文】
+   · IP 的 0~255 范围校验能修掉 999.1.1.1 和 1.2.3.4.5，
+     ⚠️ 但【修不掉 1.2.3.4】—— 它作为 IP 和作为版本号都完全合法，
+     ★★ 正则看不到上下文，【原理上】无法区分。
+   🔑 凡是 PII 格式和正常内容格式撞车的，只能在误伤和漏检之间选一个。
+      ★ 对 PII 一律选【宁可误伤】：误伤损失一点数据，漏检是合规事故。
+   ★ 中文身份证号和银行卡号有校验位（随机串通过率约 1/11），
+     ⟹ 正则抓候选 + 校验位过一遍，误报率降一个数量级，几乎不花时间。
+
+⑬ 许可：Books3 下架 / robots.txt 收紧 / 代码许可证不明
+   ✅ Books3 = The Pile 里权重 12.07%、原始体积 100.96 GiB 的书籍子集
+      ⚠️ 当成 100.96 GB 算就少 7.4%（十进制是 108.4 GB）
+      ★ 用论文 Table 1 两列相除可推出约 19.66 万份文档（= 19.66 万本书）
    三条路线：照用不误 / 只用开放许可（Common Pile）/ 买授权
-   ⚠️ 中文场景还要考虑 PIPL 与生成式 AI 管理办法
+      ★★ 路线 ③ 的存在意味着：【数据差距是买出来的，流水线优化补不回来】
+   ⚠️ 中文还要考虑 PIPL 与《生成式人工智能服务管理暂行办法》
+      ⟹ ★★ 后者把 8.5 的数据溯源从&quot;最佳实践&quot;变成了【硬要求】
 
-⑥ ★★ 数据溯源（provenance）：每条记录都要带
+⑭ ⚠️ 全行业的披露状况（✅ 出自 Dolma 论文附录 §C，2024-02 快照）：
+   【去污染那一列几乎是空的】—— PaLM 2 / LLaMA / OPT 都是 N/A，
+   GPT-4 只报事后统计（判据是去空白后的精确子串，★ 和 13-gram 不可比），
+   Llama 2 那一格填的其实是【去重】方法（★★ 又一次印证 ⑧）。
+   ⟹ 🔑 你无法判断任何两家的分数在污染程度上可不可比。
+   ★ 唯一把许可做进流水线的是 LLaMA：GitHub 代码只取 Apache / BSD / MIT。
+
+⑮ ★★ 数据溯源（provenance）：每条记录都要带
    source / url / crawl_date / license / pipeline_version / filters_passed
-   → 出了问题能定点重跑，而不是整条流水线从头再来
+   ★ 再加本章逼出来的两个：pii_hits（⑪ 的可审计性）
+                         decontam.eval_set_version（④⑨ 的时序问题）
+   ⟹ 出了问题能定点重跑，而不是整条流水线从头再来（几周 + 几十万）
+   🔑 它在事故发生前看起来完全没必要，★★ 事故发生后是唯一的救命稻草。
 </code></pre></div>
 
+<blockquote>
+<p>📘 <strong>接下来去哪</strong>：本章做的是"从语料里删题"。⟹ 如果你的问题是"<strong>已经训好的模型，分数里有多少是背出来的</strong>"，那是评测侧的事——去 <a href="../harness评测框架/评测入门/06-数据污染.html"><code>../harness评测框架/评测入门/06-数据污染.md</code></a>，它的 §6.3.3 有五种检测法的假阳假阴全表，§6.4 有五种缓解手段的代价对照，§6.5b 有一篇把污染<strong>当场抓了个正着</strong>的论文（分数在模型训练截止日那天"掉下悬崖"）。</p>
+</blockquote>
 <hr />
 <blockquote>
 <p><a href="07-质量过滤.html">← 07 质量过滤</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-Tokenizer与词表.html">09 Tokenizer 与词表</a></p>

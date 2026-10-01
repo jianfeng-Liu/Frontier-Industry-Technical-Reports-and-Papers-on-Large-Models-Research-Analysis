@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -253,37 +258,80 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>流水线上最便宜的一刀，也是砍掉份额最大的一刀。</strong><br />
 这一章全是"规则"，没有模型，没有数学——但它决定了后面所有昂贵步骤要处理多少数据。</p>
+<p>⚠️ <strong>本章数字口径（后面几章沿用）</strong>：容量一律用<strong>十进制</strong>，1 GB = 10⁹ 字节、1 TB = 10¹² 字节；需要二进制单位时写 GiB / TiB（1 GiB = 2³⁰ 字节，比 1 GB 大 7.4%；1 TiB 比 1 TB 大 10%）。<strong>"字符""字节""token"是三个不同的东西</strong>，本章凡是用到都会写明是哪一个——见 5.5 节，在中文上这三者能差到三倍。</p>
 </blockquote>
 <hr />
 <h2 id="51">5.1 为什么第一刀必须用规则，而不是模型</h2>
+<p>先算一笔账。⚠️ 下面的页面数是量级估算：Common Crawl 每月做一次快照，<strong>公开的月度统计里页面数在 20 亿~35 亿之间浮动</strong>，这里取 25 亿当代表值。</p>
 <div class="codehilite"><pre><span></span><code>输入规模：一次 Common Crawl 快照 ≈ 25 亿个网页
 
 假设用一个小模型给每篇打分：
     一篇 1 毫秒（已经很快了）
-    → 25 亿毫秒 = 29 天 × 单机
-    → 就算 1000 台机器并行，也要 40 分钟，且要 1000 台 GPU
+    → 2.5e9 篇 × 1 ms = 2.5e6 秒 = 28.9 天 × 单机单核
+    → 就算 1000 路并行，也要 2.5e6 / 1000 = 2500 秒 ≈ 42 分钟，而且要 1000 块 GPU
 
-而一条正则/一次计数：
+而一条正则 / 一次计数：
     一篇 10 微秒
-    → 100 倍便宜，纯 CPU
+    → 2.5e9 × 10 us = 2.5e4 秒 = 6.9 小时 × 单机单核
+    → 100 倍便宜，而且纯 CPU，不占 GPU
 
 ★★ 所以流水线的顺序是【固定的、由成本决定的】：
       便宜的规则先跑，把量砍下来 → 昂贵的模型后跑
    这个原则叫【级联过滤 cascade】，在整个领域里到处都是。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>成本梯度（⚠️ 我的量级估算，用于建立直觉）：
-
-  正则 / 计数        ~ 10 μs/篇     ← 本章
-  语言识别 fastText  ~ 50 μs/篇     ← 本章
-  MinHash 签名       ~ 1 ms/篇      ← 06 章
-  困惑度（小 n-gram/小模型）~ 5 ms/篇  ← 07 章
-  分类器（BERT 级）  ~ 20 ms/篇     ← 07 章
-  大模型打标签       ~ 1 s/篇       ← 07 章（所以要蒸馏成小模型）
-
-  ★ 跨度 5 个数量级 —— 顺序错了，成本差几百倍
-</code></pre></div>
-
+<p>成本梯度（⚠️ <strong>以下单篇耗时全是我的量级估算，不是实测值</strong>，只用于建立"差几个数量级"的直觉）：</p>
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>量级耗时 / 篇</th>
+<th>算力类型</th>
+<th>在哪一章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正则 / 计数</td>
+<td>~ 10 μs</td>
+<td>CPU</td>
+<td>★ 本章</td>
+</tr>
+<tr>
+<td>语言识别 fastText</td>
+<td>~ 50 μs</td>
+<td>CPU</td>
+<td>★ 本章</td>
+</tr>
+<tr>
+<td>MinHash 签名</td>
+<td>~ 1 ms</td>
+<td>CPU</td>
+<td><a href="06-去重.html">06 章</a></td>
+</tr>
+<tr>
+<td>困惑度（小 n-gram 语言模型）</td>
+<td>~ 5 ms</td>
+<td>CPU</td>
+<td><a href="07-质量过滤.html">07 章</a></td>
+</tr>
+<tr>
+<td>轻量分类器（BERT 级）</td>
+<td>~ 20 ms</td>
+<td>GPU</td>
+<td><a href="07-质量过滤.html">07 章</a></td>
+</tr>
+<tr>
+<td>大模型打标签</td>
+<td>~ 1 s</td>
+<td>GPU</td>
+<td><a href="07-质量过滤.html">07 章</a>（所以必须蒸馏成小模型）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>跨度 5 个数量级</strong>（10 μs → 1 s，10⁵ 倍）。顺序错了，总成本差几百倍：先用大模型给 25 亿篇打标签、再用正则把 90% 砍掉，等于 90% 的 GPU 钱白烧。</p>
+</blockquote>
 <hr />
 <h2 id="52-lid">5.2 语言识别（LID）</h2>
 <p><strong>LID</strong> = <strong>Language IDentification</strong>（语言识别），判断一段文字是哪种语言。</p>
@@ -293,13 +341,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    &quot;标点占比&quot; —— 中文用「，。」英文用「,.」，判断逻辑不同
    ★ 所以必须先分流，再按语言各走各的规则
 
-② 配比是按语言定的（&quot;中文 30% 英文 60%&quot;），不识别就没法配
+② 配比是按语言定的（&quot;中文 30% 英文 60%&quot;），不识别就没法配（见 10 章）
 
 ③ 大量网页是【机器翻译】或【乱码混杂】的，LID 的置信度分能顺手筛掉
 </code></pre></div>
 
 <h3 id="fasttext">怎么做：fastText</h3>
-<p><strong>fastText</strong> 是 Facebook（Meta）开源的一个轻量文本分类库。它的语言识别模型 <code>lid.176.bin</code> 认 176 种语言，<strong>~ 130 MB，单条判断几十微秒</strong>，是这个领域事实上的标准。</p>
+<p><strong>fastText</strong> 是 Facebook（现 Meta）开源的一个轻量文本分类库。它的语言识别模型 <code>lid.176.bin</code> 认 176 种语言，<strong>文件约 126 MiB（≈ 132 MB；⚠️ 官方页面只写 "131 MB"，没声明是十进制还是二进制口径）</strong>，单条判断几十微秒，是这个领域事实上的标准。</p>
 <p>原理很简单，不需要神经网络的直觉也能懂：</p>
 <div class="codehilite"><pre><span></span><code>① 把文本切成【字符 n-gram】（连续的 n 个字符）
       &quot;hello world&quot; → &quot;hel&quot;,&quot;ell&quot;,&quot;llo&quot;,&quot;lo &quot;,&quot;o w&quot;,...
@@ -330,8 +378,37 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>✅ <strong>FineWeb 的阈值是 0.65</strong>（论文明确写了这个数）。<br />
-⚠️ <strong>阈值的取舍</strong>：调高 → 更纯但丢掉大量多语言混排的技术文档（比如中文博客里贴英文代码）；调低 → 混进乱码。<strong>0.6~0.7 是常见区间。</strong></p>
+<p>✅ <strong>FineWeb 的阈值是 0.65。</strong> 论文原话（我从 <a href="papers/">papers/FineWeb-Decanting-the-Web-arXiv-2406.17557.pdf</a> 里核对过）是 "applied a fastText language classifier ... to keep only English text with a score &gt;= 0.65"。</p>
+</blockquote>
+<p>阈值怎么取舍，一张表说完（⚠️ "会留下 / 会丢掉"两列是我的归纳，不是论文里的实测分档）：</p>
+<table>
+<thead>
+<tr>
+<th>阈值</th>
+<th>★ 会留下什么</th>
+<th>⚠️ 会丢掉什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0.4 左右（宽松）</strong></td>
+<td>多语言混排的技术博客、注释夹英文的中文页面</td>
+<td>几乎不丢——代价是<strong>混进乱码、机翻、语言拼盘</strong></td>
+</tr>
+<tr>
+<td><strong>0.65（FineWeb）</strong></td>
+<td>主体语言明确的正常文档</td>
+<td>中英混排较重的技术文档、双语对照页</td>
+</tr>
+<tr>
+<td><strong>0.9 以上（严格）</strong></td>
+<td>纯度很高的单语文档</td>
+<td>★ 大量真实可用的技术内容。<strong>不推荐</strong>，除非下游确定只要单语</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>0.6~0.7 是常见区间。</strong> 更重要的一句：<strong>阈值不是独立旋钮。</strong> 调高 LID 阈值等于提前砍掉一批多语言技术文档，而这批文档往往正是 <a href="07-质量过滤.html">07 章</a>的质量分类器最想要的——两个环节的取舍会互相抵消，必须一起看。</p>
 </blockquote>
 <h3 id="_3">三个坑</h3>
 <div class="codehilite"><pre><span></span><code>① ★ 代码文件会被判成各种奇怪的语言
@@ -348,149 +425,505 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="53">5.3 ★ 启发式规则：三代规则集</h2>
 <p>"启发式（heuristic）"就是<strong>人拍脑袋想出来、但确实管用的经验规则</strong>。这个领域有三套被反复引用的规则集。</p>
+<p>★ 下面每一代都用<strong>同一张表的格式</strong>：<strong>它拦掉什么</strong>（这条规则存在的理由）和<strong>它误杀什么</strong>（这条规则的代价）。⚠️ 两列里带 ✅ 的是论文明说的，其余是我的归纳——<strong>"误杀什么"这一列几乎没有论文会写</strong>，但它才是你上线后真正会被投诉的地方。</p>
 <h3 id="c4-2019arxiv191010683">第一代：C4 规则（2019，<a href="https://arxiv.org/abs/1910.10683">arXiv:1910.10683</a> 附录）</h3>
-<p>C4 是 Google T5 论文里构建的语料，它的规则是这个领域的起点。✅ 论文里明确列出的包括：</p>
-<div class="codehilite"><pre><span></span><code>① 只保留【以句末标点结尾】的行（. ! ? &quot;）
-   ★ 直觉：导航栏、按钮文字、标签云都不以句号结尾
-   ★ 这一条极其有效，也极其粗暴 —— 代码、列表、诗歌全被误杀
-
-② 丢掉少于 5 句话的页面；只保留至少 3 个词的行
-
-③ 丢掉含有&quot;脏词表&quot;里任何词的页面
-   ⚠️ 这条后来被广泛批评：会系统性地删掉 LGBTQ、医学、法律相关的正当内容
-
-④ 丢掉含 &quot;javascript&quot; 字样的行（说明是&quot;请开启 JS&quot;提示）
-   丢掉含 &quot;lorem ipsum&quot;（排版占位文）的页面
-   丢掉含 &quot;{&quot; 的页面   ← ★ 这一条把【所有代码】都删了
-
-⑤ 丢掉含 &quot;terms of use / privacy policy / cookie&quot; 的行
-</code></pre></div>
-
+<p>C4 是 Google T5 论文里构建的语料，它的规则是这个领域的起点。✅ 论文里明确列出的那几条：</p>
+<table>
+<thead>
+<tr>
+<th>✅ C4 规则</th>
+<th>★ 它拦掉什么</th>
+<th>⚠️ 它误杀什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只保留<strong>以句末标点结尾</strong>的行（<code>.</code> <code>!</code> <code>?</code> <code>"</code>）</td>
+<td>导航栏、按钮文字、标签云、商品属性行</td>
+<td>★★ 代码、列表、表格、诗歌、字幕、API 文档——<strong>全灭</strong></td>
+</tr>
+<tr>
+<td>丢掉<strong>少于 5 句话</strong>的页面</td>
+<td>空壳页、跳转页、"页面不存在"</td>
+<td>短定义条目、单条 FAQ、词典页</td>
+</tr>
+<tr>
+<td>只保留<strong>至少 3 个词</strong>的行</td>
+<td>单词按钮行、分隔符行</td>
+<td>标题行；⚠️ 中文按空格切常常只得到 1 个"词"→ 整篇全删</td>
+</tr>
+<tr>
+<td>丢掉含<strong>脏词表</strong>里任何词的页面</td>
+<td>色情站</td>
+<td>⚠️ <strong>系统性删掉 LGBTQ、医学、法律、性教育内容</strong>——这条后来被广泛批评</td>
+</tr>
+<tr>
+<td>丢掉含 <code>javascript</code> 字样的<strong>行</strong></td>
+<td>"请开启 JS"提示条</td>
+<td>讲 JavaScript 的技术文章里的正文行</td>
+</tr>
+<tr>
+<td>丢掉含 <code>lorem ipsum</code> 的页面</td>
+<td>没上线的模板页（<code>lorem ipsum</code> 是排版占位文）</td>
+<td>讲排版 / 印刷史的文章</td>
+</tr>
+<tr>
+<td>丢掉含 <code>{</code> 的<strong>页面</strong></td>
+<td>泄漏的模板代码、CSS 残留</td>
+<td>★★ <strong>所有代码页面</strong>——见下</td>
+</tr>
+<tr>
+<td>丢掉含 <code>terms of use</code> / <code>privacy policy</code> / <code>cookie</code> 的<strong>行</strong></td>
+<td>页脚样板文</td>
+<td>讲隐私合规、讲 GDPR 的文章</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★ ④ 里那条 "丢掉含 <code>{</code> 的页面"，是 C4 一个著名的副作用：<strong>C4 里几乎没有代码</strong>。后来大家发现代码对推理能力很重要，这条规则就成了反面教材。</p>
-<p>⚠️ 我的归纳：<strong>C4 规则的时代特征是"宁可错杀"</strong>——因为 2019 年数据管够，纯度比数量重要。到了 2024 年数据不够用了，风向就反过来了（见 <a href="12-合成数据.html">12 章</a> Nemotron-CC 主动放松过滤）。</p>
+<p>★ 那条"丢掉含 <code>{</code> 的页面"是 C4 一个著名的副作用：<strong>C4 里几乎没有代码。</strong> 后来大家发现代码对推理能力很重要，这条规则就成了反面教材。</p>
+<p>⚠️ 我的归纳：<strong>C4 规则的时代特征是"宁可错杀"</strong>——2019 年数据管够，纯度比数量重要。到了 2024 年数据不够用了，风向就反过来了（见 <a href="12-合成数据.html">12 章</a> Nemotron-CC 主动放松过滤）。</p>
 </blockquote>
 <h3 id="gopher-2021deepmind">第二代：Gopher 规则（2021，DeepMind）</h3>
-<p>Gopher 的规则更"统计化"，不看具体词，看<strong>分布特征</strong>。⚠️ 下面这组阈值在业界被广泛复用（FineWeb、Dolma、RefinedWeb 都实现了 Gopher 系规则），<strong>具体数值以各自实现为准</strong>：</p>
-<div class="codehilite"><pre><span></span><code>文档级：
-  □ 词数不在 [50, 100000] 之间             → 丢
-  □ 平均词长不在 [3, 10] 之间               → 丢  ★ 抓乱码和拼接文本
-  □ 含 &quot;#&quot; 的行 &gt; 10%                       → 丢  ★ 抓 markdown 目录/标签墙
-  □ 以省略号结尾的行 &gt; 30%                  → 丢  ★ ★ 抓&quot;阅读全文…&quot;列表页
-  □ 以项目符号开头的行 &gt; 90%                → 丢  ★ 抓纯列表页
-  □ 含字母的词 &lt; 80%                        → 丢  ★ 抓纯数字表格
-  □ 不含至少 2 个停用词(the/be/to/of/and...)→ 丢  ★ 抓非自然语言
+<p>Gopher 的规则更"统计化"，不看具体词，看<strong>分布特征</strong>。⚠️ 下面这组阈值在业界被广泛复用（FineWeb、Dolma、RefinedWeb 都实现了 Gopher 系规则），<strong>具体数值以各自实现为准</strong>。</p>
+<p><strong>文档级规则：</strong></p>
+<table>
+<thead>
+<tr>
+<th>规则</th>
+<th>丢掉的条件</th>
+<th>★ 它拦掉什么</th>
+<th>⚠️ 它误杀什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>词数</td>
+<td>不在 <code>[50, 100000]</code></td>
+<td>空壳页；被拼接成一坨的整站 dump</td>
+<td>短定义、短问答；⚠️ <strong>中文按空格分词后词数几乎总是 &lt; 50 → 全灭</strong></td>
+</tr>
+<tr>
+<td>平均词长</td>
+<td>不在 <code>[3, 10]</code></td>
+<td>base64 残留、乱码、丢了空格的粘连文本</td>
+<td>德语复合词、化学式、URL 密集的文档</td>
+</tr>
+<tr>
+<td>含 <code>#</code> 的行占比</td>
+<td>&gt; 10%</td>
+<td>markdown 目录页、标签墙</td>
+<td>讲 C 预处理器 / markdown 语法 / Shell 注释的文章</td>
+</tr>
+<tr>
+<td>以省略号结尾的行占比</td>
+<td>&gt; 30%</td>
+<td>★ <strong>"阅读全文…"列表页</strong>——量最大的一类</td>
+<td>对话体小说、剧本里的省略号</td>
+</tr>
+<tr>
+<td>以项目符号开头的行占比</td>
+<td>&gt; 90%</td>
+<td>纯列表页、站点地图</td>
+<td>要点式笔记、API 参数清单、变更日志</td>
+</tr>
+<tr>
+<td>含字母的词占比</td>
+<td>&lt; 80%</td>
+<td>纯数字表格、价目表</td>
+<td>数据表、财报、体育比分、化学/数学内容</td>
+</tr>
+<tr>
+<td>停用词个数（the/be/to/of/and…）</td>
+<td>&lt; 2 个</td>
+<td>关键词堆砌页、导航栏、非自然语言</td>
+<td>⚠️ <strong>中文文档一个英文停用词都没有</strong> → 必须换中文停用词表</td>
+</tr>
+</tbody>
+</table>
+<p><strong>重复度规则（★ Gopher 最有价值的部分）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>规则</th>
+<th>丢掉的条件</th>
+<th>它抓的具体形态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>重复<strong>行</strong>占比</td>
+<td>&gt; 30%</td>
+<td>同一行在本篇里出现多次（页脚、"立即购买"按钮行）</td>
+</tr>
+<tr>
+<td>重复<strong>段落</strong>占比</td>
+<td>&gt; 30%</td>
+<td>同一段在本篇里出现多次（多次贴上的免责声明）</td>
+</tr>
+<tr>
+<td>最高频 <strong>2-gram</strong> 占比</td>
+<td>&gt; 20%</td>
+<td>一个词组被刷屏（"包邮 包邮 包邮…"）</td>
+</tr>
+<tr>
+<td>重复 <strong>5-gram</strong> 占<strong>总字符数</strong></td>
+<td>&gt; 15%</td>
+<td>一个短语被反复嵌进不同句子（SEO 关键词注入）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>重复度那一组特别重要，它抓的是"文档内部重复"，和 <a href="06-去重.html">06 章</a>的"文档之间重复"是两回事，极易混。</strong><br />
+例子：一个商品页把"包邮 正品保证 七天退换"重复了 200 遍。它和别的文档都不重复（去重抓不到它），但它本身没有任何信息量。<br />
+⚠️ 注意最后一行的口径是<strong>占总字符数</strong>，不是占词数——这两个分母在中文上差三倍，见 5.5 节。</p>
+</blockquote>
+<h3 id="fineweb-2024">第三代：FineWeb 自己加的三条（2024）</h3>
+<p>✅ FineWeb 论文报告，他们在 C4 + Gopher 之上又加了几条自研过滤器，其中效果最好的三条大意是：</p>
+<table>
+<thead>
+<tr>
+<th>✅ FineWeb 自研规则（方向性描述）</th>
+<th>★ 它拦掉什么</th>
+<th>⚠️ 它误杀什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>行末不带标点的行占比过高 → 丢</td>
+<td>表格残骸、字段列表、属性墙</td>
+<td>代码、诗歌、歌词、字幕</td>
+</tr>
+<tr>
+<td>极短行（&lt; 30 字符）占比过高 → 丢</td>
+<td>菜单、面包屑导航、评论计数行</td>
+<td>对话体文本、聊天记录、剧本</td>
+</tr>
+<tr>
+<td>重复行的<strong>字符数</strong>占比过高 → 丢</td>
+<td>页脚被重复贴上的样板文</td>
+<td>带重复表头的长表格</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 具体阈值请以 <a href="papers/">papers/FineWeb-Decanting-the-Web-arXiv-2406.17557.pdf</a> 为准；我这里只保留方向性描述，避免转述出错。</p>
+<blockquote>
+<p>★ 对照着看三代的差别，这条演进线很清楚：<strong>C4 看具体词 → Gopher 看分布统计 → FineWeb 看行级形态</strong>。判据一代比一代"不依赖语言知识"，因此一代比一代好迁移到中文——但没有一代是<strong>天生</strong>适配中文的，5.5 节会讲要改什么。</p>
+</blockquote>
+<hr />
+<h2 id="54">5.4 ★★ 逐步推演：拿一段脏文本，看它在第几条被拦下</h2>
+<p>上面三张表都是"规则说明书"。下面把一段<strong>真实感的脏文本</strong>完整走一遍，每一条规则算出具体数值、和阈值比一比。✅ <strong>下面每一个数字我都在本机跑过一遍</strong>，不是估算。</p>
+<p><strong>输入（一个很典型的电商列表页，12 个非空行）：</strong></p>
+<div class="codehilite"><pre><span></span><code>Best Laptop Deals 2024 | Top 10 Picks
+Home | Shop | Blog | Contact | About Us | Login
+Dell XPS 13 - Great value, free shipping, 7-day returns…
+HP Pavilion 15 - Great value, free shipping, 7-day returns…
+Lenovo ThinkPad E14 - Great value, free shipping, 7-day returns…
+Asus VivoBook 14 - Great value, free shipping, 7-day returns…
+Acer Aspire 5 - Great value, free shipping, 7-day returns…
+MSI Modern 14 - Great value, free shipping, 7-day returns…
+Read more…
+Read more…
+Read more…
+Terms of use | Privacy policy | Cookie settings
+</code></pre></div>
 
-重复度（★ Gopher 最有价值的部分，见下）：
-  □ 重复行占比 &gt; 30%                        → 丢
-  □ 重复段落占比 &gt; 30%                      → 丢
-  □ top-2gram 占比 &gt; 20%                    → 丢
-  □ 重复 5-gram 占总字符 &gt; 15%              → 丢
+<p><strong>先量三个基数</strong>（后面所有占比的分母都来自这里，★ 分母是什么必须写清，否则同一条规则两个人算出两个结果）：</p>
+<table>
+<thead>
+<tr>
+<th>基数</th>
+<th>值</th>
+<th>怎么来的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>非空行数 <code>n_l</code></td>
+<td><strong>12</strong></td>
+<td>按 <code>\n</code> 切，去掉空行</td>
+</tr>
+<tr>
+<td>空格分词后词数 <code>n_w</code></td>
+<td><strong>95</strong></td>
+<td><code>text.split()</code>，<code>\|</code> 这种分隔符也算一个"词"</td>
+</tr>
+<tr>
+<td>总字符数 <code>n_c</code></td>
+<td><strong>528</strong></td>
+<td>Unicode 码位数（⚠️ 不是字节数，这段纯 ASCII 所以两者恰好相等）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>逐条过：</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>规则</th>
+<th>算出来的值</th>
+<th>阈值</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>词数 ∈ <code>[50, 100000]</code></td>
+<td>95</td>
+<td>在区间内</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>②</td>
+<td>平均词长 ∈ <code>[3, 10]</code></td>
+<td>528 字符 ÷ 95 词 ≈ <strong>4.57</strong></td>
+<td>在区间内</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>③</td>
+<td>停用词 ≥ 2 个</td>
+<td>只命中 <strong>1</strong> 个（<code>of</code>，来自 <code>Terms of use</code>）</td>
+<td>&lt; 2</td>
+<td>★ <strong>拦下</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td>以省略号结尾的行占比 ≤ 30%</td>
+<td><strong>9 / 12 = 75%</strong></td>
+<td>&gt; 30%</td>
+<td><strong>拦下</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>以项目符号开头的行占比 ≤ 90%</td>
+<td>0 / 12 = 0%</td>
+<td>≤ 90%</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>无句末标点的行占比 ≤ 70%</td>
+<td><strong>12 / 12 = 100%</strong></td>
+<td>&gt; 70%</td>
+<td><strong>拦下</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>重复<strong>行</strong>多占的字符占比 ≤ 30%</td>
+<td><code>Read more…</code> 重复 3 次 → 多占 2 × 10 = 20 字符 → <strong>20 / 528 ≈ 4%</strong></td>
+<td>≤ 30%</td>
+<td>通过</td>
+</tr>
+<tr>
+<td>⑧</td>
+<td>最高频 5-gram 覆盖的字符占比 ≤ 15%</td>
+<td><code>- Great value, free shipping,</code> 出现 <strong>6</strong> 次，6 × 29 = 174 → <strong>174 / 528 ≈ 33%</strong></td>
+<td>&gt; 15%</td>
+<td><strong>拦下</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★ 三个必须从这张表里读出来的结论：</strong></p>
+<div class="codehilite"><pre><span></span><code>① 它在第 ③ 条就被拦下了 —— 停用词不够。
+   ★ 但另外还有 ④ ⑥ ⑧ 三条也会单独拦住它。
+   ⟹ 这一篇被【四条规则同时命中】。
+
+② ⑦ 和 ⑧ 抓的是两种不同的重复，看数值就知道：
+   ⑦ 重复【行】：只有 4%  ← &quot;Read more…&quot; 虽然重复 3 次，但行太短，占不了几个字符
+   ⑧ 重复【5-gram】：33%  ← &quot;- Great value, free shipping,&quot; 嵌在 6 个不同的行里
+   ⟹ ★ 只做行级去重会放过 ⑧ 这一类，这就是 Gopher 要同时做两套的原因。
+
+③ ⑥ 这一条是 100% —— 整篇一行都不以句末标点结尾。
+   ★ 这就是 C4 那条&quot;只保留以句末标点结尾的行&quot;为什么极其有效：
+     列表页天生不带句号。
+   ⚠️ 也正因为它太有效，代码和表格跟着一起死。
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>重复度那一组特别重要，它抓的是"文档内部重复"，和 <a href="06-去重.html">06 章</a>的"文档之间重复"是两回事，很容易混。</strong><br />
-例子：一个商品页把"包邮 正品保证 七天退换"重复了 200 遍。它和别的文档都不重复（去重抓不到它），但它本身没有任何信息量。</p>
+<p>★★ <strong>因此有一条实践铁律：统计"被哪条规则拒掉"时，必须记录【全部命中的规则】，不能只记第一条。</strong><br />
+如果只记第一条，上面这篇会被归到 ③ 停用词 名下，于是你的报表会说"停用词规则砍掉了 X%"——而其实把 ③ 关掉，这篇一样会被 ④⑥⑧ 砍掉，<strong>总量一点不变</strong>。<br />
+⚠️ 这是一个真实的决策陷阱：<strong>按"只记第一条"的报表去删规则，你会以为删掉某条能救回很多数据，实际上救回来的接近于零。</strong></p>
 </blockquote>
-<h3 id="fineweb-2024">第三代：FineWeb 自己加的三条（2024）</h3>
-<p>✅ FineWeb 论文报告，他们在 C4 + Gopher 之上又加了几条自研过滤器，其中效果最好的三条（论文里给了各自的收益）大意是：</p>
-<div class="codehilite"><pre><span></span><code>① 行末不带标点的行占比过高 → 丢
-② 极短行（&lt; 30 字符）占比过高 → 丢
-③ 重复行的【字符数】占比过高 → 丢
-</code></pre></div>
-
-<p>⚠️ 具体阈值请以 <a href="papers/">papers/FineWeb-Decanting-the-Web-arXiv-2406.17557.pdf</a> 为准；我这里只保留方向性描述，避免转述出错。</p>
-<hr />
-<h2 id="54">5.4 一段能跑的实现</h2>
+<h3 id="_4">一段能跑的实现</h3>
+<p>★ 注意这段代码和上一节的推演是严格对应的：它返回<strong>所有</strong>被违反的规则名，而不是第一条。</p>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">re</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">Counter</span>
 
 <span class="n">STOPWORDS_EN</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;the&quot;</span><span class="p">,</span> <span class="s2">&quot;be&quot;</span><span class="p">,</span> <span class="s2">&quot;to&quot;</span><span class="p">,</span> <span class="s2">&quot;of&quot;</span><span class="p">,</span> <span class="s2">&quot;and&quot;</span><span class="p">,</span> <span class="s2">&quot;that&quot;</span><span class="p">,</span> <span class="s2">&quot;have&quot;</span><span class="p">,</span> <span class="s2">&quot;with&quot;</span><span class="p">}</span>
 <span class="n">END_PUNCT</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;.&quot;</span><span class="p">,</span> <span class="s2">&quot;!&quot;</span><span class="p">,</span> <span class="s2">&quot;?&quot;</span><span class="p">,</span> <span class="s1">&#39;&quot;&#39;</span><span class="p">,</span> <span class="s2">&quot;。&quot;</span><span class="p">,</span> <span class="s2">&quot;！&quot;</span><span class="p">,</span> <span class="s2">&quot;？&quot;</span><span class="p">,</span> <span class="s2">&quot;”&quot;</span><span class="p">)</span>
 
-<span class="k">def</span><span class="w"> </span><span class="nf">heuristic_filter</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">lang</span><span class="o">=</span><span class="s2">&quot;en&quot;</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;返回 (是否保留, 被哪条规则拒掉)&quot;&quot;&quot;</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">heuristic_check</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">lang</span><span class="o">=</span><span class="s2">&quot;en&quot;</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;返回【所有】被违反的规则名；返回空列表 = 保留。&quot;&quot;&quot;</span>
     <span class="n">lines</span> <span class="o">=</span> <span class="p">[</span><span class="n">l</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">text</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">if</span> <span class="n">l</span><span class="o">.</span><span class="n">strip</span><span class="p">()]</span>
     <span class="n">words</span> <span class="o">=</span> <span class="n">text</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
     <span class="n">n_w</span><span class="p">,</span> <span class="n">n_l</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">words</span><span class="p">),</span> <span class="nb">len</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span>
+    <span class="n">n_c</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="p">),</span> <span class="mi">1</span><span class="p">)</span>                 <span class="c1"># ★ 字符数，占比的分母，别和词数混用</span>
     <span class="k">if</span> <span class="n">n_w</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_l</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;empty&quot;</span>
+        <span class="k">return</span> <span class="p">[</span><span class="s2">&quot;empty&quot;</span><span class="p">]</span>
 
-    <span class="c1"># ---- 长度 ----</span>
+    <span class="n">bad</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="c1"># ---- ① 长度 ----</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="mi">50</span> <span class="o">&lt;=</span> <span class="n">n_w</span> <span class="o">&lt;=</span> <span class="mi">100_000</span><span class="p">):</span>
-        <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;word_count&quot;</span>
+        <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;word_count&quot;</span><span class="p">)</span>
 
-    <span class="c1"># ---- 平均词长（★ 只对空格分词的语言有意义）----</span>
+    <span class="c1"># ---- ②③ 只对空格分词的语言有意义 ----</span>
     <span class="k">if</span> <span class="n">lang</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;en&quot;</span><span class="p">,</span> <span class="s2">&quot;de&quot;</span><span class="p">,</span> <span class="s2">&quot;fr&quot;</span><span class="p">):</span>
-        <span class="n">avg_len</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">words</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_w</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="mi">3</span> <span class="o">&lt;=</span> <span class="n">avg_len</span> <span class="o">&lt;=</span> <span class="mi">10</span><span class="p">):</span>
-            <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;avg_word_len&quot;</span>
-        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">STOPWORDS_EN</span> <span class="o">&amp;</span> <span class="p">{</span><span class="n">w</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">words</span><span class="p">})</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
-            <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;no_stopwords&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="mi">3</span> <span class="o">&lt;=</span> <span class="nb">sum</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">words</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_w</span> <span class="o">&lt;=</span> <span class="mi">10</span><span class="p">):</span>
+            <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;avg_word_len&quot;</span><span class="p">)</span>
+        <span class="n">norm</span> <span class="o">=</span> <span class="p">{</span><span class="n">w</span><span class="o">.</span><span class="n">strip</span><span class="p">(</span><span class="s2">&quot;.,|-&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="k">for</span> <span class="n">w</span> <span class="ow">in</span> <span class="n">words</span><span class="p">}</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">STOPWORDS_EN</span> <span class="o">&amp;</span> <span class="n">norm</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;no_stopwords&quot;</span><span class="p">)</span>
 
-    <span class="c1"># ---- 行级形态 ----</span>
-    <span class="k">if</span> <span class="nb">sum</span><span class="p">(</span><span class="n">l</span><span class="o">.</span><span class="n">rstrip</span><span class="p">()</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;…&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="n">l</span><span class="o">.</span><span class="n">rstrip</span><span class="p">()</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;...&quot;</span><span class="p">)</span>
-           <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_l</span> <span class="o">&gt;</span> <span class="mf">0.30</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;ellipsis_lines&quot;</span>          <span class="c1"># ★ 抓&quot;阅读全文…&quot;列表页</span>
-    <span class="k">if</span> <span class="nb">sum</span><span class="p">(</span><span class="n">l</span><span class="o">.</span><span class="n">lstrip</span><span class="p">()</span><span class="o">.</span><span class="n">startswith</span><span class="p">((</span><span class="s2">&quot;•&quot;</span><span class="p">,</span> <span class="s2">&quot;-&quot;</span><span class="p">,</span> <span class="s2">&quot;*&quot;</span><span class="p">,</span> <span class="s2">&quot;·&quot;</span><span class="p">))</span>
-           <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_l</span> <span class="o">&gt;</span> <span class="mf">0.90</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;bullet_lines&quot;</span>
+    <span class="c1"># ---- ④⑤⑥ 行级形态 ----</span>
+    <span class="k">if</span> <span class="nb">sum</span><span class="p">(</span><span class="n">l</span><span class="o">.</span><span class="n">rstrip</span><span class="p">()</span><span class="o">.</span><span class="n">endswith</span><span class="p">((</span><span class="s2">&quot;…&quot;</span><span class="p">,</span> <span class="s2">&quot;...&quot;</span><span class="p">))</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_l</span> <span class="o">&gt;</span> <span class="mf">0.30</span><span class="p">:</span>
+        <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;ellipsis_lines&quot;</span><span class="p">)</span>        <span class="c1"># ★ 抓&quot;阅读全文…&quot;列表页</span>
+    <span class="k">if</span> <span class="nb">sum</span><span class="p">(</span><span class="n">l</span><span class="o">.</span><span class="n">lstrip</span><span class="p">()</span><span class="o">.</span><span class="n">startswith</span><span class="p">((</span><span class="s2">&quot;•&quot;</span><span class="p">,</span> <span class="s2">&quot;-&quot;</span><span class="p">,</span> <span class="s2">&quot;*&quot;</span><span class="p">,</span> <span class="s2">&quot;·&quot;</span><span class="p">))</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_l</span> <span class="o">&gt;</span> <span class="mf">0.90</span><span class="p">:</span>
+        <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;bullet_lines&quot;</span><span class="p">)</span>
     <span class="k">if</span> <span class="nb">sum</span><span class="p">(</span><span class="ow">not</span> <span class="n">l</span><span class="o">.</span><span class="n">rstrip</span><span class="p">()</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="n">END_PUNCT</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">lines</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_l</span> <span class="o">&gt;</span> <span class="mf">0.70</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;no_terminal_punct&quot;</span>
+        <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;no_terminal_punct&quot;</span><span class="p">)</span>
 
-    <span class="c1"># ---- ★ 文档【内部】重复度（Gopher 系）----</span>
-    <span class="n">dup_line_chars</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">l</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span><span class="p">,</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">Counter</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
-                         <span class="k">if</span> <span class="n">c</span> <span class="o">&gt;</span> <span class="mi">1</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">c</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span>
-    <span class="k">if</span> <span class="n">dup_line_chars</span> <span class="o">/</span> <span class="nb">max</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="p">),</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">0.30</span><span class="p">:</span>
-        <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;dup_lines&quot;</span>
+    <span class="c1"># ---- ⑦ 重复【行】多占的字符数 / 总字符数 ----</span>
+    <span class="n">dup_chars</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">l</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="n">c</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span><span class="p">,</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">Counter</span><span class="p">(</span><span class="n">lines</span><span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">c</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">dup_chars</span> <span class="o">/</span> <span class="n">n_c</span> <span class="o">&gt;</span> <span class="mf">0.30</span><span class="p">:</span>
+        <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;dup_lines&quot;</span><span class="p">)</span>
 
-    <span class="n">grams</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">words</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="mi">5</span><span class="p">])</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_w</span> <span class="o">-</span> <span class="mi">4</span><span class="p">)]</span>
+    <span class="c1"># ---- ⑧ 最高频 5-gram 覆盖的字符数 / 总字符数 ----</span>
+    <span class="n">grams</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">words</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span> <span class="o">+</span> <span class="mi">5</span><span class="p">])</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">n_w</span> <span class="o">-</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">0</span><span class="p">))]</span>
     <span class="k">if</span> <span class="n">grams</span><span class="p">:</span>
-        <span class="n">top_n</span><span class="p">,</span> <span class="n">top_g</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="n">grams</span><span class="p">)</span><span class="o">.</span><span class="n">most_common</span><span class="p">(</span><span class="mi">1</span><span class="p">)[</span><span class="mi">0</span><span class="p">][::</span><span class="o">-</span><span class="mi">1</span><span class="p">][</span><span class="mi">0</span><span class="p">],</span> <span class="kc">None</span>
-        <span class="n">most</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="n">grams</span><span class="p">)</span><span class="o">.</span><span class="n">most_common</span><span class="p">(</span><span class="mi">1</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
-        <span class="k">if</span> <span class="n">most</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">*</span> <span class="mi">5</span> <span class="o">/</span> <span class="n">n_w</span> <span class="o">&gt;</span> <span class="mf">0.15</span><span class="p">:</span>
-            <span class="k">return</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;dup_5gram&quot;</span>
+        <span class="n">top_gram</span><span class="p">,</span> <span class="n">top_cnt</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="n">grams</span><span class="p">)</span><span class="o">.</span><span class="n">most_common</span><span class="p">(</span><span class="mi">1</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">top_cnt</span> <span class="o">*</span> <span class="nb">len</span><span class="p">(</span><span class="n">top_gram</span><span class="p">)</span> <span class="o">/</span> <span class="n">n_c</span> <span class="o">&gt;</span> <span class="mf">0.15</span><span class="p">:</span>
+            <span class="n">bad</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;dup_5gram&quot;</span><span class="p">)</span>
 
-    <span class="k">return</span> <span class="kc">True</span><span class="p">,</span> <span class="kc">None</span>
+    <span class="k">return</span> <span class="n">bad</span>
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>实践建议：一定要把"被哪条规则拒掉"记下来并统计。</strong><br />
-每条规则各砍掉多少，是调流水线唯一可靠的抓手。<br />
-⚠️ 一个真实的失败模式：某条规则因为一个 bug 砍掉了 80% 的数据，而你只看总量的话完全发现不了。</p>
+<p>★ <strong>实践建议：把 <code>bad</code> 这个列表落盘，按规则名做计数，每天看一张表。</strong><br />
+每条规则各砍掉多少、和别的规则重叠多少，是调流水线唯一可靠的抓手。<br />
+⚠️ 一个真实的失败模式：某条规则因为一个 bug 砍掉了 80% 的数据，而你只看总量的话完全发现不了——因为总量本来就该掉 80%~90%。</p>
 </blockquote>
 <hr />
 <h2 id="55">5.5 中文特有的问题</h2>
-<p>上面的规则几乎全是为英文设计的。中文要单独处理：</p>
-<div class="codehilite"><pre><span></span><code>① ★ 没有空格分词 → &quot;词数&quot;&quot;平均词长&quot;这两类规则【直接失效】
-   替代：用【字符数】，或者先用 jieba 之类分词（但那又慢了 100 倍）
-   实践：中文一般改用【字符数】+【标点密度】
+<h3 id="_5">先把三个容易混的单位分清</h3>
+<p>★★ 这一节的所有坑都源自同一件事：<strong>上面的规则默认"词"是靠空格切出来的，而中文不打空格。</strong> 顺带把三个单位一次性说清，后面几章都要用：</p>
+<table>
+<thead>
+<tr>
+<th>单位</th>
+<th>定义</th>
+<th>"深度学习模型" 这 6 个字</th>
+<th>"deep learning model"</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>字符</strong></td>
+<td>Unicode 码位个数</td>
+<td><strong>6</strong></td>
+<td>19（含 2 个空格）</td>
+</tr>
+<tr>
+<td><strong>字节</strong></td>
+<td>UTF-8 编码后的字节数</td>
+<td><strong>18</strong>（★ 常用汉字在 UTF-8 下是 <strong>3 字节/字</strong>）</td>
+<td>19（ASCII 是 1 字节/字符）</td>
+</tr>
+<tr>
+<td><strong>token</strong></td>
+<td>分词器切出的单元个数</td>
+<td>⚠️ 约 <strong>3~4 个</strong>（1 个 token 常覆盖 1~2 个汉字，随分词器变，见 <a href="09-Tokenizer与词表.html">09 章</a>）</td>
+<td>约 3 个</td>
+</tr>
+<tr>
+<td><strong>空格分词的"词"</strong></td>
+<td><code>text.split()</code> 的结果数</td>
+<td>★ <strong>1 个</strong>（整段算一个"词"！）</td>
+<td>3 个</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>请把最后一行读两遍。</strong> 一段 500 字的中文文章，<code>text.split()</code> 往往只切出三五个"词"，平均"词长"一百多——于是 Gopher 的<strong>词数规则和平均词长规则同时判死它</strong>。这不是"效果差"，是<strong>整条规则在中文上的行为完全颠倒了</strong>。</p>
+<p>⚠️ 由此派生出一个报数陷阱：说"我们的中文语料有 1 T"，必须问清是 <strong>1 T 字符</strong>、<strong>1 T 字节</strong>还是 <strong>1 T token</strong>。按上表，同一份中文语料的字节数约是字符数的 3 倍、token 数约是字符数的 0.5~0.7 倍——<strong>最大最小两个口径之间差 4~6 倍。</strong></p>
+</blockquote>
+<h3 id="_6">五条规则的中文改法</h3>
+<table>
+<thead>
+<tr>
+<th>英文规则</th>
+<th>英文上的作用</th>
+<th>⚠️ 直接搬到中文会怎样</th>
+<th>★ 中文替代做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>词数 ∈ <code>[50, 100000]</code></td>
+<td>砍空壳页</td>
+<td>几乎每篇都 &lt; 50 → <strong>全灭</strong></td>
+<td>改成<strong>字符数</strong> ∈ <code>[100, 200000]</code></td>
+</tr>
+<tr>
+<td>平均词长 ∈ <code>[3, 10]</code></td>
+<td>抓乱码、粘连文本</td>
+<td>平均词长动辄 100+ → <strong>全灭</strong></td>
+<td>改成<strong>标点密度</strong> = 标点字符 / 总字符，正常中文约在 2%~20%</td>
+</tr>
+<tr>
+<td>停用词 ≥ 2 个</td>
+<td>抓非自然语言</td>
+<td>一个英文停用词都没有 → <strong>全灭</strong></td>
+<td>换中文停用词表（的 / 了 / 在 / 是 / 和 / 就 / 不 / 都 / 一 / 有）</td>
+</tr>
+<tr>
+<td>以句末标点结尾的行</td>
+<td>抓导航栏</td>
+<td>只判 ASCII <code>. ! ?</code> → 中文全被判"不以标点结尾" → <strong>全灭</strong></td>
+<td>标点表必须含 <code>。！？；：""》）</code></td>
+</tr>
+<tr>
+<td>项目符号 <code>• - * ·</code> 开头</td>
+<td>抓纯列表页</td>
+<td>中文列表用 <code>一、</code> <code>1．</code> <code>（1）</code> <code>①</code></td>
+<td>补全角序号和中文数字序号的前缀表</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"只判 ASCII 标点"这个 bug 是真的常见</strong>，而且它的症状是<strong>中文分片的留存率接近 0</strong>——如果你看到某个语言分片留存率异常低，先怀疑标点表。</p>
+</blockquote>
+<h3 id="_7">中文互联网特有的垃圾形态</h3>
+<div class="codehilite"><pre><span></span><code>① 采集站 / 伪原创（同义词替换过的洗稿）
+   → 06 章的近似去重能抓一部分，精确去重完全抓不到
 
-② 标点必须用中文标点表（，。！？；：&quot;&quot;）
-   ★ 一个常见 bug：只判 ASCII 标点 → 所有中文文档都被判成&quot;不以标点结尾&quot;→ 全灭
+② 小说站的分章页（每页只有几百字正文 + 大段导航）
+   → 字符数规则 + 行级形态规则配合才能抓
 
-③ 简繁混排、全角半角混排 → 需要 Unicode 归一化（NFKC）
+③ ★ 全角空格和不可见字符插入（专门用来绕过平台查重）
+   → ★★ 必须做 Unicode 归一化 + 零宽字符清除，否则后面的去重会【静默失效】
 
-④ ★ 中文互联网的垃圾形态和英文不同：
-   - 采集站/伪原创（同义词替换过的洗稿）→ 06 章的近似去重能抓一部分
-   - 小说站的分章页（每页只有几百字 + 大段导航）
-   - 全角空格和不可见字符插入（用来绕过查重）
-     → ★ 必须做 Unicode 归一化 + 零宽字符清除，否则去重会失效
+④ 简繁混排、全角半角混排
+   → 需要 Unicode 归一化（NFKC）
 </code></pre></div>
 
+<p><strong>NFKC</strong> = <strong>Normalization Form KC</strong>（Unicode 兼容分解 + 标准合成），作用是把"全角 Ａ"和"半角 A"、"①"和"1"这类<strong>看起来不同但语义相同</strong>的字符统一掉。</p>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">unicodedata</span><span class="o">,</span><span class="w"> </span><span class="nn">re</span>
+
+<span class="c1"># ★ 零宽字符：U+200B~U+200F、U+202A~U+202E、U+FEFF</span>
 <span class="n">ZERO_WIDTH</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[​-‏‪-‮﻿]&quot;</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">normalize_zh</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
-    <span class="n">text</span> <span class="o">=</span> <span class="n">ZERO_WIDTH</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>            <span class="c1"># ★ 先清零宽字符</span>
-    <span class="n">text</span> <span class="o">=</span> <span class="n">unicodedata</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="s2">&quot;NFKC&quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>  <span class="c1"># 全角→半角，兼容字符归一</span>
+    <span class="n">text</span> <span class="o">=</span> <span class="n">ZERO_WIDTH</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>             <span class="c1"># ★ 必须先清零宽字符，再做别的</span>
+    <span class="n">text</span> <span class="o">=</span> <span class="n">unicodedata</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="s2">&quot;NFKC&quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>  <span class="c1"># 全角→半角、兼容字符归一</span>
     <span class="n">text</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;[ \t]+&quot;</span><span class="p">,</span> <span class="s2">&quot; &quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>
     <span class="n">text</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;\n{3,}&quot;</span><span class="p">,</span> <span class="s2">&quot;</span><span class="se">\n\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">text</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">text</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
 </code></pre></div>
 
 <blockquote>
-<p>⚠️ <strong>零宽字符这一条是我特别想强调的</strong>：内容农场会插入零宽空格来绕过平台查重。如果不清掉，<strong>你的 MinHash 去重（<a href="06-去重.html">06 章</a>）会认为两篇一模一样的洗稿文是不同文档</strong>，全部留下来。这是一个静默失效的坑。</p>
+<p>⚠️ <strong>零宽字符这一条我特别想强调</strong>：内容农场会在正文里插入零宽空格来绕过平台查重。如果不清掉，<strong>你的 MinHash 去重（<a href="06-去重.html">06 章</a>）会认为两篇一模一样的洗稿文是不同文档</strong>，于是全部留下来。<br />
+★ 这是一个<strong>静默失效</strong>的坑：去重程序没报错、没告警，留存率看起来也正常，但它实际上什么都没去掉。</p>
 </blockquote>
 <hr />
 <h2 id="56">5.6 挂回真实系统</h2>
@@ -531,37 +964,60 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>Nemotron-CC</strong></td>
 <td>—</td>
-<td>✅ <strong>主动放松</strong>启发式规则以保留更多 token</td>
+<td>✅ <strong>主动放松</strong>启发式规则以保留更多唯一 token</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>★ 注意最后一行的方向反转：<strong>Nemotron-CC 明确主张放松过滤</strong>，理由是长周期训练（15 T token 以上）时，<strong>唯一 token 的数量比纯度更值钱</strong>——因为数据不够就得重复，而重复的边际收益递减（<a href="11-喂多少-ScalingLaw.html">11 章</a>）。这是 2024 年之后的新共识方向之一。</p>
+<p>★ 注意最后一行的方向反转：<strong>Nemotron-CC 明确主张放松过滤</strong>，理由是长周期训练（15 T token 以上）时，<strong>唯一 token 的数量比纯度更值钱</strong>——因为数据不够就得重复，而重复的边际收益递减（<a href="11-喂多少-ScalingLaw.html">11 章</a>）。这是 2024 年之后的新共识方向之一，<a href="07-质量过滤.html">07 章</a>会给它的具体数字。</p>
 </blockquote>
+<p><strong>一个可以校核的留存率数字</strong>（✅ 我从 <a href="papers/">papers/Dolma-Open-Corpus-of-Three-Trillion-Tokens-arXiv-2402.00159.pdf</a> 里核对过原文）：</p>
+<div class="codehilite"><pre><span></span><code>Dolma 论文转述 CCNet 流水线的整体效果：
+    &quot;filters out 84.2% of the content in Common Crawl, from 175.1 TB to 27.7 TB&quot;
+
+★ 自己验一遍：1 − 27.7 / 175.1 = 1 − 0.1582 = 84.18%  ✅ 和论文的 84.2% 一致
+⚠️ 口径提醒：论文只写了 &quot;TB&quot;，没说是十进制 TB 还是二进制 TiB。
+   如果原意是 TiB，换算成十进制 TB 是 192.5 → 30.5 ——
+   ★ 比例不变（84.2%），但绝对值差 10%。报绝对容量时务必声明口径。
+</code></pre></div>
+
 <hr />
 <h2 id="57">5.7 小结</h2>
 <div class="codehilite"><pre><span></span><code>① ★★ 流水线顺序由【成本】决定：便宜的规则先跑砍量，昂贵的模型后跑
-   成本跨度 5 个数量级（正则 10μs → 大模型打标 1s）
+   成本跨度 5 个数量级（正则 ~10 μs → 大模型打标 ~1 s，⚠️ 量级估算）
 
-② 语言识别（LID）必须最先做，因为后面的规则全是语言相关的
-   工具：fastText lid.176.bin，几十微秒一条
-   ✅ FineWeb 阈值 0.65
+② 语言识别（LID = Language IDentification）必须最先做，
+   因为后面的规则全是语言相关的
+   工具：fastText lid.176.bin（176 种语言，约 126 MiB），几十微秒一条
+   ✅ FineWeb 阈值 0.65（论文原文核对过）
    坑：代码别过 LID；短文本不准；不区分简繁
+   ★ 阈值不是独立旋钮：调高 LID 阈值会提前砍掉 07 章想要的多语言技术文档
 
-③ 三代启发式规则集：
-   C4（2019）    —— 词表和标点规则，宁可错杀
+③ 三代启发式规则集，每一代都要同时看【拦掉什么】和【误杀什么】：
+   C4（2019）    —— 看具体词和标点，宁可错杀
                     ★ &quot;丢掉含 { 的页面&quot; 把代码全删了，著名反面教材
-   Gopher（2021）—— 统计分布规则 + ★【文档内部重复度】
-   FineWeb（2024）—— 在前两者之上再加自研三条
+   Gopher（2021）—— 看分布统计 + ★【文档内部重复度】
+   FineWeb（2024）—— 看行级形态，再加自研三条
 
-④ ★ 区分两种&quot;重复&quot;，极易混淆：
+④ ★★ 5.4 节的推演给出两条硬结论：
+   · 一篇垃圾通常被【多条规则同时命中】（例中被 ③④⑥⑧ 四条同时拦下）
+   · ⟹ 统计必须记录【全部命中的规则】，只记第一条会让你误判
+     &quot;删掉某条规则能救回很多数据&quot;——实际上救回来的接近于零
+
+⑤ ★ 区分两种&quot;重复&quot;，极易混淆：
    文档【内部】重复 —— 一句话在同一篇里重复 200 遍  → 本章的 Gopher 规则
    文档【之间】重复 —— 两篇文档一模一样            → 06 章的去重
+   ★ 而文档内部重复又分【行级】和【n-gram 级】，5.4 的例子里一个是 4%、
+     一个是 33% —— 只做行级会放过后者
 
-⑤ 中文要单独一套：字符数代替词数、中文标点表、
-   ★ Unicode 归一化 + 零宽字符清除（否则洗稿文的去重会静默失效）
+⑥ ★★ 三个单位必须分清（中文上差 4~6 倍）：
+   字符（Unicode 码位） / 字节（UTF-8，汉字 3 字节） / token（约 1~2 汉字）
+   ⟹ 报&quot;语料有 1 T&quot;时必须声明是哪一个
+   ⟹ 中文要单独一套规则：字符数代替词数、标点密度代替平均词长、
+      中文停用词表、中文句末标点表
 
-⑥ 实践铁律：★ 记录每条规则各砍掉多少，否则出了 bug 你完全看不见
+⑦ ★ Unicode 归一化（NFKC）+ 零宽字符清除是【必做前置】，
+   否则洗稿文的去重会【静默失效】：不报错、不告警、也没去掉任何东西
 </code></pre></div>
 
 <hr />

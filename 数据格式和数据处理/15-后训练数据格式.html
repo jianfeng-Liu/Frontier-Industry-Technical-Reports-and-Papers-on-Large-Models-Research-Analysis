@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -274,12 +279,37 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    }
    ★ 有【角色结构】
    ★★★ 训练目标：只学【assistant 说的话】，不学 user 说的话
-   ★ 规模：几万 ~ 几百万条（★ 比预训练小【六个数量级】）
+   ★ 规模：几万 ~ 几百万【条】
+</code></pre></div>
+
+<h3 id="token">⚠️ 先把"小多少"这个数算对：别拿「条」和「token」比</h3>
+<p>⚠️ 「后训练数据比预训练小六个数量级」这句话流传很广，<strong>但它在偷换单位</strong>：</p>
+<div class="codehilite"><pre><span></span><code>预训练的规模单位是【token】：   10¹² token（万亿级）
+后训练的规模单位是【条】：      10⁵ ~ 10⁶ 条
+
+❌ 直接相除：10¹² / 10⁶ = 10⁶ ⟹ &quot;小六个数量级&quot;
+   ★ 错在哪：★★ 分子是 token 数，分母是【样本条数】—— 两个不同的量纲。
+
+✅ 换成同一个单位（token）再比：
+   一条 SFT 样本（多轮对话 + 回答）平均约 10³ token
+     ⟹ 后训练总量 ≈ 10⁵~10⁶ 条 × 10³ token/条 = 10⁸ ~ 10⁹ token
+   ⟹ 10¹² / 10⁹ = 10³     （数据多的那一端）
+      10¹² / 10⁸ = 10⁴     （数据少的那一端）
+   ⟹ ★★★ 按 token 算，后训练比预训练小【三到四个数量级】，不是六个。
+
+★ 还要再扣一刀才是&quot;真正学到的量&quot;：
+  后训练里【只有 assistant 的部分算 loss】（15.3），
+  一条多轮样本里 assistant 占比常在 30%~50%
+  ⟹ ★ 真正产生梯度的 token 又要再打个对折 ⟹ 约 10⁷·⁷ ~ 10⁸·⁷
+  ⟹ ★★ 所以&quot;小四到五个数量级&quot;是更诚实的说法。
 </code></pre></div>
 
 <blockquote>
+<p>⚠️ <strong>这不是抠字眼</strong>。整本教程里 <strong>token / 字符 / 字节 / 条</strong> 这四个单位反复出现，混一次结论就错一个数量级：<br />
+★ <code>条</code> 要乘平均长度才是 token；★ <code>token</code> 要乘平均压缩率（<a href="09-Tokenizer与词表.html">9.5 节</a>：中文约 3.8~4.0 字符/token）才是字符；★ 中文一个汉字在 UTF-8 里通常是 <strong>3 字节</strong>，所以"字符数"和"字节数"也差着三倍。</p>
 <p><strong>SFT</strong> = <strong>Supervised Fine-Tuning</strong>（有监督微调），指用"问题—标准回答"配对数据继续训练模型。<br />
-它是后训练的第一步，后面通常还有 <strong>RLHF</strong>（Reinforcement Learning from Human Feedback，基于人类反馈的强化学习）或 <strong>DPO</strong>（Direct Preference Optimization，直接偏好优化）等偏好对齐阶段（15.7）。</p>
+它是后训练的第一步，后面通常还有 <strong>RLHF</strong>（Reinforcement Learning from Human Feedback，基于人类反馈的强化学习）、<strong>DPO</strong>（Direct Preference Optimization，直接偏好优化）或 <strong>RLVR</strong>（Reinforcement Learning with Verifiable Rewards，基于可验证奖励的强化学习）等对齐阶段（15.7 / 15.8）。<br />
+★ 这四个缩写本章都会用到，后面不再重复展开。</p>
 </blockquote>
 <div class="codehilite"><pre><span></span><code>★★ 核心认知：底层训练机制【完全没变】，还是&quot;预测下一个 token&quot;。
    变的只有两件事：
@@ -329,9 +359,181 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="153-loss">15.3 ★★★ loss 掩码：本章最重要的一件事</h2>
 <div class="codehilite"><pre><span></span><code>拍平之后是一串 token。但【不是每个 token 都该算 loss】。
 
-&lt;|im_start|&gt;user\n北京在哪？&lt;|im_end|&gt;\n&lt;|im_start|&gt;assistant\n北京位于……&lt;|im_end|&gt;
-└───────────── loss_mask = 0 ─────────────┘└──────── loss_mask = 1 ────────┘
-             ★ 不学（这是别人说的）              ★ 学（这是你该说的）
+  &lt;|im_start|&gt;user \n 北京在哪？ &lt;|im_end|&gt; \n   &lt;|im_start|&gt;assistant \n 北京位于…… &lt;|im_end|&gt;
+  |&lt;------------ loss_mask = 0 -----------&gt;|   |&lt;---------- loss_mask = 1 ----------&gt;|
+         ★ 不学（这是别人说的）                        ★ 学（这是你该说的）
+</code></pre></div>
+
+<h3 id="token-mask">★★★ 逐 token 把 mask 标出来：一条真的多轮样本</h3>
+<blockquote>
+<p>★ 上面那张示意图只分了两段。真实样本是<strong>多轮交替</strong>的，所以这里把一条完整样本<strong>一个 token 一个 token 列出来</strong>。</p>
+</blockquote>
+<p><strong>原始样本</strong>（两轮对话）：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;system&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;你是一个严谨的助手。&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;北京在哪？&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;北京位于华北平原北部。&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;人口多少？&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;约 2100 万。&quot;</span><span class="p">}</span>
+<span class="p">]}</span>
+</code></pre></div>
+
+<p><strong>拍平 + 逐段标 mask</strong>（⚠️ 为了看得清，把"一个角色头 / 一段正文"当成一组；真实实现是逐 token 的）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>token 段（ChatML 拍平后）</th>
+<th>属于谁</th>
+<th><strong>loss_mask</strong></th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>&lt;\|im_start\|&gt;</code> <code>system</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>★ 角色头是模板，不是模型要生成的内容</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>你是一个严谨的助手。</code></td>
+<td>system</td>
+<td><strong>0</strong></td>
+<td>★ 系统提示是<strong>我们写给它的</strong>，不是它说的</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>&lt;\|im_end\|&gt;</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>这一轮不是 assistant 的，结束符也不学</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>&lt;\|im_start\|&gt;</code> <code>user</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>同 1</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>北京在哪？</code></td>
+<td>user</td>
+<td><strong>0</strong></td>
+<td>★★ <strong>最关键的一行</strong>：学了它，模型就会自己编问题</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>&lt;\|im_end\|&gt;</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>同 3</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>&lt;\|im_start\|&gt;</code> <code>assistant</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>⚠️ 易错：这是<strong>推理时由框架喂进去的</strong>生成提示，模型不需要学会打出它</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>北京位于华北平原北部。</code></td>
+<td>assistant</td>
+<td>★ <strong>1</strong></td>
+<td>✅ 这才是我们要教的</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>&lt;\|im_end\|&gt;</code></td>
+<td>框架</td>
+<td>★★ <strong>1</strong></td>
+<td>★★★ <strong>必须学！</strong> 它是停止信号（见下方说明）</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong> 或 1</td>
+<td>⚠️ 各家实现不一；★ 关键是<strong>训练和推理用同一套</strong>（见 15.2）</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>&lt;\|im_start\|&gt;</code> <code>user</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>第二轮开始</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>人口多少？</code></td>
+<td>user</td>
+<td><strong>0</strong></td>
+<td>同 5</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>&lt;\|im_end\|&gt;</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>&lt;\|im_start\|&gt;</code> <code>assistant</code> <code>\n</code></td>
+<td>框架</td>
+<td><strong>0</strong></td>
+<td>同 7</td>
+</tr>
+<tr>
+<td>15</td>
+<td><code>约 2100 万。</code></td>
+<td>assistant</td>
+<td>★ <strong>1</strong></td>
+<td>✅ 第二段要学的内容</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>&lt;\|im_end\|&gt;</code></td>
+<td>框架</td>
+<td>★★ <strong>1</strong></td>
+<td>同 9</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表要读出来的四件事：
+
+① ★ mask=1 的区域【不是一段，是多段】（第 8-9 组、第 15-16 组）
+   ⟹ 这就是 15.4 说&quot;多轮要写成【逐段】mask&quot;的原因。
+
+② ★★ 结束符 &lt;|im_end|&gt; 的 mask 是 1 —— ★ 和它前面的正文一起学。
+   ⟹ 但只在【assistant 的那一轮】是 1（第 9、16 组）；
+      user/system 那几轮的 &lt;|im_end|&gt;（第 3、6、13 组）仍是 0。
+   ⚠️ 这是最容易写成&quot;所有 &lt;|im_end|&gt; 都学&quot;或&quot;所有都不学&quot;的地方，两种都错。
+
+③ ★ 角色头（&lt;|im_start|&gt;assistant\n）的 mask 是 0。
+   ⚠️ 新手直觉是&quot;模型要学会说自己是 assistant&quot;—— 不需要。
+      ★ 推理时这几个 token 是【框架替它写进去】的（15.2 的&quot;生成提示&quot;）。
+
+④ ★★ ⚠️ 粗估一下有效 token 占比（★ 下面两个数都是估的，不是实测）：
+   整条样本假设 ≈ 60 个 token，mask=1 的两段（第 8-9、15-16 组）≈ 17 个
+   ⟹ ★ 只有约 17/60 ≈ 28% 的 token 在产生梯度。
+   ⟹ 这就是 15.1 那段&quot;真正学到的 token 还要再打对折&quot;的来历。
+   ★ 自检时别猜：直接 print(sum(mask), len(mask)) —— 这两个数必须自己量。
+</code></pre></div>
+
+<p><strong>自检脚本（强烈建议每次改完格式都跑）</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ★★★ 把 mask==1 的位置解码回文本打印出来，肉眼比对</span>
+<span class="n">learned</span> <span class="o">=</span> <span class="n">tok</span><span class="o">.</span><span class="n">decode</span><span class="p">([</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span><span class="p">,</span> <span class="n">m</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">ids</span><span class="p">,</span> <span class="n">mask</span><span class="p">)</span> <span class="k">if</span> <span class="n">m</span> <span class="o">==</span> <span class="mi">1</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">learned</span><span class="p">))</span>
+<span class="c1"># ✅ 期望输出（顺序拼接，不多一个字不少一个字）：</span>
+<span class="c1">#    &#39;北京位于华北平原北部。&lt;|im_end|&gt;约 2100 万。&lt;|im_end|&gt;&#39;</span>
+<span class="c1"># ⚠️ 如果里面出现了&quot;北京在哪？&quot;→ ★ 你把 user 也学了（坑①）</span>
+<span class="c1"># ⚠️ 如果末尾没有 &lt;|im_end|&gt;  → ★ 你漏了结束符（坑②）</span>
+<span class="c1"># ⚠️ 如果整体错开一格（比如开头多了个&quot;。&quot;）→ ★ 移位差一（坑③）</span>
 </code></pre></div>
 
 <p><strong>为什么必须这样？</strong></p>
@@ -484,7 +686,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ① 训一个【奖励模型 RM】（Reward Model）
    目标：让 RM 给 chosen 打的分 &gt; 给 rejected 打的分
    损失：L = −log σ( r(chosen) − r(rejected) )
-              └─ σ 是 sigmoid，把分差压到 (0,1) 当概率看 ─┘
+   ★ 其中 σ 是 sigmoid，把&quot;分差&quot;压到 (0,1) 区间当概率看
+     ⟹ 分差越大，损失越小；分差为 0 时损失 = −log 0.5 ≈ 0.693
    ★ 然后用这个 RM 去做强化学习（PPO 等）
 
 ② ★ 直接偏好优化 DPO
@@ -507,7 +710,157 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <hr />
-<h2 id="158-vs">15.8 ★ 后训练数据：少而精 vs 多而杂</h2>
+<h2 id="158">15.8 ★★★ 三种后训练数据格式：字段逐项对照</h2>
+<blockquote>
+<p>★ 前面 15.1-15.7 是一节一种格式地讲。这一节把 <strong>SFT / 偏好对 / RLVR</strong> 三种格式<strong>并排摊在一张表上</strong>，因为实践中你会在同一个项目里同时用到三种，<strong>最容易搞混的就是"哪个字段是必需的、loss 怎么算"</strong>。</p>
+</blockquote>
+<h3 id="_1">字段对照表</h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th><strong>① SFT</strong><br>（有监督微调）</th>
+<th><strong>② 偏好对</strong><br>（DPO / 训奖励模型）</th>
+<th><strong>③ RLVR</strong><br>（可验证奖励强化学习）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>提示 / 输入</td>
+<td><code>messages</code>（多轮）</td>
+<td><code>prompt</code>（或同样的 <code>messages</code>）</td>
+<td><code>prompt</code></td>
+</tr>
+<tr>
+<td><strong>标准答案</strong></td>
+<td>★ <code>messages</code> 里的 assistant 内容<br>（<strong>必需</strong>，人写或模型生成后筛过）</td>
+<td>❌ <strong>没有</strong>"唯一正确答案"</td>
+<td>⚠️ <strong>不必需</strong>：只要有<strong>可判对错的东西</strong></td>
+</tr>
+<tr>
+<td>对比项</td>
+<td>❌ 无</td>
+<td>★★ <code>chosen</code> / <code>rejected</code><br>（<strong>必需，成对，共享同一 prompt</strong>）</td>
+<td>❌ 无</td>
+</tr>
+<tr>
+<td><strong>验证信号</strong></td>
+<td>❌ 无</td>
+<td>❌ 无（偏好本身就是信号）</td>
+<td>★★★ <code>answer</code>（标准解）<br>或 <code>test_cases</code>（单元测试）<br>或 <code>verifier</code>（判题程序）</td>
+</tr>
+<tr>
+<td>回答从哪来</td>
+<td>★ 数据集里<strong>给定</strong></td>
+<td>★ 数据集里<strong>给定</strong>两条</td>
+<td>★★ <strong>训练时模型自己采样</strong>生成</td>
+</tr>
+<tr>
+<td><strong>loss / 目标在哪</strong></td>
+<td>★ 对 assistant 段做<strong>交叉熵</strong><br>（15.3 的 loss_mask）</td>
+<td>★ 对<strong>分差</strong>建模：<br><code>−log σ(r_chosen − r_rejected)</code></td>
+<td>★ 对<strong>采样出的轨迹</strong>按奖励加权<br>（PPO / GRPO 之类的策略梯度）</td>
+</tr>
+<tr>
+<td>需要 loss_mask 吗</td>
+<td>★★★ <strong>需要</strong>，而且最容易写错</td>
+<td>★ 需要：两条都只对<strong>回答段</strong>算</td>
+<td>★ 需要：只对<strong>模型自己生成的 token</strong> 算</td>
+</tr>
+<tr>
+<td>一条样本的成本</td>
+<td>中（要写/筛一条好答案）</td>
+<td>高（要两条 + 一次判优劣）</td>
+<td>★ <strong>低</strong>（只要一道题 + 一个判题器）</td>
+</tr>
+<tr>
+<td>⚠️ 最大的坑</td>
+<td>loss_mask 写错 → 自问自答</td>
+<td>★ <strong>长度偏置</strong>（15.7）</td>
+<td>★★ <strong>奖励被钻空子</strong>（reward hacking）</td>
+</tr>
+<tr>
+<td>能不能规模化</td>
+<td>受标注产能限制</td>
+<td>受标注产能限制</td>
+<td>★★★ <strong>能</strong>：判题器不累，可无限采样</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 一句话串起这三种：
+
+  ① SFT    = 「照着这个答案说」          —— 教【格式和风格】
+  ② 偏好对 = 「这两个里哪个更好」        —— 教【人类偏好】（没有标准答案的领域）
+  ③ RLVR   = 「你自己试，我只告诉你对不对」—— 教【把事情做对】（有标准答案的领域）
+
+★★ 为什么 ③ 这两年火起来：★ 它是唯一一种【数据量不受人工标注产能限制】的格式
+   —— 只要题目和判题器到位，模型可以自己采样出任意多的训练信号。
+   ⟹ 这正是 [12.7 节](12-合成数据.md)&quot;可验证领域是合成数据的甜区&quot;的另一面。
+</code></pre></div>
+
+<h3 id="_2">同一道题，三种格式各写一遍</h3>
+<p>★ 刻意用<strong>同一个问题</strong>，这样区别一眼就能看出来。</p>
+<p><strong>① SFT</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;system&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;你是一个数学助手，先给步骤再给答案。&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;一个班有 36 人，其中 5/9 是女生，男生有多少人？&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;女生 = 36 × 5/9 = 20 人。\n男生 = 36 − 20 = 16 人。\n答：男生有 16 人。&quot;</span><span class="p">}</span>
+<span class="p">]}</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ loss 在哪：只有最后那段 assistant 的内容 + 它的 &lt;|im_end|&gt;（mask=1）
+⚠️ 这条样本的质量【完全取决于那段答案写得对不对】——
+   ★ 如果答案算错了，模型就学会了错的算法，而且学得很扎实。
+</code></pre></div>
+
+<p><strong>② 偏好对</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;prompt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;一个班有 36 人，其中 5/9 是女生，男生有多少人？&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;chosen&quot;</span><span class="p">:</span><span class="w">   </span><span class="s2">&quot;女生 = 36 × 5/9 = 20 人，所以男生 = 36 − 20 = 16 人。答：16 人。&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;rejected&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;36 的 5/9 大约是 20 人左右，剩下的就是男生，应该有十几个人。&quot;</span><span class="p">}</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 注意这一对的差别【不在对错，而在&quot;好不好&quot;】：
+  rejected 其实没说错，只是【含糊、不给确数】。
+⟹ ★★ 这正是偏好数据擅长的事：教【表达方式和严谨程度】，
+   而这种东西没法写成&quot;标准答案&quot;。
+⚠️ 而这也是【长度偏置】的来源：chosen 通常更长更完整
+   ⟹ ★ 模型可能学成&quot;把话说长&quot;而不是&quot;把话说准&quot;（15.7）。
+</code></pre></div>
+
+<p><strong>③ RLVR</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;prompt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;一个班有 36 人，其中 5/9 是女生，男生有多少人？&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;answer&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;16&quot;</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">&quot;verifier&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;exact_match_after_normalize&quot;</span><span class="p">}</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★★★ 注意这条样本里【没有任何一段&quot;回答&quot;】！
+   它只有：题目 + 标准答案 + 怎么判。
+
+★ 训练时发生的事：
+   ① 模型对这道题采样 8 条回答（温度 &gt; 0，所以每条不一样）
+   ② 判题器各判一次 → 比如 3 条答出 16（奖励 1），5 条答错（奖励 0）
+   ③ ★ 按奖励给这 8 条轨迹加权，做策略梯度更新
+   ⟹ ★★ 答对的那 3 条被&quot;鼓励&quot;，答错的 5 条被&quot;抑制&quot;
+
+★★ 和 ① 的本质区别：
+   ① 的监督信号是【别人写的那一条答案】——★ 模型只能模仿
+   ③ 的监督信号是【自己生成、被判对的那几条】——★ 模型在自己的分布上改进
+   ⟹ 这就是为什么 ③ 对&quot;把题做对&quot;这类能力提升更直接。
+
+⚠️⚠️ ③ 最大的坑是【奖励被钻空子（reward hacking）】：
+   · 判题器写成&quot;答案里出现 16 就算对&quot; → ★ 模型学会把 0~100 全列一遍
+   · 判题器只看最终数字 → ★ 模型学会跳过推理直接猜一个常见答案
+   ★ 所以 verifier 这一行代码的严格程度，直接决定这份数据有没有用。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>⚠️ 一个诚实的边界：本节只讲【数据长什么样】。
+   ★ PPO（Proximal Policy Optimization，近端策略优化）、
+     GRPO 这些算法怎么用这些数据做更新，属于强化学习的范围，
+     不在本教程（数据侧）的范围内。
+</code></pre></div>
+
+<hr />
+<h2 id="159-vs">15.9 ★ 后训练数据：少而精 vs 多而杂</h2>
 <div class="codehilite"><pre><span></span><code>预训练的逻辑是【越多越好】（11 章的 scaling law）。
 ★★ 后训练的逻辑【完全不同】：
 
@@ -515,9 +868,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ——知识在预训练阶段就已经在模型里了
   · ⟹ 少量高质量数据就能激活出很好的对话能力
 
-⚠️ LIMA（Less Is More for Alignment）这篇工作是这个观点的代表，
-   它用【约一千条】精心挑选的样本就做出了很强的对话能力。
-   ⚠️ 该论文不在本目录 papers/ 内，具体数字与结论请以原文为准。
+⚠️ LIMA（Less Is More for Alignment，&quot;对齐上少即是多&quot;，arXiv:2305.11206）
+   这篇工作是这个观点的代表：它用【约一千条】精心挑选的样本
+   就做出了很强的对话能力。
+   ⚠️⚠️ 核对说明：该论文的 PDF【不在本目录 papers/ 内】，
+      ★ 上面这句是通行说法，我没有逐句核对原文 ——
+      具体数字、模型规模与评测口径请以原文为准。
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>★ 所以后训练数据的工作重心和预训练【正好相反】：
@@ -531,7 +887,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <hr />
-<h2 id="159">15.9 ⚠️ 六个坑</h2>
+<h2 id="1510">15.10 ⚠️ 八个坑</h2>
 <div class="codehilite"><pre><span></span><code>① ★★★ loss 掩码写错，把 user 的部分也学了
    → 模型自问自答、停不下来。★ 这是最经典的 SFT 失败现象
 
@@ -550,13 +906,31 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 ⑥ ★ SFT 打包后 loss_mask 没跟着重排（13 章坑④）
    一条 4096 的序列里塞了十几条对话，每条的 mask 边界都要重新对齐
+
+⑦ ⚠️⚠️ 截断把 &lt;|im_end|&gt; 砍掉了（★ 15.3 那段代码就藏着这个坑）
+   ids[:max_len] 这一刀如果落在最后一轮 assistant 的中间，
+   → ★ 这条样本就变成&quot;话说到一半、没有结束符&quot;的样本
+   → ⚠️ 症状和坑② 一模一样（模型不知道何时停），但原因完全不同
+   ★ 正确做法：★★ 以【轮】为单位截断 ——
+     装不下一整轮就【整轮丢掉】，绝不半轮入库
+   ★ 自检：assert ids[-1] == eos_id（或&quot;最后一个 mask=1 的 token 是结束符&quot;）
+
+⑧ ⚠️ 把 RLVR 的样本当 SFT 喂进去（15.8）
+   RLVR 的样本里【根本没有回答】，只有题目 + 标准答案 + 判题器
+   → ★ 如果你把 answer 字段直接当成 assistant 的回答去做 SFT，
+     模型学到的是&quot;看到题目就蹦一个裸答案&quot;，★ 推理过程全丢
 </code></pre></div>
 
 <hr />
-<h2 id="1510">15.10 小结</h2>
-<div class="codehilite"><pre><span></span><code>① 预训练数据 = 纯文本、每个 token 都算 loss、万亿规模
-   后训练数据 = 结构化对话、★★★ 只对一部分位置算 loss、几万~几百万条
+<h2 id="1511">15.11 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 预训练数据 = 纯文本、每个 token 都算 loss、万亿 token
+   后训练数据 = 结构化对话、★★★ 只对一部分位置算 loss、几万~几百万【条】
    ★★ 底层机制没变（还是预测下一个 token），变的只有【模板】和【loss 掩码】
+   ⚠️⚠️ 别信&quot;小六个数量级&quot;：★ 那是拿【token 数】除【条数】得出的，量纲不对
+      ✅ 换成同一单位：10⁵~10⁶ 条 × ~10³ token/条 = 10⁸~10⁹ token
+         ⟹ 10¹²/10⁹ ~ 10¹²/10⁸ = ★【小三到四个数量级】
+      ★ 再扣掉 mask=0 的部分（assistant 常只占 30%~50%）
+         ⟹ 按&quot;真正产生梯度的 token&quot;算，★ 约小四到五个数量级
 
 ② ChatML 把对话拍平成 token 串：&lt;|im_start|&gt;role\n内容&lt;|im_end|&gt;
    ★ 特殊 token 要在 09 章训 tokenizer 时就预留好
@@ -570,8 +944,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
      【只学模型自己产生的 token，不学环境/对方产生的】
      user 不学 / system 不学 / ★ tool 返回不学 / assistant 学 /
      ★ assistant 发起的工具调用【要学】（那是模型的决策）
-   ★ &lt;|im_end|&gt; 结束符【必须学】—— 否则模型不知道何时停
-   ★ 移位差一是重灾区：自检办法是把 mask==1 的 token 解码打印出来看
+   ★★ 15.3 把一条两轮样本【逐 token】标了一遍，三个易错点：
+     · ★ mask=1 是【多段】而不是一段（每轮 assistant 各一段）
+     · ★★ &lt;|im_end|&gt; 要学，★ 但只有 assistant 那几轮的要学；
+       user/system 那几轮的结束符仍是 0 —— 两种一刀切都错
+     · ★ 角色头 &lt;|im_start|&gt;assistant\n 的 mask 是【0】
+       （推理时它由框架写进去，模型不需要学会打出它）
+   ★ 移位差一是重灾区：自检办法是把 mask==1 的 token 解码打印出来看，
+     ★ 打出来必须【正好是各段 assistant 的话 + 结束符】，不多不少一个字
 
 ④ 多轮对话：★ 一条样本多段 loss（推荐，前向只算一遍）
    而不是拆成 N 条（前缀被重复计算）
@@ -585,7 +965,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    （于是训练拼接必须和推理严格一致）；
    来源主要是★合成 + 拒绝采样（只留最终答案正确的轨迹）—— 即 12.7 的可验证领域
 
-⑦ 偏好数据是【成对】的 (prompt, chosen, rejected)
+⑦a ★★★ 三种格式的字段对照（15.8 整张表）：
+   ① SFT    必需【标准答案】，loss = 对 assistant 段的交叉熵
+   ② 偏好对 必需【chosen/rejected 成对、共享 prompt】，
+            loss = −log σ(r_chosen − r_rejected)，★ 没有唯一正确答案
+   ③ RLVR   ★★★【样本里根本没有回答】，只有 prompt + answer/test_cases
+            + verifier；★ 回答是训练时模型自己采样出来的
+   ★ 一句话：① 照着答案说（教格式）／② 哪个更好（教偏好）／
+     ③ 自己试、我只判对错（教把事做对）
+   ★★ ③ 的独特价值：★ 唯一一种【不受人工标注产能限制】的格式
+      ⚠️ 代价是最大的坑变成【奖励被钻空子 reward hacking】——
+         verifier 写松一点，模型就去钻它
+
+⑦b 偏好数据是【成对】的 (prompt, chosen, rejected)
    → 训 RM（L = −log σ(r_chosen − r_rejected)）或 ★ 直接用 DPO
    三个来源：人工 / 模型评判 / ★ 验证器自动构造
    ⚠️ 最大陷阱是【长度偏置】：评判者偏爱长回答 → 模型学会把话说长
@@ -594,8 +986,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    （SFT 主要教格式与风格，知识来自预训练）
    ⚠️ 但教【新技能】（工具、长思维链）时数据量还是要上去
 
-⑨ ⚠️ 六个坑全部【不报错】：学了 user / 没学结束符 / 移位差一 /
-   模板不一致 / 学了 tool 返回（★ 模型编造工具结果）/ 打包后 mask 没重排
+⑨ ⚠️ 八个坑全部【不报错】：学了 user / 没学结束符 / 移位差一 /
+   模板不一致 / 学了 tool 返回（★ 模型编造工具结果）/ 打包后 mask 没重排 /
+   ★ 截断把结束符砍掉（★ 要以【轮】为单位截断，装不下就整轮丢）/
+   ★ 把 RLVR 的 answer 当 assistant 回答去做 SFT（推理过程全丢）
 </code></pre></div>
 
 <hr />

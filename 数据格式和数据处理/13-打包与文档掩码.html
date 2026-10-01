@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -270,7 +275,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p><strong>三种做法：</strong></p>
 <div class="codehilite"><pre><span></span><code>① 补齐（padding）
-   [doc0 ────312───][PAD PAD PAD ... PAD]  共 4096
+   [doc0 ----312---][PAD PAD PAD ... PAD]  共 4096
    ❌ ★ 浪费巨大
 
 ② 截断（truncation）
@@ -333,11 +338,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong>原因二：受影响的 token 占比很小，且会被 shuffle 稀释</strong></p>
 <div class="codehilite"><pre><span></span><code>⚠️ 下面是我为了给量级感构造的粗估，不是论文结论：
 
-  设 L = 8192，平均文档长度 ≈ 1000 token
-     ⟹ 一条样本里约拼了 8 篇 → 产生 8 个文档边界
+  设 s = 8192（序列长），平均文档长度 ≈ 1000 token
+     ⟹ 一条样本里约拼了 8 篇
+     ⟹ 边界数 = 7 个【文档之间的接缝】 + 1 个【样本开头的续写点】≈ 8 个
   设每个边界之后 ~50 个 token 处于&quot;上文不足&quot;的劣化区
 
-     劣化占比 ≈ 8 × 50 / 8192 ≈ 5%
+     劣化占比 ≈ 8 × 50 / 8192 = 400 / 8192 ≈ 4.9% ≈ 5%
 
 ★ 而且切点位置会随 shuffle 种子变化（见 [14 章](14-采样-shuffle-与断点续训.md)）：
   同一篇文档在不同轮次里切在不同地方
@@ -431,18 +437,72 @@ SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</stron
 <hr />
 <h2 id="132-padding">13.2 padding 到底浪费了多少</h2>
 <p>✅ <strong>Efficient Sequence Packing without Cross-contamination</strong><br />
-（<a href="https://arxiv.org/abs/2107.02027">arXiv:2107.02027</a>，Mario Michael Krell 等，Graphcore，2021-06）</p>
-<p>✅ 论文报告的实测：</p>
-<div class="codehilite"><pre><span></span><code>· 在常见的 NLP 数据集上，★ 高达 50% 的 token 是 padding
-· 极端例子：GLUE-CoLA 数据集在最大长度 128 下，
-  ★★ 89% 的 token 是 padding —— 也就是说 GPU 有 89% 的算力在算空气
-· 对 BERT 的 phase-2 预训练，打包带来了约 2 倍的加速
+（<a href="https://arxiv.org/abs/2107.02027">arXiv:2107.02027</a>，Mario Michael Krell 等，Graphcore，2021-06。✅ PDF 已归档在 <a href="papers/">papers/</a>，下面带 ✅ 的句子我逐句核对过原文）</p>
+<p>✅ 论文摘要与正文报告的实测：</p>
+<div class="codehilite"><pre><span></span><code>· ✅ 在常见的 NLP 数据集上，★ 高达 50% 的 token 是 padding
+    （原文 &quot;up to 50% of all tokens can be padding&quot;）
+· ✅ 极端例子：GLUE-CoLA 在序列长度 128 下，★★ padding 占比最高到 89%
+    —— 也就是说 GPU 有 89% 的算力在算空气
+· ✅ 连 BERT 自己的 Wikipedia 预训练集，在序列长度 512 下 padding 也占 50%
+    ✅ 原因写得很直白：长度正好是 512 的样本【只占 23.5%】，
+       其余 76.5% 的样本都在补空气（长度范围是 5 ~ 512）
+· ✅ 论文摘要的提法是：打包给 BERT 的 phase-2 预训练带来【2× 加速】
 </code></pre></div>
 
 <blockquote>
-<p>★ 为什么这么夸张？因为 padding 浪费 = <strong>1 − 平均长度/最大长度</strong>。<br />
-长度分布重尾时，你为了容纳那少数几条长的，把 L 设得很大，于是<strong>绝大多数样本都在补空气</strong>。</p>
+<p>★ 为什么这么夸张？因为 <strong>填充浪费率 = 1 − 平均长度 / 序列长度 s</strong>。<br />
+长度分布重尾时，你为了容纳那少数几条长的，把 s 设得很大，于是<strong>绝大多数样本都在补空气</strong>。</p>
 </blockquote>
+<h3 id="_2">⚠️ 先把"加速"的口径钉死，后面全章都要用</h3>
+<p>⚠️ 这是本章最容易被混着用的一组词，三句话说的<strong>不是同一件事</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>说法</th>
+<th>含义</th>
+<th>和"浪费率 w"的关系</th>
+<th>例子（w = 50%）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「padding 占 <strong>50%</strong>」</td>
+<td>一条样本里一半 token 是空气</td>
+<td>浪费率 w = 0.50</td>
+<td>—</td>
+</tr>
+<tr>
+<td>「有效算力只有 <strong>50%</strong>」</td>
+<td>利用率 = 1 − w</td>
+<td>利用率 = 0.50</td>
+<td>—</td>
+</tr>
+<tr>
+<td>「时间<strong>减少 50%</strong>」</td>
+<td>耗时从 1 降到 0.5</td>
+<td>减少比例 = w</td>
+<td>耗时 1 → 0.5</td>
+</tr>
+<tr>
+<td>「<strong>加速 2×</strong>」</td>
+<td>同样的活，用一半时间</td>
+<td><strong>加速倍数 = 1 / (1 − w)</strong></td>
+<td>1 / (1 − 0.5) = <strong>2×</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 把这条公式记住，后面自己算任何打包/掩码收益都靠它：
+
+     加速倍数 = 1 / (1 − 时间减少比例)
+
+  ⚠️ 两个最常见的口误：
+     · 「时间减少 50%」说成「加速 50%」 —— 后者只有 1.5×，差一倍
+     · 「时间减少 90%」对应的是 10× 而不是 9× —— 1/(1−0.9) = 10
+
+  ⟹ 本章凡是写「约 2× 加速」的地方，背后都是&quot;浪费率 ≈ 50% 被消掉&quot;。
+  ⚠️ 而且这是【理想上界】：真实加速还要扣掉打包本身的开销，见 13.3 的实测表。
+</code></pre></div>
+
 <hr />
 <h2 id="133">13.3 ★ 打包 = 一个装箱问题</h2>
 <p>✅ 论文的核心贡献之一，就是<strong>把它明确地表述成了经典的【装箱问题（bin packing）】</strong>：</p>
@@ -453,21 +513,24 @@ SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</stron
 ⟹ 这是运筹学里研究了几十年的经典 NP-hard 问题，有大量成熟的近似算法。
 </code></pre></div>
 
-<h3 id="_2">三个够用的算法</h3>
-<div class="codehilite"><pre><span></span><code>① 首次适应递减 First-Fit-Decreasing (FFD)
+<h3 id="_3">三个够用的算法</h3>
+<div class="codehilite"><pre><span></span><code>① 首次适应递减 First-Fit-Decreasing (FFD，首次适应 + 降序)
    ★ 先把所有文档【从长到短】排序，
      每篇依次放进【第一个装得下】的箱子；都装不下就开新箱子
-   ✅ 效果：通常能把浪费压到 1~3%，实现十行代码
+   ★ 实现十行代码，效果见下面 13.3.1 的手算表
 
-② 最佳适应 Best-Fit
+② 最佳适应递减 Best-Fit-Decreasing (BFD，最佳适应 + 降序)
    放进【放完后剩余空间最小】的箱子。稍好一点，稍慢一点
 
 ③ ✅ 论文提出的两个方法（针对超大规模）：
-   · SPFHP —— 基于【长度直方图】做打包，
-     ★ 关键洞察：几百万篇文档里长度只有 L 种取值，
+   · SPFHP（shortest-pack-first histogram-packing，最短箱优先的直方图打包）
+     ★ 关键洞察：几百万篇文档，长度取值却**最多只有 s 种**（1 ~ s），
        所以不必逐篇处理，按【长度桶】处理就行 → 复杂度大幅下降
-   · NNLSHP —— 用非负最小二乘求解&quot;每种组合模式用多少次&quot;
-   ✅ 论文报告这两种方法能达到接近理论最优的打包效率
+     ⚠️ 注意这里的 s 是序列长（比如 512 或 4096），不是文档篇数
+   · NNLSHP（non-negative least squares histogram-packing，
+     非负最小二乘直方图打包）—— 把&quot;每种长度组合模式用多少次&quot;
+     解成一个非负最小二乘问题
+   ✅ 论文报告这两种方法能达到接近理论最优的打包效率（实测数字见 13.3.2）
 
 ④ ✅ Best-fit Packing（2404.10830，AWS，见 13.1）
    ★ 同样是装箱，但它的目标函数不是&quot;省 padding&quot;（预训练本来就没有 padding），
@@ -479,30 +542,275 @@ SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</stron
       ★ 闭域幻觉最多减少 58.3%
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pack_first_fit_decreasing</span><span class="p">(</span><span class="n">lengths</span><span class="p">,</span> <span class="n">L</span><span class="o">=</span><span class="mi">4096</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;返回 [[doc_idx, ...], ...]，每个子列表是一个样本&quot;&quot;&quot;</span>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pack_first_fit_decreasing</span><span class="p">(</span><span class="n">lengths</span><span class="p">,</span> <span class="n">s</span><span class="o">=</span><span class="mi">4096</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;返回 [[doc_idx, ...], ...]，每个子列表是一个样本（一个&quot;箱子&quot;）&quot;&quot;&quot;</span>
     <span class="n">order</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">lengths</span><span class="p">)),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">i</span><span class="p">:</span> <span class="o">-</span><span class="n">lengths</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>   <span class="c1"># ★ 长的先放</span>
     <span class="n">bins</span><span class="p">,</span> <span class="n">remain</span> <span class="o">=</span> <span class="p">[],</span> <span class="p">[]</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">order</span><span class="p">:</span>
         <span class="n">li</span> <span class="o">=</span> <span class="n">lengths</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
-        <span class="k">if</span> <span class="n">li</span> <span class="o">&gt;</span> <span class="n">L</span><span class="p">:</span>                       <span class="c1"># 超长文档单独处理（切分或丢弃）</span>
+        <span class="k">if</span> <span class="n">li</span> <span class="o">&gt;</span> <span class="n">s</span><span class="p">:</span>                       <span class="c1"># 超长文档单独处理（切分或丢弃）</span>
             <span class="n">bins</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">i</span><span class="p">]);</span> <span class="n">remain</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="mi">0</span><span class="p">);</span> <span class="k">continue</span>
         <span class="k">for</span> <span class="n">b</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">bins</span><span class="p">)):</span>
             <span class="k">if</span> <span class="n">remain</span><span class="p">[</span><span class="n">b</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">li</span><span class="p">:</span>
                 <span class="n">bins</span><span class="p">[</span><span class="n">b</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">i</span><span class="p">);</span> <span class="n">remain</span><span class="p">[</span><span class="n">b</span><span class="p">]</span> <span class="o">-=</span> <span class="n">li</span>
                 <span class="k">break</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="n">bins</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">i</span><span class="p">]);</span> <span class="n">remain</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">L</span> <span class="o">-</span> <span class="n">li</span><span class="p">)</span>
+            <span class="n">bins</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">i</span><span class="p">]);</span> <span class="n">remain</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">s</span> <span class="o">-</span> <span class="n">li</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">bins</span>
 
-<span class="c1"># ★ 一定要打印这个数字：它是打包好坏的唯一指标</span>
-<span class="c1"># 利用率 = 总 token 数 / (箱子数 × L)</span>
+<span class="c1"># ★ 一定要打印这两个数字：它们是打包好坏的唯一指标</span>
+<span class="c1">#   利用率     = sum(lengths) / (len(bins) * s)</span>
+<span class="c1">#   填充浪费率 = 1 - 利用率</span>
 </code></pre></div>
 
 <blockquote>
 <p>⚠️ <strong>一个实践细节</strong>：FFD 每次要扫所有箱子，箱子多了会慢。<br />
 ★ 实用做法：<strong>分块处理</strong>（每 10 万篇文档独立打包一次），几乎不损失效率，速度快几个数量级。</p>
 </blockquote>
+<h3 id="1331">13.3.1 ★★★ 把浪费率算出来：一个能手算验证的例子</h3>
+<blockquote>
+<p>★ 这一小节是本章最该亲手跟着算一遍的地方。规模刻意选到<strong>纸上就能验算</strong>。</p>
+</blockquote>
+<p>设定（刻意取小，方便核对）：</p>
+<div class="codehilite"><pre><span></span><code>序列长 s = 16
+10 篇文档的长度： 13  11  9  8  7  5  4  3  2  2
+总 token 数 = 13+11+9+8+7+5+4+3+2+2 = 64
+
+★ 理论下界：至少要 ceil(64 / 16) = 4 个箱子
+  ⟹ 如果真能装到 4 个箱子，就是【零浪费】
+</code></pre></div>
+
+<p><strong>做法 ① 一篇一条，补齐到 s（也就是 13.1 的做法①）</strong></p>
+<div class="codehilite"><pre><span></span><code>每篇文档独占一条样本，不足 16 的补 PAD：
+  [13+3PAD] [11+5PAD] [9+7PAD] [8+8PAD] [7+9PAD]
+  [5+11PAD] [4+12PAD] [3+13PAD] [2+14PAD] [2+14PAD]
+  ⟹ 10 个箱子，总容量 10 × 16 = 160，实装 64
+</code></pre></div>
+
+<p><strong>做法 ② 贪心 next-fit（按文档原顺序来，装不下就开新箱，★ 不排序）</strong></p>
+<div class="codehilite"><pre><span></span><code>13 → 箱1（余 3）；11 装不下 → 封箱，开箱2
+11 → 箱2（余 5）； 9 装不下 → 封箱，开箱3
+ 9 → 箱3（余 7）； 8 装不下 → 封箱，开箱4
+ 8 → 箱4（余 8）； 7 装得下 → 箱4（余 1）；5 装不下 → 封箱，开箱5
+ 5 → 箱5（余11）； 4 → 余 7；3 → 余 4；2 → 余 2；2 → 余 0
+⟹ 箱1=13 / 箱2=11 / 箱3=9 / 箱4=8+7 / 箱5=5+4+3+2+2
+⟹ 5 个箱子，总容量 5 × 16 = 80，实装 64
+</code></pre></div>
+
+<p><strong>做法 ③ FFD（降序 + 放进第一个装得下的箱）</strong></p>
+<div class="codehilite"><pre><span></span><code>（记号：箱N(r) 表示箱 N 还剩 r 的空间；no = 放不下，YES = 放进去）
+
+文档 13：所有箱都放不下（还没有箱子）→ 开新箱1，余 3
+文档 11：箱1(3) no                   → 开新箱2，余 5
+文档  9：箱1(3) no，箱2(5) no         → 开新箱3，余 7
+文档  8：箱1(3) no，箱2(5) no，箱3(7) no → 开新箱4，余 8
+文档  7：箱1(3) no，箱2(5) no，箱3(7) YES → 箱3 余 0
+文档  5：箱1(3) no，箱2(5) YES            → 箱2 余 0
+文档  4：箱1(3) no，箱2(0) no，箱3(0) no，箱4(8) YES → 箱4 余 4
+文档  3：箱1(3) YES                       → 箱1 余 0
+文档  2：箱1(0) no，箱2(0) no，箱3(0) no，箱4(4) YES → 箱4 余 2
+文档  2：箱1~箱3 均 no，箱4(2) YES        → 箱4 余 0
+
+⟹ 最终四个箱子（★ 每个都正好装满 16）：
+     箱1 = 13 + 3         = 16
+     箱2 = 11 + 5         = 16
+     箱3 =  9 + 7         = 16
+     箱4 =  8 + 4 + 2 + 2 = 16
+⟹ 4 个箱子，总容量 64，实装 64 —— ★★ 正好打到理论下界
+</code></pre></div>
+
+<p><strong>三种做法的浪费率对照</strong></p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>箱子数</th>
+<th>总容量<br>(箱子数 × s)</th>
+<th>实装 token</th>
+<th>利用率</th>
+<th>★ 填充浪费率</th>
+<th>相对 ① 的加速上界</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 一篇一条、补齐到 s</td>
+<td>10</td>
+<td>160</td>
+<td>64</td>
+<td><strong>40.0%</strong></td>
+<td><strong>60.0%</strong></td>
+<td>1.00×</td>
+</tr>
+<tr>
+<td>② 贪心 next-fit（不排序）</td>
+<td>5</td>
+<td>80</td>
+<td>64</td>
+<td><strong>80.0%</strong></td>
+<td><strong>20.0%</strong></td>
+<td>160/80 = <strong>2.00×</strong></td>
+</tr>
+<tr>
+<td>③ FFD（降序 + first-fit）</td>
+<td><strong>4</strong></td>
+<td>64</td>
+<td>64</td>
+<td><strong>100%</strong></td>
+<td><strong>0%</strong></td>
+<td>160/64 = <strong>2.50×</strong></td>
+</tr>
+<tr>
+<td>④ BFD（降序 + best-fit）</td>
+<td><strong>4</strong></td>
+<td>64</td>
+<td>64</td>
+<td><strong>100%</strong></td>
+<td><strong>0%</strong></td>
+<td><strong>2.50×</strong></td>
+</tr>
+<tr>
+<td>理论下界 ceil(64/16)</td>
+<td>4</td>
+<td>64</td>
+<td>64</td>
+<td>100%</td>
+<td>0%</td>
+<td>2.50×</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表要读出三件事：
+
+① 最大的一跳在【①→②】：只要肯把文档拼起来，浪费立刻从 60% 掉到 20%。
+   ⟹ 这解释了为什么&quot;随便拼一下&quot;就能拿到绝大部分收益。
+
+② 第二跳【②→③】是【先排序】带来的：
+   ★ 贪心 next-fit 不排序，长文档会把箱子卡住，后面的小文档没机会填进去；
+     降序之后，先放大件、再用小件填缝 —— 这就是 FFD 的全部秘密。
+
+③ ⚠️ 这里 ③ 做到 100% 是因为这组数字刚好能凑整，★ 不要当成普遍结论。
+   真实语料上 FFD 做不到 0% 浪费，具体能到多少见下面 13.3.2 的实测表。
+
+⚠️ 还有两个这个小例子覆盖不到的情况：
+   · 有文档比 s 还长（比如 17 &gt; 16）→ ★ 它装不进任何箱子，
+     只能走 13.1 的做法③把它【切开】（预训练）或丢弃/截断（SFT）
+   · 长度分布极度重尾（大量 1~2 token 的碎文档）→ 箱子里会塞进上百篇，
+     ★ 此时 13.4 的跨文档污染和 13.6 的 cu_seqlens 开销才是主要矛盾
+</code></pre></div>
+
+<h3 id="1332">13.3.2 ✅ 一手实测表：各算法到底能打到多少</h3>
+<p>✅ 下面这张表是 <strong>2107.02027 论文 Table 1</strong> 的原始数字（BERT 预训练数据，序列长 512，IPU 上实测）。⚠️ 我只做了列名翻译和一句读法，<strong>数字一个没动</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>打包深度</th>
+<th>算法</th>
+<th>✅ 打包效率 EFF</th>
+<th>实际装入条数 p</th>
+<th>额外开销 OH</th>
+<th>✅ 实测加速</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>NONE（基线，不打包）</td>
+<td>50.0%</td>
+<td>1.00</td>
+<td>0.000%</td>
+<td>1.000×</td>
+</tr>
+<tr>
+<td>1</td>
+<td>SORT（按长度排序分批）</td>
+<td>99.9%</td>
+<td>2.00</td>
+<td><strong>≫100%</strong></td>
+<td><strong>≪1.000×</strong></td>
+</tr>
+<tr>
+<td>≈10</td>
+<td><strong>GREEDY</strong>（来一篇装一篇，满了换箱）</td>
+<td><strong>≈78%</strong></td>
+<td>≈1.6</td>
+<td>≈4.48%</td>
+<td>≈1.5×</td>
+</tr>
+<tr>
+<td>2</td>
+<td>SPFHP</td>
+<td>80.5%</td>
+<td>1.61</td>
+<td>4.283%</td>
+<td>1.544×</td>
+</tr>
+<tr>
+<td>3</td>
+<td>SPFHP</td>
+<td>89.4%</td>
+<td>1.79</td>
+<td>4.287%</td>
+<td>1.716×</td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td><strong>NNLSHP</strong></td>
+<td><strong>99.7%</strong></td>
+<td>2.00</td>
+<td>4.287%</td>
+<td><strong>1.913×</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td>SPFHP</td>
+<td>93.9%</td>
+<td>1.88</td>
+<td>4.294%</td>
+<td>1.803×</td>
+</tr>
+<tr>
+<td>8</td>
+<td>SPFHP</td>
+<td>98.9%</td>
+<td>1.98</td>
+<td>4.481%</td>
+<td>1.895×</td>
+</tr>
+<tr>
+<td>max</td>
+<td>SPFHP</td>
+<td>99.6%</td>
+<td>1.99</td>
+<td>4.477%</td>
+<td>1.905×</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表比上面的手算例子更值得记，因为它纠正三个常见误解：
+
+① ⚠️ 「贪心拼接就够了」是错的
+   ✅ GREEDY 的打包效率只有【≈78%】—— 还剩 22% 是空气。
+   ★ 我手算例子里 ② 的 80% 和它几乎一致，不是巧合：
+     next-fit 不排序，天花板就在这个量级。
+
+② ⚠️ 「打包深度越大越好」要有条件
+   ✅ SPFHP 要堆到 depth 8 才有 98.9%，但 NNLSHP 在 depth【3】就有 99.7%。
+   ★ 算法选得好，比硬加深度省事得多 —— 而深度越大，
+     13.4 的跨文档污染和 cu_seqlens 的长度都跟着涨。
+
+③ ⚠️⚠️ 「打包效率高 = 一定更快」是错的 —— ★ 看 SORT 那一行
+   ✅ SORT 的打包效率 99.9%（几乎没有 padding），
+      但额外开销 OH ≫ 100%，★ 实测加速【≪1】—— 也就是【比不打包还慢】。
+   ★ 原因：按长度排序分批会破坏数据顺序的随机性，要靠额外机制补救。
+   ⟹ ★★★ 评价一个打包方案，必须同时看【效率】和【开销】两列，
+        只看 EFF 会得出完全相反的结论。
+
+★ 顺带把 13.2 那个&quot;2× 加速&quot;对齐一下口径：
+  ✅ 表里最好的实测是 1.913×（NNLSHP, depth 3），不是整数 2×。
+  ⟹ 摘要里的「2×」是【口头取整】，★ 落到表上是 1.9× 左右。
+</code></pre></div>
+
 <hr />
 <h2 id="134">13.4 ★★★ 跨文档污染：本章最重要的正确性问题</h2>
 <p>现在假设你把三篇不相干的文档打包进了同一条样本：</p>
@@ -520,29 +828,139 @@ SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</stron
 </code></pre></div>
 
 <p><strong>这就叫跨文档污染（cross-contamination）。</strong></p>
-<h3 id="_3">✅ 一个必须知道的实验结论</h3>
+<h3 id="_4">★★★ 把"该屏蔽的格子"逐格画出来</h3>
 <blockquote>
-<p>✅ <strong>论文明确报告：加分隔符 token（比如 <code>&lt;eod&gt;</code>）【并不能】消除跨文档污染。</strong></p>
-<p>★ 很多人以为"我加了 <code>&lt;eod&gt;</code> 就没事了"。<strong>这是错的。</strong><br />
-<code>&lt;eod&gt;</code> 只是一个普通 token，注意力<strong>照样能看过去</strong>。模型或许能学到"遇到 <code>&lt;eod&gt;</code> 就该重置"，但那是<strong>让模型自己去学一件本可以直接在掩码里规定死的事</strong>——浪费容量，且学不干净。</p>
+<p>★ 上面那段话很多人点头了但没真信。所以这里把注意力矩阵<strong>整张摊开数格子</strong>。</p>
 </blockquote>
-<hr />
-<h2 id="135">13.5 ★★ 解法：块对角注意力掩码</h2>
-<div class="codehilite"><pre><span></span><code>【默认】因果掩码（下三角）——           【文档掩码】块对角 —— 
-可以看到样本里之前的一切               ★ 只能看到【同一篇文档】里之前的
+<p>设定（小到能数）：</p>
+<div class="codehilite"><pre><span></span><code>序列长 s = 12，塞进三篇各 4 token 的短文档：
 
-     0 1 2 3 4 5 6 7                       0 1 2 3 4 5 6 7
-  0 [█ · · · · · · ·]                   0 [█ · · · · · · ·]
-  1 [█ █ · · · · · ·]  doc A            1 [█ █ · · · · · ·]  doc A
-  2 [█ █ █ · · · · ·]                   2 [█ █ █ · · · · ·]
-  3 [█ █ █ █ · · · ·]                   3 [· · · █ · · · ·]  ← ★ 看不到 A 了
-  4 [█ █ █ █ █ · · ·]  doc B            4 [· · · █ █ · · ·]  doc B
-  5 [█ █ █ █ █ █ · ·]                   5 [· · · █ █ █ · ·]
-  6 [█ █ █ █ █ █ █ ·]  doc C            6 [· · · · · · █ ·]  doc C
-  7 [█ █ █ █ █ █ █ █]                   7 [· · · · · · █ █]
-       ↑ ★ 跨文档&quot;串味&quot;                       ↑ ★ 干净的块对角
+  位置   0      1      2      3   | 4       5      6     7  | 8      9      10    11
+  doc A: 今天   天气   很     好  |
+  doc B:                          | import  numpy  as    np |
+  doc C:                          |                         | 上证   指数   收    涨
+
+  cu_seqlens = [0, 4, 8, 12]      ← ★ 13.6 要用的那个&quot;边界表&quot;
 </code></pre></div>
 
+<p><strong>因果注意力矩阵（行 = 谁在查 query，列 = 看谁 key）</strong></p>
+<div class="codehilite"><pre><span></span><code>标记：  A/B/C = 允许且【同文档】      x = 允许但【跨文档】★ 必须屏蔽
+        .     = 因果掩码本来就挡住的&quot;未来&quot;
+
+            key: 0 1 2 3   4 5 6 7   8 9 a b
+  q=0  今天        A . . .   . . . .   . . . .
+  q=1  天气        A A . .   . . . .   . . . .
+  q=2  很          A A A .   . . . .   . . . .
+  q=3  好          A A A A   . . . .   . . . .
+  q=4  import      x x x x   B . . .   . . . .
+  q=5  numpy       x x x x   B B . .   . . . .
+  q=6  as          x x x x   B B B .   . . . .
+  q=7  np          x x x x   B B B B   . . . .
+  q=8  上证        x x x x   x x x x   C . . .
+  q=9  指数        x x x x   x x x x   C C . .
+  q=10 收          x x x x   x x x x   C C C .
+  q=11 涨          x x x x   x x x x   C C C C
+</code></pre></div>
+
+<p><strong>数一下格子：</strong></p>
+<table>
+<thead>
+<tr>
+<th>格子类型</th>
+<th>个数</th>
+<th>怎么算的</th>
+<th>占因果允许格子的比例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>因果掩码允许的全部格子</td>
+<td><strong>78</strong></td>
+<td>s(s+1)/2 = 12×13/2</td>
+<td>100%</td>
+</tr>
+<tr>
+<td>★ 同文档内（A+B+C，该保留）</td>
+<td><strong>30</strong></td>
+<td>3 块 × 4×5/2 = 3×10</td>
+<td>38.5%</td>
+</tr>
+<tr>
+<td>★★ 跨文档（x，<strong>该屏蔽但默认没屏蔽</strong>）</td>
+<td><strong>48</strong></td>
+<td>B 的 4 行各 4 个 = 16<br>C 的 4 行各 8 个 = 32</td>
+<td><strong>61.5%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 读出来的结论：这条样本里，★ 61.5% 的注意力格子算的是【垃圾】。
+
+★ 推广到一般情形：一条长 s 的样本里等长塞 k 篇（每篇 m = s/k）：
+     跨文档格子占比 = (s − m) / (s + 1) ≈ 1 − 1/k
+
+  k = 2  →  约 50%
+  k = 3  →  (12−4)/13 = 61.5%   ← 上面这个例子
+  k = 8  →  (4096−512)/4097 = 87.5%
+  k = 16 →  约 93.8%
+
+⟹ ★★★ SFT 场景（一条 4096 塞十几轮对话）下，
+     【九成以上的注意力计算都是在学虚假关系】。
+     这就是 13.5 说&quot;SFT 必须打开掩码&quot;的量化依据。
+</code></pre></div>
+
+<p><strong>不屏蔽，模型具体学到了什么？</strong></p>
+<div class="codehilite"><pre><span></span><code>q=8 这个位置（&quot;上证&quot;）的监督信号是&quot;下一个词是【指数】&quot;。
+而它的上文里躺着 &quot;今天天气很好&quot; 和 &quot;import numpy as np&quot;。
+
+⟹ ★ 梯度会告诉模型：
+     「看到『今天天气很好 / import numpy』之后，接下来会出现『上证指数』」
+⟹ ★★ 这是一个【统计上存在、现实中不存在】的关系 ——
+     因为这两篇文档凑在一起，纯粹是打包算法的随机结果，
+     换个 shuffle 种子，&quot;上证&quot;前面就换成别的东西了。
+⟹ 所以它既【学不成有用的规律】，又【白占了注意力的容量和算力】。
+</code></pre></div>
+
+<h3 id="token">✅ 一个必须知道的实验结论：分隔符 token 救不了</h3>
+<blockquote>
+<p>✅ <strong>论文原文（Related Work 一节）</strong>：为"分开"来自不同文档的序列，通常会引入一个分隔符 token，<br />
+<strong>「但这样并不充分，而且会对性能产生显著影响」</strong>（原文 "this is not sufficient and can have a significant impact on performance"）。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★ 很多人以为&quot;我加了 &lt;eod&gt; 就没事了&quot;。★★ 这是错的。
+
+  &lt;eod&gt; 只是词表里一个普通 token，★ 注意力【照样能看过去】
+  —— 回看上面那张矩阵：加一个 &lt;eod&gt; 只是把 x 的区域往右下挪一格，
+     48 个跨文档格子一个都没少。
+  模型或许能学到&quot;遇到 &lt;eod&gt; 就该重置&quot;，但那是
+  ★【让模型自己去学一件本可以直接在掩码里规定死的事】
+  —— 浪费容量，而且学不干净（它只能&quot;倾向于&quot;忽略，不能&quot;完全&quot;忽略）。
+
+⚠️⚠️ 一个必须分清的归因（★ 16 章最容易犯的那类错，这里先自查一遍）：
+   ✅ 2107.02027【自己】的实测是打包效率与加速那张表（13.3.2）；
+   ✅ 它对&quot;分隔符不够用&quot;给出的【量化证据是转引 RoBERTa 论文的】——
+      原文说：这一点&quot;只在 RoBERTa 论文里被讨论过，
+      该文显示下游 F1 分数平均被持续拉低【0.35%】&quot;。
+   ⟹ ★ 所以「0.35% 的 F1 损失」是【RoBERTa 的数字】，
+        ⚠️ 不要写成&quot;Graphcore 实测分隔符会掉 0.35 个 F1&quot;。
+</code></pre></div>
+
+<hr />
+<h2 id="135">13.5 ★★ 解法：块对角注意力掩码</h2>
+<p>⚠️ 下面两张图用<strong>纯 ASCII</strong>画（<code>#</code> = 算、<code>.</code> = 不算）。★ 样本结构：位置 0-2 是 doc A，位置 3-5 是 doc B，位置 6-7 是 doc C。</p>
+<div class="codehilite"><pre><span></span><code>  左：默认因果掩码（下三角）—— 能看到样本里之前的一切
+  右：文档掩码（块对角）    —— 只能看到同一篇文档里之前的
+
+       k: 0 1 2 3 4 5 6 7          k: 0 1 2 3 4 5 6 7
+  q=0    [# . . . . . . .]    q=0    [# . . . . . . .]   doc A
+  q=1    [# # . . . . . .]    q=1    [# # . . . . . .]   doc A
+  q=2    [# # # . . . . .]    q=2    [# # # . . . . .]   doc A
+  q=3    [# # # # . . . .]    q=3    [. . . # . . . .]   doc B
+  q=4    [# # # # # . . .]    q=4    [. . . # # . . .]   doc B
+  q=5    [# # # # # # . .]    q=5    [. . . # # # . .]   doc B
+  q=6    [# # # # # # # .]    q=6    [. . . . . . # .]   doc C
+  q=7    [# # # # # # # #]    q=7    [. . . . . . # #]   doc C
+</code></pre></div>
+
+<p>★ 左图左下那一大片 <code>#</code>（q=3 起、k≤2 的格子）就是 13.4 数过的<strong>跨文档"串味"区</strong>；★ 右图把它们全部清零，只剩下沿对角线排布的三个小三角——这就是<strong>块对角</strong>这个名字的来历。</p>
 <p><strong>同时还要重置位置编码：</strong></p>
 <div class="codehilite"><pre><span></span><code>默认位置 id：  0 1 2 3 4 5 6 7          （跨文档连续累加）
 ★ 重置后：    0 1 2 | 0 1 2 | 0 1       （每篇文档从 0 重新数）
@@ -554,18 +972,64 @@ SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</stron
   ⚠️ 对 RoPE 这类相对位置编码，影响的是【文档内部的相对距离计算】。
 </code></pre></div>
 
-<h3 id="megatron">✅ Megatron 里的两个开关</h3>
-<div class="codehilite"><pre><span></span><code>--reset-attention-mask     ← ★ 打开块对角掩码
---reset-position-ids       ← ★ 每篇文档位置 id 从 0 重新数
-
-⚠️⚠️ 两个都【默认关闭】。
+<h3 id="megatron-megatron-lm">✅ Megatron 里的三个开关（✅ 我在本仓库 <a href="../训练框架/"><code>训练框架/源码/Megatron-LM</code></a> 里逐个核对过源码）</h3>
+<table>
+<thead>
+<tr>
+<th>开关</th>
+<th>作用</th>
+<th>✅ 默认值</th>
+<th>✅ 源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--reset-attention-mask</code></td>
+<td>打开<strong>块对角掩码</strong>（在 dataloader 里造 <code>[s,s]</code> 掩码矩阵）</td>
+<td><strong>关</strong></td>
+<td><code>megatron/training/arguments.py</code>，<code>action='store_true'</code></td>
+</tr>
+<tr>
+<td><code>--reset-position-ids</code></td>
+<td>每篇文档的位置 id <strong>从 0 重新数</strong></td>
+<td><strong>关</strong></td>
+<td>同上</td>
+</tr>
+<tr>
+<td><code>--dataloader-inter-document-masking</code></td>
+<td>★★ 直接输出 <strong><code>cu_seqlens</code></strong>，把注意力限制在单篇文档内</td>
+<td><strong>关</strong></td>
+<td>同上；消费方在 <code>megatron/core/datasets/gpt_dataset.py</code></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⚠️⚠️ 三个全都是 action=&#39;store_true&#39; ⟹ 【默认关闭】。
    ★★ 也就是说：如果你什么都不改，你的预训练【是带跨文档污染的】。
+
+★★★ 而这三个开关走的是【两条不同的路】，这一点几乎没人讲清楚：
+
+  路线一：--reset-attention-mask （+ --reset-position-ids）
+     ⟹ 在 dataloader 里显式构造一个 [s, s] 的布尔掩码矩阵交给算子
+     ⟹ ★ 正确性有了，但掩码是&quot;先算完整的注意力、再把该屏蔽的位置乘 0&quot;
+     ⟹ ⚠️ 算力一点没省（13.6 会算出到底差多少）
+
+  路线二：--dataloader-inter-document-masking
+     ✅ 它的 help 原文就是：
+        &quot;Return cu_seqlens marking document boundaries within each sample
+         so that attention is restricted to individual documents.&quot;
+     ⟹ ★★ 输出的是【边界表】而不是掩码矩阵，交给【变长注意力】算子
+     ⟹ ★ 这才是 13.6 说的&quot;又正确又快&quot;的那条路
+
+✅ 源码里 cu_seqlens 就是一行前缀和（gpt_dataset.py）：
+     cu_seqlens = torch.tensor(numpy.cumsum([0] + document_lengths))
+     max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max()
+   ⟹ ★ 和 13.6 讲的两个入参完全对得上，不是我编的。
 </code></pre></div>
 
 <blockquote>
 <p>★★ <strong>那为什么默认是关的？</strong> ⚠️ 我的理解（不是官方说法）：<br />
-<code>① 历史原因：早期实现里块对角掩码要显式构造 [L, L] 的掩码矩阵，
-   L=4096 时是 1600 万个 bool，★ 显存和带宽开销都很实在
+<code>① 历史原因：早期实现里块对角掩码要显式构造 [s, s] 的掩码矩阵，
+   s=4096 时是 4096² ≈ 1678 万个 bool，★ 显存和带宽开销都很实在
 ② 预训练时如果文档普遍很长（一条样本里就 1~2 篇文档），污染影响较小
 ③ ★ 而 SFT 场景下文档普遍很短（一轮对话几百 token），
    一条样本里能塞十几条 —— 此时污染影响【大得多】
@@ -576,15 +1040,126 @@ SFT 必须装箱，是因为它的样本一旦切开，信号就废了。</stron
 <p>很多人以为"加掩码 = 多做一件事 = 更慢"。<strong>恰恰相反。</strong></p>
 <div class="codehilite"><pre><span></span><code>朴素注意力的开销 ∝ 序列长度的平方。
 
-  不加掩码：一条 4096 的样本 → 4096² = 1677 万次
+  不加掩码：一条 4096 的样本 → 4096² = 16,777,216 ≈ 1678 万次
   加掩码后：假设塞了 8 篇各 512 的文档
-            → 8 × 512² = 209 万次
-            ★★ 只有 1/8 !
+            → 8 × 512² = 8 × 262,144 = 2,097,152 ≈ 210 万次
+            ★★ 恰好是 1/8 !
 
-★ 一般地：一条样本里均匀塞 k 篇文档 → 注意力开销降到 1/k
+★ 一般地：一条样本里塞 k 篇文档、长度分别是 s₁..s_k（Σsᵢ = s）：
+     注意力开销正比于 Σ sᵢ²，而不加掩码是 s²
+  ⟹ 省下的比例 = 1 − (Σ sᵢ²) / s²
+  ⟹ ★ 等长时 Σ sᵢ² = k·(s/k)² = s²/k，所以是【降到 1/k】
+  ⚠️ 不等长时要差一些：长度越不均，Σ sᵢ² 越大。
+     例：s=4096 拆成 [3000, 1000, 96] →
+         (3000²+1000²+96²)/4096² = 10,009,216 / 16,777,216 ≈ 0.60
+         ★ 只降到 60%，远不是 1/3 = 33%。
+     ⟹ ★★ &quot;降到 1/k&quot;是【均匀分布下的最好情况】，不是普遍结论。
 </code></pre></div>
 
-<p><strong>但前提是：算子必须真的跳过那些被掩掉的块，而不是"算完再乘 0"。</strong></p>
+<h3 id="1k-k">⚠️⚠️ 但别把"注意力降到 1/k"当成"训练快 k 倍"</h3>
+<p>⚠️ 这是本章<strong>最容易被夸大</strong>的一个结论。注意力只是训练算力的<strong>一部分</strong>。</p>
+<div class="codehilite"><pre><span></span><code>★ 训练算力的标准拆分（每个 token 每次训练步的 FLOP，浮点运算次数）：
+
+     总 FLOP/token  ~=  [A]  +  [B]
+
+       [A] = 6 * N              &lt;- 矩阵乘部分，★ 与序列长【无关】
+       [B] = 12 * L * s * h     &lt;- ★ 注意力分数部分，正比于 s
+                                   ★★【只有 [B] 能被文档掩码省掉】
+
+  N = 非嵌入参数量    L = 层数    s = 序列长    h = 隐藏维度
+
+★ 那个 6N 的来历（必须说清，否则后面算不对）：
+     2N = 前向   +   4N = 反向（反向约为前向的 2 倍）
+   ⚠️⚠️ 6N【不含优化器更新】的开销（Adam 的 m/v 更新、梯度裁剪、通信等）
+        —— 它算的是&quot;矩阵乘的浮点运算&quot;，优化器那部分通常另算。
+   ⚠️ 也不含激活重算（recompute）：开了重算要再加一次前向，约 +2N。
+</code></pre></div>
+
+<p><strong>代入一个具体模型算一遍</strong>（★ 7B 量级：N = 6.7e9，L = 32，h = 4096）：</p>
+<table>
+<thead>
+<tr>
+<th>序列长 s</th>
+<th>6N（FLOP/token）</th>
+<th>12·L·s·h（FLOP/token）</th>
+<th>★ 注意力占总量</th>
+<th>掩码后（k=8，降到 1/8）</th>
+<th>★★ 整体加速</th>
+<th>整体耗时减少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2,048</td>
+<td>4.02e10</td>
+<td>3.22e9</td>
+<td><strong>7.4%</strong></td>
+<td>4.02e10 + 4.0e8</td>
+<td><strong>1.07×</strong></td>
+<td>6.5%</td>
+</tr>
+<tr>
+<td>4,096</td>
+<td>4.02e10</td>
+<td>6.44e9</td>
+<td><strong>13.8%</strong></td>
+<td>4.02e10 + 8.1e8</td>
+<td><strong>1.14×</strong></td>
+<td>12.1%</td>
+</tr>
+<tr>
+<td>8,192</td>
+<td>4.02e10</td>
+<td>1.29e10</td>
+<td><strong>24.3%</strong></td>
+<td>4.02e10 + 1.6e9</td>
+<td><strong>1.27×</strong></td>
+<td>21.2%</td>
+</tr>
+<tr>
+<td>32,768</td>
+<td>4.02e10</td>
+<td>5.15e10</td>
+<td><strong>56.2%</strong></td>
+<td>4.02e10 + 6.4e9</td>
+<td><strong>1.97×</strong></td>
+<td>49.2%</td>
+</tr>
+<tr>
+<td>131,072</td>
+<td>4.02e10</td>
+<td>2.06e11</td>
+<td><strong>83.7%</strong></td>
+<td>4.02e10 + 2.6e10</td>
+<td><strong>3.73×</strong></td>
+<td>73.2%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表才是 13.6 的真实结论，和&quot;快 8 倍&quot;相差很远：
+
+  s = 4096 时：注意力只占 13.8% 的算力，
+    ★ 把它降到 1/8 也只换来【1.14× 整体加速】（耗时减少 12%）。
+  s = 128K 时：注意力占 83.7%，
+    ★★ 降到 1/8 换来【3.73×】—— 这时候才真叫&quot;快得多&quot;。
+
+⟹ ★★★ 一句话总结：
+     【文档掩码的加速收益，随序列长平方级地变重要。】
+     短上下文下它主要是个【正确性】措施；
+     ★ 长上下文下它才同时是个【性能】措施。
+
+⚠️ 顺手避开那个口误（13.2 的公式）：
+   s=4096 那一行是「耗时减少 12.1%」⟹ 加速 1/(1−0.121) = 1.14×，
+   ★ 不是&quot;加速 12%&quot;，也绝不是&quot;快 8 倍&quot;。
+
+⚠️ 这张表里只有两列是硬事实（6N 与 12·L·s·h 的公式），
+   ★ 其余都是把 N/L/h 代进公式的算术 —— 换个模型形状，占比会变，
+     但【&quot;注意力占比随 s 上升&quot;】这个趋势不变。
+⚠️ 另外这是朴素 O(s²) 注意力的账。稀疏/线性注意力（DSA、SWA 之类）
+   会把 12·L·s·h 这一项本身压下去，★ 那时掩码的性能收益也跟着缩水。
+</code></pre></div>
+
+<p><strong>而且，所有这些收益都有一个前提：算子必须真的跳过那些被掩掉的块，而不是"算完再乘 0"。</strong></p>
 <div class="codehilite"><pre><span></span><code>★★ 这就是【变长注意力（varlen attention）】的用途。
    FlashAttention 提供了专门的变长接口，需要三样东西：
 
@@ -604,9 +1179,14 @@ THD 格式（变长）   = [Total_tokens, Heads, Dim]
    ★★ 把整个 batch 的所有 token 【拍平成一维】，
      不同序列的边界靠 cu_seqlens 描述 —— 完全没有 padding
 
-  例：batch 里三条样本长 300 / 1200 / 2596
-    SBHD: [2596, 3, H, D]，其中 (2596-300) + (2596-1200) = 3692 个位置是空气
-    THD : [4096, H, D]     ★ 一个 padding 都没有
+  ⚠️ 换个口径看同一组数字：这次把 300/1200/2596 当成【batch 里的三条样本】
+     （而不是上面那个&quot;一条样本里的三篇文档&quot;）
+    SBHD: 必须补到最长的 2596 → [2596, 3, H, D]
+          空气 = (2596−300) + (2596−1200) + (2596−2596)
+               = 2296 + 1396 + 0 = ★ 3692 个位置
+          有效率 = 4096 / (2596×3) = 4096 / 7788 = ★ 52.6%
+    THD : 拍平成 [4096, H, D]  ★ 一个 padding 都没有，有效率 100%
+    ⟹ ★★ 同一批数据，SBHD 有近一半的算力在算空气
 
 ⟹ ★★ THD + cu_seqlens 是现在长上下文和 SFT 训练的标准做法。
    Transformer Engine / FlashAttention / 各家训练框架都支持。
@@ -643,7 +1223,38 @@ THD 格式（变长）   = [Total_tokens, Heads, Dim]
 ★ 额外的好处：既然桶是显式的，就可以【控制各桶的采样比例随时间变化】
   → 前期多用短序列（便宜、收敛快），后期加大长序列比例
   → ★★ 这就是标题里的&quot;变长序列课程（curriculum）&quot;
-✅ 论文报告：在同等目标效果下取得了明显的训练加速。
+  ✅ 论文把这条课程叫 Grow-P2（逐级放大 2 的幂）
+</code></pre></div>
+
+<p>✅ <strong>论文原文明确写到的三件事</strong>（✅ PDF 已归档在 <a href="papers/">papers/</a>，我核对过摘要与第 2 节）：</p>
+<table>
+<thead>
+<tr>
+<th>✅ 论文的说法</th>
+<th>为什么关键</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「每个桶 Dᵢ 装的是长度为 <strong>2ⁱ</strong> 的序列，<strong>且每条都抽自单独一篇文档</strong>」</td>
+<td>★★ 这是"零跨文档污染"的<strong>结构性</strong>保证——不靠掩码，靠数据本身就不混</td>
+</tr>
+<tr>
+<td>「训练每一步从桶 Dᵢ 取 <strong>b / 2ⁱ</strong> 条序列」</td>
+<td>★ 批内 token 总数恒定 ⟹ 显存平稳，不会因为换桶而 OOM</td>
+</tr>
+<tr>
+<td>「用 <strong>8k 上下文</strong>训 1B 模型的成本，<strong>等于</strong>基线方法训 <strong>2k 上下文</strong>的成本」</td>
+<td>★★ 这是最直观的收益表述：上下文翻两番而不加钱</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>✅ 论文报告的量化收益（摘要 + Fig.1）：
+   · ★★ 达到目标精度最多快【6×】（原文 &quot;up to 6× faster training&quot;）
+   · ★ 数据效率 &gt;【4×】（同等精度所需 token 数）
+   · 即使训到 1.1 T token，相对基线仍有 +2.4 的平均精度优势
+⚠️ 这些是在 RefinedWeb 上、1B 量级模型、最长上下文 8192 的设定下测的，
+   ★ 不要直接外推到&quot;任何规模都快 6 倍&quot;。
 </code></pre></div>
 
 <blockquote>
@@ -660,20 +1271,43 @@ SFT                                    → ★ 必须打包 + 掩码（样本不
 <thead>
 <tr>
 <th>本章内容</th>
-<th>✅ 报告原文（按原意转述）</th>
+<th>✅ 报告原文（英文照抄 + 中文转述）</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>13.3 装箱打包</td>
-<td>「把来自不同来源的文档<strong>打包</strong>进合适的序列，以<strong>最小化样本截断</strong>」</td>
+<td>「<strong>Inspired by Ding et al. 2024</strong>, we <strong>pack</strong> documents from different sources into appropriate sequences to <strong>minimize sample truncation</strong>.」<br>——「<strong>受 Ding 等人 2024 的启发</strong>，我们把来自不同来源的文档<strong>打包</strong>进合适的序列，以<strong>最小化样本截断</strong>」</td>
 </tr>
 <tr>
 <td>13.5 文档掩码</td>
-<td>「★ <strong>与 DeepSeek-V3 不同</strong>，我们在预训练中采用了<strong>样本级注意力掩码</strong>」</td>
+<td>「<strong>Different from DeepSeek-V3</strong>, we employ <strong>sample-level attention masking</strong> during pre-training.」<br>——「★ <strong>与 DeepSeek-V3 不同</strong>，我们在预训练中采用了<strong>样本级注意力掩码</strong>」</td>
 </tr>
 </tbody>
 </table>
+<h3 id="inspired-by-ding-et-al-2024">★★★ 一个之前被漏掉的、分量更重的细节：那句「Inspired by Ding et al. 2024」</h3>
+<div class="codehilite"><pre><span></span><code>✅ 我去 DeepSeek-V4 报告的参考文献里把这条引用查出来了，原文是：
+
+   &quot;H. Ding, Z. Wang, G. Paolini, V. Kumar, A. Deoras, D. Roth, and S. Soatto.
+    Fewer truncations improve language modeling.
+    arXiv preprint arXiv:2404.10830, 2024.&quot;
+
+★★★ 也就是说：13.1 里那篇【Best-fit Packing】（2404.10830，AWS），
+     ✅ 正是 DeepSeek-V4 自己点名引用、并照着做的那篇论文。
+
+⟹ 这把本章的两条线直接焊在了一起：
+     13.1 的学术结论（少切文档能减少幻觉）
+   → 13.3 的装箱算法
+   → ✅ 一家前沿实验室在新一代模型里【按这篇论文的方法实装】
+⟹ ★★ 这比&quot;某报告也提到了打包&quot;强得多 ——
+     它是【方法论的直接采纳链条】，而不是两件碰巧相似的事。
+
+⚠️ 必须守住的边界：
+   ✅「DeepSeek-V4 引用了 2404.10830 并据此打包」是报告原文 + 参考文献，是事实；
+   ⚠️「所以 DeepSeek-V4 用的就是论文里的 Best-fit Packing 算法本身」
+      是【我的推断】—— 报告只说 &quot;inspired by&quot;，没有给算法细节。
+</code></pre></div>
+
 <div class="codehilite"><pre><span></span><code>★★★ &quot;与 V3 不同&quot;这四个字，是本章最有分量的一句佐证：
 
    ⟹ 它说明【DeepSeek-V3 那一代还没有做文档掩码】。
@@ -707,13 +1341,14 @@ SFT                                    → ★ 必须打包 + 掩码（样本不
 ⚠️ 但报告没说明此时是否关闭文档掩码，这一点无法从原文确认。</code></p>
 </blockquote>
 <hr />
-<h2 id="139">13.9 ⚠️ 四个坑</h2>
+<h2 id="139">13.9 ⚠️ 六个坑</h2>
 <div class="codehilite"><pre><span></span><code>① ★★ 以为加了 &lt;eod&gt; 就不用掩码了
    ✅ 论文明确否定：分隔符 token 【不能】消除跨文档污染
 
 ② 打开了 --reset-attention-mask 但用的是 SBHD 稠密注意力
    → 正确性有了，★ 但速度一点没省（掩码是&quot;算完乘 0&quot;）
    → 要拿到加速必须走 THD + cu_seqlens
+   ★ 在 Megatron 上就是换用 --dataloader-inter-document-masking
 
 ③ ⚠️ cu_seqlens 算错 —— 最常见的是【差一错误】
    它的长度必须是【序列条数 + 1】，且首元素为 0、末元素为总 token 数
@@ -724,6 +1359,15 @@ SFT                                    → ★ 必须打包 + 掩码（样本不
    打包后一条样本里有 10 轮对话，
    ★ 每一轮的&quot;只对 assistant 部分算 loss&quot;的掩码都要跟着重新对齐
    ⚠️ 现象：模型学会了生成用户的提问。见 [15 章](15-后训练数据格式.md)
+
+⑤ ⚠️⚠️ 把&quot;注意力降到 1/k&quot;当成&quot;训练快 k 倍&quot;（13.6）
+   ★ 只有 12·L·s·h 那一项能省，6N 那一项一分不省
+   ⟹ 7B 量级、s=4096、k=8 时整体只有【1.14×】
+   ★ 自检：先算 12·L·s·h / (6N + 12·L·s·h)，★ 这个比例就是你的收益上限
+
+⑥ ⚠️ 只看&quot;打包效率&quot;选算法（13.3.2）
+   ✅ SORT 的效率 99.9%，但开销 OH ≫100% ⟹ 实测【比不打包还慢】
+   ★ 必须同时看【效率】和【开销/对数据顺序的破坏】
 </code></pre></div>
 
 <hr />
@@ -746,39 +1390,84 @@ SFT                                    → ★ 必须打包 + 掩码（样本不
       ★ 使闭域幻觉最多减少 58.3%（阅读理解 +4.7% / 上下文遵循 +16.8% / 程序合成 +9.2%）
    ⟹ ★ 正确态度是&quot;能少切就少切&quot;，不是&quot;反正能截断，无所谓&quot;
 
-② ✅ 打包的收益（2107.02027）：常见数据集里高达 50% 是 padding，
-   GLUE-CoLA@128 极端到 89%；打包给 BERT phase-2 带来约 2× 加速
-   ★ 本质是经典的【装箱问题】，FFD 十行代码就能把浪费压到 1~3%
-   ✅ 论文的 SPFHP/NNLSHP 用【长度直方图】而非逐篇处理，可扩到超大规模
+② ✅ 打包的收益（2107.02027，PDF 已归档）：常见数据集里高达 50% 是 padding，
+   GLUE-CoLA@128 极端到 89%，✅ 连 BERT 的 Wikipedia 集@512 也是 50%
+   （✅ 因为长度正好 512 的样本只占 23.5%）
+   ⚠️ 口径：**加速倍数 = 1/(1−时间减少比例)** —— 摘要的「2×」落到
+      ✅ Table 1 的实测是【1.913×】（NNLSHP, depth 3），不是整数 2
+   ★ 本质是经典的【装箱问题】。13.3.1 手算了一组 10 篇文档 @ s=16：
+      ★ 一篇一条补齐 → 浪费 60% ／ 贪心 next-fit → 20% ／ FFD/BFD → 0%
+      ⟹ ★★ 最大的一跳来自&quot;肯拼起来&quot;，第二跳来自&quot;先降序排&quot;
+   ✅ Table 1 的实测（13.3.2）纠正三个误解：
+      · ★ GREEDY（来一篇装一篇）打包效率只有【≈78%】，不是 99%
+      · ★ NNLSHP 在 depth 3 就有 99.7%，SPFHP 要 depth 8 才 98.9%
+      · ★★★ SORT 的效率 99.9% 但开销 OH ≫100% ⟹ 实测【比不打包还慢】
+        —— 评价打包必须同时看【效率】和【开销】两列
 
 ③ ★★★ 跨文档污染：一条样本里塞了三篇不相干的文档，
    默认因果掩码让后面的能看到前面的 → 模型在学【虚假的统计关系】
-   ✅ 论文明确报告：★ 加 &lt;eod&gt; 分隔符【不能】解决这个问题
+   ★★ 13.4 把格子数出来了：s=12 塞 3 篇各 4 token ⟹ 因果允许 78 格，
+      其中【48 格（61.5%）是跨文档的垃圾】
+      ★ 一般式：等长塞 k 篇 ⟹ 跨文档格子占比 ≈ 1 − 1/k
+        （k=8 → 87.5%，k=16 → 93.8%）
+      ⟹ ★★★ SFT 下九成以上的注意力计算在学虚假关系
+   ✅ 论文明确：★ 加 &lt;eod&gt; 分隔符【不能】解决（&quot;not sufficient&quot;）
+      ⚠️ 但注意归因：那个「F1 平均降 0.35%」的量化证据，
+         ✅ 论文是【转引 RoBERTa】的，★ 不是 Graphcore 自己的实测
 
 ④ ★★ 解法 = 块对角注意力掩码 + 位置 id 重置
-   ✅ Megatron: --reset-attention-mask / --reset-position-ids
-   ⚠️⚠️ 两个都【默认关闭】→ 不改配置的话你的训练是带污染的
+   ✅ Megatron 有【三个】开关（我核对过本仓库里的 Megatron-LM 源码）：
+     --reset-attention-mask   造 [s,s] 掩码矩阵（★ 正确但不省算力）
+     --reset-position-ids     位置 id 每篇从 0 重数
+     --dataloader-inter-document-masking
+        ★★ 直接输出 cu_seqlens 给变长算子 —— 这才是&quot;又对又快&quot;的那条路
+        ✅ 源码里就是一行前缀和：cumsum([0] + document_lengths)
+   ⚠️⚠️ 三个全是 action=&#39;store_true&#39; ⟹【默认关闭】
+      → 不改配置的话你的训练是带污染的
    ★ 预训练可斟酌（文档长时影响小），SFT 必须开（文档短、一条塞十几个）
 
-⑤ ★★★ 反直觉：文档掩码不但不慢，反而【更快】
-   一条样本塞 k 篇 → 注意力开销降到 1/k
-   ★ 但前提是算子真的跳过被掩的块 ⟹ 必须用变长注意力：
+⑤ ★★ 文档掩码不但不慢，反而更快 —— ⚠️ 但【别把收益说大了】
+   注意力开销 ∝ Σsᵢ²；等长塞 k 篇才是降到 1/k
+   ⚠️ 不等长要差得多：[3000,1000,96] 只降到 60%，不是 1/3
+   ⚠️⚠️ 更重要的是：注意力只是总算力的一部分。
+     总 FLOP/token ≈ 6N + 12·L·s·h，★【只有后一项能被掩码省掉】
+     （6N = 2N 前向 + 4N 反向，⚠️ 不含优化器、不含激活重算）
+     ⟹ 7B 量级（N=6.7e9, L=32, h=4096）、k=8 时的整体加速：
+          s=4K  → 注意力占 13.8% → 整体仅【1.14×】（耗时 −12%）
+          s=32K → 占 56.2%       → 【1.97×】
+          s=128K→ 占 83.7%       → 【3.73×】
+     ⟹ ★★★ 短上下文下掩码主要是【正确性】措施；
+          长上下文下它才同时是【性能】措施
+   ★ 而且前提是算子真的跳过被掩的块 ⟹ 必须用变长注意力：
      cu_seqlens（累积长度前缀和，★ 就是 .idx 边界表思想的复现）
      + THD 格式（把整 batch 拍平成一维，零 padding）
+     ★ 同一批 300/1200/2596：SBHD 有效率 52.6%，THD 100%
    ⟹ 打包 + 掩码 + THD 三件事要一起做
 
-⑥ ✅ 另一条路 Dataset Decomposition（2405.13226，Apple）：
-   按长度把语料分解成 2 的幂的桶，★ 每个 batch 只从一个桶取
-   → 零 padding + 零污染 + ★ 还能做&quot;短序列在前、长序列在后&quot;的课程
+⑥ ✅ 另一条路 Dataset Decomposition（2405.13226，Apple，PDF 已归档）：
+   桶 Dᵢ 装长度 2ⁱ 的序列，✅【每条都抽自单独一篇文档】
+     ⟹ ★★ 零污染是【结构性】保证，不靠掩码
+   ✅ 每步从 Dᵢ 取 b/2ⁱ 条 ⟹ 批内 token 数恒定、显存平稳
+   ✅ 收益：到达目标精度最多快【6×】／数据效率 &gt;【4×】／
+      ★「8k 上下文的 1B 模型，训练成本等于基线的 2k 上下文」
+   ⚠️ 设定是 RefinedWeb、1B 量级、最长 8192 —— 别外推成&quot;永远快 6 倍&quot;
 
-⑦ ⚠️ 四个坑：以为 &lt;eod&gt; 够用 / 开了掩码但用 SBHD 没省算力 /
+⑦ ⚠️ 六个坑：以为 &lt;eod&gt; 够用 / 开了掩码但用 SBHD 没省算力 /
    ★ cu_seqlens 差一错误（loss 略高但不崩，极难发现）/
-   SFT 打包后 loss 掩码没跟着对齐（★ 模型学会生成用户提问）
+   SFT 打包后 loss 掩码没跟着对齐（★ 模型学会生成用户提问）/
+   ⚠️ 把&quot;注意力降 1/k&quot;当成&quot;快 k 倍&quot; / ⚠️ 只看打包效率不看开销
 
 ⑧ ★★★ 一手佐证（DeepSeek-V4 报告 §4.1，见 16 章）：
-   ✅「打包文档以最小化样本截断」+
-   ✅「★ 与 V3 不同，我们采用【样本级注意力掩码】」
+   ✅「Inspired by Ding et al. 2024, we pack documents ... to minimize
+      sample truncation」+
+   ✅「★ Different from DeepSeek-V3, we employ sample-level attention masking」
    ⟹ ★ &quot;与 V3 不同&quot;说明上一代还没做 —— 本章这个坑是真实存在的
+   ★★★ 而且我把那条引用查实了：✅ Ding et al. 2024 就是
+      【Fewer truncations improve language modeling, arXiv:2404.10830】
+      —— 也就是 13.1 那篇 Best-fit Packing。
+      ⟹ ★★ 这是一条【学术方法被前沿实验室点名采纳】的完整链条
+      ⚠️ 但报告只说 &quot;inspired by&quot;，★ 没给算法细节 ——
+         &quot;V4 用的就是 Best-fit Packing 本身&quot;是我的推断，不是报告结论
    ✅ MiniMax-M3 则更进一步：★★【主题相关的文档打包】
       ⟹ 此时跨文档注意力不是污染，而是有价值的长程信号
 </code></pre></div>

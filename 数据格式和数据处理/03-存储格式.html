@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,32 +257,119 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="03-jsonl-parquet-arrow-webdataset">03 · 存储格式：JSONL / Parquet / Arrow / WebDataset</h1>
 <blockquote>
 <p><strong>这一章讲"清洗阶段"的文件格式。</strong> 训练时真正读的那个格式（<code>.bin</code> / <code>.idx</code>）是下一章。<br />
-<strong>核心只有一个概念：行存 vs 列存。</strong> 搞懂它，这一章其余部分都是推论。</p>
+<strong>核心只有一个概念：行存 vs 列存。</strong> 搞懂它，这一章其余部分都是推论。<br />
+<strong>本章会把同一份数据在五种格式下的字节数和 IO 次数全部算出来</strong>（§3.6），这样"选哪个格式"就不再是感觉问题。</p>
+</blockquote>
+<hr />
+<p><strong>先把本章要用的三套口径钉死</strong></p>
+<p><strong>容量</strong>：沿用 <a href="01-鸟瞰全景.html">01 章</a>，1 TB = 10¹² 字节、1 TiB = 2⁴⁰ 字节（差 9.95%），1 GB = 10⁹、1 GiB = 2³⁰（差 7.37%）。</p>
+<p><strong>压缩</strong>：同一件事有<strong>三种说法，数值完全不同</strong>，混用是本领域最常见的口误。以 6203 字节压到 2068 字节为例：</p>
+<table>
+<thead>
+<tr>
+<th>说法</th>
+<th>算式</th>
+<th>数值</th>
+<th>什么时候该用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>压缩到 X%</strong></td>
+<td>2068 ÷ 6203</td>
+<td><strong>33%</strong></td>
+<td>谈"剩多少"、算存储账单</td>
+</tr>
+<tr>
+<td><strong>压缩 X 倍</strong>（压缩比）</td>
+<td>6203 ÷ 2068</td>
+<td><strong>3.0 倍</strong></td>
+<td>谈"省了几倍"、比较算法</td>
+</tr>
+<tr>
+<td><strong>省了 X%</strong></td>
+<td>1 − 2068/6203</td>
+<td><strong>67%</strong></td>
+<td>谈"节约多少"</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️⚠️ <strong>"压缩到 33%"、"压缩 3 倍"、"省了 67%" 是同一件事的三种说法</strong>（上表三行算的是同一对数字）。 而"<strong>压缩 33%</strong>"这个说法是<strong>歧义的</strong>——它既可能指"压到 33%"（省 67%），也可能指"省了 33%"（压到 67%）。<strong>本教程不使用"压缩 X%"这种写法。</strong> 看到别人这么写，一定要回头确认。</p>
+</blockquote>
+<p><strong>速度</strong>：同理，<strong>"时间减少 X%"和"加速 X 倍"是两回事</strong>，换算关系是：</p>
+<div class="codehilite"><pre><span></span><code>加速倍数 = 1 / (1 − 时间减少比例)
+时间减少比例 = 1 − 1 / 加速倍数
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>时间减少</th>
+<th>对应加速</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>50%</td>
+<td><strong>2.0 倍</strong></td>
+</tr>
+<tr>
+<td>60%</td>
+<td><strong>2.5 倍</strong></td>
+</tr>
+<tr>
+<td>75%</td>
+<td><strong>4.0 倍</strong></td>
+</tr>
+<tr>
+<td>80%</td>
+<td><strong>5.0 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 所以"解压时间减少 60%"<strong>不等于</strong>"解压快 60%"，它等于"<strong>解压快 2.5 倍</strong>"。⚠️ 而"加速 60%"通常指 1.6 倍（时间减少 37.5%）。<strong>本教程统一用"快 N 倍"的写法。</strong></p>
 </blockquote>
 <hr />
 <h2 id="31">3.1 先说清楚：为什么会有好几种格式</h2>
 <p>一份数据在生命周期里会<strong>换好几次格式</strong>，因为不同阶段的访问模式完全不同：</p>
-<div class="codehilite"><pre><span></span><code>阶段              典型操作                        想要的性质
-──────────────────────────────────────────────────────────────
-① 抓取/抽取      一条条追加写                     ★ 追加便宜、能流式处理
-                 → JSONL / WARC
-
-② 清洗/过滤      &quot;把 quality_score &lt; 2 的删掉&quot;    ★ 只读某几列要快
-                 &quot;统计各语言的 token 总数&quot;        ★ 压缩率高（省存储费）
-                 → Parquet
-
-③ 训练           &quot;给我第 8,231,904 号样本&quot;        ★ ★ 随机访问 O(1)
-                 每秒几万次随机读                  ★ 零解析开销
-                 → .bin + .idx（下一章）
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>典型操作</th>
+<th>★ 想要的性质</th>
+<th>用什么格式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 抓取 / 抽取</strong></td>
+<td>一条条追加写</td>
+<td>★ 追加便宜、能流式处理</td>
+<td><strong>JSONL</strong> / WARC</td>
+</tr>
+<tr>
+<td><strong>② 清洗 / 过滤</strong></td>
+<td>"把 <code>quality_score &lt; 2</code> 的删掉"、"统计各语言的 token 总数"</td>
+<td>★ 只读某几列要快；★ 压缩率高（省存储费）</td>
+<td><strong>Parquet</strong></td>
+</tr>
+<tr>
+<td><strong>③ 训练</strong></td>
+<td>"给我第 8,231,904 号样本"，每秒几千到几万次随机读</td>
+<td>★★ 随机访问 O(1)；★ 零解析开销</td>
+<td><strong><code>.bin</code> + <code>.idx</code></strong>（<a href="04-训练格式-Megatron索引.html">04 章</a>）</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★ <strong>一句话概括</strong>：<strong>JSONL 便于写和流式过，Parquet 便于筛和存，<code>.bin/.idx</code> 便于随机取。</strong><br />
-现实中的流水线就是 <code>JSONL → Parquet → .bin/.idx</code> 一路转下去。</p>
+<p>★★ <strong>一句话概括</strong>：<strong>JSONL 便于写和流式过，Parquet 便于筛和存，<code>.bin/.idx</code> 便于随机取。</strong> 现实中的流水线就是 <code>JSONL → Parquet → .bin/.idx</code> 一路转下去。</p>
 </blockquote>
 <hr />
 <h2 id="32-jsonl">3.2 JSONL：最简单、最通用的那个</h2>
-<p><strong>JSONL</strong> = <strong>JSON Lines</strong>（每行一个 JSON 对象），有时也写作 <code>.jsonl</code> / <code>.ndjson</code>（Newline-Delimited JSON）。</p>
+<p><strong>JSONL</strong> = <strong>JSON L</strong>ines（每行一个 JSON 对象），有时也写作 <code>.jsonl</code> / <code>.ndjson</code>（<strong>N</strong>ewline-<strong>D</strong>elimited <strong>JSON</strong>，换行分隔的 JSON）。</p>
 <div class="codehilite"><pre><span></span><code>{&quot;id&quot;:&quot;a1&quot;,&quot;text&quot;:&quot;番茄炒蛋是一道家常菜……&quot;,&quot;url&quot;:&quot;http://...&quot;,&quot;lang&quot;:&quot;zh&quot;}
 {&quot;id&quot;:&quot;a2&quot;,&quot;text&quot;:&quot;def quicksort(arr):\n    if len(arr)…&quot;,&quot;url&quot;:&quot;http://...&quot;,&quot;lang&quot;:&quot;code&quot;}
 {&quot;id&quot;:&quot;a3&quot;,&quot;text&quot;:&quot;The mitochondrion is the powerhouse…&quot;,&quot;url&quot;:&quot;http://...&quot;,&quot;lang&quot;:&quot;en&quot;}
@@ -298,6 +390,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ❌ 不支持&quot;只读某一列&quot; —— 要拿 lang 字段也得把整行 text 解析出来
 </code></pre></div>
 
+<p><strong>"字段名每行重复存一遍"到底多花钱？</strong> §3.6 会给精确数字，先给结论：<strong>一条带 2000 个汉字正文的记录里，字段名 + 标点 + 引号共占 203 字节，正文占 6000 字节——结构开销只有 3.3%</strong>；但如果是一条<strong>只有元数据、没有正文</strong>的记录（去重 / 打标签阶段的常见形态），253 字节里有 <strong>153 字节是字段名和标点，占 60%</strong>。★ <strong>JSONL 的体积问题只在"记录短"的时候才严重。</strong></p>
 <blockquote>
 <p>★ <strong><code>preprocess_data.py</code>（Megatron 的预处理脚本）的输入就是 JSONL</strong>，这是这个领域最标准的交接格式。它默认读的字段名是 <code>"text"</code>。</p>
 </blockquote>
@@ -308,37 +401,74 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
   ├── part-00001.jsonl.zst
   ├── ...
   └── part-04095.jsonl.zst
-
-压缩格式的选择：
-  gzip  ——  最通用，压缩率一般，★ 不能并行解压
-  zstd  ——  ★ 现在的默认选择。解压快 3~5 倍，压缩率还更好
-  lz4   ——  最快但压缩率低，适合临时中间文件
 </code></pre></div>
 
+<p>压缩格式的选择：</p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>⚠️ 压缩比（中文 UTF-8 文本，量级）</th>
+<th>⚠️ 单核解压速度</th>
+<th>能并行解压</th>
+<th>什么时候用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>gzip</strong></td>
+<td>约 <strong>2.5 倍</strong>（压缩到 40%）</td>
+<td>约 200 ~ 400 MB/s</td>
+<td>❌ 不能</td>
+<td>最通用，和谁都能对接</td>
+</tr>
+<tr>
+<td><strong>zstd</strong></td>
+<td>约 <strong>3.0 倍</strong>（压缩到 33%）</td>
+<td>约 800 ~ 1500 MB/s</td>
+<td>✅ 能</td>
+<td>★ <strong>现在的默认选择</strong></td>
+</tr>
+<tr>
+<td><strong>lz4</strong></td>
+<td>约 <strong>1.8 倍</strong>（压缩到 55%）</td>
+<td>几 GB/s</td>
+<td>✅ 能</td>
+<td>临时中间文件，CPU 比磁盘贵时</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>上表三列数字都是量级，不是跑分</strong>：压缩比强烈依赖内容（代码比中文好压，base64 几乎不可压），解压速度依赖 CPU 和压缩等级。<strong>自己的数据自己测，三行命令的事。</strong></p>
+<p>★ <strong>zstd 对 gzip 的优势，用上面钉好的口径说一遍</strong>：压缩比 3.0 倍 vs 2.5 倍（<strong>体积再小 17%</strong>），解压 <strong>快 3 ~ 4 倍</strong>（= 解压时间减少 67% ~ 75%）。⚠️ 注意<strong>不要</strong>说成"解压快 300%"或"压缩 17%"，那都是歧义写法。</p>
+</blockquote>
 <hr />
 <h2 id="33-vs">3.3 ★ 核心概念：行存 vs 列存</h2>
 <p>这是整章唯一需要真正理解的东西。</p>
 <h3 id="_3">直觉类比</h3>
 <p>想象一个 Excel 表格要存到磁盘上，只有两种存法：</p>
-<div class="codehilite"><pre><span></span><code>原始表格：
-        id    text（很长）        lang    score
-  行1:  a1    &quot;番茄炒蛋……&quot;        zh      2.7
-  行2:  a2    &quot;def quicksort……&quot;   code    4.1
-  行3:  a3    &quot;The mitochond……&quot;   en      1.2
+<div class="codehilite"><pre><span></span><code>原始表格（text 列故意画宽，因为它在真实语料里就是最宽的那一列）：
 
+   row  id  text                    lang  score
+   r1   a1  &quot;tomato-egg recipe...&quot;  zh    2.7
+   r2   a2  &quot;def quicksort(arr)..&quot;  code  4.1
+   r3   a3  &quot;The mitochondrion..&quot;   en    1.2
+</code></pre></div>
 
-【行存 row-based】—— 一行的所有字段挨着放（JSONL 就是这样）
-  磁盘布局： [a1|番茄炒蛋……|zh|2.7] [a2|def quick……|code|4.1] [a3|The mit…|en|1.2]
-                                    ↑                        ↑
-  要拿&quot;所有的 score&quot;？ → 必须把三段【全部】读进来，跳着取
+<p><strong>【行存 row-based】—— 一行的所有字段挨着放（JSONL 就是这样）</strong></p>
+<div class="codehilite"><pre><span></span><code>  磁盘布局: [a1|&quot;tomato-egg...&quot;|zh|2.7][a2|&quot;def quick...&quot;|code|4.1][a3|&quot;The mito...&quot;|en|1.2]
+            |&lt;--------- r1 ----------&gt;||&lt;---------- r2 ----------&gt;||&lt;-------- r3 ---------&gt;|
+
+  要拿&quot;所有的 score&quot;? -&gt; 必须把三段全部读进来，跳着取
      ★ 而 text 字段极长 —— 你为了拿 3 个浮点数，读了几十 KB 文本
+</code></pre></div>
 
+<p><strong>【列存 columnar】—— 同一列的所有值挨着放（Parquet 就是这样）</strong></p>
+<div class="codehilite"><pre><span></span><code>  磁盘布局: [a1|a2|a3][&quot;tomato...&quot;|&quot;def qu...&quot;|&quot;The mi...&quot;][zh|code|en][2.7|4.1|1.2]
+            |&lt;- id -&gt;||&lt;------------- text --------------&gt;||&lt;- lang -&gt;||&lt;- score -&gt;|
 
-【列存 columnar】—— 同一列的所有值挨着放（Parquet 就是这样）
-  磁盘布局： [a1|a2|a3] [番茄炒蛋…|def quick…|The mit…] [zh|code|en] [2.7|4.1|1.2]
-             └─ id ─┘  └────────── text ───────────┘  └─ lang ─┘  └─ score ─┘
-                                    ↑                              ↑
-  要拿&quot;所有的 score&quot;？ → ★ 只读最后那一小段，text 那一大坨【碰都不用碰】
+  要拿&quot;所有的 score&quot;? -&gt; ★ 只读最右边那一小段
+                          text 那一大坨【碰都不用碰】
 </code></pre></div>
 
 <h3 id="_4">列存的两个额外好处（比"少读"更重要）</h3>
@@ -349,14 +479,40 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                  → 再游程编码：(0,×3)(1,×4)(0,×1)(2,×1)
                  → 原本几百 MB 的字符串列 → 几 KB
    而行存里 &quot;zh&quot; 夹在两段长文本中间，压缩器根本发现不了这个规律
-   ⚠️ 我的经验量级：同一份语料，Parquet 通常比 gzip 后的 JSONL 再小 30~60%
 
 ② ★ 谓词下推（predicate pushdown）
-   Parquet 在每个数据块的页脚记了【每列的 min / max】
+   Parquet 在每个数据块（row group）的页脚记了【每列的 min / max】
    查 &quot;score &gt; 3.5&quot; 时，某个块的 score.max = 2.9 → ★ 整块直接跳过，不解压
-   → 扫 10 TB 语料做一次筛选，可能只真正读了 200 GB
 </code></pre></div>
 
+<blockquote>
+<p>⚠️⚠️ <strong>本章旧版在这里写过一句"Parquet 通常比 gzip 后的 JSONL 再小 30~60%"，这句话要加条件才成立。</strong> §3.6 把两种记录形态都算了一遍：</p>
+<table>
+<thead>
+<tr>
+<th>记录形态</th>
+<th>JSONL+gzip</th>
+<th>Parquet+zstd</th>
+<th><strong>Parquet 小多少</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A：2000 汉字正文 + 7 个元数据字段</strong></td>
+<td>2481 B</td>
+<td>2030 B</td>
+<td>只小 <strong>18%</strong></td>
+</tr>
+<tr>
+<td><strong>B：只有元数据、无正文</strong>（12 个字段）</td>
+<td>84 B</td>
+<td>28 B</td>
+<td>小 <strong>67%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>结论</strong>：<strong>长文本列一旦占主导，Parquet 的压缩优势就被摊薄了</strong>——因为那一大坨正文谁压都是压一样的三倍，列存帮不上忙。<strong>"30~60%" 只在短字段占主导时成立。</strong> 长文本场景下，列存的价值<strong>几乎全部来自"只读需要的列"，不是压缩</strong>。</p>
+</blockquote>
 <h3 id="_5">什么时候<strong>不该</strong>用列存</h3>
 <div class="codehilite"><pre><span></span><code>❌ 要一条条追加写（列存必须凑够一批才能写一个块）
 ❌ 每次都要读整行的全部字段（那列存反而多了拼装开销）
@@ -364,68 +520,412 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>这正好解释了流水线的换格式点</strong>：<br />
-<strong>抽取阶段是一条条追加写 → JSONL；清洗阶段是反复按列筛选统计 → Parquet。</strong></p>
+<p>★★ <strong>这正好解释了流水线的换格式点</strong>：<strong>抽取阶段是一条条追加写 → JSONL；清洗阶段是反复按列筛选统计 → Parquet。</strong></p>
 </blockquote>
 <hr />
 <h2 id="34-parquet-arrow">3.4 Parquet 与 Arrow：一对经常被搞混的兄弟</h2>
-<div class="codehilite"><pre><span></span><code>┌─ Apache Parquet ────────────────────────────────────────────┐
-│  ★ 磁盘上的格式（on-disk）                                   │
-│  为【存储】优化：压缩、编码、谓词下推                          │
-│  读的时候必须解压 + 解码                                      │
-│  文件后缀 .parquet                                           │
-└─────────────────────────────────────────────────────────────┘
-┌─ Apache Arrow ──────────────────────────────────────────────┐
-│  ★ 内存里的格式（in-memory）                                 │
-│  为【计算】优化：不压缩，字段定长对齐，CPU 可以直接向量化处理  │
-│  ★★ 零拷贝（zero-copy）：不同进程/语言可以【共享同一块内存】  │
-│     Python 读进来的 Arrow 表，C++ 那边不用序列化就能直接用     │
-└─────────────────────────────────────────────────────────────┘
-
-关系：      Parquet（磁盘，压缩）
-              │  读取时解压展开
-              ▼
-            Arrow（内存，不压缩，可直接算）
+<p>它们是<strong>同一个社区做的两个东西，分工完全不同</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>Apache Parquet</strong></th>
+<th><strong>Apache Arrow</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>活在哪</td>
+<td>★ <strong>磁盘上</strong>（on-disk）</td>
+<td>★ <strong>内存里</strong>（in-memory）</td>
+</tr>
+<tr>
+<td>为什么优化</td>
+<td>为<strong>存储</strong>：压缩、编码、谓词下推</td>
+<td>为<strong>计算</strong>：字段定长对齐，CPU 可直接向量化处理</td>
+</tr>
+<tr>
+<td>压不压缩</td>
+<td>✅ 压（zstd / snappy / gzip）</td>
+<td>❌ <strong>不压</strong>（压了就不能直接算了）</td>
+</tr>
+<tr>
+<td>用的时候要做什么</td>
+<td>必须先<strong>解压 + 解码</strong></td>
+<td>★ 什么都不用做，直接按下标访问</td>
+</tr>
+<tr>
+<td>杀手特性</td>
+<td>谓词下推 + 列投影</td>
+<td>★★ <strong>零拷贝（zero-copy）</strong>：不同进程 / 不同语言可以<strong>共享同一块内存</strong>。Python 读进来的 Arrow 表，C++ 那边不用序列化就能直接用</td>
+</tr>
+<tr>
+<td>文件后缀</td>
+<td><code>.parquet</code></td>
+<td><code>.arrow</code> / <code>.feather</code>（其实是把内存布局原样落盘）</td>
+</tr>
+</tbody>
+</table>
+<p>两者的关系是<strong>一条单向的管道</strong>：</p>
+<div class="codehilite"><pre><span></span><code>  Parquet（磁盘，压缩，省空间）
+      │
+      │  读取时：解压 + 解码 + 展开
+      ▼
+  Arrow（内存，不压缩，可直接算）
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>HuggingFace <code>datasets</code> 库的底层就是 Arrow。</strong> 你 <code>load_dataset(...)</code> 之后它在磁盘上缓存的 <code>.arrow</code> 文件，就是把 Arrow 内存布局直接 mmap 到磁盘——所以它加载 100 GB 数据集"秒开"，因为<strong>根本没有真的读进内存，只是建立了内存映射</strong>。</p>
+<p>★ <strong>HuggingFace <code>datasets</code> 库的底层就是 Arrow。</strong> 你 <code>load_dataset(...)</code> 之后它在磁盘上缓存的 <code>.arrow</code> 文件，就是把 Arrow 内存布局直接 <strong>mmap</strong> 到磁盘——所以它加载 100 GB 数据集"秒开"，因为<strong>根本没有真的读进内存，只是建立了内存映射</strong>。</p>
 </blockquote>
-<p><strong>mmap（memory-mapped file，内存映射文件）</strong>：让操作系统把一个磁盘文件"假装"成一段内存地址。你按数组下标访问，操作系统在背后按需从磁盘换页进来。<strong>这是整个数据领域最重要的一个系统技巧</strong>——下一章的 <code>.bin</code> 文件也靠它。</p>
+<p><strong>mmap</strong>（<strong>m</strong>emory-<strong>m</strong>apped <strong>f</strong>ile，内存映射文件）：让操作系统把一个磁盘文件"假装"成一段内存地址。你按数组下标访问，操作系统在背后按需从磁盘<strong>换页</strong>（paging）进来。<strong>这是整个数据领域最重要的一个系统技巧</strong>——下一章的 <code>.bin</code> 文件也靠它。</p>
+<blockquote>
+<p>★ <strong>mmap 为什么"秒开"，说白了</strong>：<code>open</code> + <code>mmap</code> 这两个系统调用<strong>一个字节都不读</strong>，只是在进程的地址空间里登记"这段地址对应那个文件的那一段"。真正的磁盘读发生在你第一次访问某个下标的时候，而且<strong>只读那一个 4 KB 页</strong>。⚠️ 代价是：<strong>第一次访问每一页都要等一次磁盘</strong>（冷页，约 100 µs 量级），所以 mmap 快的是"打开"，不是"随机访问的第一次"。</p>
+</blockquote>
 <hr />
 <h2 id="35-webdataset-mds">3.5 WebDataset 与 MDS：为"顺序流式读"设计的</h2>
-<p>前面几种格式都假设<strong>数据在本地磁盘上</strong>。但真实训练时数据往往在<strong>对象存储</strong>（S3、OSS）上，几百 TB，本地根本放不下。</p>
-<p>这时的访问模式变了：<strong>顺序流式拉取，边拉边训</strong>。</p>
-<div class="codehilite"><pre><span></span><code>┌─ WebDataset ────────────────────────────────────────────────┐
-│  做法：★ 就是普通的 .tar 文件！                              │
-│                                                             │
-│  shard-000123.tar 里面：                                    │
-│      000000.txt   000000.json                               │
-│      000001.txt   000001.json     ← 同一个 basename 的文件  │
-│      000002.txt   000002.json        自动被打包成一条样本   │
-│                                                             │
-│  ✅ tar 是纯顺序格式 → 一个 HTTP GET 流式拉，边拉边解        │
-│  ✅ 不需要任何特殊服务，S3/HTTP 直接读                       │
-│  ✅ 多模态友好（图片、音频直接当文件塞进去）                  │
-│  ❌ ★ 不能随机访问                                          │
-│     → shuffle 靠【两级近似】：shard 级打乱 + 缓冲区内打乱     │
-└─────────────────────────────────────────────────────────────┘
-
-┌─ MDS（Mosaic Data Shard，MosaicML StreamingDataset）────────┐
-│  ✅ 比 WebDataset 多了一个索引 → ★ 支持确定性的随机访问      │
-│  ✅ 内置断点续训：记录&quot;已经消费到第几个样本&quot;                  │
-│  ✅ 自动做本地缓存与预取                                     │
-└─────────────────────────────────────────────────────────────┘
+<p>前面几种格式都假设<strong>数据在本地磁盘上</strong>。但真实训练时数据往往在<strong>对象存储</strong>（S3、OSS）上，几百 TB，本地根本放不下。这时的访问模式变了：<strong>顺序流式拉取，边拉边训。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>WebDataset</strong></th>
+<th><strong>MDS</strong>（Mosaic Data Shard，MosaicML <code>StreamingDataset</code>）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>底层是什么</td>
+<td>★ <strong>就是普通的 <code>.tar</code> 文件</strong>，没有任何自定义格式</td>
+<td>tar 风格的分片 <strong>+ 一个索引文件</strong></td>
+</tr>
+<tr>
+<td>怎么组样本</td>
+<td>★ <strong>同一个 basename 的文件自动被打包成一条样本</strong></td>
+<td>索引里直接记录每条样本的位置</td>
+</tr>
+<tr>
+<td>远程读</td>
+<td>✅ 一个 HTTP GET 流式拉，边拉边解；S3 / HTTP 直接读，不需要任何特殊服务</td>
+<td>✅ 同样支持，另有<strong>自动本地缓存与预取</strong></td>
+</tr>
+<tr>
+<td>随机访问</td>
+<td>❌ <strong>不能</strong>（tar 是纯顺序格式）</td>
+<td>✅ <strong>支持确定性的随机访问</strong></td>
+</tr>
+<tr>
+<td>shuffle 怎么办</td>
+<td>★ 靠<strong>两级近似</strong>（见下）</td>
+<td>可以真随机，因为有索引</td>
+</tr>
+<tr>
+<td>断点续训</td>
+<td>要自己实现</td>
+<td>✅ <strong>内置</strong>：记录"已经消费到第几个样本"</td>
+</tr>
+<tr>
+<td>多模态</td>
+<td>✅ 友好（图片、音频直接当文件塞进去）</td>
+<td>✅ 友好</td>
+</tr>
+<tr>
+<td>谁在用</td>
+<td>OpenCLIP、图文训练栈</td>
+<td>MosaicML / Databricks 训练栈</td>
+</tr>
+</tbody>
+</table>
+<p>一个 WebDataset 分片内部长这样：</p>
+<div class="codehilite"><pre><span></span><code>shard-000123.tar 里面：
+    000000.txt   000000.json
+    000001.txt   000001.json     ← 同一个 basename 的两个文件
+    000002.txt   000002.json        被自动配成一条样本
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>shuffle 的两级近似</strong>是流式格式的关键妥协，值得记住（<a href="14-采样-shuffle-与断点续训.html">14 章</a>会再讲）：<br />
-<code>① shard 级：把 4096 个 shard 的【顺序】随机打乱
-② 样本级：维护一个 10000 条样本的缓冲区，随机从里面抽一条，抽走就补一条
-→ 合起来的效果 ≈ 全局随机，但从头到尾只做【顺序读】</code></p>
+<p>★ <strong>shuffle 的两级近似</strong>是流式格式的关键妥协，值得记住（<a href="14-采样-shuffle-与断点续训.html">14 章</a>会再讲）：</p>
+<p>① <strong>shard 级</strong>：把 4096 个 shard 的<strong>顺序</strong>随机打乱；② <strong>样本级</strong>：维护一个 10000 条样本的缓冲区，随机从里面抽一条，抽走就补一条。</p>
+<p>合起来的效果 ≈ 全局随机，但从头到尾只做<strong>顺序读</strong>。⚠️ 注意它只是"≈"：<strong>缓冲区只有 10000 条，所以相距超过 10000 条的两个样本永远不可能换位置</strong>。对需要严格全局 shuffle 的场景（比如课程学习的对照实验），这个近似是不够的。</p>
 </blockquote>
 <hr />
-<h2 id="36">3.6 四种格式的一张对照表</h2>
+<h2 id="36-io">3.6 ★★★ 把账算出来：同一份数据，五种格式各占多少字节、随机读一条要几次 IO</h2>
+<p>前面全是定性描述。这一节用<strong>一份具体的数据</strong>把所有格式的字节数和 IO 次数算到底。</p>
+<h3 id="100">规范数据：100 万篇中文网页</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文档数</td>
+<td><strong>100 万篇</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>每篇正文</td>
+<td><strong>2000 个汉字</strong></td>
+<td>= 2000 字符</td>
+</tr>
+<tr>
+<td>每篇正文 UTF-8 字节</td>
+<td><strong>6000 字节</strong></td>
+<td>2000 × 3（一个汉字 3 字节）</td>
+</tr>
+<tr>
+<td>每篇 token 数</td>
+<td>⚠️ <strong>1143</strong></td>
+<td>2000 ÷ 1.75 = 1142，加 1 个 <code>&lt;eod&gt;</code>。⚠️ 这里用的是<strong>经验区间 1.5 ~ 2 汉字/token</strong> 的中值，<strong>不是</strong> openPangu 报告 Table 4 的"中文 3.82"——理由见 <a href="09-Tokenizer与词表.html">09 章</a> §9.5 那条口径矛盾。★ 取区间两端（2 汉字/token 和 1.5 汉字/token）会得到 1001 ~ 1334 token，下面每个"每条字节"都跟着浮动 −12% ~ +17%</td>
+</tr>
+<tr>
+<td>每篇源文本字节/token</td>
+<td>⚠️ <strong>5.25</strong></td>
+<td>6000 ÷ 1143</td>
+</tr>
+<tr>
+<td>元数据字段</td>
+<td>7 个</td>
+<td><code>id</code> / <code>url</code> / <code>language</code> / <code>language_score</code> / <code>quality_score</code> / <code>token_count</code> / <code>dump</code></td>
+</tr>
+</tbody>
+</table>
+<p>一条 JSONL 记录长这样（正文用省略号代替）：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="s2">&quot;cc-2024-10-0000123456&quot;</span><span class="p">,</span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="s2">&quot;番番番……（2000 个汉字）&quot;</span><span class="p">,</span><span class="nt">&quot;url&quot;</span><span class="p">:</span><span class="s2">&quot;http://example.com/recipe/tomato-egg&quot;</span><span class="p">,</span><span class="nt">&quot;language&quot;</span><span class="p">:</span><span class="s2">&quot;zh&quot;</span><span class="p">,</span><span class="nt">&quot;language_score&quot;</span><span class="p">:</span><span class="mf">0.98</span><span class="p">,</span><span class="nt">&quot;quality_score&quot;</span><span class="p">:</span><span class="mf">2.7</span><span class="p">,</span><span class="nt">&quot;token_count&quot;</span><span class="p">:</span><span class="mi">1143</span><span class="p">,</span><span class="nt">&quot;dump&quot;</span><span class="p">:</span><span class="s2">&quot;CC-MAIN-2024-10&quot;</span><span class="p">}</span>
+</code></pre></div>
+
+<p><strong>先把这一条的字节数拆开</strong>（<code>json.dumps(..., ensure_ascii=False)</code> + <code>"\n"</code>，可以自己跑一遍验证）：</p>
+<table>
+<thead>
+<tr>
+<th>成分</th>
+<th>字节</th>
+<th>占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正文（<code>text</code> 的值）</td>
+<td><strong>6000</strong></td>
+<td>96.7%</td>
+</tr>
+<tr>
+<td>字段名 + 引号 + 冒号 + 逗号 + 花括号 + 换行</td>
+<td><strong>203</strong></td>
+<td>3.3%</td>
+</tr>
+<tr>
+<td><strong>合计一条</strong></td>
+<td><strong>6203</strong></td>
+<td>100%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">五种格式的体积</h3>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>一条占多少字节</th>
+<th>100 万条合计</th>
+<th>相对 JSONL</th>
+<th>怎么算的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>WARC.gz</strong>（原始网页）</td>
+<td>⚠️ 约 <strong>36.7 KB</strong></td>
+<td>⚠️ <strong>36.7 GB</strong></td>
+<td>5.9 倍</td>
+<td>99 TB 压缩 ÷ 27 亿页（<a href="02-数据源与文本抽取.html">02 章</a> §2.2）。正文只占其中 6000/163000 = <strong>3.7%</strong>，其余是 HTML / JS / CSS</td>
+</tr>
+<tr>
+<td><strong>JSONL</strong>（未压缩）</td>
+<td><strong>6203</strong></td>
+<td><strong>6.20 GB</strong></td>
+<td>1.00</td>
+<td>✅ 精确</td>
+</tr>
+<tr>
+<td><strong>JSONL + gzip</strong></td>
+<td>⚠️ 约 <strong>2481</strong></td>
+<td>⚠️ <strong>2.48 GB</strong></td>
+<td>0.40</td>
+<td>6203 ÷ 2.5</td>
+</tr>
+<tr>
+<td><strong>JSONL + zstd</strong></td>
+<td>⚠️ 约 <strong>2068</strong></td>
+<td>⚠️ <strong>2.07 GB</strong></td>
+<td>0.33</td>
+<td>6203 ÷ 3.0</td>
+</tr>
+<tr>
+<td><strong>Parquet + zstd</strong></td>
+<td>⚠️ 约 <strong>2030</strong></td>
+<td>⚠️ <strong>2.03 GB</strong></td>
+<td>0.33</td>
+<td>正文列 6000÷3.0 = 2000，加 7 个小列压完约 30</td>
+</tr>
+<tr>
+<td><strong><code>.bin</code> + <code>.idx</code>（uint16）</strong></td>
+<td><strong>2286</strong> + <strong>20</strong></td>
+<td><strong>2.29 GB</strong> + <strong>20 MB</strong></td>
+<td>0.37</td>
+<td>1143 × 2 字节；<code>.idx</code> 每条 4+8+8 = 20 字节（<a href="04-训练格式-Megatron索引.html">04 章</a> §4.3）</td>
+</tr>
+<tr>
+<td><strong><code>.bin</code> + <code>.idx</code>（int32）</strong></td>
+<td><strong>4572</strong> + <strong>20</strong></td>
+<td><strong>4.57 GB</strong> + <strong>20 MB</strong></td>
+<td>0.74</td>
+<td>1143 × 4 字节</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★★ <strong>这张表里最该记住的一行</strong>：<strong><code>.bin</code>（int32，4.57 GB）比 Parquet+zstd（2.03 GB）大 2.25 倍。</strong></p>
+<p>很多人以为"tokenize 之后数据会变小"。算一遍就知道不是：中文源文本 ⚠️ <strong>5.25 字节/token</strong>，<code>.bin</code> 里 <strong>4 字节/token</strong>——<strong>tokenize 只"压"了 1.31 倍</strong>，而 zstd 轻松压 3 倍。★ <strong>所以 <code>.bin</code> 不是省空间的格式，它是用 2 倍多的磁盘换 O(1) 随机访问</strong>（下面马上算这笔交易值不值）。</p>
+<p>⚠️ <strong>而且这个比值随语言变</strong>：</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>语料</th>
+<th>⚠️ 源文本字节/token</th>
+<th><code>.bin</code> int32</th>
+<th><strong><code>.bin</code> ÷ 源文本</strong></th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>中文</strong></td>
+<td>约 <strong>5.25</strong></td>
+<td>4</td>
+<td><strong>0.76</strong></td>
+<td>略小一点</td>
+</tr>
+<tr>
+<td><strong>英文</strong></td>
+<td>约 <strong>4.2</strong></td>
+<td>4</td>
+<td><strong>0.95</strong></td>
+<td>基本一样大</td>
+</tr>
+<tr>
+<td><strong>代码</strong></td>
+<td>⚠️ 约 <strong>2.7</strong></td>
+<td>4</td>
+<td><strong>1.48</strong></td>
+<td>★ <strong><code>.bin</code> 比源文本还大一半</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 所以"<code>.bin</code> 要多少 TB"这个问题，<strong>不用管语料里中文英文代码各占几成</strong>——<code>.bin</code> 那一边永远是确定的：<strong>15 T token × 4 字节 = 60 TB，不管什么语言。</strong> 变的是"同样一份源文本能切出多少 token"。</p>
+</blockquote>
+<h3 id="823190">随机读第 823,190 条要付多少代价</h3>
+<p>这是训练阶段唯一重要的指标。假设 NVMe 固态盘顺序读 <strong>2 GB/s</strong>、zstd 解压 <strong>1 GB/s</strong>、随机读一个冷页约 <strong>100 µs</strong>（⚠️ 都是量级）：</p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>要做什么</th>
+<th>实际读入的字节</th>
+<th>⚠️ 大致耗时</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>JSONL</strong>（未压缩）</td>
+<td>❌ 没有索引，只能<strong>从头数 <code>\n</code></strong>：平均扫过半个文件</td>
+<td><strong>5.11 GB</strong>（823190 × 6203）</td>
+<td><strong>2.6 s</strong></td>
+</tr>
+<tr>
+<td><strong>JSONL + zstd</strong>（500 MB/片）</td>
+<td>❌ 先定位到哪一片，然后<strong>把整片解压</strong>，再数 <code>\n</code></td>
+<td>500 MB</td>
+<td><strong>0.5 s</strong></td>
+</tr>
+<tr>
+<td><strong>Parquet + zstd</strong></td>
+<td>读文件页脚 1 次 → 定位 row group → <strong>整组读入并解压</strong>（<code>row_group_size=10000</code>）</td>
+<td><strong>20.3 MB</strong></td>
+<td><strong>约 20 ms</strong></td>
+</tr>
+<tr>
+<td><strong>Parquet + zstd</strong>（只要 <code>id</code> 和 <code>score</code>）</td>
+<td>同上，但只读这两列的 chunk</td>
+<td>⚠️ 约 <strong>0.1 MB</strong></td>
+<td>约 1 ms</td>
+</tr>
+<tr>
+<td><strong>WARC.gz</strong></td>
+<td>需要额外的 CDX 索引：查索引 1 次 + HTTP range GET 1 次</td>
+<td>约 36.7 KB</td>
+<td>网络往返，几十 ms</td>
+</tr>
+<tr>
+<td><strong><code>.bin</code> + <code>.idx</code></strong></td>
+<td>✅ 查 <code>.idx</code> 的 2 个数组元素 → 在 <code>.bin</code> 的 mmap 上切一刀</td>
+<td><strong>2286 字节</strong>（跨 1 ~ 2 个 4 KB 页）</td>
+<td><strong>约 100 ~ 200 µs</strong>（冷页）／<strong>约 1 µs</strong>（页缓存命中）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>最后一行对第一行的倍数</strong>：2.6 s ÷ 100 µs = <strong>约 2.6 万倍</strong>。</p>
+<blockquote>
+<p>★★★ <strong>这 2.6 万倍就是 <a href="04-训练格式-Megatron索引.html">04 章</a> 存在的全部理由。</strong> 注意它<strong>不是靠压缩或更快的磁盘换来的</strong>——<code>.bin</code>（int32）比压缩后的 Parquet <strong>还大 2.25 倍</strong>。它靠的是<strong>把"第 n 条在哪"这个信息单独存成一个定长数组</strong>，于是"找"这个动作从 O(n) 变成 O(1)。<strong>用 2 倍多的磁盘换 2.6 万倍的查找速度，这笔交易毫无悬念。</strong></p>
+</blockquote>
+<h3 id="bin">顺便回答：为什么 <code>.bin</code> 不压缩</h3>
+<div class="codehilite"><pre><span></span><code>压缩是【变长】的：同样 1143 个 token，压完可能 1600 字节，也可能 2600 字节
+     → 第 n 条的字节偏移就不能用乘法算出来，必须查表
+     → 而且取出来还要解压，每条几十微秒
+★ 而 .bin 的全部价值就在于&quot;定长 + 零解析&quot;
+     → 压缩会同时毁掉这两条
+⟹ 结论：.bin 宁可多占一倍磁盘，也不能压
+   （反过来说，这也是 tokenize 必须放在落盘之前的原因之一：
+     它是唯一一种【不破坏定长性】的压缩）
+</code></pre></div>
+
+<h3 id="200-gb">谓词下推能省多少：把旧版那个"200 GB"算清楚</h3>
+<p>本章旧版写过"扫 10 TB 语料做一次筛选，可能只真正读了 200 GB"。用上面的数字验算：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只读 <code>id</code> + <code>score</code> 两列占整表的比例</td>
+<td>10 B ÷ 2030 B</td>
+<td><strong>0.49%</strong></td>
+</tr>
+<tr>
+<td>扫 10 TB 语料实际读入</td>
+<td>10 TB × 0.49%</td>
+<td><strong>约 49 GB</strong></td>
+</tr>
+<tr>
+<td>加上 row group 粒度的浪费 + <code>min/max</code> 跳不掉的块</td>
+<td>⚠️ 乘 1 ~ 4 倍</td>
+<td><strong>约 50 ~ 200 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 所以"200 GB"是这个区间的<strong>上端</strong>，不是典型值。⚠️ 真实比例取决于你读几列、列有多宽、<code>row_group_size</code> 多大。<strong>但量级是对的：列投影 + 谓词下推能把扫表成本压到百分之几。</strong></p>
+</blockquote>
+<hr />
+<h2 id="37">3.7 四种格式的一张对照表</h2>
 <table>
 <thead>
 <tr>
@@ -487,6 +987,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>❌</td>
 </tr>
 <tr>
+<td>§3.6 里 100 万条占多少</td>
+<td>6.20 GB</td>
+<td>⚠️ <strong>2.03 GB</strong>（最小）</td>
+<td>—</td>
+<td>⚠️ 2.29 ~ <strong>4.57 GB</strong>（最大）</td>
+</tr>
+<tr>
+<td>§3.6 里随机读一条</td>
+<td>⚠️ 2.6 s</td>
+<td>⚠️ 20 ms</td>
+<td>不支持</td>
+<td>✅ <strong>约 100 µs</strong>（最快）</td>
+</tr>
+<tr>
 <td>用在哪一步</td>
 <td>①抽取 ②交接</td>
 <td>③清洗筛选</td>
@@ -496,7 +1010,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <hr />
-<h2 id="37">3.7 一段能跑的代码：三种格式互转</h2>
+<h2 id="38">3.8 一段能跑的代码：三种格式互转</h2>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">json</span><span class="o">,</span><span class="w"> </span><span class="nn">pyarrow</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pa</span><span class="o">,</span><span class="w"> </span><span class="nn">pyarrow.parquet</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pq</span>
 
 <span class="c1"># ---------- 写 JSONL ----------</span>
@@ -521,10 +1035,23 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
         <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">f</span><span class="p">:</span>                   <span class="c1"># ★ 一次只有一行在内存里</span>
             <span class="k">yield</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+
+<span class="c1"># ---------- 把 §3.6 那张体积表自己跑一遍 ----------</span>
+<span class="n">rec</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;cc-2024-10-0000123456&quot;</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;番&quot;</span> <span class="o">*</span> <span class="mi">2000</span><span class="p">,</span>
+       <span class="s2">&quot;url&quot;</span><span class="p">:</span> <span class="s2">&quot;http://example.com/recipe/tomato-egg&quot;</span><span class="p">,</span> <span class="s2">&quot;language&quot;</span><span class="p">:</span> <span class="s2">&quot;zh&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;language_score&quot;</span><span class="p">:</span> <span class="mf">0.98</span><span class="p">,</span> <span class="s2">&quot;quality_score&quot;</span><span class="p">:</span> <span class="mf">2.7</span><span class="p">,</span>
+       <span class="s2">&quot;token_count&quot;</span><span class="p">:</span> <span class="mi">1143</span><span class="p">,</span> <span class="s2">&quot;dump&quot;</span><span class="p">:</span> <span class="s2">&quot;CC-MAIN-2024-10&quot;</span><span class="p">}</span>
+<span class="n">line</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">rec</span><span class="p">,</span> <span class="n">ensure_ascii</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">line</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)))</span>            <span class="c1"># → 6203</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">rec</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)))</span>     <span class="c1"># → 6000  （正文）</span>
+<span class="nb">print</span><span class="p">(</span><span class="mi">6203</span> <span class="o">-</span> <span class="mi">6000</span><span class="p">)</span>                          <span class="c1"># → 203   （结构开销）</span>
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong><code>row_group_size</code> 是 Parquet 唯一一个必须自己调的参数。</strong> 太大（比如 100 万）→ 随机读一条要解压一大坨；太小（比如 100）→ 页脚元数据膨胀、压缩率变差。★ 长文本语料常用 <strong>1000 ~ 10000</strong>。</p>
+</blockquote>
 <hr />
-<h2 id="38">3.8 挂回真实系统</h2>
+<h2 id="39">3.9 挂回真实系统</h2>
 <table>
 <thead>
 <tr>
@@ -536,7 +1063,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tbody>
 <tr>
 <td><strong>Common Crawl</strong></td>
-<td>WARC / WET</td>
+<td>WARC / WAT / WET</td>
 <td>见 <a href="02-数据源与文本抽取.html">02 章</a></td>
 </tr>
 <tr>
@@ -551,7 +1078,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td><strong>Megatron <code>preprocess_data.py</code></strong></td>
-<td>输入 ✅ <strong>JSONL</strong> → 输出 <code>.bin/.idx</code></td>
+<td>输入 ✅ <strong>JSONL</strong> → 输出 <code>.bin</code>/<code>.idx</code></td>
 <td><a href="04-训练格式-Megatron索引.html">04 章</a></td>
 </tr>
 <tr>
@@ -567,30 +1094,59 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ <strong>一个常见的困惑先在这里澄清</strong>：你从 HuggingFace 下载的 FineWeb 是 <strong>Parquet</strong>，但<strong>不能直接拿它训练</strong>——它里面是<strong>文本</strong>，还没 tokenize。中间必须跑一次 <code>preprocess_data.py</code> 转成 <code>.bin/.idx</code>。<strong>很多人第一次做训练卡在这一步。</strong></p>
+<p>⚠️ <strong>一个常见的困惑先在这里澄清</strong>：你从 HuggingFace 下载的 FineWeb 是 <strong>Parquet</strong>，但<strong>不能直接拿它训练</strong>——它里面是<strong>文本</strong>，还没 tokenize。中间必须跑一次 <code>preprocess_data.py</code> 转成 <code>.bin</code>/<code>.idx</code>。<strong>很多人第一次做训练卡在这一步。</strong></p>
+<p>★ 顺手估一下这一步要多久和多大：FineWeb 全量 15 T token，按 §3.6 的比例，Parquet 约 44 TB（✅ HuggingFace 数据集卡给的体积），转出来的 <code>.bin</code> 是 <strong>60 TB</strong>（int32）。⚠️ tokenize 是纯 CPU 活，单核大约每秒几 MB 文本，<strong>全量跑完是几千核 × 几天的量级</strong>——所以这一步的产物必须放共享存储并复用，不要每次训练重跑。</p>
 </blockquote>
 <hr />
-<h2 id="39">3.9 小结</h2>
-<div class="codehilite"><pre><span></span><code>① 一份数据一生要换三次格式，因为访问模式完全不同：
+<h2 id="310">3.10 小结</h2>
+<div class="codehilite"><pre><span></span><code>① 三套口径先钉死（本章开头）：
+   容量   1 TB = 10^12，1 TiB = 2^40，差 9.95%
+   压缩   &quot;压缩到 33%&quot; = &quot;压缩 3 倍&quot; = &quot;省了 67%&quot; 是同一件事
+          ⚠️ &quot;压缩 33%&quot; 是歧义写法，本教程不用
+   速度   加速倍数 = 1/(1−时间减少比例)
+          ⚠️ &quot;时间减少 60%&quot; = &quot;快 2.5 倍&quot;，不是&quot;快 60%&quot;
+
+② 一份数据一生要换三次格式，因为访问模式完全不同：
    JSONL（追加写、流式过） → Parquet（按列筛、省存储） → .bin/.idx（随机取）
 
-② ★ 行存 vs 列存 是本章唯一的核心概念
+③ ★ 行存 vs 列存 是本章唯一的核心概念
    行存：一行的字段挨着放。要一列就得读全部
    列存：一列的值挨着放。→ ① 只读需要的列 ② 同类值压缩率暴涨
                             ③ 每块记 min/max → 谓词下推整块跳过
+   ⚠️ 但&quot;Parquet 比 gzip 的 JSONL 小 30~60%&quot;只在【短字段占主导】时成立：
+      长文本记录只小 18%，纯元数据记录才小 67%（§3.3 那张表）
+      ⟹ 长文本场景下，列存的价值几乎全在&quot;只读需要的列&quot;，不在压缩
 
-③ Parquet = 磁盘格式（压缩）；Arrow = 内存格式（不压缩，零拷贝可直接算）
+④ ★★ §3.6 的账（100 万篇 × 2000 汉字 ≈ 1143 token，可自己验算）：
+   体积   .bin int32 4.57 GB &gt; JSONL 6.20... 排序要分开看：
+          未压缩： JSONL 6.20 GB &gt; .bin int32 4.57 &gt; .bin uint16 2.29
+          压缩后： gzip 2.48 &gt; zstd 2.07 ≈ Parquet 2.03
+   ★★ .bin（int32）比压缩后的 Parquet 大 2.25 倍 ——
+      因为 tokenize 只&quot;压&quot;了 1.31 倍（中文 5.25 字节/token → 4 字节/token），
+      而 zstd 压 3 倍。⟹ .bin 不是省空间的格式
+      ⚠️ .bin ÷ 源文本：中文 0.76、英文 0.95、代码 1.48
+   随机读一条  JSONL 2.6 s ≫ zstd 0.5 s ≫ Parquet 20 ms ≫ .bin 100 µs
+          ★ 差 2.6 万倍，靠的不是压缩，是把&quot;第 n 条在哪&quot;单独存成定长数组
+          ⟹ 用 2 倍多的磁盘换 2.6 万倍的查找速度
+
+⑤ 为什么 .bin 不压缩：压缩是变长的，会同时毁掉&quot;定长&quot;和&quot;零解析&quot;
+   ⟹ 宁可多占一倍磁盘。tokenize 是唯一不破坏定长性的压缩
+
+⑥ Parquet = 磁盘格式（压缩）；Arrow = 内存格式（不压缩，零拷贝可直接算）
    HuggingFace datasets 底层是 Arrow + mmap → 所以&quot;秒开&quot;
 
-④ mmap（内存映射文件）：把磁盘文件当内存数组用，操作系统按需换页
+⑦ mmap（内存映射文件）：把磁盘文件当内存数组用，操作系统按需换页
    ★ 这是数据领域最重要的系统技巧，下一章还要靠它
+   ⚠️ 它快的是&quot;打开&quot;，不是&quot;随机访问的第一次&quot;（冷页仍要等一次磁盘）
 
-⑤ 数据在远程对象存储时换用流式格式：
+⑧ 数据在远程对象存储时换用流式格式：
    WebDataset = 就是 tar，纯顺序读，shuffle 靠 shard 级 + 缓冲区两级近似
+     ⚠️ 缓冲区只有万条量级 → 相距超过一万条的样本永远换不了位置
    MDS = 多了索引，支持确定性随机访问 + 断点续训
 
-⑥ ⚠️ 从 HuggingFace 下的 Parquet 语料【不能直接训练】，
+⑨ ⚠️ 从 HuggingFace 下的 Parquet 语料【不能直接训练】，
    里面是文本，必须先 tokenize 成 .bin/.idx
+   ★ FineWeb 全量：44 TB Parquet → 60 TB .bin，几千核 × 几天
 </code></pre></div>
 
 <hr />

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -267,11 +272,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    &quot;hello world&quot; → hello, world
    ✅ 序列短
    ❌ 词表爆炸：英文常用词就几十万，加上时态变化、专有名词，无穷无尽
-   ❌ ★ 遇到没见过的词只能给一个 &lt;UNK&gt;（unknown，未知词）
+   ❌ ★ 遇到没见过的词只能给一个 &lt;UNK&gt;
+      （UNK = unknown，未知词；也叫 OOV = Out-Of-Vocabulary，词表外）
       → 模型永远学不会新词、拼写错误、代码里的变量名
    ❌ ★★ 中文根本没有&quot;词&quot;的天然边界
 
-★★ 所以答案是【中间路线】：切成&quot;子词&quot;（subword）
+★★ 所以答案是【中间路线】：切成&quot;子词&quot;
+   （subword，子词 —— 比词小、比字符大的单位）
    常见词整个保留，罕见词拆成有意义的碎片
        &quot;unbelievable&quot; → &quot;un&quot; + &quot;believ&quot; + &quot;able&quot;
        &quot;深度学习&quot;      → &quot;深度&quot; + &quot;学习&quot;
@@ -287,61 +294,211 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>反复找出当前语料里【出现次数最多的相邻符号对】，把它合并成一个新符号。重复 N 次。</strong></p>
 </blockquote>
-<h3 id="_2">手算一遍</h3>
-<div class="codehilite"><pre><span></span><code>语料（简化成词频表）：
-    &quot;low&quot;    出现 5 次
+<h3 id="_2">★★ 手算五轮：看着词表自己长出来</h3>
+<p>下面这个例子请<strong>拿笔跟着数一遍</strong>。整章最该花时间的就是这一小节——看完你就知道 tokenizer 文件里那几万行 merges 是怎么来的。</p>
+<p><strong>语料</strong>（简化成"词 → 出现次数"的频率表，只有 4 个词）：</p>
+<div class="codehilite"><pre><span></span><code>    &quot;low&quot;    出现 5 次
     &quot;lower&quot;  出现 2 次
     &quot;newest&quot; 出现 6 次
     &quot;widest&quot; 出现 3 次
 
-初始：全部拆成字符（末尾加 &lt;/w&gt; 表示词尾）
+初始：全部拆成字符，每个词末尾加 &lt;/w&gt; 表示词尾
     l o w &lt;/w&gt;          ×5
     l o w e r &lt;/w&gt;      ×2
     n e w e s t &lt;/w&gt;    ×6
     w i d e s t &lt;/w&gt;    ×3
 
-── 第 1 轮：数所有相邻对 ──
-    (e,s): 6+3 = 9   ← ★ 最多
-    (s,t): 6+3 = 9
-    (l,o): 5+2 = 7
-    (o,w): 5+2 = 7
-    ...
-  合并 (e,s) → &quot;es&quot;
-    n e w es t &lt;/w&gt;   ×6
-    w i d es t &lt;/w&gt;   ×3
+初始词表（11 个基础符号）：l o w e r n s t i d &lt;/w&gt;
+初始 token 总数：4×5 + 6×2 + 7×6 + 7×3 = 20 + 12 + 42 + 21 = 95
+</code></pre></div>
 
-── 第 2 轮 ──
-    (es,t): 9  ← 最多  → 合并成 &quot;est&quot;
-    n e w est &lt;/w&gt;    ×6
-    w i d est &lt;/w&gt;    ×3
+<blockquote>
+<p>⚠️ <strong>先说清一条规则，否则你自己数会卡住</strong>：经常出现<strong>多个对并列最高频</strong>的情况。本例统一用「<strong>并列时取扫描顺序里先遇到的那个</strong>」（按词表顺序、每个词从左到右）。✅ 真实实现（<code>tokenizers</code>、<code>sentencepiece</code>）也必须定下某个确定的打破平局规则，否则同一份语料会训出不同的词表。</p>
+</blockquote>
+<p><strong>第 1 轮</strong> —— 数出全部相邻对（出现次数 = 所在词的词频之和）：</p>
+<table>
+<thead>
+<tr>
+<th>相邻对</th>
+<th>来自哪些词</th>
+<th>次数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>(l,o)</code></td>
+<td>low ×5、lower ×2</td>
+<td>7</td>
+</tr>
+<tr>
+<td><code>(o,w)</code></td>
+<td>low ×5、lower ×2</td>
+<td>7</td>
+</tr>
+<tr>
+<td><code>(w,e)</code></td>
+<td>lower ×2、newest ×6</td>
+<td>8</td>
+</tr>
+<tr>
+<td><strong><code>(e,s)</code></strong></td>
+<td>newest ×6、widest ×3</td>
+<td><strong>9</strong> ← 并列第一，扫描序最靠前</td>
+</tr>
+<tr>
+<td><code>(s,t)</code></td>
+<td>newest ×6、widest ×3</td>
+<td><strong>9</strong> ← 并列</td>
+</tr>
+<tr>
+<td><code>(t,&lt;/w&gt;)</code></td>
+<td>newest ×6、widest ×3</td>
+<td><strong>9</strong> ← 并列</td>
+</tr>
+<tr>
+<td><code>(n,e)</code> / <code>(e,w)</code></td>
+<td>newest ×6</td>
+<td>6</td>
+</tr>
+<tr>
+<td><code>(w,&lt;/w&gt;)</code></td>
+<td>low ×5</td>
+<td>5</td>
+</tr>
+<tr>
+<td><code>(w,i)</code> / <code>(i,d)</code> / <code>(d,e)</code></td>
+<td>widest ×3</td>
+<td>3</td>
+</tr>
+<tr>
+<td><code>(e,r)</code> / <code>(r,&lt;/w&gt;)</code></td>
+<td>lower ×2</td>
+<td>2</td>
+</tr>
+</tbody>
+</table>
+<p>合并 <code>(e,s)</code> → 新 token <strong><code>es</code></strong>，语料变成：</p>
+<div class="codehilite"><pre><span></span><code>    l o w &lt;/w&gt;          ×5
+    l o w e r &lt;/w&gt;      ×2
+    n e w es t &lt;/w&gt;     ×6
+    w i d es t &lt;/w&gt;     ×3
+</code></pre></div>
 
-── 第 3 轮 ──
-    (est,&lt;/w&gt;): 9  → 合并成 &quot;est&lt;/w&gt;&quot;     ★ 学会了英语的最高级后缀！
+<p><strong>第 2 ~ 5 轮</strong> —— 每一轮重新数一遍（这一步不能偷懒，合并会改变所有计数）：</p>
+<table>
+<thead>
+<tr>
+<th>轮</th>
+<th>最高频对</th>
+<th>次数</th>
+<th>新 token</th>
+<th>合并后的语料（只列变化的词）</th>
+<th>词表大小</th>
+<th>语料 token 总数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>(e,s)</code></td>
+<td>9</td>
+<td><strong><code>es</code></strong></td>
+<td><code>n e w es t &lt;/w&gt;</code> ×6<br><code>w i d es t &lt;/w&gt;</code> ×3</td>
+<td>11 → 12</td>
+<td>95 → 86</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>(es,t)</code></td>
+<td>9</td>
+<td><strong><code>est</code></strong></td>
+<td><code>n e w est &lt;/w&gt;</code> ×6<br><code>w i d est &lt;/w&gt;</code> ×3</td>
+<td>12 → 13</td>
+<td>86 → 77</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>(est,&lt;/w&gt;)</code></td>
+<td>9</td>
+<td><strong><code>est&lt;/w&gt;</code></strong> ★</td>
+<td><code>n e w est&lt;/w&gt;</code> ×6<br><code>w i d est&lt;/w&gt;</code> ×3</td>
+<td>13 → 14</td>
+<td>77 → 68</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>(l,o)</code></td>
+<td>7</td>
+<td><strong><code>lo</code></strong></td>
+<td><code>lo w &lt;/w&gt;</code> ×5<br><code>lo w e r &lt;/w&gt;</code> ×2</td>
+<td>14 → 15</td>
+<td>68 → 61</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>(lo,w)</code></td>
+<td>7</td>
+<td><strong><code>low</code></strong> ★</td>
+<td><code>low &lt;/w&gt;</code> ×5<br><code>low e r &lt;/w&gt;</code> ×2</td>
+<td>15 → 16</td>
+<td>61 → 57</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 第 3 轮的 &quot;est&lt;/w&gt;&quot; 是英语的【最高级后缀】—— 算法没有任何语法知识，
+  纯靠频率就把它挖出来了。
+★ 第 5 轮的 &quot;low&quot; 是一个【词根】。
+⟹ 这就是子词切分&quot;有意义&quot;的由来：高频共现的片段，往往正好是语言里的语素。
+</code></pre></div>
 
-── 第 4 轮 ──
-    (l,o): 7  → &quot;lo&quot;
-── 第 5 轮 ──
-    (lo,w): 7 → &quot;low&quot;                     ★ 学会了词根 &quot;low&quot;
+<p><strong>五轮之后的账</strong>：</p>
+<div class="codehilite"><pre><span></span><code>词表：11 个基础符号 → 16 个（新增 es / est / est&lt;/w&gt; / lo / low）
+语料 token 总数：95 → 57
 
-最终词表 = 初始字符 + 这些合并出来的新符号
-最终【合并规则表】= [(e,s), (es,t), (est,&lt;/w&gt;), (l,o), (lo,w), ...]  ★ 有顺序！
+⚠️ 这里有一个非常容易说错的地方（本章后面还会再碰到一次）：
+    57 ÷ 95 = 60%     ⟹ 正确说法是「压缩到了 60%」
+    95 ÷ 57 = 1.67    ⟹ 正确说法是「压缩了 1.67 倍」
+    ❌ 错误说法：「压缩了 60%」—— 那意思是只剩 40%，和事实差了一半
+★ 「压缩到 X%」和「压缩 X 倍」是两件事，互为倒数，写报告时务必说清是哪个。
 </code></pre></div>
 
 <blockquote>
 <p>★★ <strong>关键理解：BPE 的产物是两个东西</strong><br />
 <code>① vocab   —— 所有 token 的列表（token → id）
-② merges  —— ★【有序的】合并规则表</code><br />
-<strong>编码新文本时，就是按 merges 的顺序，从头到尾把能合的都合掉。</strong><br />
-顺序不能变——变了切出来就是另一套 token。这也是为什么 tokenizer 文件必须和模型权重<strong>严格配套</strong>。</p>
+② merges  —— ★【有序的】合并规则表
+   本例：[(e,s), (es,t), (est,&lt;/w&gt;), (l,o), (lo,w)]</code><br />
+<strong>编码新文本时，就是按 merges 的顺序，从头到尾把能合的都合掉。</strong> 顺序不能变——变了切出来就是另一套 token。这也是为什么 tokenizer 文件必须和模型权重<strong>严格配套</strong>。</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code><span class="c1"># 编码：按 merges 顺序反复合并（概念版）</span>
-<span class="k">def</span><span class="w"> </span><span class="nf">encode</span><span class="p">(</span><span class="n">word</span><span class="p">,</span> <span class="n">merges</span><span class="p">):</span>
+<h3 id="5">★ 用这 5 条规则去切两个没见过的词</h3>
+<div class="codehilite"><pre><span></span><code>① &quot;lowest&quot;（语料里从来没出现过）
+   初始：  l o w e s t &lt;/w&gt;
+   规则①(e,s)   → l o w es t &lt;/w&gt;
+   规则②(es,t)  → l o w est &lt;/w&gt;
+   规则③(est,&lt;/w&gt;) → l o w est&lt;/w&gt;
+   规则④(l,o)   → lo w est&lt;/w&gt;
+   规则⑤(lo,w)  → low est&lt;/w&gt;
+   ⟹ 结果：[&quot;low&quot;, &quot;est&lt;/w&gt;&quot;]  ★ 只用 2 个 token，而且恰好切成【词根 + 后缀】
+      模型没见过 &quot;lowest&quot;，但它见过 &quot;low&quot; 和 &quot;est&lt;/w&gt;&quot;，所以能泛化
+
+② &quot;newer&quot;
+   初始：  n e w e r &lt;/w&gt;
+   五条规则一条都匹配不上
+   ⟹ 结果：[&quot;n&quot;,&quot;e&quot;,&quot;w&quot;,&quot;e&quot;,&quot;r&quot;,&quot;&lt;/w&gt;&quot;]  6 个 token
+   ★ 这说明【词表太小】。真实训练会跑 15 万轮而不是 5 轮，
+     &quot;new&quot; / &quot;er&lt;/w&gt;&quot; 这类片段早就被合出来了。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>"有序"这两个字实测会出事</strong>：如果把规则④⑤换个顺序（先 <code>(lo,w)</code> 再 <code>(l,o)</code>），切 <code>"lowest"</code> 时 <code>(lo,w)</code> 根本匹配不上（那一刻还没有 <code>lo</code> 这个符号），结果会变成 <code>["l","o","w","est&lt;/w&gt;"]</code> —— <strong>4 个 token 而不是 2 个</strong>。同一份 vocab、同一份规则集合，只是顺序不同，切出来就是另一套 id。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 编码：按 merges 顺序反复合并（概念版，对应上面手算的过程）</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">encode</span><span class="p">(</span><span class="n">word</span><span class="p">,</span> <span class="n">merges</span><span class="p">,</span> <span class="n">vocab</span><span class="p">):</span>
     <span class="n">symbols</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">word</span><span class="p">)</span> <span class="o">+</span> <span class="p">[</span><span class="s2">&quot;&lt;/w&gt;&quot;</span><span class="p">]</span>
     <span class="k">for</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="ow">in</span> <span class="n">merges</span><span class="p">:</span>                       <span class="c1"># ★ 必须按训练时的顺序</span>
         <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="k">while</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">symbols</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">==</span> <span class="n">a</span> <span class="ow">and</span> <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">==</span> <span class="n">b</span><span class="p">:</span>
-                <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">a</span> <span class="o">+</span> <span class="n">b</span><span class="p">]</span>
+                <span class="n">symbols</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">a</span> <span class="o">+</span> <span class="n">b</span><span class="p">]</span>      <span class="c1"># 合并，不前进（可能要连合多次）</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="n">i</span> <span class="o">+=</span> <span class="mi">1</span>
     <span class="k">return</span> <span class="p">[</span><span class="n">vocab</span><span class="p">[</span><span class="n">s</span><span class="p">]</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">symbols</span><span class="p">]</span>
@@ -349,15 +506,66 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <hr />
 <h2 id="93-bpe-byte-fallback">9.3 字节级 BPE 与 byte fallback：怎么保证"什么都能切"</h2>
-<p>上面的 BPE 是在<strong>字符</strong>上做的。但字符有 15 万种（Unicode），而且总有你没见过的（生僻字、emoji、古文字）。</p>
+<p>上面的 BPE 是在<strong>字符</strong>上做的。但字符有十几万种（Unicode 码点），而且总有你没见过的（生僻字、emoji、古文字）。</p>
 <div class="codehilite"><pre><span></span><code>★ 解决办法：不在【字符】上做 BPE，在【字节】上做。
    任何文本先转成 UTF-8 字节序列 → 只有 256 种可能的基础符号
    ⟹ ★★ 任何输入都一定能被表示出来，永远不会有 &lt;UNK&gt;
 
   这叫【字节级 BPE / byte-level BPE】，GPT-2 之后成为主流。
 
-  变体：byte fallback —— 平时按字符 BPE，遇到词表里没有的字符
+  变体：byte fallback（字节兜底）—— 平时按字符 BPE，遇到词表里没有的字符
        才退回到字节表示。SentencePiece 的常见配置。
+</code></pre></div>
+
+<h3 id="token">⚠️ 先把三个单位钉死：字符 / 字节 / token</h3>
+<p>这三个词在 tokenizer 这一块<strong>天天被混用</strong>，而且混了之后数字会差 2~3 倍。本章后面 9.5 的那条跨目录矛盾，根子就在这里。</p>
+<table>
+<thead>
+<tr>
+<th>单位</th>
+<th>准确定义</th>
+<th>"今天天气不错，我们出去散步吧。"</th>
+<th>"The weather is nice today, let's go out for a walk."</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>字符</strong>（character，Unicode 码点）</td>
+<td>人眼看到的一个字/一个标点</td>
+<td><strong>15</strong></td>
+<td><strong>51</strong></td>
+</tr>
+<tr>
+<td><strong>字节</strong>（byte，UTF-8 编码后）</td>
+<td>存到磁盘上实际占几个字节</td>
+<td><strong>45</strong>（每个汉字和全角标点都是 3 字节）</td>
+<td><strong>51</strong>（全是 ASCII，1 字节/字符）</td>
+</tr>
+<tr>
+<td><strong>单词</strong>（word）</td>
+<td>空格分出来的词</td>
+<td>⚠️ 不适用，中文没有空格边界</td>
+<td><strong>11</strong></td>
+</tr>
+<tr>
+<td><strong>token</strong></td>
+<td>tokenizer 切出来的单位，模型真正看到的东西</td>
+<td>⚠️ 经验值 <strong>8 ~ 10</strong></td>
+<td>⚠️ 经验值 <strong>13 ~ 15</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 把上面这张表换算成&quot;每个 token 覆盖多少&quot;，会得到一个反直觉的结论：
+
+  按【字符】算：  中文 15 ÷ 9  ≈ 1.7 字符/token
+                 英文 51 ÷ 14 ≈ 3.6 字符/token     → 中文看着只有英文的一半
+
+  按【字节】算：  中文 45 ÷ 9  ≈ 5.0 字节/token
+                 英文 51 ÷ 14 ≈ 3.6 字节/token     → ★ 中文反而【更高】
+
+⟹ 同一份数据，换个口径结论直接反过来。
+   所以看到任何&quot;每 token 覆盖 N 个 character&quot;的数字，
+   ★ 第一件事是问：这个 character 是【码点】还是【字节】？
 </code></pre></div>
 
 <blockquote>
@@ -368,15 +576,16 @@ UTF-8 里一个汉字占 【3 个字节】<br />
 → 它就会被切成 3 个字节 token<br />
 ⟹ ★ 同一句中文，在中文友好的 tokenizer 上是 20 个 token，<br />
      在中文不友好的 tokenizer 上可能是 50 个<br />
-  → 存储贵 2.5 倍、训练贵 2.5 倍、推理贵 2.5 倍、上下文窗口缩水 2.5 倍</p>
+  → 存储、训练、推理的成本同比例上升，上下文窗口同比例缩水（本例 2.5 倍）</p>
 <p>★★ 这就是为什么国产模型都要【自己重训 tokenizer】，而不是直接用开源的。<br />
 ```</p>
 </blockquote>
 <p><strong>其他几种算法</strong>（知道名字就够）：</p>
 <div class="codehilite"><pre><span></span><code>WordPiece   —— BERT 用的。和 BPE 几乎一样，只是合并时选的不是&quot;最高频&quot;
                而是&quot;最能提升语言模型似然&quot;的那一对
-Unigram LM  —— SentencePiece 的另一种模式。★ 思路【反过来】：
-               先弄一个巨大的候选词表，再迭代地【删掉】贡献最小的
+Unigram LM  —— （Unigram Language Model，一元语言模型）SentencePiece 的另一种模式。
+               ★ 思路【反过来】：先弄一个巨大的候选词表，
+                 再迭代地【删掉】贡献最小的
 SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法。
                它同时实现了 BPE 和 Unigram 两种模式。很多人会搞混。
                ★ 它的真正卖点是【把空格也当普通字符处理】（用 ▁ 表示），
@@ -391,35 +600,123 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
      → 上下文窗口能装更多真实内容
 
   ❌ Embedding 矩阵变大：V × d
-     V=15万, d=5120 → 7.68 亿参数，★ 光输入 embedding 就快 8 亿
-     再加输出层（LM head）又是一份 → ★ 15 亿参数花在&quot;查表&quot;上
-
   ❌ 输出 softmax 变慢：每一步都要在 V 个词上算概率
-
   ❌ ★ 罕见 token 训练不足
-     词表里排在最后的那些 token，可能在整个语料里只出现几百次
-     → 它们的 embedding 基本是随机初始化的状态
-     → ★★ 这就是&quot;glitch token&quot;（故障 token）现象的来源：
-        某些 token 一旦出现，模型行为会变得完全不可预测
+  ❌ ★★★ 存储成本断崖（04 章的坑）
+</code></pre></div>
 
-  ❌ ★★★ 【04 章的存储成本断崖】：
-     V ≤ 65535 → .bin 用 uint16，每 token 2 字节
-     V &gt; 65535 → .bin 用 int32，每 token 4 字节
-     → 15 T token 的数据集：30 TB vs 60 TB，★ 直接翻倍
+<p>下面把这四笔账<strong>一项一项算出来</strong>，因为"大概会变大"这种说法没法支撑决策。</p>
+<h3 id="1-embedding-lm-head">账① Embedding 与 LM head 的参数量</h3>
+<p>设 V = 150,000（当代主流量级），d = hidden size（隐层宽度）。</p>
+<table>
+<thead>
+<tr>
+<th>模型规模</th>
+<th>d</th>
+<th>输入 Embedding = V×d</th>
+<th>加上 LM head（不共享权重）</th>
+<th>占总参数量（共享 / 不共享）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.5 B</td>
+<td>1,536</td>
+<td>2.30 亿</td>
+<td>4.61 亿</td>
+<td><strong>15.4% / 30.7%</strong></td>
+</tr>
+<tr>
+<td>7 B</td>
+<td>4,096</td>
+<td>6.14 亿</td>
+<td>12.29 亿</td>
+<td><strong>8.8% / 17.6%</strong></td>
+</tr>
+<tr>
+<td>70 B</td>
+<td>8,192</td>
+<td>12.29 亿</td>
+<td>24.58 亿</td>
+<td><strong>1.8% / 3.5%</strong></td>
+</tr>
+<tr>
+<td>400 B</td>
+<td>16,384</td>
+<td>24.58 亿</td>
+<td>49.15 亿</td>
+<td><strong>0.6% / 1.2%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 这张表解释了一个常被问起的现象：
+   为什么【小模型倾向于用小词表】，大模型反而敢把词表做到 20 万？
+
+   因为同一个 15 万词表：
+     在 1.5 B 模型上吃掉 15%~31% 的参数预算 —— 这些参数是&quot;查表&quot;，不参与推理计算
+     在 400 B 模型上只占 0.6%~1.2% —— 完全可以忽略
+
+   ⚠️ 注意&quot;占比&quot;的口径：上表的分母是【总参数量】。
+      对 MoE（Mixture of Experts，混合专家）模型，总参数量和每 token 激活参数量
+      是两个不同的数，Embedding 在后者里的占比会高得多（Embedding 对每个 token 都全量参与）。
+</code></pre></div>
+
+<h3 id="2-logits">账② 输出 logits 张量有多大（★ 最容易被忽略的一笔）</h3>
+<p>LM head 的输出是一个 <code>[token 数, V]</code> 的张量，叫 <strong>logits</strong>（未归一化的打分）。</p>
+<div class="codehilite"><pre><span></span><code>设：micro-batch = 1 条序列，序列长度 s = 8192，V = 150,000
+
+  logits 元素个数 = 8192 × 150,000 = 1,228,800,000 ≈ 12.3 亿
+  BF16（2 字节）  = 2,457,600,000 字节 = 2.46 GB = 2.29 GiB
+  FP32（4 字节）  = 4,915,200,000 字节 = 4.92 GB = 4.58 GiB
+                   └─ ★ 交叉熵一般要升到 FP32 算，否则数值不稳
+
+★★ 对照账①：7 B 模型的整个 Embedding 矩阵（BF16）只有
+   6.14 亿 × 2 字节 = 1.23 GB。
+   ⟹ 【一个 micro-batch 的 logits 张量，比整个 Embedding 矩阵还大 2~4 倍。】
+   而且前向的 logits、softmax 的输出、反向的梯度往往要同时在显存里。
+
+⚠️ 这就是为什么训练框架一定要做【词表并行的交叉熵】或者【分块 softmax】：
+   不是为了省算力，是因为这个张量按朴素写法直接放不下。
+   ✅ 实现细节见隔壁 大模型架构入门/02-Embedding与词表.md 的&quot;词表并行&quot;一节。
+
+⚠️ 单位提醒：2.46 GB 和 2.29 GiB 是同一个数的两种写法，差 7.4%
+   （1 GiB = 1024³ 字节 = 1.0737 GB）。看到&quot;显存占用 2.3 G&quot;要问清是哪个。
+</code></pre></div>
+
+<h3 id="3-token-glitch-token">账③ 罕见 token 训练不足 → glitch token</h3>
+<div class="codehilite"><pre><span></span><code>词表里排在最后的那些 token，可能在整个语料里只出现几百次
+→ 它们的 embedding 基本停留在随机初始化的状态
+→ ★★ 这就是 &quot;glitch token&quot;（故障 token）现象的来源：
+   某些 token 一旦出现，模型行为会变得完全不可预测
+</code></pre></div>
+
+<h3 id="4-04">账④ ★★★ 04 章的存储成本断崖</h3>
+<div class="codehilite"><pre><span></span><code>V ≤ 65,535 → .bin 可以用 uint16，每 token 2 字节
+V &gt; 65,535 → .bin 必须用 int32，每 token 4 字节
+             （65,535 = 2¹⁶ − 1，uint16 能表示的最大值）
+
+代进 15 T token 的数据集：
+   uint16：15e12 × 2 字节 = 3.0e13 字节 = 30.0 TB = 27.3 TiB
+   int32 ：15e12 × 4 字节 = 6.0e13 字节 = 60.0 TB = 54.6 TiB
+   ★ 直接翻倍，多出 30 TB（= 27.3 TiB）
+
+⚠️ 又是单位：30 TB ≠ 30 TiB，差 10%（1 TiB = 1024⁴ 字节 = 1.0995 TB）。
+   买盘按 TB 标，`df -h` 按 TiB 显示 —— 这 10% 足够让一次扩容做错。
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>现实的落点</strong>：现在的大模型词表普遍在 <strong>12 万 ~ 20 万</strong>之间。已经远超 65535，所以<strong>存储翻倍这笔账大家都认了</strong>——因为多语言能力比存储费重要得多。</p>
+<p>★ <strong>现实的落点</strong>：现在的大模型词表普遍在 <strong>12 万 ~ 20 万</strong>之间。已经远超 65,535，所以<strong>存储翻倍这笔账大家都认了</strong>——因为多语言能力比存储费重要得多。</p>
 </blockquote>
 <h3 id="megatron">⚠️ 一个 Megatron 特有的坑：词表要能被整除</h3>
 <div class="codehilite"><pre><span></span><code>✅ Megatron 有一个参数 --make-vocab-size-divisible-by（默认 128）
 
-原因：★ 输出层（LM head）是按【张量并行 TP】切开的，
+原因：★ 输出层（LM head）是按【张量并行 TP = Tensor Parallelism】切开的，
       V 必须能被 (TP 大小 × 128) 整除，才能均匀切分且对齐 GPU 的计算单元
 
-现象：你的 tokenizer 是 151,552 个 token，
-      但模型里的 Embedding 矩阵是 151,552 → 被补齐到某个更大的数
-      → ★ 多出来的那些行是【永远不会被用到的填充】
+现象：你的 tokenizer 训出来是 149,600 个 token，
+      但模型 config 里的 vocab_size 是 151,552
+      → ★ 多出来的 1,952 行是【永远不会被用到的填充】
+        （151,552 = 128 × 1184，而 149,600 ÷ 128 = 1168.75 不整）
 
 ⚠️ 新手困惑：&quot;为什么 config 里的 vocab_size 和 tokenizer 的长度对不上？&quot;
    答案就是这个填充。★ 计算 loss 时要把填充位置屏蔽掉，否则概率质量会漏。
@@ -434,7 +731,8 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
       —— 是同一件事的倒过来说法，看到别人用哪个都不要慌
 </code></pre></div>
 
-<p>✅ <strong>openPangu-2.0 技术报告 Table 4 的实测数据</strong>（这是本章最有价值的一手数字）：</p>
+<h3 id="openpangu-20-table-4">✅ openPangu-2.0 技术报告 Table 4 的一手数据</h3>
+<p>✅ 出处：openPangu-2.0 技术报告 <strong>论文 §2.6 / Table 4</strong>（"Vocabulary compression rate comparison"）。✅ 报告原文对这个指标的定义是："<em>We evaluate tokenizer efficiency using the average number of </em><em>characters covered per token</em><em>, where a higher value indicates better compression.</em>"</p>
 <table>
 <thead>
 <tr>
@@ -481,23 +779,127 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>读法：
-  ① 中文 3.82~4.04 —— ★ 平均一个 token 覆盖将近 4 个汉字
-     这是【中文友好】tokenizer 的正常水平
-  ② 代码只有 2.56~2.80 —— ★ 代码是最难压缩的，
-     因为变量名千奇百怪、缩进和符号极多
-  ③ &quot;平均&quot;那一列比各分项都低 —— ⚠️ 说明它不是简单算术平均，
-     ✅ 报告没说加权方式，我不做推测
+<div class="codehilite"><pre><span></span><code>可以直接读出来的三条：
+  ① ★ 3digit 变体在【五个分项上全部】优于 single-digit
+     （4.04&gt;3.82、4.27&gt;4.15、3.37&gt;3.32、2.77&gt;2.56、4.51&gt;4.27）
+  ② 代码是最难压缩的一列（2.56 ~ 2.80）—— ★ 因为变量名千奇百怪、
+     缩进和符号极多，很难形成高频共现片段
+  ③ 2.0 的两个变体在【多语言】上都比 1.0 高一截（3.32/3.37 vs 2.80）
+     ✅ 对得上报告说的&quot;2.0 重训时加入了 188 种低资源语言&quot;
+</code></pre></div>
+
+<h3 id="382">⚠️⚠️ 这张表里的"中文 3.82"不能按字面读 —— 一条必须写明的口径矛盾</h3>
+<p>这是全章<strong>唯一一处我没法给你一个干净答案</strong>的地方，但把矛盾摊开比糊过去有用。</p>
+<div class="codehilite"><pre><span></span><code>✅ 已核对的事实（一手）：
+   报告原文写的是 &quot;average number of characters covered per token&quot;，
+   Table 4 里 Chinese 一列确实是 3.82（1.0 与 single-digit）/ 4.04（3digit）。
+   ⟹ 这两个数字本章【✅ 原样保留】，一个字不改。
+
+⚠️ 但是：3.82 个【汉字】一个 token，对 15 万量级的词表高得不寻常。
+   公开的中文友好 tokenizer 普遍落在 ⚠️【1.5 ~ 2 汉字/token】这个经验区间。
+   差了一倍多，这不是测量噪声能解释的量级。
+
+⚠️ 报告【没有披露】它的 &quot;Chinese&quot; 测试集是怎么构成的，所以有两种合理解释：
+
+   ① 这份 &quot;Chinese&quot; 语料里混了大量 ASCII
+      —— 标点、数字、英文词、HTML/Markdown 标记。
+      ASCII 字符的压缩率天然高（一个 token 轻松覆盖 4~8 个 ASCII 字符），
+      ★ 混得足够多就能把&quot;字符/token&quot;的均值拉到 3.82，
+        而其中真正的汉字可能还是 1.5~2 一个 token。
+
+   ② 统计脚本里的 &quot;character&quot; 实际是按【字节】算的
+      —— 一个汉字 = 3 个 UTF-8 字节，
+         3.82 字节 ÷ 3 ≈ 1.27 汉字/token，
+      ★ 量级上正好接回经验区间（如果语料里再混一点 ASCII 把
+        &quot;平均每字符字节数&quot;从 3 拉到 2.6，就是 3.82÷2.6 ≈ 1.47 汉字/token）。
+
+★★ 本章的处理口径（和 隔壁 02 章 完全一致，两边不要打架）：
+   ✅ Table 4 的数字原样保留，并且【只用于跨变体的相对比较】——
+      &quot;3digit 比 single-digit 压缩率高&quot;这个【相对】结论是可靠的，
+      因为三行是同一个脚本、同一份测试集跑出来的，口径再怎么歪也歪得一样。
+   ⚠️ 凡是要换算成&quot;一个 token 大概几个汉字&quot;的【绝对】估计，
+      一律改用经验区间并明确标 ⚠️，不引用 3.82。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>换算成绝对量级时，请用这一行，不要用 Table 4</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>语言</th>
+<th>⚠️ 经验区间</th>
+<th>128 K（131,072 token）上下文大约能装</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>中文</td>
+<td>1.5 ~ 2 汉字 / token</td>
+<td><strong>约 20 万 ~ 26 万字</strong></td>
+</tr>
+<tr>
+<td>英文</td>
+<td>约 0.75 单词 / token（≈ 4 字符 / token）</td>
+<td><strong>约 9.8 万单词</strong>（≈ 52 万字符）</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 顺手纠一个高频换算错误：128 K token 对英文是 <strong>9.8 万单词</strong>，不是 50 万。50 万是<strong>字符</strong>的量级。<strong>单词和字符差 5 倍多，看到"能装多少万字"先问清是字还是单词。</strong></p>
+</blockquote>
+<h3 id="_3">★ "平均"那一列：一个可以自己验算出来的疑点</h3>
+<div class="codehilite"><pre><span></span><code>⚠️ Table 4 的&quot;平均&quot;列比它旁边所有分项都低，这件事值得停一下。
+
+★ 一个加权平均（权重非负）的结果，【必须落在最小值和最大值之间】。
+  这是数学事实，不是经验法则。
+
+  openPangu-1.0 这一行：五个分项 min = 2.80（多语言/代码），
+                        但&quot;平均&quot;写的是 2.56 &lt; 2.80
+  3digit 这一行：      五个分项 min = 2.77（代码），
+                        但&quot;平均&quot;写的是 2.71 &lt; 2.77
+
+⟹ ★★ 所以&quot;平均&quot;列【不可能】是这五列的任何一种加权平均
+      （不管是按文档数、按字符数还是按 token 数加权）。
+
+⚠️ 我的推断（不是报告原话）：&quot;平均&quot;那一列覆盖的语料【多于表上这五列】，
+   最可能是把 §2.6 提到的【188 种低资源语言】也算进去了 ——
+   那些语言在词表里分到的 token 极少，压缩率会低得多，足以把均值拖到 2.5 附近。
+   ✅ 报告没有说明加权方式，以上只是用上面那条数学约束反推的，不是一手结论。
+
+★ 实践建议：做跨变体比较时用&quot;平均&quot;列没问题（三行口径一致）；
+  但不要拿&quot;平均&quot;列去估算任何具体语料的成本。
+</code></pre></div>
+
+<h3 id="_4">★ 自己量一遍：别让脚本把字节当字符</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ★ 量 tokenizer 压缩率的正确姿势：三个分母全都打印出来</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">transformers</span><span class="w"> </span><span class="kn">import</span> <span class="n">AutoTokenizer</span>
+
+<span class="n">tok</span> <span class="o">=</span> <span class="n">AutoTokenizer</span><span class="o">.</span><span class="n">from_pretrained</span><span class="p">(</span><span class="s2">&quot;你的模型目录&quot;</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">report</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
+    <span class="n">n_tok</span>  <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">tok</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">add_special_tokens</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
+    <span class="n">n_char</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="p">)</span>                          <span class="c1"># Unicode 码点数</span>
+    <span class="n">n_byte</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">))</span>          <span class="c1"># ★ 和 n_char 完全不是一个数</span>
+    <span class="n">n_cjk</span>  <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="mi">1</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">text</span> <span class="k">if</span> <span class="s2">&quot;一&quot;</span> <span class="o">&lt;=</span> <span class="n">c</span> <span class="o">&lt;=</span> <span class="s2">&quot;鿿&quot;</span><span class="p">)</span>   <span class="c1"># 只数汉字</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">n_tok</span><span class="si">}</span><span class="s2"> token | &quot;</span>
+          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">n_char</span><span class="o">/</span><span class="n">n_tok</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> 字符/token | &quot;</span>
+          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">n_byte</span><span class="o">/</span><span class="n">n_tok</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> 字节/token | &quot;</span>
+          <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">n_cjk</span><span class="o">/</span><span class="n">n_tok</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> 汉字/token | &quot;</span>
+          <span class="sa">f</span><span class="s2">&quot;汉字占全部字符 </span><span class="si">{</span><span class="n">n_cjk</span><span class="o">/</span><span class="nb">max</span><span class="p">(</span><span class="n">n_char</span><span class="p">,</span><span class="mi">1</span><span class="p">)</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="n">report</span><span class="p">(</span><span class="s2">&quot;今天天气不错，我们出去散步吧。&quot;</span><span class="p">,</span> <span class="s2">&quot;纯中文&quot;</span><span class="p">)</span>
+<span class="n">report</span><span class="p">(</span><span class="s2">&quot;The weather is nice today, let&#39;s go out for a walk.&quot;</span><span class="p">,</span> <span class="s2">&quot;纯英文&quot;</span><span class="p">)</span>
+<span class="c1"># ★ 最后那一列是关键：如果&quot;汉字占比&quot;只有 60%，</span>
+<span class="c1">#   那&quot;字符/token&quot;这个数就被 ASCII 拉高了，不能当&quot;汉字/token&quot;读。</span>
 </code></pre></div>
 
 <hr />
 <h2 id="96-openpangu">9.6 ★★★ 一个绝佳的教学案例：openPangu 为什么故意选了压缩率更差的那个</h2>
-<p>看上表：<strong>3digit 变体在几乎所有语料上压缩率都更好</strong>（平均 2.71 vs 2.59）。</p>
+<p>看上表：<strong>3digit 变体在五个分项上全部优于 single-digit</strong>（平均 2.71 vs 2.59）。</p>
 <p>✅ <strong>但报告明确说：openPangu-2.0 最终采用的是 single-digit 变体。</strong></p>
 <p>先解释这两个变体的区别：</p>
 <div class="codehilite"><pre><span></span><code>数字 &quot;12345&quot; 怎么切？
 
-  3-digit 变体      → &quot;123&quot; + &quot;45&quot;      （按最多 3 位一组合并）
+  3-digit 变体      → &quot;123&quot; + &quot;45&quot;        （按最多 3 位一组合并）
   single-digit 变体 → &quot;1&quot;+&quot;2&quot;+&quot;3&quot;+&quot;4&quot;+&quot;5&quot;  ★ 每个数字单独一个 token
 </code></pre></div>
 
@@ -514,7 +916,13 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
       · 多模态定位（坐标、bounding box 都是数字）
       · 工具调用（tool 参数里全是数字）
 
-③ 代价：压缩率损失一点点（平均 2.71 → 2.59，约 4%）
+③ 代价：压缩率损失一点点
+   平均 2.71 → 2.59，★ 下降 (2.71−2.59)/2.71 = 4.4%
+   ⚠️ 注意这里又是&quot;压缩到&quot;与&quot;压缩&quot;的区别：
+      2.59 ÷ 2.71 = 95.6%，所以是【压缩率退到原来的 95.6%】，
+      也就是序列会变长约 1/0.956 − 1 = 4.6%。
+   ★ 而且即便退了这 4.4%，single-digit（2.59）仍然【优于 openPangu-1.0 的 2.56】。
+     ⟹ 这笔代价其实是&quot;少赚了&quot;，不是&quot;亏了&quot;。
 </code></pre></div>
 
 <blockquote>
@@ -555,12 +963,14 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
 <span class="n">tok</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">&quot;tokenizer.json&quot;</span><span class="p">)</span>
 </code></pre></div>
 
-<h3 id="_3">★ 训练语料怎么选（比算法本身更重要）</h3>
+<h3 id="_5">★ 训练语料怎么选（比算法本身更重要）</h3>
 <div class="codehilite"><pre><span></span><code>① ★★ 必须【按最终训练配比采样】
    如果你的训练数据是 中文30% 英文50% 代码20%，
    那 tokenizer 的训练样本也要按这个比例
-   ⚠️ 一个真实的失败：拿英文语料训 tokenizer，然后训中文模型
-      → 中文全部退化成字节，成本翻 3 倍
+   ⚠️ 一个典型的失败：拿英文语料训 tokenizer，然后训中文模型
+      → 中文大面积退化成字节表示，成本按 9.3 那条账上升 2~3 倍
+      （⚠️ &quot;2~3 倍&quot;是按&quot;一个汉字 3 字节 vs 一个 token 覆盖 1.5~2 字&quot;
+        推出来的量级，不是某次实测）
 
 ② 采样量不需要很大
    ★ 几 GB ~ 几十 GB 就够了，因为 BPE 只看频率统计，收敛很快
@@ -586,14 +996,16 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
    .bin 里存的是【整数 id】。换词表后同一个 id 指向完全不同的词。
    ★ 现象：loss 从第一步就停在随机水平且不下降。
    ⚠️ 这是 04 章列的五个坑里【最隐蔽】的一个，因为程序不会报任何错。
+   ★ 怎么自查：随机抽几条 .bin 里的 id 序列，用新 tokenizer 解码回文本看看是不是人话。
 
 ② 训练和推理用了不同版本的 tokenizer
    哪怕只差一条 merge 规则，切出来的 token 边界就会不同
+   （★ 回想 9.2 那个 &quot;lowest&quot; 的例子：规则顺序一换，2 个 token 变 4 个）
    ★ 现象：模型在自己的评测里正常，一上线就变傻
    ★ 这也是 GLM-5.2 报告里提到的 RL 训练&quot;重新 tokenize 会破坏对齐&quot;的同一类问题
 
 ③ 特殊 token 被用户输入注入
-   用户在输入里打了 &quot;&lt;|im_start|&gt;&quot; 这几个字符 —— 
+   用户在输入里打了 &quot;&lt;|im_start|&gt;&quot; 这几个字符 ——
    ⚠️ 如果 tokenizer 把它编码成【真正的特殊 token】而不是普通文本，
       用户就能伪造对话角色。
    ★ 正确做法：用户输入编码时必须关掉特殊 token 解析
@@ -634,14 +1046,19 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
-<td><strong>149,600</strong>（★ 配置表里写 <strong>151,552</strong>）</td>
-<td>✅ single-digit 变体，见 9.6。⚠️ 报告里两个数都有：149,600 是<strong>真正训出来的词表</strong>，151,552 是<strong>补齐后的 Embedding 宽度</strong>（见 9.4）——问的问题不同，不矛盾</td>
+<td><strong>149,600</strong>（★ config 表里写 <strong>151,552</strong>）</td>
+<td>✅ single-digit 变体，见 9.6。⚠️ 报告里两个数都有：149,600 是<strong>真正训出来的词表</strong>（Table 4），151,552 是<strong>补齐后的 Embedding 宽度</strong>（见 9.4 的整除规则）——问的问题不同，不矛盾</td>
 </tr>
 </tbody>
 </table>
 <div class="codehilite"><pre><span></span><code>★★ 一个值得注意的对比：
    DeepSeek-V4 是五家里【唯一没有扩词表】的 —— 128K，而且明说&quot;保持不变&quot;。
-   MiniMax-M3 是 200K，★ 差了 56%。
+   MiniMax-M3 是 200,064。
+   ⚠️ 这两个数没法精确相除：报告只写了&quot;128 K&quot;这个约数，没给确切值。
+      按 2¹⁷ = 131,072 算，200,064 ÷ 131,072 = 1.53 倍；
+      按 128,000 算，200,064 ÷ 128,000 = 1.56 倍。
+      ★ 所以&quot;差 56%&quot;这个说法完全取决于你怎么读那个 K。
+        凡是带 K/M/G 的约数，相除之前先把口径定下来，否则会凭空造出几个百分点。
 
 ⚠️ 这说明&quot;词表越大越好&quot;远不是共识。
    ★ 我的理解（不是报告原话）：词表一旦定死，
@@ -651,37 +1068,58 @@ SentencePiece —— ⚠️ 注意：它是一个【库】，不是一种算法�
 
 <blockquote>
 <p>★ 五家里有四家落在 <strong>15 万 ~ 20 万</strong>区间，DeepSeek 是那个例外。<br />
-⚠️ 上表数字均取自 <a href="../业界模型技术报告/papers/"><code>业界模型技术报告/papers/</code></a> 下的报告正文提取；⚠️ 注意 openPangu 那一行是<strong>报告 Table 4 里的词表大小</strong>，与其 config 表中的数字可能不完全一致（见 <a href="16-五家报告的数据章节.html">16 章</a>）。</p>
+⚠️ <strong>上表的 provenance（来源）说明</strong>：DeepSeek 那一行是 ✅ 从报告正文提取里核过的（另见 <a href="16-五家报告的数据章节.html">16 章</a>）；openPangu 那两个数是 ✅ 从 Table 4 与 config 表核过的；<strong>GLM-5.2 与 MiniMax-M3 的两个数沿用 <a href="16-五家报告的数据章节.html">16 章</a> 与 <a href="../业界模型技术报告/大模型架构入门/02-Embedding与词表.html"><code>大模型架构入门/02-Embedding与词表.md</code></a> 的核对结果，本章没有重新回溯一手 PDF。</strong></p>
 </blockquote>
 <hr />
 <h2 id="910">9.10 小结</h2>
-<div class="codehilite"><pre><span></span><code>① 按字切 → 序列太长（注意力 O(L²)）；按词切 → 词表爆炸 + &lt;UNK&gt;
+<div class="codehilite"><pre><span></span><code>① 按字切 → 序列太长（注意力 O(L²)）；按词切 → 词表爆炸 + &lt;UNK&gt;/OOV
    ⟹ 子词（subword）是中间路线
 
-② ✅ BPE（[1508.07909](https://arxiv.org/abs/1508.07909)，Sennrich 2015）只有一条规则：
-   反复合并【出现次数最多的相邻符号对】
+② ✅ BPE（Byte Pair Encoding，[1508.07909](https://arxiv.org/abs/1508.07909)，Sennrich 2015）只有一条规则：
+   反复合并【出现次数最多的相邻符号对】；并列时必须有确定的打破平局规则
+   ★ 9.2 的五轮手算：11 个基础符号 → 16 个，语料 95 token → 57 token
+     ⟹ 压缩【到】60%，也就是压缩了 1.67 倍（⚠️ 这两句话不一样！）
    产物 = vocab（token→id）+ ★【有序的】merges 规则表
+   ★ 顺序一换，&quot;lowest&quot; 从 2 个 token 变 4 个 —— 所以 tokenizer 必须和权重严格配套
    ★ 它原本是 1994 年的数据压缩算法 —— 所以&quot;压缩率&quot;成了核心指标
 
 ③ 字节级 BPE：在 UTF-8 字节上做 → 只有 256 个基础符号 → 永不 &lt;UNK&gt;
-   ⚠️ 一个汉字 3 字节：tokenizer 不含中文 → 中文成本翻 2~3 倍
+   ⚠️⚠️ 三个单位千万别混：字符（码点）/ 字节（UTF-8）/ token
+      同一句中文：15 字符 = 45 字节 ≈ 9 token
+      按字符算中文 1.7/token、英文 3.6/token（中文看着差一半）
+      按字节算中文 5.0/token、英文 3.6/token（★ 中文反而更高）
+      ⟹ 换个口径结论反过来
+   ⚠️ 一个汉字 3 字节：tokenizer 不含中文 → 中文成本上升 2~3 倍
       ★ 这就是国产模型必须自己重训 tokenizer 的原因
 
-④ ★ 词表大小的四方权衡：
-   大 → 压缩率好、序列短
-      ❌ Embedding + LM head 参数暴涨（15万×5120 ≈ 15 亿参数）
-      ❌ 罕见 token 训练不足 → glitch token
-      ❌★ 04 章的断崖：V&gt;65535 → .bin 从 2 字节变 4 字节，存储【翻倍】
+④ ★ 词表大小的四笔账（9.4 全部算出来了）：
+   账① V=15万、d=4096 时 Embedding+LM head = 12.3 亿参数
+       → 占 1.5B 模型的 31%，但只占 400B 模型的 1.2%
+       ★ 所以小模型倾向小词表，大模型才敢做到 20 万
+   账② logits 张量 [8192, 150000] FP32 = 4.92 GB = 4.58 GiB
+       ★ 比整个 Embedding 矩阵还大 —— 这是词表并行交叉熵存在的真正原因
+   账③ 罕见 token 训练不足 → glitch token
+   账④★ 04 章的断崖：V&gt;65,535 → .bin 从 2 字节变 4 字节
+       15 T token：30.0 TB（27.3 TiB） vs 60.0 TB（54.6 TiB），★ 翻倍
    现实落点：12 万 ~ 20 万
    ⚠️ Megatron 会把 V 补齐到能被 TP×128 整除 → config 和 tokenizer 长度对不上
+      （149,600 → 151,552 = 128×1184，多出 1,952 行填充）
 
 ⑤ 压缩率 = 每 token 覆盖多少字符（越高越好）；fertility 是它的倒过来说法
-   ✅ openPangu-2.0 实测：中文 ~3.8-4.0，代码只有 ~2.6-2.8（代码最难压）
+   ✅ openPangu-2.0 论文 §2.6 / Table 4：中文 3.82~4.04、代码 2.56~2.80（代码最难压）
+   ⚠️⚠️ 但&quot;中文 3.82&quot;不能按&quot;将近 4 个汉字&quot;读：
+      报告没披露 Chinese 测试集构成，两种解释都成立
+      （① 混了大量 ASCII；② 脚本里的 character 其实按字节算，3.82÷3 ≈ 1.27 汉字）
+      ★ 处理口径：Table 4 原样保留，只做【跨变体相对比较】；
+        要绝对换算就用 ⚠️ 经验值 1.5~2 汉字/token
+   ⚠️ &quot;平均&quot;列比所有分项都低 → 数学上不可能是这五列的加权平均
+      ⟹ ⚠️ 推断：它覆盖的语料多于这五列（很可能含 188 种低资源语言）
 
 ⑥ ★★★ openPangu 的教学案例：
-   3digit 变体压缩率更好（2.71 vs 2.59），但最终选了 single-digit。
+   3digit 变体五个分项全胜（平均 2.71 vs 2.59），但最终选了 single-digit。
    理由：★ 频率驱动的数字合并【切法不一致】，模型学不到位值结构；
         逐位切分让数值推理、多模态坐标、工具参数都规整
+   代价：压缩率 −4.4%（序列长 +4.6%），而且 2.59 仍优于 1.0 的 2.56
    ⟹ ★★ tokenizer 的目标不是&quot;压缩率最高&quot;，是&quot;让模型好学&quot;
 
 ⑦ 训 tokenizer：★ 采样必须按最终训练配比；几十 GB 就够；

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -254,6 +259,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><strong><a href="05-语言识别与启发式过滤.html">05 章</a>的规则回答的是"这是不是一段正常的文字"。</strong><br />
 <strong>这一章回答的是一个更难、也更主观的问题："这段文字值不值得学"。</strong></p>
 <p>★ 这是整条流水线上<strong>最没有共识、各家差距最大</strong>的一环。</p>
+<p>⚠️ <strong>本章数字口径</strong>：容量沿用 <a href="05-语言识别与启发式过滤.html">05 章</a>的十进制约定。<strong>★ 规模一律写明是 token 数还是容量</strong>——7.7 节的对照表里 C4 报的是 GB、别家报的是 T token，<strong>这两列不能直接比</strong>，那一节会给换算。</p>
 </blockquote>
 <hr />
 <h2 id="71">7.1 先承认一件事：没人知道"质量"是什么</h2>
@@ -274,13 +280,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>★★ <strong>"质量高" ≈ "长得像我心目中的好文本"。</strong><br />
 你先挑一批<strong>种子样本</strong>当作"好"的标准，然后训一个分类器去找<strong>长得像种子</strong>的网页。</p>
-<p><strong>⚠️ 于是：质量过滤的效果，几乎完全由"你挑了什么当种子"决定。</strong> 这是本章最重要的一句话。</p>
+<p><strong>⚠️ 于是：质量过滤的效果，几乎完全由"你挑了什么当种子"决定。</strong> 这是本章最重要的一句话，7.4 节会给出"种子和阈值到底怎么定"的具体做法。</p>
 </blockquote>
 <h3 id="_1">还有一个更麻烦的问题：怎么知道你的过滤器管用？</h3>
 <div class="codehilite"><pre><span></span><code>唯一真正可靠的验证方式：
    用过滤后的数据【训一个模型】，看下游评测分
 
-  ⟹ 一次实验 = 训一个模型 = 几万到几十万美元
+  ⟹ 一次实验 = 训一个模型 = 几万到几十万美元（⚠️ 我的量级估算）
   ⟹ ★ 所以质量过滤是整条流水线上【反馈最慢、最贵】的一环
 </code></pre></div>
 
@@ -302,34 +308,111 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <hr />
-<h2 id="72">7.2 ★ 四代方法，一条清晰的演进线</h2>
+<h2 id="72">7.2 ★★ 四代方法：一张总表</h2>
 <div class="codehilite"><pre><span></span><code>第一代（2019）  数规则         ← 05 章
-   &quot;少于 5 句话就丢&quot;
-
 第二代（2019）  困惑度         ← 7.3  CCNet
-   &quot;拿维基百科训个语言模型，看这段文字它觉得有多意外&quot;
-
 第三代（2023-24）轻量分类器    ← 7.4  DCLM / FineWeb-Edu / Nemotron-CC
-   &quot;挑一批好样本当正例，训个 fastText / BERT 打分&quot;
-
 第四代（2025）  大模型打标签   ← 7.5  Essential-Web
-   &quot;让大模型给每篇文章打一整套结构化标签，再蒸馏成小模型&quot;
 
 ★★ 这条线的方向非常一致：
    【判据越来越像&quot;人的判断&quot;，成本越来越高 → 于是必须不断蒸馏回小模型】
 </code></pre></div>
 
+<p>★ 本章剩下的内容都是在填下面这张表。⚠️ "成本 / 篇"一列是我的量级估算（沿用 <a href="05-语言识别与启发式过滤.html">05 章</a> 5.1 的梯度），不是实测值；带 ✅ 的是论文明确报告的。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>第一代</strong><br>启发式规则</th>
+<th><strong>第二代</strong><br>困惑度</th>
+<th><strong>第三代</strong><br>轻量分类器</th>
+<th><strong>第四代</strong><br>大模型打标签</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代表</strong></td>
+<td>C4 / Gopher（<a href="05-语言识别与启发式过滤.html">05 章</a>）</td>
+<td>CCNet</td>
+<td>DCLM / FineWeb-Edu / Nemotron-CC</td>
+<td>Essential-Web</td>
+</tr>
+<tr>
+<td><strong>它在问什么</strong></td>
+<td>"这是一段正常的文字吗"</td>
+<td>"这段文字像不像维基百科"</td>
+<td>"这段文字像不像我挑的种子"</td>
+<td>"这段文字是关于什么的、有多好"</td>
+</tr>
+<tr>
+<td>★ <strong>需要你准备什么</strong></td>
+<td>只要几条正则和计数器</td>
+<td>一份当"标准"的语料（维基）+ KenLM</td>
+<td>★ <strong>一批种子正例 + 一批负例</strong> + fastText</td>
+<td>一个大模型 + 一套标签体系 + 蒸馏预算</td>
+</tr>
+<tr>
+<td>★ <strong>它拦掉什么</strong></td>
+<td>导航栏、列表页、乱码、标签墙</td>
+<td>口语化、排版混乱、拼写错误多的文本</td>
+<td>"长得不像种子"的文本</td>
+<td>★ 其实什么都不删，只是你查询时不选它</td>
+</tr>
+<tr>
+<td>⚠️ <strong>它误杀什么</strong></td>
+<td>代码、表格、诗歌、字幕</td>
+<td>⚠️ 口语、诗歌、方言、非西方语言——<strong>系统性压缩多样性</strong></td>
+<td>⚠️ 种子覆盖不到的<strong>整类</strong>内容（分布收窄）</td>
+<td>⚠️ 标签体系里没设计的维度就筛不出来</td>
+</tr>
+<tr>
+<td><strong>成本 / 篇</strong>（⚠️ 量级估算）</td>
+<td>~10 μs</td>
+<td>~5 ms</td>
+<td>~0.3 ms（fastText）<br>~20 ms（BERT 级）</td>
+<td>打标时 ~1 s；✅ 蒸馏后约 1/50</td>
+</tr>
+<tr>
+<td>⚠️ <strong>主要代价</strong></td>
+<td>粗暴，整类内容被一刀切</td>
+<td>低困惑度 ≠ 高质量</td>
+<td>★ 效果<strong>完全</strong>取决于种子怎么挑</td>
+<td>一次性成本极高（✅ Essential-Web 打标用了约 9 万 MI300X 卡时）</td>
+</tr>
+<tr>
+<td><strong>可逆吗</strong></td>
+<td>✗ 删了就没了</td>
+<td>半可逆（✅ CCNet 把三档都发布了）</td>
+<td>✗ 删了就没了</td>
+<td>★ ✅ <strong>可逆</strong>：只打标签、不删数据</td>
+</tr>
+<tr>
+<td><strong>调的旋钮</strong></td>
+<td>每条规则一个阈值</td>
+<td>两个分档阈值</td>
+<td>★ 种子、正负例比例、阈值分位数</td>
+<td>标签体系 + 查询条件</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>读这张表要抓住两条纵向的线：</strong><br />
+<strong>① "需要你准备什么"越来越重</strong> —— 从几行正则，到要自己攒一批种子，到要有一个大模型。这就是为什么各家差距主要出现在第三代之后：<strong>前两代谁都能复现，第三代拼的是你手上有什么种子。</strong><br />
+<strong>② "可逆吗"在第四代翻转了</strong> —— 前三代都是<strong>删除</strong>，决定一次、终身生效；第四代是<strong>打标</strong>，什么都留着。7.5 节会讲这为什么是范式转变。</p>
+</blockquote>
 <hr />
 <h2 id="73-ccnet">7.3 第二代：困惑度过滤（CCNet）</h2>
 <p>✅ <strong>CCNet</strong>（<a href="https://arxiv.org/abs/1911.00359">arXiv:1911.00359</a>，Wenzek 等，Facebook，2019-11）。</p>
-<p><strong>困惑度（perplexity, PPL）</strong> 先解释清楚：</p>
+<p><strong>困惑度（perplexity，简称 PPL）</strong> 先解释清楚：</p>
 <div class="codehilite"><pre><span></span><code>一个语言模型看一段文字，会对每个词给出&quot;我预测它出现的概率&quot;。
 困惑度 = 这些概率的几何平均的倒数。
 
     PPL(x) = exp( − (1/T) · Σ_{t=1..T} log P(x_t | x_&lt;t) )
 
 ★ 一句话：【困惑度低 = 这段文字对模型来说&quot;意料之中&quot;、&quot;眼熟&quot;】
-                    ↑ 注意，这是&quot;眼熟&quot;，不是&quot;正确&quot;，7.3 末尾会讲这个坑
+                    ↑ 注意，这是&quot;眼熟&quot;，不是&quot;正确&quot;，本节末尾会讲这个坑
+⚠️ 困惑度是【绝对值】，不是百分比。说&quot;困惑度降了 3&quot;和&quot;困惑度降了 3%&quot;
+   是两回事（[06 章](06-去重.md) 6.1 的 Wiki-40B 那条数字就是绝对值降 3）。
 </code></pre></div>
 
 <p><strong>CCNet 的做法：</strong></p>
@@ -346,10 +429,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 ④ ★ 论文并不是简单地&quot;只要 head&quot;。它把三档都发布出来，
    让下游自己决定用哪些 —— 因为&quot;像维基&quot;不等于&quot;有用&quot;
+   ⟹ ★ 这是第二代唯一&quot;半可逆&quot;的地方（见 7.2 的表）
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">kenlm</span>
-<span class="n">model</span> <span class="o">=</span> <span class="n">kenlm</span><span class="o">.</span><span class="n">Model</span><span class="p">(</span><span class="s2">&quot;wiki_5gram.arpa&quot;</span><span class="p">)</span>     <span class="c1"># 在维基上训好的 n-gram LM</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">kenlm</span><span class="o">.</span><span class="n">Model</span><span class="p">(</span><span class="s2">&quot;wiki_5gram.arpa&quot;</span><span class="p">)</span>     <span class="c1"># 在维基上训好的 n-gram 语言模型</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">perplexity</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
     <span class="c1"># kenlm 返回 log10 概率</span>
@@ -373,6 +457,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ⚠️ 这是"用一个分布当标准去筛另一个分布"的通病，<br />
       第三代的分类器【继承了这个毛病】，只是种子换了而已<br />
 ```</p>
+<p>★ 顺带一个中文的坑：拿中文维基训 KenLM，<strong>必须先定好切分口径</strong>（按字 / 按词 / 按 token）。⚠️ 同一段中文按"字"算和按"词"算，困惑度的绝对值完全不可比——而这个口径几乎没人在报数时写出来（见 <a href="05-语言识别与启发式过滤.html">05 章</a> 5.5 的三个单位）。</p>
 </blockquote>
 <hr />
 <h2 id="74">7.4 ★★ 第三代：轻量分类器（这一代是现在的主流）</h2>
@@ -384,61 +469,210 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <h3 id="_3">三家的种子选择，一眼看出各自的取向</h3>
-<div class="codehilite"><pre><span></span><code>┌─ DCLM-Baseline（2024，[2406.11794](https://arxiv.org/abs/2406.11794)）────────────────┐
-│  ✅ 正例 = OpenHermes-2.5（指令数据）                                │
-│           + r/ExplainLikeImFive 里高赞的帖子                        │
-│  ✅ 负例 = RefinedWeb 里随机抽                                       │
-│  ✅ 分类器 = fastText                                                │
-│                                                                     │
-│  ★ 取向：【像&quot;有人在好好回答一个问题&quot;的文本】                        │
-│     ELI5 = Explain Like I&#39;m Five，&quot;用五岁小孩听得懂的话解释&quot;         │
-│     —— 选它当正例，等于把&quot;讲得清楚&quot;直接编码进了过滤器                │
-│  产出：DCLM-Baseline，3.8 T token                                   │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─ FineWeb-Edu（2024，[2406.17557](https://arxiv.org/abs/2406.17557)）─────────────────┐
-│  ✅ 正例的来源不是&quot;现成数据集&quot;，而是【让大模型来标】：                │
-│     用 Llama-3-70B-Instruct 给一批 FineWeb 网页打 0~5 分的           │
-│     &quot;教育价值&quot;分 → 用这些标注训一个小分类器 → 给全量 FineWeb 打分     │
-│  ✅ 卡阈值后得到 FineWeb-Edu，1.3 T token                            │
-│     （★ 从 15 T 筛到 1.3 T —— 只留了不到 9%）                        │
-│                                                                     │
-│  ★ 取向：【像教科书/科普的文本】                                     │
-│  ✅ 效果：在 MMLU、ARC 这类知识型评测上大幅优于全量 FineWeb           │
-│  ⚠️ 代价：只剩 9%，多样性和&quot;网感&quot;被砍掉很多                          │
-└─────────────────────────────────────────────────────────────────────┘
-
-┌─ Nemotron-CC（2024，[2412.02595](https://arxiv.org/abs/2412.02595)）─────────────────┐
-│  ✅ 做法：【多个分类器集成】 + 分成质量档，而不是一刀切               │
-│     ★ 它【不丢掉】低质档，而是把低质档拿去让模型改写（见 12 章）      │
-│                                                                     │
-│  ✅ 论文报告的两个结果（这是本章最值得记的数字）：                    │
-│     · 高质量子集：MMLU 比 DCLM 高 5.6 分                             │
-│     · 全量版本：达到与 DCLM 相当的效果，但有【4 倍多的唯一 token】    │
-│                          ↑★★ 这一条才是重点                          │
-└─────────────────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<p>✅ 下表带 ✅ 的内容我都从对应论文核对过。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>DCLM-Baseline</strong><br>2024，<a href="https://arxiv.org/abs/2406.11794">2406.11794</a></th>
+<th><strong>FineWeb-Edu</strong><br>2024，<a href="https://arxiv.org/abs/2406.17557">2406.17557</a></th>
+<th><strong>Nemotron-CC</strong><br>2024，<a href="https://arxiv.org/abs/2412.02595">2412.02595</a></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ <strong>正例（种子）</strong></td>
+<td>OpenHermes-2.5（指令数据）<br>+ r/ExplainLikeImFive 里高赞的帖子</td>
+<td>★ <strong>不用现成数据集</strong>：用 Llama-3-70B-Instruct 给一批 FineWeb 网页打 <strong>0~5 分的"教育价值"分</strong>，拿这些标注当训练目标</td>
+<td>多来源种子</td>
+</tr>
+<tr>
+<td>✅ <strong>负例</strong></td>
+<td>RefinedWeb 里随机抽</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>✅ <strong>分类器</strong></td>
+<td>fastText</td>
+<td>在 70B 的标注上训的小分类器</td>
+<td>✅ <strong>多个分类器集成</strong></td>
+</tr>
+<tr>
+<td>★ <strong>取向</strong></td>
+<td>像"有人在好好回答一个问题"</td>
+<td>像"教科书 / 科普"</td>
+<td>★ <strong>不一刀切，分成质量档</strong></td>
+</tr>
+<tr>
+<td><strong>低质档怎么处理</strong></td>
+<td>丢弃</td>
+<td>丢弃</td>
+<td>★ ✅ <strong>不丢</strong>，拿去让模型改写（见 <a href="12-合成数据.html">12 章</a>）</td>
+</tr>
+<tr>
+<td>✅ <strong>产出规模</strong></td>
+<td><strong>3.8 T token</strong></td>
+<td><strong>1.3 T token</strong>（从 15 T 筛出，★ 只剩 <strong>8.7%</strong>）</td>
+<td><strong>~6.3 T token</strong></td>
+</tr>
+<tr>
+<td>✅ <strong>论文报告的效果</strong></td>
+<td>把"数据过滤"变成了一个可比赛的公开基准</td>
+<td>在 MMLU、ARC 这类知识型评测上<strong>大幅优于全量 FineWeb</strong></td>
+<td>① 高质子集 <strong>MMLU 比 DCLM 高 5.6</strong>；② 全量版本效果<strong>与 DCLM 相当</strong>，但有 <strong>4 倍多的唯一 token</strong></td>
+</tr>
+<tr>
+<td>⚠️ <strong>代价</strong></td>
+<td>分数的绝对值不可比（换一批负例分布就变）</td>
+<td>只剩 8.7%，多样性和"网感"被砍掉很多</td>
+<td>流水线复杂度最高</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>★ <strong>ELI5 = Explain Like I'm Five</strong>（"用五岁小孩听得懂的话解释"），是 Reddit 上一个科普问答版块。<strong>选它当正例，等于把"讲得清楚"这件事直接编码进了过滤器。</strong> 这就是"种子决定一切"最直观的例子。</p>
+<p>⚠️ <strong>"高 5.6"的口径</strong>：✅ 论文原文是 "a 5.6 MMLU improvement over DCLM"，指 <strong>MMLU 准确率的绝对分高 5.6 个百分点</strong>，<strong>不是</strong>"相对提升 5.6%"。★ 这两种说法在中文里被混用得非常厉害，看到"高 X 分 / 高 X%"一定要回原文确认。</p>
+<p>⚠️ <strong>"只剩 8.7%"的口径</strong>：1.3 T ÷ 15 T = 8.67%，分母是 <strong>token 数</strong>。★ 这也可以说成"砍掉了 91.3%"或"压缩到 8.7%"/"压缩 11.5 倍"，但<strong>不能说成"压缩了 8.7%"</strong>（见 <a href="06-去重.html">06 章</a> 6.7）。</p>
 <p>★★★ <strong>Nemotron-CC 那第二条结果，是这个领域近两年最重要的转向。</strong></p>
 <p>在此之前所有人都在比"谁筛得更狠、剩下的更精"。Nemotron-CC 说的是：</p>
 <p>```<br />
 如果你要训 15 T token，而 FineWeb-Edu 只有 1.3 T<br />
-   → 你必须把它【重复 11 遍】<br />
+   → 你必须把它【重复 11.5 遍】（15 ÷ 1.3）<br />
    → 而重复的边际收益是递减的（见 11 章）</p>
 <p>⟹ ★ "更纯但更少" 和 "稍差但更多" 之间存在一个真实的权衡点，<br />
      而这个点【随训练预算变化】：预算越大，越应该放松过滤。<br />
 ```</p>
 <p>这也解释了 <a href="05-语言识别与启发式过滤.html">05 章</a>末尾那个方向反转——Nemotron-CC <strong>主动放松了启发式规则</strong>。</p>
 </blockquote>
-<h3 id="_4">一段能跑的实现</h3>
-<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">fasttext</span><span class="o">,</span><span class="w"> </span><span class="nn">random</span><span class="o">,</span><span class="w"> </span><span class="nn">json</span>
+<h3 id="_4">★★★ 正负样本怎么选：四条具体做法</h3>
+<p>这一节是本章唯一"必须照着做"的部分，因为 7.1 已经说了：<strong>效果几乎完全由种子决定。</strong></p>
+<div class="codehilite"><pre><span></span><code>① 正例从哪来 —— 三条路，成本递增
+   (a) 借现成的高质量数据集     ★ 最省，DCLM 走这条（OpenHermes + ELI5）
+   (b) 借现成的&quot;权威&quot;语料       ★ 维基、教科书、arXiv —— 但会把分布拽向书面语
+   (c) ✅ 让大模型现场标注       ★ FineWeb-Edu 走这条，最贵但最贴合你的目标
 
-<span class="c1"># ---- ① 造训练集 ----</span>
+② 正例要多少
+   ⚠️ fastText 在几万到几十万条正例上就已经饱和，再加收益很小。
+   ★ 所以不要在&quot;攒更多正例&quot;上花时间，该花在【正例覆盖得够不够全】上：
+     把你希望模型会的每一类能力，都至少放几千条进去。
+
+③ ★★ 负例怎么选 —— 这里有一个必踩的坑
+   标准做法：从【未过滤的原始网页】里随机抽。
+   ⚠️ 坑在于：随机网页和你的正例在【长度、语言、排版】上系统性不同。
+      例：OpenHermes 的条目普遍是几百词的完整回答，
+          而随机网页里有大量 50 词以下的碎片。
+      ⟹ ★ 分类器会发现&quot;判长度就能拿高分&quot;，于是学成了一个【长度分类器】。
+   ★ 两条缓解：
+      (a) 按长度分层抽负例：让负例的长度分布和正例对齐
+      (b) 上线前做&quot;长度分桶保留率&quot;诊断（见 7.6）
+
+④ 负例 : 正例 的比例
+   ⚠️ 1:1 会让分类器的分数分布挤在中间，阈值很难切；
+      常见做法是负例多一些（1:3 ~ 1:10），让高分区更稀疏、排序更稳。
+   ★ 但记住：【比例只影响分数的绝对值，不影响排序】——
+     而下一节会说明，我们只用排序，所以这个旋钮没那么要紧。
+</code></pre></div>
+
+<h3 id="_5">★★★ 阈值怎么定：先算预算，再定分位数</h3>
+<p><strong>★ 关键认识：阈值不是一个"质量问题"，是一个"预算问题"。</strong> 走一遍完整算术。</p>
+<p><strong>给定</strong>：手上是 FineWeb 全量 <strong>15 T token</strong>；计划训一个消耗 <strong>8 T token</strong> 的模型。</p>
+<table>
+<thead>
+<tr>
+<th>想留的比例</th>
+<th>留下的 token</th>
+<th>训 8 T 要重复几遍</th>
+<th>阈值该取在哪个分位数</th>
+<th>对应现实</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>8.7%</strong></td>
+<td>1.3 T</td>
+<td>8 ÷ 1.3 = <strong>6.2 遍</strong></td>
+<td>第 <strong>91.3</strong> 分位</td>
+<td>✅ FineWeb-Edu 的实际口径</td>
+</tr>
+<tr>
+<td>20%</td>
+<td>3.0 T</td>
+<td>8 ÷ 3.0 = 2.7 遍</td>
+<td>第 80 分位</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>42%</strong></td>
+<td>6.3 T</td>
+<td>8 ÷ 6.3 = 1.3 遍</td>
+<td>第 58 分位</td>
+<td>≈ ✅ Nemotron-CC 全量规模</td>
+</tr>
+<tr>
+<td>★ <strong>53.3%</strong></td>
+<td><strong>8.0 T</strong></td>
+<td>★ <strong>1.0 遍（刚好不用重复）</strong></td>
+<td>第 <strong>46.7</strong> 分位</td>
+<td>★ 预算决定的"自然阈值"</td>
+</tr>
+<tr>
+<td>100%</td>
+<td>15 T</td>
+<td>0.53 遍（用不完）</td>
+<td>不过滤</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 这张表怎么用（三步）：
+
+  第 1 步：算出&quot;1 epoch 刚好够&quot;的那个保留比例 = 训练预算 ÷ 手上总量
+           = 8 T ÷ 15 T = 53.3%
+  第 2 步：★ 这个比例就是阈值的【上界】——
+           留得比它【多】，数据根本用不完，过滤白做；
+           留得比它【少】，就必须重复，而重复的边际收益递减（11 章）。
+  第 3 步：在 [0, 53.3%] 这个区间里做 ablation，而不是在 [0, 100%] 里瞎试。
+           ⟹ ★ 这一步把搜索空间砍掉一半，而且砍掉的那一半是确定无用的。
+
+⚠️ 一个常见的错误顺序：先按&quot;质量&quot;定一个阈值，训完发现数据不够，
+   再回头放松阈值 —— 等于把最贵的那一步（训模型）做了两遍。
+</code></pre></div>
+
+<p><strong>为什么一定要用分位数、不能用绝对分数：</strong></p>
+<div class="codehilite"><pre><span></span><code>★ 分类器输出的绝对分数【没有可比性】：
+    换一批负例 → 分数分布整体平移；
+    重训一次（换随机种子）→ 分数分布也会变。
+  ⚠️ 所以&quot;阈值 = 0.7&quot;这种写法在换了一次模型之后就失去意义。
+
+★ 但【排序是稳定的】—— 同一批文档，两个版本的分类器给出的排名高度一致。
+  ⟹ 所以阈值要写成&quot;保留分数最高的 X%&quot;，而不是&quot;分数 ≥ 0.7&quot;。
+</code></pre></div>
+
+<h3 id="_6">一段能跑的实现</h3>
+<div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">fasttext</span><span class="o">,</span><span class="w"> </span><span class="nn">random</span><span class="o">,</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+
+<span class="c1"># ---- ① 造训练集（★ 负例按长度分层抽，避免学成长度分类器）----</span>
+<span class="n">seed</span> <span class="o">=</span> <span class="n">load_seed_positive</span><span class="p">()</span>              <span class="c1"># 指令数据 / 高赞问答 / 教科书</span>
+<span class="n">raw</span>  <span class="o">=</span> <span class="n">load_raw_web</span><span class="p">()</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">len_bucket</span><span class="p">(</span><span class="n">t</span><span class="p">):</span>                       <span class="c1"># ★ 按词数分桶，负例按正例的桶分布来抽</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">t</span><span class="o">.</span><span class="n">split</span><span class="p">())</span>
+    <span class="k">return</span> <span class="mi">0</span> <span class="k">if</span> <span class="n">n</span> <span class="o">&lt;</span> <span class="mi">200</span> <span class="k">else</span> <span class="mi">1</span> <span class="k">if</span> <span class="n">n</span> <span class="o">&lt;</span> <span class="mi">800</span> <span class="k">else</span> <span class="mi">2</span> <span class="k">if</span> <span class="n">n</span> <span class="o">&lt;</span> <span class="mi">3000</span> <span class="k">else</span> <span class="mi">3</span>
+
+<span class="n">pos_dist</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">bincount</span><span class="p">([</span><span class="n">len_bucket</span><span class="p">(</span><span class="n">t</span><span class="p">)</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">seed</span><span class="p">],</span> <span class="n">minlength</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<span class="n">pos_dist</span> <span class="o">=</span> <span class="n">pos_dist</span> <span class="o">/</span> <span class="n">pos_dist</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
+<span class="n">NEG_RATIO</span> <span class="o">=</span> <span class="mi">3</span>                            <span class="c1"># ★ 负例是正例的 3 倍</span>
+<span class="n">neg</span> <span class="o">=</span> <span class="p">[]</span>
+<span class="n">by_bucket</span> <span class="o">=</span> <span class="p">{</span><span class="n">b</span><span class="p">:</span> <span class="p">[</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">raw</span> <span class="k">if</span> <span class="n">len_bucket</span><span class="p">(</span><span class="n">t</span><span class="p">)</span> <span class="o">==</span> <span class="n">b</span><span class="p">]</span> <span class="k">for</span> <span class="n">b</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">)}</span>
+<span class="k">for</span> <span class="n">b</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
+    <span class="n">k</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span> <span class="o">*</span> <span class="n">NEG_RATIO</span> <span class="o">*</span> <span class="n">pos_dist</span><span class="p">[</span><span class="n">b</span><span class="p">])</span>
+    <span class="n">neg</span> <span class="o">+=</span> <span class="n">random</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="n">by_bucket</span><span class="p">[</span><span class="n">b</span><span class="p">],</span> <span class="nb">min</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">by_bucket</span><span class="p">[</span><span class="n">b</span><span class="p">])))</span>
+
 <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;cls_train.txt&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-    <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">load_seed_positive</span><span class="p">():</span>          <span class="c1"># 指令数据 / 高赞问答 / 教科书</span>
+    <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">seed</span><span class="p">:</span>
         <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;__label__hq &quot;</span> <span class="o">+</span> <span class="n">t</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot; &quot;</span><span class="p">)[:</span><span class="mi">2000</span><span class="p">]</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
-    <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">random</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="n">load_raw_web</span><span class="p">(),</span> <span class="nb">len</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span> <span class="o">*</span> <span class="mi">3</span><span class="p">):</span>   <span class="c1"># ★ 负例可以多一些</span>
+    <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">neg</span><span class="p">:</span>
         <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s2">&quot;__label__lq &quot;</span> <span class="o">+</span> <span class="n">t</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot; &quot;</span><span class="p">)[:</span><span class="mi">2000</span><span class="p">]</span> <span class="o">+</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
 
 <span class="c1"># ---- ② 训（几分钟，CPU 就够）----</span>
@@ -446,7 +680,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                                 <span class="n">wordNgrams</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span> <span class="n">minCount</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 <span class="n">clf</span><span class="o">.</span><span class="n">quantize</span><span class="p">(</span><span class="nb">input</span><span class="o">=</span><span class="s2">&quot;cls_train.txt&quot;</span><span class="p">,</span> <span class="n">retrain</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>   <span class="c1"># ★ 量化后模型小 10 倍，更快</span>
 
-<span class="c1"># ---- ③ 打分 + 卡阈值 ----</span>
+<span class="c1"># ---- ③ 打分 ----</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">score</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
     <span class="n">labels</span><span class="p">,</span> <span class="n">probs</span> <span class="o">=</span> <span class="n">clf</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">text</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="s2">&quot; &quot;</span><span class="p">)[:</span><span class="mi">2000</span><span class="p">],</span> <span class="n">k</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
     <span class="k">return</span> <span class="nb">dict</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">labels</span><span class="p">,</span> <span class="n">probs</span><span class="p">))</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;__label__hq&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
@@ -454,41 +688,105 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <span class="k">for</span> <span class="n">doc</span> <span class="ow">in</span> <span class="n">docs</span><span class="p">:</span>
     <span class="n">doc</span><span class="p">[</span><span class="s2">&quot;q&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">score</span><span class="p">(</span><span class="n">doc</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">])</span>
 
-<span class="c1"># ★ 阈值不要拍脑袋定，而是【按目标 token 量反推分位数】</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="c1"># ---- ④ ★ 阈值按目标 token 量反推分位数，不要拍绝对分数 ----</span>
+<span class="n">TRAIN_BUDGET_TOKENS</span> <span class="o">=</span> <span class="mf">8e12</span>
+<span class="n">total_tokens</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="s2">&quot;n_tokens&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">docs</span><span class="p">)</span>
+<span class="n">keep_ratio</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">TRAIN_BUDGET_TOKENS</span> <span class="o">/</span> <span class="n">total_tokens</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>   <span class="c1"># ★ 8/15 = 0.533</span>
 <span class="n">scores</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">d</span><span class="p">[</span><span class="s2">&quot;q&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">docs</span><span class="p">])</span>
-<span class="n">th</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">quantile</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-</span> <span class="n">TARGET_KEEP_RATIO</span><span class="p">)</span>     <span class="c1"># 想留 20% 就取 80 分位</span>
+<span class="n">th</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">quantile</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="mi">1</span> <span class="o">-</span> <span class="n">keep_ratio</span><span class="p">)</span>                    <span class="c1"># ★ 留 53.3% → 取 46.7 分位</span>
 <span class="n">keep</span> <span class="o">=</span> <span class="p">[</span><span class="n">d</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">docs</span> <span class="k">if</span> <span class="n">d</span><span class="p">[</span><span class="s2">&quot;q&quot;</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">th</span><span class="p">]</span>
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>"按分位数定阈值"是实践中的标准做法</strong>，因为分类器的绝对分数没有可比性（换一批负例分数分布就变了），但<strong>排序是稳定的</strong>。</p>
+<p>⚠️ <strong>注意 <code>keep_ratio</code> 是按 token 数算的，而 <code>np.quantile</code> 是按文档数算的</strong> ——<strong>这两个分母不一样。</strong> 如果高分文档系统性更长（很常见），按文档数取 46.7 分位实际会留下<strong>远多于</strong> 53.3% 的 token。★ 严谨做法是按分数排序后<strong>累加 token 数</strong>，加到预算为止：</p>
+<p><code>python
+docs.sort(key=lambda d: -d["q"])
+acc, keep = 0, []
+for d in docs:
+    if acc &gt;= TRAIN_BUDGET_TOKENS: break
+    keep.append(d); acc += d["n_tokens"]</code></p>
+<p>★ 这是 <a href="06-去重.html">06 章</a> 6.1 那个"分母"问题在本章的翻版：<strong>只要同时存在"按文档"和"按 token"两个口径，就一定要检查自己用的是哪个。</strong></p>
 </blockquote>
 <hr />
 <h2 id="75-essential-web">7.5 第四代：大模型打标签 + 蒸馏（Essential-Web）</h2>
 <p>第三代给每篇文档一个<strong>标量分数</strong>。但一个分数丢掉了太多信息——它没告诉你<strong>这篇文章是关于什么的</strong>。</p>
-<p>✅ <strong>Essential-Web v1.0</strong>（<a href="https://arxiv.org/abs/2506.14111">arXiv:2506.14111</a>，Essential AI，2025-06）：</p>
+<p>✅ <strong>Essential-Web v1.0</strong>（<a href="https://arxiv.org/abs/2506.14111">arXiv:2506.14111</a>，Essential AI，2025-06）。✅ 下面的数字我从 <a href="papers/">papers/Essential-Web-v1.0-24T-tokens-arXiv-2506.14111.pdf</a> 逐句核对过：</p>
 <div class="codehilite"><pre><span></span><code>① 不打分，打【一整套结构化标签】：
-   ✅ 12 个类别维度，包括主题分类、网页类型、内容复杂度、
+   ✅ 每个网页拿到 12 个类别的标签（论文把这套体系叫 EAI-Taxonomy），
+      分属 5 个逻辑组，包括主题分类、网页类型、内容复杂度、
       文档质量、以及是否含广告/导航污染 等
 
 ② 用一个大模型（Qwen2.5-32B-Instruct）先标一批
 
-③ ★★ 蒸馏成一个 0.5B 的小模型 EAI-Distill-0.5b
-   ✅ 论文报告：与 32B 老师的一致性差距在 3% 以内，
-      而吞吐提升约 50 倍
+③ ★★ 蒸馏成一个 0.5 B 的小模型 EAI-Distill-0.5b
+   ✅ 论文报告它与 32B 老师的差距：
+        标注一致性（annotator agreement）  3% 以内
+        NMI（归一化互信息）               14% 以内
+        领域召回（domain-recall）          1% 以内
    ★ 这就是 7.2 说的&quot;成本越来越高 → 必须蒸馏回小模型&quot;
 
 ④ ★ 于是筛数据变成了【写 SQL】：
    SELECT * FROM web WHERE topic=&#39;mathematics&#39; AND quality&gt;=4 AND ads=false
 
-   ✅ 论文报告用这种方式筛出的领域数据集，
-      与各领域 SOTA 数据集相比：网页代码 +14.3%、STEM +24.5%、医学 +8.6%，
-      数学 −8.0%（★ 唯一落后的一项，论文如实报告了）
-
-   规模：24 T token
+   规模：✅ 23.6 B 篇文档 / 24 T token
 </code></pre></div>
 
+<p>✅ <strong>蒸馏省了多少，论文给了可验算的数字：</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>✅ 吞吐（RPS/GPU，每 GPU 每秒处理的请求数）</th>
+<th>相对提升</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始做法：给 32B 模型发完整 prompt</td>
+<td><strong>1.4</strong></td>
+<td>基线</td>
+</tr>
+<tr>
+<td>★ 换成 0.5B + 去掉 prompt + 压缩生成长度</td>
+<td><strong>70</strong></td>
+<td>★ <strong>50 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 自己验一遍：70 ÷ 1.4 = 50.0 倍   ✅ 和论文说的 &quot;50× faster annotation&quot; 一致
+⚠️ 注意这是【吞吐倍数】，不是&quot;时间减少 50%&quot;（见 06 章 6.7 那三组说法）：
+   吞吐 ×50 ⟺ 同样的量耗时变成 1/50 ⟺ 时间减少 98%。
+✅ 即便如此，给 23.6 B 篇文档全部打标仍然用了约 9 万 MI300X 卡时 ——
+   ★ 这就是第四代&quot;一次性成本极高&quot;的具体量级。
+</code></pre></div>
+
+<p>✅ <strong>论文报告用 SQL 方式筛出的领域数据集，和各领域此前 SOTA 数据集相比：</strong></p>
+<table>
+<thead>
+<tr>
+<th>领域</th>
+<th>✅ 相对 SOTA 的变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>网页代码（web code）</td>
+<td><strong>+14.3%</strong></td>
+</tr>
+<tr>
+<td>STEM</td>
+<td><strong>+24.5%</strong></td>
+</tr>
+<tr>
+<td>医学（medical）</td>
+<td><strong>+8.6%</strong></td>
+</tr>
+<tr>
+<td>数学（math）</td>
+<td>⚠️ <strong>−8.0%</strong>（★ 唯一落后的一项，论文如实报告了）</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>★★ <strong>为什么这是范式转变</strong>：前三代是<strong>破坏性</strong>的——过滤即删除，一次决定终身。<br />
 第四代是<strong>非破坏性</strong>的——先给所有数据打好标签<strong>全部留着</strong>，用的时候再按需查询。</p>
@@ -498,7 +796,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>⚠️ 我的判断：<strong>这个方向大概率会成为下一代的默认做法</strong>，但目前公开采用它的还很少（数据是 2025 年的）。</p>
 </blockquote>
 <hr />
-<h2 id="76">7.6 ⚠️ 三个必须知道的风险</h2>
+<h2 id="76">7.6 ⚠️ 三个必须知道的风险，和四张诊断表</h2>
 <div class="codehilite"><pre><span></span><code>① ★★ 分布收窄（distribution narrowing）
    所有分类器都在做同一件事：【把语料的分布往种子的分布上拽】
    → 筛得越狠，语料越单一，越像种子
@@ -507,19 +805,62 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 ② 评测污染（间接的）
    用&quot;像 MMLU 题目&quot;的种子去筛数据，等于变相往训练集里塞评测题的近亲
-   → 分数涨了，真实能力没涨。★ 08 章专门讲这个
+   → 分数涨了，真实能力没涨。★ [08 章](08-去污染与隐私许可.md)专门讲这个
 
 ③ 分类器学到的是【表面特征】
    fastText 只看词袋和 n-gram，很容易学成&quot;有没有出现某些词&quot;
    ⚠️ 一个真实的失败模式：分类器学会了&quot;含 &#39;Abstract&#39; &#39;Figure 1&#39; 就是高质量&quot;
       → 于是筛出一堆论文的【参考文献页】
-   ★ 缓解：一定要人工抽样看【被留下的】和【被删掉的】各 100 篇
 </code></pre></div>
 
+<h3 id="_7">★★ 上线前必须算的四张交叉表（+ 一次人工抽样）</h3>
+<p>⚠️ 这五件事总共花不到一天，而它们是<strong>唯一</strong>能在训模型之前发现"筛错了整整一类内容"的办法。</p>
+<table>
+<thead>
+<tr>
+<th>诊断</th>
+<th>怎么算</th>
+<th>⚠️ 看到什么就该警惕</th>
+<th>对应的真实失败模式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 长度分桶保留率</strong></td>
+<td>按词数分 4~5 桶，算每桶的保留率</td>
+<td>保留率随长度<strong>单调上升</strong></td>
+<td>★ 分类器学成了"长度分类器"——因为种子正例普遍比随机网页长（见 7.4 的坑 ③）</td>
+</tr>
+<tr>
+<td><strong>② 语言分桶保留率</strong></td>
+<td>按 <a href="05-语言识别与启发式过滤.html">05 章</a>的 LID 结果分桶</td>
+<td>某个语言分片保留率<strong>接近 0</strong></td>
+<td>种子全是英文 → 分类器把"有英文停用词"当成了质量信号；也可能是中文标点表的 bug</td>
+</tr>
+<tr>
+<td><strong>③ 域名集中度</strong></td>
+<td>取保留下来的文档的 top 1000 域名，看它们占了多少比例</td>
+<td>保留的文档<strong>集中在极少数站点</strong></td>
+<td>分类器学成了"站点分类器"，多样性直接塌掉</td>
+</tr>
+<tr>
+<td><strong>④ 留/删两组的高频词对比</strong></td>
+<td>分别统计被留下和被删掉的文档的高频词，看差异最大的那几十个</td>
+<td>差异词里出现 <code>Abstract</code> <code>Figure 1</code> <code>References</code> 这类<strong>格式词</strong></td>
+<td>⚠️ 上面那个"筛出一堆参考文献页"的案例，就是这张表能抓到的</td>
+</tr>
+<tr>
+<td><strong>⑤ ★ 人工抽样</strong></td>
+<td>随机抽 <strong>100 篇被删掉的</strong>，自己从头读一遍</td>
+<td>发现<strong>整整一类</strong>你本来想要的内容被删了</td>
+<td>★ 这是唯一能发现"整类误杀"的办法，成本只有半小时</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★ <strong>实践铁律（和 <a href="05-语言识别与启发式过滤.html">05 章</a>那条同源）</strong>：<br />
+<p>★ <strong>实践铁律（和 <a href="05-语言识别与启发式过滤.html">05 章</a> 5.4 那条同源）</strong>：<br />
 <strong>上线任何过滤器之前，随机抽 100 篇被它删掉的文档，自己读一遍。</strong><br />
-这是唯一能发现"筛错了整整一类内容"的办法，而且成本只有半小时。</p>
+⚠️ 注意是读<strong>被删掉的</strong>，不是被留下的。读留下的只能让你安心，读删掉的才能让你发现问题——因为<strong>误杀是沉默的</strong>：它不会出现在任何指标里。</p>
 </blockquote>
 <hr />
 <h2 id="77">7.7 挂回真实系统</h2>
@@ -535,7 +876,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>C4</strong>（2019）</td>
 <td>纯规则</td>
-<td>~750 GB</td>
+<td>✅ 约 <strong>750 GB</strong>（⚠️ 容量口径，见下）</td>
 </tr>
 <tr>
 <td><strong>CCNet</strong>（2019）</td>
@@ -545,45 +886,72 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>RefinedWeb</strong>（2023）</td>
 <td>✅ <strong>只用规则 + 重度去重，不用分类器</strong></td>
-<td>5 T（公开 600 B）</td>
+<td>✅ <strong>5 T token</strong>（公开发布 600 B）</td>
 </tr>
 <tr>
 <td><strong>Dolma</strong>（2024）</td>
 <td>规则 + 质量分类器</td>
-<td>3 T</td>
+<td>✅ <strong>3 T token</strong>（跨 40 亿+ 篇文档）</td>
 </tr>
 <tr>
 <td><strong>FineWeb</strong>（2024）</td>
-<td>规则（C4+Gopher+自研三条）</td>
-<td>15 T</td>
+<td>规则（C4 + Gopher + 自研三条）</td>
+<td>✅ <strong>15 T token</strong></td>
 </tr>
 <tr>
 <td><strong>FineWeb-Edu</strong></td>
 <td>✅ <strong>Llama-3-70B 标注 → 小分类器</strong>，教育价值 0~5</td>
-<td>✅ <strong>1.3 T</strong></td>
+<td>✅ <strong>1.3 T token</strong>（= 15 T 的 8.7%）</td>
 </tr>
 <tr>
 <td><strong>DCLM-Baseline</strong>（2024）</td>
 <td>✅ <strong>fastText</strong>，正例 = OpenHermes-2.5 + ELI5</td>
-<td>✅ <strong>3.8 T</strong></td>
+<td>✅ <strong>3.8 T token</strong></td>
 </tr>
 <tr>
 <td><strong>Nemotron-CC</strong>（2024）</td>
 <td>✅ 分类器<strong>集成</strong> + 分质量档 + 低质档改写</td>
-<td>~6.3 T</td>
+<td>✅ <strong>~6.3 T token</strong></td>
 </tr>
 <tr>
 <td><strong>Ultra-FineWeb</strong>（2025）</td>
 <td>✅ <strong>高效验证</strong>策略 + fastText</td>
-<td>~1 T 英文 + 120 B 中文</td>
+<td>~1 T 英文 + 120 B 中文 token</td>
 </tr>
 <tr>
 <td><strong>Essential-Web v1.0</strong>（2025）</td>
 <td>✅ <strong>12 维标签</strong>（32B 标注 → 0.5B 蒸馏）</td>
-<td>✅ <strong>24 T</strong></td>
+<td>✅ <strong>24 T token</strong>（23.6 B 篇文档）</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p>⚠️⚠️ <strong>这张表的"保留规模"一列混了两种口径，不能直接比。</strong> C4 那一行报的是<strong>容量</strong>（✅ T5 论文原文 "about 750 GB"，★ 而且论文<strong>没有声明</strong>这个 GB 是十进制还是二进制——如果原意是 GiB，换成十进制就是 805 GB，差 7.4%）；别的行报的是 <strong>token 数</strong>。</p>
+<p>★ 粗略换算一下好有个概念（⚠️ <strong>我的估算</strong>，不是论文数字）：英文纯文本在常见分词器下大约 <strong>4 字节 / token</strong>，于是</p>
+<p>```<br />
+750 GB ÷ 4 字节/token ≈ 1.9 × 10¹¹ token ≈ 190 B token</p>
+<p>⟹ ★ C4 的量级大约是 FineWeb（15 T）的 1.3%、是 FineWeb-Edu（1.3 T）的 15%。<br />
+⚠️ 这个换算对中文【完全不适用】：中文 UTF-8 是 3 字节/字、<br />
+   1 token 约覆盖 1~2 个字 ⟹ 约 2~6 字节/token，口径一变结论就变<br />
+   （见 05 章 5.5）。<br />
+```</p>
+</blockquote>
+<p><strong>顺带一个可以验算的成本锚点</strong>（✅ 我从 FineWeb 论文核对过原文）：</p>
+<div class="codehilite"><pre><span></span><code>✅ &quot;Applying the classifier to the 15 trillion tokens of FineWeb
+    required 6,000 H100 GPU hours.&quot;
+
+★ 自己换算：
+    15e12 token ÷ 6000 卡时 = 2.5e9 token / 卡时
+                            = 2.5e9 / 3600 ≈ 69 万 token / 卡秒
+    每 1 T token 要 400 H100 卡时。
+
+⟹ ★ 这是&quot;第三代轻量分类器&quot;真实的算力量级：
+     给 15 T token 全量打分，6000 卡时 —— 几十块 H100 跑一周左右。
+   ⚠️ 对比 7.5 节第四代的约 9 万 MI300X 卡时（打 24 T token），
+      ★ 按每 T token 折算约是 3750 卡时，是第三代的近 10 倍。
+      （⚠️ 不同卡型不能严格比，这里只看数量级。）
+</code></pre></div>
+
 <blockquote>
 <p>★ <strong>RefinedWeb 那一行值得单独看</strong>：它<strong>故意不用任何模型分类器</strong>，只靠规则 + 狠去重，照样训出了 Falcon。<br />
 ⚠️ 我的读法：这说明<strong>去重的收益比质量分类器更确凿</strong>（<a href="06-去重.html">06 章</a>）——如果算力有限，先把去重做扎实，再考虑分类器。</p>
@@ -598,30 +966,56 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
          ② ✅ DCLM 建立统一评测协议，让各家数据可比
          ③ ✅ Ultra-FineWeb 的高效验证策略，绕开大循环
 
-③ 四代方法：
-   规则(05章) → 困惑度(CCNet) → 轻量分类器(DCLM/FineWeb-Edu) 
+③ 四代方法（7.2 有完整对照表）：
+   规则(05章) → 困惑度(CCNet) → 轻量分类器(DCLM/FineWeb-Edu)
               → 大模型打标签+蒸馏(Essential-Web)
-   ★ 判据越来越像人的判断，成本越来越高 → 每一代都要蒸馏回小模型
+   ★ 纵向看两条线：
+     · &quot;需要你准备什么&quot;越来越重 → 各家差距从第三代开始拉开
+     · &quot;可逆吗&quot;在第四代翻转：前三代是删除，第四代是打标、全部留着
 
-④ 困惑度：PPL 低 = 模型觉得&quot;眼熟&quot;
+④ 困惑度（PPL）：低 = 模型觉得&quot;眼熟&quot;
    ⚠️ 眼熟 ≠ 有价值（&quot;的的的的&quot;PPL 极低）；且会系统性压缩多样性
+   ⚠️ PPL 是绝对值：&quot;降了 3&quot;和&quot;降了 3%&quot;是两回事
+   ⚠️ 中文要先定切分口径（按字/按词/按 token），否则绝对值不可比
 
 ⑤ 三家种子选择直接体现取向：
-   DCLM        = OpenHermes + ELI5   → &quot;有人在好好回答问题&quot;
-   FineWeb-Edu = Llama-3-70B 打教育分 → &quot;像教科书&quot;（15T → 1.3T，只剩 9%）
-   Nemotron-CC = 分类器集成 + 分档，低质档【改写而非丢弃】
+   DCLM        = OpenHermes + ELI5   → &quot;有人在好好回答问题&quot;，3.8 T
+   FineWeb-Edu = Llama-3-70B 打教育分 → &quot;像教科书&quot;（15 T → 1.3 T，剩 8.7%）
+   Nemotron-CC = 分类器集成 + 分档，低质档【改写而非丢弃】，~6.3 T
 
-⑥ ★★★ Nemotron-CC 的转向（本章最重要的结论）：
-   高质量子集 MMLU 比 DCLM 高 5.6 分；
-   而全量版本效果与 DCLM 相当，却有【4 倍多的唯一 token】
+⑥ ★★★ 正负样本与阈值的具体做法（7.4）：
+   正例：借现成数据集 / 借权威语料 / ✅ 让大模型现场标；
+         ★ 几万~几十万条就饱和，该花力气在【覆盖得全不全】
+   负例：⚠️ 必须【按长度分层抽】，否则分类器会学成&quot;长度分类器&quot;
+         负例 : 正例 取 1:3 ~ 1:10；★ 比例只影响分数绝对值，不影响排序
+   阈值：★★ 阈值是【预算问题】不是质量问题 —— 先算
+         &quot;1 epoch 刚好够&quot;的保留比例 = 训练预算 ÷ 手上总量（例：8T/15T = 53.3%）
+         ⟹ 这就是阈值上界，ablation 只在 [0, 53.3%] 里做
+   ⚠️ 阈值要写成&quot;保留最高的 X%&quot;（分位数），不能写成&quot;分数 ≥ 0.7&quot;
+      —— 绝对分数换一批负例就平移，但排序是稳定的
+   ⚠️ 而且要注意分位数是按【文档数】、预算是按【token 数】——
+      严谨做法是排序后累加 token 到预算为止
+
+⑦ ★★★ Nemotron-CC 的转向（本章最重要的结论）：
+   ✅ 高质量子集 MMLU 比 DCLM 高 5.6【个百分点，绝对分】；
+   ✅ 而全量版本效果与 DCLM 相当，却有【4 倍多的唯一 token】
    → 训练预算越大，越应该【放松】过滤，因为重复的边际收益递减
 
-⑦ Essential-Web：从&quot;打一个分数并删除&quot;变成&quot;打一整套标签并保留&quot;
-   → 筛数据变成写 SQL，配方迭代从几周变成几分钟
+⑧ ✅ Essential-Web：从&quot;打一个分数并删除&quot;变成&quot;打一整套标签并保留&quot;
+   12 个类别 / 23.6 B 篇文档 / 24 T token
+   0.5B 蒸馏模型与 32B 老师的一致性差距在 3% 以内，吞吐 1.4 → 70 RPS/GPU（50 倍）
+   ⚠️ 50 倍是【吞吐倍数】，等于耗时变成 1/50、时间减少 98%
+   领域效果：代码 +14.3% / STEM +24.5% / 医学 +8.6% / ⚠️ 数学 −8.0%
 
-⑧ ⚠️ 三个风险：分布收窄（指标涨但多样性掉）/ 间接评测污染 /
+⑨ ⚠️ 三个风险：分布收窄（指标涨但多样性掉）/ 间接评测污染 /
    分类器学到表面特征
-   ★ 铁律：上线前随机抽 100 篇【被删掉的】自己读一遍
+   ★ 上线前必算五件事（7.6）：长度分桶保留率、语言分桶保留率、
+     域名集中度、留删两组高频词对比、★ 随机抽 100 篇【被删掉的】自己读
+   ★ 注意读的是【被删掉的】—— 误杀是沉默的，不会出现在任何指标里
+
+⑩ ⚠️ 规模口径：7.7 的表里 C4 报 GB、别家报 T token，不能直接比
+   按英文约 4 字节/token 粗算，750 GB ≈ 190 B token
+   ⚠️ 这个换算对中文完全不适用（中文约 2~6 字节/token）
 </code></pre></div>
 
 <hr />

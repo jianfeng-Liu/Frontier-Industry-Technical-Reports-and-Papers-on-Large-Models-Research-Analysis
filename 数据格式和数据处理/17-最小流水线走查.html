@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -285,7 +290,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <span class="w"> </span><span class="nt">&quot;lang&quot;</span><span class="p">:</span><span class="s2">&quot;zh&quot;</span><span class="p">,</span><span class="nt">&quot;lang_score&quot;</span><span class="p">:</span><span class="mf">0.94</span><span class="p">,</span><span class="nt">&quot;quality&quot;</span><span class="p">:</span><span class="mf">3.7</span><span class="p">,</span><span class="nt">&quot;filters_passed&quot;</span><span class="p">:[</span><span class="s2">&quot;lid&quot;</span><span class="p">,</span><span class="s2">&quot;gopher&quot;</span><span class="p">]}}</span>
 </code></pre></div>
 
-<p>★ 注意 <code>meta</code> 里那几个字段就是 <a href="08-去污染与隐私许可.html">08.5 节</a>的<strong>数据溯源</strong>要求。</p>
+<p>★ 注意 <code>meta</code> 里那几个字段就是 <a href="08-去污染与隐私许可.html">08 章</a>讲的<strong>数据溯源</strong>要求。</p>
 <hr />
 <h2 id="172">17.2 每一步的代码骨架</h2>
 <h3 id="step-1-02">Step 1 · 正文抽取（<a href="02-数据源与文本抽取.html">02 章</a>）</h3>
@@ -379,7 +384,13 @@ zstdcat<span class="w"> </span>03_heuristic/*.jsonl.zst<span class="w"> </span><
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code><span class="c1"># 模糊去重：MinHash + LSH（06.5 节的完整实现在那一章）</span>
-<span class="n">K</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">R</span> <span class="o">=</span> <span class="mi">128</span><span class="p">,</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">8</span>          <span class="c1"># ★ 阈值 ≈ (1/B)^(1/R) ≈ 0.75</span>
+<span class="n">K</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">R</span> <span class="o">=</span> <span class="mi">128</span><span class="p">,</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">8</span>          <span class="c1"># ★ K = B × R = 128，必须对得上</span>
+<span class="c1"># ⚠️ 阈值别抄错（★ 以 [06.5 节](06-去重.md)的那张表为准）：</span>
+<span class="c1">#   · 口诀公式 (1/B)^(1/R) = (1/16)^(1/8) = 0.707</span>
+<span class="c1">#     ★★ 它是 S 曲线【最陡处/拐点】的近似，⚠️ 不是&quot;命中概率 50%&quot;的点</span>
+<span class="c1">#   · 真正 P = 0.5 的点要解 1 − (1 − s^R)^B = 0.5</span>
+<span class="c1">#     ⟹ s = (1 − 0.5^(1/B))^(1/R) = 0.674</span>
+<span class="c1">#   ⚠️⚠️ 本教程早先某些地方写过「≈ 0.75」—— ★ 那个数两头都不是，别用</span>
 <span class="n">sigs</span> <span class="o">=</span> <span class="p">{</span><span class="n">doc_id</span><span class="p">:</span> <span class="n">minhash</span><span class="p">(</span><span class="n">doc</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">])</span> <span class="k">for</span> <span class="o">...</span><span class="p">}</span>
 <span class="n">buckets</span> <span class="o">=</span> <span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span>
 <span class="k">for</span> <span class="n">doc_id</span><span class="p">,</span> <span class="n">sig</span> <span class="ow">in</span> <span class="n">sigs</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
@@ -428,7 +439,7 @@ zstdcat<span class="w"> </span>03_heuristic/*.jsonl.zst<span class="w"> </span><
         <span class="k">return</span> <span class="kc">None</span>                    <span class="c1"># ★ 撞上评测题的整篇丢</span>
     <span class="n">doc</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">],</span> <span class="n">hits</span> <span class="o">=</span> <span class="n">mask_pii</span><span class="p">(</span><span class="n">doc</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">])</span>
     <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">hits</span><span class="o">.</span><span class="n">items</span><span class="p">():</span> <span class="n">STATS</span><span class="p">[</span><span class="sa">f</span><span class="s2">&quot;pii</span><span class="si">{</span><span class="n">k</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">]</span> <span class="o">+=</span> <span class="n">v</span>
-    <span class="n">doc</span><span class="p">[</span><span class="s2">&quot;meta&quot;</span><span class="p">][</span><span class="s2">&quot;pipeline_version&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;v1.0&quot;</span>       <span class="c1"># ★ 08.5 的溯源字段</span>
+    <span class="n">doc</span><span class="p">[</span><span class="s2">&quot;meta&quot;</span><span class="p">][</span><span class="s2">&quot;pipeline_version&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;v1.0&quot;</span>       <span class="c1"># ★ 08 章要求的溯源字段</span>
     <span class="k">return</span> <span class="n">doc</span>
 </code></pre></div>
 
@@ -436,9 +447,38 @@ zstdcat<span class="w"> </span>03_heuristic/*.jsonl.zst<span class="w"> </span><
 <div class="codehilite"><pre><span></span><code><span class="c1"># ★ 采样必须按最终训练配比！这是 9.7 强调的第一条</span>
 python3<span class="w"> </span>sample_by_mix.py<span class="w"> </span>--zh<span class="w"> </span><span class="m">0</span>.5<span class="w"> </span>--en<span class="w"> </span><span class="m">0</span>.4<span class="w"> </span>--code<span class="w"> </span><span class="m">0</span>.1<span class="w"> </span><span class="se">\</span>
 <span class="w">        </span>--total-gb<span class="w"> </span><span class="m">10</span><span class="w"> </span>-o<span class="w"> </span>tokenizer/corpus.txt
-python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab-size<span class="w"> </span><span class="m">65536</span><span class="w"> </span>-o<span class="w"> </span>tokenizer/tokenizer.json
-<span class="c1">#                                        ↑ ★ 小实验用 65536，正好卡在</span>
-<span class="c1">#                                          04 章那个 uint16 的边界内</span>
+<span class="c1">#       ↑ ⚠️ 这里的 GB 指十进制 10⁹ 字节；若你的工具按 GiB(2³⁰) 算，会多出 7.4%</span>
+python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab-size<span class="w"> </span><span class="m">65024</span><span class="w"> </span>-o<span class="w"> </span>tokenizer/tokenizer.json
+<span class="c1">#                                        ↑ ★★ 小实验用 65024，★ 不是 65536</span>
+<span class="c1">#                                          （为什么，见下面这一段）</span>
+</code></pre></div>
+
+<blockquote>
+<p>⚠️⚠️ <strong>这里有一个数字必须说准，否则你的 <code>.bin</code> 会白白大一倍。</strong></p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★ 很多人（包括本教程以前的写法）把边界记成&quot;65535&quot;，★ 这是【不对的】。
+
+✅ 我在本仓库的 Megatron-LM 源码里核对过
+   （megatron/core/datasets/indexed_dataset.py，DType.optimal_dtype）：
+
+     if cardinality is not None and cardinality &lt; 65500:
+         return numpy.uint16
+     else:
+         return numpy.int32
+
+✅ 而 tools/preprocess_data.py 传进去的就是 tokenizer.vocab_size。
+
+⟹ ★★★ 真正的判据是【vocab_size &lt; 65500】，不是 ≤ 65535：
+
+     vocab_size = 65024  →  65024 &lt; 65500  →  ★ uint16，2 字节/token  ✅
+     vocab_size = 65500  →  不满足 &lt;        →  ⚠️ int32，4 字节/token
+     vocab_size = 65535  →  不满足 &lt;        →  ⚠️ int32 ★（很多人以为能过，不能）
+     vocab_size = 65536  →  不满足 &lt;        →  ⚠️ int32
+
+⚠️ 注意 65500 这个数【比 uint16 的理论上限 65535 还小 35】——
+   ★ 我的理解（不是官方说明）：这 35 个是留给后续追加的特殊 token 的余量。
+★ 实践建议：想吃到 uint16，★ 词表定在【65024】或【65536−1024=64512】这类
+  明显低于 65500 的整数上，别去贴边。
 </code></pre></div>
 
 <h3 id="step-8-04">Step 8 · 转成训练格式（<a href="04-训练格式-Megatron索引.html">04 章</a>）</h3>
@@ -452,8 +492,12 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>★★ 跑完立刻做三件自检（04 章的坑）：
-   ① 检查 .bin 的 dtype：vocab 65536 → ⚠️ 已经【超过】65535 了，
-      会用 int32 而不是 uint16！★ 想省一半存储要用 65535 或更小
+   ① 检查 .bin 的 dtype：★ 判据是【vocab_size &lt; 65500 → uint16，否则 int32】
+      · 上面 Step 7 用的 65024 → ✅ uint16，2 字节/token
+      · ⚠️ 如果你改回了 65536（或 65535），→ 会变 int32，★ 存储直接翻倍
+      ★ 一行验证：python -c &quot;import numpy as np; print(np.memmap(
+        &#39;07_bin/zh_text_document.bin&#39;, dtype=np.uint16, mode=&#39;r&#39;)[:20])&quot;
+        —— 打出来是不是合理的 token id（而不是乱七八糟的大数）
    ② 随机抽 5 条样本【解码回文本】打印出来，肉眼确认不是乱码
    ③ 统计总 token 数 —— ★ 这是 10 章反推配比权重的输入
 </code></pre></div>
@@ -466,9 +510,28 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
 <span class="w">  </span>--split<span class="w"> </span><span class="m">998</span>,1,1<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--seq-length<span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--reset-position-ids<span class="w">  </span>--reset-attention-mask<span class="w"> </span><span class="se">\ </span><span class="w">   </span><span class="c1"># ★★ 13 章：默认关，手动开</span>
-<span class="w">  </span>--eod-mask-loss<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dataloader-inter-document-masking<span class="w"> </span><span class="se">\ </span><span class="w">            </span><span class="c1"># ★★★ 13.5：输出 cu_seqlens</span>
+<span class="w">  </span>--eod-mask-loss<span class="w"> </span><span class="se">\ </span><span class="w">                                </span><span class="c1"># ★ eod 位置不算 loss</span>
 <span class="w">  </span>--seed<span class="w"> </span><span class="m">1234</span><span class="w"> </span><span class="se">\ </span><span class="w">                                    </span><span class="c1"># ★ 14 章：显式 seed</span>
 <span class="w">  </span>--save-interval<span class="w"> </span><span class="m">500</span><span class="w">                               </span><span class="c1"># ★ 14 章：能续训</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>✅ 这四个开关我在本仓库的 Megatron-LM 源码里逐个核对过
+   （megatron/training/arguments.py，都是 action=&#39;store_true&#39; ⟹ ★ 默认全关）：
+
+  --reset-attention-mask              造 [s,s] 掩码矩阵 → ★ 对但不省算力
+  --reset-position-ids                位置 id 每篇文档从 0 重数
+  --dataloader-inter-document-masking ★★ 输出 cu_seqlens 给变长算子
+     ✅ help 原文：&quot;Return cu_seqlens marking document boundaries within
+        each sample so that attention is restricted to individual documents.&quot;
+  --eod-mask-loss                     ✅ help：&quot;Mask loss for the end of
+                                      document tokens.&quot;
+
+★★★ 13.5 的结论在这里落地：
+   只开前两个 → ★ 正确性有了，但掩码是&quot;算完乘 0&quot;，★ 速度一点没省
+   加上第三个 → ★★ 走变长注意力，才拿到 13.6 那张表里的加速
+⚠️ 第三个开关在旧版 Megatron 里可能没有 —— ★ 跑之前先
+   `python pretrain_gpt.py --help | grep inter-document` 确认一下。
 </code></pre></div>
 
 <hr />
@@ -517,13 +580,13 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
 </tr>
 <tr>
 <td>07 tokenizer</td>
-<td>★ 各语料的压缩率</td>
-<td>中文压缩率 &lt;2 → 训练语料里中文太少</td>
+<td>★ 各语料的压缩率<br>⚠️ 单位是<strong>字符/token</strong>（<a href="09-Tokenizer与词表.html">9.5 节</a>的定义）</td>
+<td>中文 &lt;2 字符/token → 训练语料里中文太少<br>★ 参照：<a href="09-Tokenizer与词表.html">9.5 节</a>实测中文约 <strong>3.8~4.0</strong></td>
 </tr>
 <tr>
 <td>08 转格式</td>
 <td>★ 总 token 数、dtype</td>
-<td>dtype 是 int32 → 存储翻倍，确认是否有意为之</td>
+<td>dtype 是 int32 → 存储翻倍；★ 判据是 <strong>vocab_size &lt; 65500</strong></td>
 </tr>
 <tr>
 <td>09 训练</td>
@@ -541,27 +604,67 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
 
 <hr />
 <h2 id="174">17.4 ★ 一个真实的量级感受</h2>
-<p>⚠️ 下面这组数字是<strong>我按前面各章的典型留存率推算的示意</strong>，不是某次真实运行的记录，<strong>用来建立量级直觉</strong>：</p>
-<div class="codehilite"><pre><span></span><code>100 TB 原始 WARC
-   │  正文抽取（留存 ~30%）
-   ▼
+<p>⚠️ 下面这组数字是<strong>我按前面各章的典型留存率推算的示意</strong>，不是某次真实运行的记录，<strong>用来建立量级直觉</strong>。</p>
+<blockquote>
+<p>⚠️⚠️ <strong>先把三个单位口径钉死</strong>，否则这条链算出来的东西没有意义：<br />
+★ ① 这里的 <strong>TB 是十进制 10¹² 字节</strong>（若按 TiB = 2⁴⁰ 算，同一堆数据的"数字"会小 <strong>10%</strong>）；<br />
+★ ② 每一级的"留存 ~x%"都是 <strong>按字节数</strong>算的，<strong>不是按文档篇数</strong> —— ⚠️ 两者差别很大（去重砍掉的往往是短文档，按篇数算会显著更高）；<br />
+★ ③ 最后那一步"字节 → token"的换算系数我写在下面，<strong>不要把它当成普适常数</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>100 TB 原始 WARC（十进制 TB = 10¹² 字节）
+   |
+   |  正文抽取        留存 ~30%（★ 按字节）
+   v
  30 TB 纯文本
-   │  语言识别 + 只留中英（留存 ~40%）
-   ▼
+   |
+   |  语言识别+只留中英 留存 ~40%（★ 按字节）
+   v
  12 TB
-   │  启发式过滤（留存 ~60%）
-   ▼
-  7 TB
-   │  精确 + 模糊去重（留存 ~45%）      ★ 这一步砍得最狠
-   ▼
-  3 TB
-   │  质量过滤（留存 ~30%）             ★ 这一步争议最大
-   ▼
-0.9 TB  ≈ 2000 亿 token
+   |
+   |  启发式过滤      留存 ~60%（★ 按字节）
+   v
+  7 TB            （12 × 0.6 = 7.2，取整写 7）
+   |
+   |  精确+模糊去重   留存 ~45%  ★★ 这一步砍得最狠
+   v
+  3 TB            （7 × 0.45 = 3.15，取整写 3）
+   |
+   |  质量过滤        留存 ~30%  ★★ 这一步争议最大
+   v
+0.9 TB
 
-★★★ 总留存率：100 TB → 0.9 TB，约 【0.9%】
+★★★ 总留存率：
+   按链条相乘 = 0.30 × 0.40 × 0.60 × 0.45 × 0.30 = 0.00972 ≈ ★【0.97%】
+   按首尾相除 = 0.9 / 100 = ★【0.9%】
+   ⟹ ★ 两个数不同是因为中间取了整（7.2→7、3.15→3）；★ 量级都是&quot;约 1%&quot;。
+
 ⟹ 这就是 [01 章](01-鸟瞰全景.md)开头那句话的来历：
    【数据工作的主体不是&quot;收集&quot;，是&quot;扔掉&quot;。】
+</code></pre></div>
+
+<p><strong>那 0.9 TB 是多少 token？⚠️ 这一步换算最容易被含糊过去，所以把系数摊开：</strong></p>
+<div class="codehilite"><pre><span></span><code>0.9 TB = 9 × 10¹¹ 字节
+
+★ 需要一个【字节/token】的系数，而它【取决于语种】：
+  · 英文：UTF-8 下一个字母 = 1 字节；一个 token 平均约 4 个字符
+    ⟹ ★ 约 4 字节/token
+  · 中文：★★ 一个汉字在 UTF-8 里通常是【3 字节】；
+    ✅ 09.5 节实测中文压缩率约 3.8~4.0 字符/token
+    ⟹ ★ 约 3.9 × 3 ≈ 【11~12 字节/token】
+  ⚠️ 两者差了近三倍！★ 所以&quot;多少 token&quot;必须先说清语种配比。
+
+★ 本章这条示例链的配比是 zh:en:code = 0.5 : 0.4 : 0.1（见 Step 7），
+  ⚠️ 但语料里中文的【字节占比】会被那 3 倍放大，
+  ★ 粗估混合系数落在 4~6 字节/token 之间，取中间值 4.5：
+
+     9 × 10¹¹ 字节 ÷ 4.5 字节/token = 2 × 10¹¹ token = ★【2000 亿 token】
+
+⚠️⚠️ 所以&quot;0.9 TB ≈ 2000 亿 token&quot;这句话的完整写法是：
+   【在 4.5 字节/token 的假设下，0.9 TB ≈ 2000 亿 token】。
+   ★ 换成纯英文语料（4 字节/token）会是 2250 亿；
+   ★ 换成纯中文语料（11.5 字节/token）只有 780 亿 —— 差了近三倍。
+   ⟹ ★★★ 以后看到任何&quot;X TB 语料 = Y token&quot;的说法，
+        ★ 第一句话就该问：【按什么语种、什么 tokenizer 换的？】
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>⚠️ 但要立刻补一句 [07 章](07-质量过滤.md)和 [16 章](16-五家报告的数据章节.md)的话：
@@ -581,7 +684,7 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
 
 ② ★ 一次跑通 → 反复重跑
    大规模下你一定会中途发现某条规则有 bug。
-   ⟹ 所以 [08.5 节](08-去污染与隐私许可.md)的 pipeline_version 和
+   ⟹ 所以 [08 章](08-去污染与隐私许可.md)要求的 pipeline_version 和
      filters_passed 字段是【必需品】，不是锦上添花。
 
 ③ ★★★ 从&quot;删除&quot;转向&quot;标注&quot;
@@ -598,7 +701,7 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
    04_dedup → 05_quality → 06_clean → 07_bin
    ★★★ 外加一个 stats/：每步必写&quot;进来多少/出去多少/各规则砍多少&quot;
 
-② 统一中间格式：JSON Lines + zstd，meta 里带全 08.5 的溯源字段
+② 统一中间格式：JSON Lines + zstd，meta 里带全 08 章要求的溯源字段
    （url / crawl_date / lang / quality / pipeline_version / filters_passed）
 
 ③ ★★ 关键实操点逐条对应：
@@ -607,18 +710,32 @@ python3<span class="w"> </span>train_tokenizer.py<span class="w"> </span>--vocab
    ★★★质量分只【打标不删】、阈值按分位数定 /
    去污染 13-gram + PII 掩码 / ★tokenizer 采样按最终配比
 
-④ ⚠️ 两个容易忽略的边界：
-   ★ vocab 65536 已经【超过】65535 → .bin 变 int32、存储翻倍
-   ★ --reset-position-ids / --reset-attention-mask 默认关，要手动开
+④ ⚠️ 三个容易忽略的边界：
+   ★★ dtype 的真实判据是【vocab_size &lt; 65500 → uint16，否则 int32】
+      ✅ 核对自 Megatron-LM 源码 DType.optimal_dtype
+      ⚠️ 不是&quot;≤ 65535&quot;：★ 65535 和 65536 都会变成 int32、★ 存储翻倍
+      ★ 想吃 uint16 就把词表定在 65024 这类明显低于 65500 的数上，别贴边
+   ★ --reset-position-ids / --reset-attention-mask 默认关，要手动开，
+      ★★ 而且只开这两个【不省算力】——
+      要加速还得开 --dataloader-inter-document-masking（输出 cu_seqlens）
+   ★ MinHash 的阈值 ≈ (1/B)^(1/R)：B=16, R=8 时是【0.71】，⚠️ 不是 0.75
 
 ⑤ ★★ &quot;每步该看什么&quot;检查表是本章核心产出；
    ★★★ 最后一行【每个数据集重复几遍】是整条流水线的收口，
       &gt;4 遍就要动手调，而不是假装没看见
 
 ⑥ ★ 量级直觉（⚠️ 示意推算，非实测）：
-   100 TB → 30 → 12 → 7 → 3 → 0.9 TB，★ 总留存率约 0.9%
+   100 TB → 30 → 12 → 7 → 3 → 0.9 TB，★ 总留存率约 1%
+   （★ 链条相乘 0.97%，首尾相除 0.9%，差别来自中间取整）
    ⟹ 数据工作的主体是【扔掉】
-   ⚠️ 但最后那步质量过滤正是业界在【主动放松】的一步
+   ⚠️⚠️ 这条链的三个口径必须一起说，否则数字没意义：
+     · ★ TB 是【十进制 10¹² 字节】（按 TiB 算差 10%）
+     · ★ 每级留存率都是【按字节】，⚠️ 不是按文档篇数（两者差别很大）
+     · ★★【0.9 TB ≈ 2000 亿 token】只在&quot;4.5 字节/token&quot;的假设下成立：
+          纯英文（4 字节/token）→ 2250 亿；
+          纯中文（汉字 3 字节 × 约 3.9 字符/token ≈ 11.5）→ 只有 780 亿
+       ⟹ ★★★ 看到&quot;X TB = Y token&quot;先问【按什么语种、什么 tokenizer 换的】
+   ⚠️ 另外最后那步质量过滤正是业界在【主动放松】的一步
 
 ⑦ ★★ 放大到生产会变三件事：单机→分布式（★ 只有去重真正变形）/
    一次跑通→反复重跑（★ 所以要有版本字段）/

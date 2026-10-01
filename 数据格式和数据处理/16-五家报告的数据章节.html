@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -256,63 +261,269 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ⚠️ 带 ⚠️ 的是我自己的判断或推断，请分开看。</p>
 </blockquote>
 <hr />
-<h2 id="161">16.1 先看一张总表</h2>
+<h2 id="161">16.1 ★★★ 先把五家压进同一组口径</h2>
+<blockquote>
+<p>★★ 这一章之所以不按"一家一段"来写，是因为<strong>横向对照的价值全在"口径一致"上</strong>。所以先摆三张<strong>列相同</strong>的表：规模与阶段、清洗手段、披露程度。</p>
+<p>⚠️ 表里每一格的标记规则：✅ = 报告原文有写（我核对过提取文件）；⚠️ <strong>未提及</strong> = 我在那一份报告的数据章节里<strong>没找到</strong>，★ 这<strong>不等于没做</strong>。</p>
+</blockquote>
+<h3 id="_1">表一 · 规模、阶段与上下文</h3>
 <table>
 <thead>
 <tr>
 <th></th>
-<th>✅ 语料规模</th>
-<th>✅ 阶段划分</th>
-<th>✅ 最终上下文</th>
+<th>✅ 语料总量</th>
+<th>✅ 阶段划分与各段 token 预算</th>
+<th>✅ 上下文扩展路径</th>
+<th>最终上下文</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>DeepSeek-V4</strong></td>
-<td>语料 <strong>&gt; 32 T</strong>；Flash 训 <strong>32 T</strong>、Pro 训 <strong>33 T</strong></td>
-<td>预训练 + mid-training（引入 agentic 数据）</td>
+<td>✅ 语料 <strong>&gt; 32 T</strong><br>✅ Flash 训 <strong>32 T</strong>、Pro 训 <strong>33 T</strong></td>
+<td>预训练 + mid-training（引入 agentic 数据）<br>⚠️ <strong>未给各段 token 预算</strong></td>
+<td>⚠️ <strong>未给分段路径</strong></td>
 <td><strong>1 M</strong></td>
 </tr>
 <tr>
 <td><strong>Kimi K3</strong></td>
-<td>⚠️ 报告未给总 token 数</td>
-<td>预训练 + cooldown（冷却期）</td>
+<td>⚠️ <strong>未给总 token 数</strong><br>（★ 五家里唯一没给的）</td>
+<td>预训练 + cooldown（冷却期）<br>⚠️ <strong>未给各段 token 预算</strong></td>
+<td>✅ 四阶段：预训练内 <strong>8 K → 64 K</strong>；<br>✅ cooldown 内 <strong>256 K → 1 M</strong></td>
 <td><strong>1 M</strong></td>
 </tr>
 <tr>
 <td><strong>GLM-5.2</strong></td>
-<td>起步语料 <strong>27 T</strong>；base 合计 <strong>28.5 T</strong></td>
-<td>预训练 + <strong>mid-training</strong> 三段扩上下文</td>
+<td>✅ 起步语料 <strong>27 T</strong><br>✅ base 合计 <strong>28.5 T</strong></td>
+<td>预训练 + mid-training<br>✅ <strong>三段都给了预算</strong>（见右）</td>
+<td>✅ <strong>32 K</strong>(1 T) → <strong>128 K</strong>(500 B)<br>→ <strong>200 K</strong>(50 B)</td>
 <td><strong>200 K</strong></td>
 </tr>
 <tr>
 <td><strong>MiniMax-M3</strong></td>
-<td>恒定阶段 <strong>19.9 T</strong> + 衰减阶段 <strong>9.3 T</strong> ≈ <strong>29.2 T</strong></td>
-<td>constant phase + decay phase</td>
+<td>✅ 报告自己写的是 <strong>29.2 T</strong><br>（✅ 恒定 <strong>19.9 T</strong> + 衰减 <strong>9.3 T</strong>，自洽）</td>
+<td>✅ constant phase <strong>19.9 T</strong><br>+ decay phase <strong>9.3 T</strong></td>
+<td>✅ <strong>8 K → 32 K → 192 K</strong></td>
 <td><strong>192 K</strong></td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0</strong></td>
-<td><strong>34 T</strong></td>
-<td>★ 三阶段课程：General <strong>25 T</strong> / Reasoning <strong>8 T</strong> / Annealing <strong>1.4 T</strong></td>
+<td>✅ <strong>约 34 T</strong>（原文 "roughly 34 trillion"）<br>⚠️ 三段相加是 34.4 T，见下方注</td>
+<td>✅ 三阶段课程：<br>General <strong>25 T</strong>（4 K）/ Reasoning <strong>8 T</strong>（8 K）/ Annealing <strong>1.4 T</strong></td>
+<td>✅ 退火段内 <strong>32 K</strong>(800 B) → <strong>128 K</strong>(400 B)<br>→ <strong>512 K</strong>(200 B)</td>
 <td><strong>512 K</strong></td>
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>★★ 第一个观察：语料规模全部落在【28 T ~ 34 T】这个很窄的带里。
+<div class="codehilite"><pre><span></span><code>⚠️ 一个必须说出来的口径差（openPangu）：
+   ✅ 报告说总量 &quot;roughly 34 trillion&quot;，
+   ✅ 又说三阶段是 25 T + 8 T + 1.4 T = ★ 34.4 T。
+   ⟹ 差了 0.4 T。★ 这不是算错，是原文用的 &quot;roughly&quot;（约）——
+      ⚠️ 但引用时不要把&quot;34 T&quot;写成精确值，★ 也不要把 34.4 T 说成报告的数字。
+   ✅ 内部另有一处自洽可查：退火段的 800 B + 400 B + 200 B = 1.4 T，
+      ★ 正好等于 Phase 3 的预算 —— 说明上下文扩展就在退火段里做完。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★★ 第一个观察：语料总量全部落在【28 T ~ 34 T】这个很窄的带里。
    ⟹ 这一代前沿模型的&quot;数据预算&quot;事实上已经收敛了。
-   ⚠️ 我的判断：这个数字更可能是【高质量数据的供给上限】，
-      而不是&quot;算出来的最优值&quot; —— 正是 [11 章](11-喂多少-ScalingLaw.md)说的【数据墙】。
+   ⚠️ 我的判断（不是哪家报告的结论）：这个数字更可能是
+      【高质量数据的供给上限】，而不是&quot;算出来的最优值&quot;
+      —— 正是 [11 章](11-喂多少-ScalingLaw.md)说的【数据墙】。
+   ⚠️ 而且这个&quot;收敛&quot;是在【四家】上观察到的：★ Kimi K3 根本没给总量，
+      严格说只能说&quot;给了总量的四家都在 28~34 T&quot;。
 
 ★★ 第二个观察：★ 五家【全部】都是多阶段的。
    名字各不相同（mid-training / cooldown / decay / annealing / 三阶段课程），
    ⟹ 但做的是同一件事：[10.6 节](10-数据配比.md)讲的【配比随时间变化 + 学习率衰减】。
    ★ 单一固定配比在这一代已经【完全消失】了。
+
+★★ 第三个观察：★ 上下文都不是一步到位的，而是【逐级扩】，
+   而且凡是给了预算的（GLM、openPangu）都呈现【急剧递减】：
+     GLM:       1 T → 500 B → 50 B      （★ 每级约 1/2 ~ 1/10）
+     openPangu: 800 B → 400 B → 200 B   （★ 每级对折）
+   ⟹ 说明扩上下文的【边际成本很高】，所以越到后面给的量越少。
+</code></pre></div>
+
+<h3 id="05-08">表二 · 清洗与质量手段（★ 这张表的列就是本教程 05-08 章）</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>去重方法</th>
+<th>质量过滤方法</th>
+<th>污染/去污染处理</th>
+<th>合成数据的态度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>⚠️ <strong>未提及</strong>具体方法<br>（只说"沿用 V3 的预处理")</td>
+<td>✅ 过滤<strong>批量自动生成/模板化内容</strong><br>✅ 理由：防<strong>模型坍塌</strong></td>
+<td>⚠️ <strong>未提及</strong>评测去污染</td>
+<td>✅ <strong>过滤</strong>网上来源不明的 AI 内容</td>
+</tr>
+<tr>
+<td><strong>Kimi K3</strong></td>
+<td>✅ 文本：<strong>去重</strong>（与规则、分类器并列）<br>✅ 长文档/视频：<strong>精确 + 模糊去重</strong><br>✅★ 视频用<strong>逐帧感知哈希</strong></td>
+<td>✅ <strong>规则启发式 + 分类器打分</strong><br>✅ 长文档另加<strong>结构验证</strong></td>
+<td>⚠️ <strong>未提及</strong></td>
+<td>✅★ <strong>主动改写</strong>知识与数学语料<br>✅★★ 并做<strong>保真度验证</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5.2</strong></td>
+<td>✅ 代码语料用<strong>模糊去重</strong><br>✅ 长文档过滤含<strong>去重</strong>（与 PPL、长度并列）</td>
+<td>✅★ <strong>DCLM 分类器</strong>（句子嵌入）<br>✅★★ <strong>世界知识分类器</strong><br>✅ 大模型打分 + <strong>分块打分再聚合</strong></td>
+<td>⚠️ <strong>未提及</strong>（唯一出现<br>"decontaminated"的地方是在说<br>SWE-rebench 这个<strong>评测集</strong>，不是自己语料）</td>
+<td>⚠️★ <strong>分场景</strong>：数学与科学<strong>严格避免</strong>；<br>✅ 但长上下文数据<strong>明确含合成</strong>（见 16.4）</td>
+</tr>
+<tr>
+<td><strong>MiniMax-M3</strong></td>
+<td>⚠️ <strong>未提及</strong>具体方法</td>
+<td>✅★ <strong>模型打的奖励分 + 辅助分类器</strong>，多维度<br>✅ 采样时<strong>上调高质量、保留类别多样性</strong></td>
+<td>⚠️ <strong>未提及</strong></td>
+<td>⚠️ <strong>未提及</strong></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0</strong></td>
+<td>⚠️ <strong>未提及</strong>具体方法</td>
+<td>✅ <strong>规则启发式 + 基于模型的评估管线</strong><br>✅★★ <strong>每篇文档标注</strong>质量/难度/类别/教育价值</td>
+<td>⚠️ <strong>未提及</strong></td>
+<td>✅ 语料来源<strong>明确包含合成数据</strong><br>✅★ 并<strong>改写</strong>低清洁度数据保长尾知识</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">表三 · ★★★ 披露程度本身就是信息</h3>
+<blockquote>
+<p>★★ 这张表可能是整章最有用的一张。<strong>"查不到"也是一个结论</strong>——知道哪一家什么都没说，能省下大量徒劳的搜索。</p>
+<p>★ 评分口径：✅ = 给了可引用的数字或具体方法；◐ = 只给了定性描述；✗ = 数据章节里完全没提。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>披露项</th>
+<th>DeepSeek-V4</th>
+<th>Kimi K3</th>
+<th>GLM-5.2</th>
+<th>MiniMax-M3</th>
+<th>openPangu-2.0</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>语料<strong>总 token 数</strong></td>
+<td>✅ &gt;32T / 32T / 33T</td>
+<td>✗ <strong>没给</strong></td>
+<td>✅ 27T→28.5T</td>
+<td>✅ 29.2T</td>
+<td>✅ ~34T</td>
+</tr>
+<tr>
+<td><strong>各阶段 token 预算</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✅ 1T/500B/50B</td>
+<td>✅ 19.9T/9.3T</td>
+<td>✅ 25T/8T/1.4T + 800/400/200B</td>
+</tr>
+<tr>
+<td><strong>数据配比百分比</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>◐ "显著上采样"</td>
+<td>✗</td>
+</tr>
+<tr>
+<td><strong>域划分</strong></td>
+<td>◐ 列了类别</td>
+<td>✅ 四域 + 视觉</td>
+<td>✅ 网页/代码/数学科学</td>
+<td>◐ 列了来源</td>
+<td>◐ 列了来源</td>
+</tr>
+<tr>
+<td><strong>去重方法</strong></td>
+<td>✗</td>
+<td>✅ 精确+模糊+感知哈希</td>
+<td>✅ 模糊去重</td>
+<td>✗</td>
+<td>✗</td>
+</tr>
+<tr>
+<td><strong>质量过滤方法</strong></td>
+<td>◐</td>
+<td>✅ 三件套</td>
+<td>✅★ 点名 DCLM 等</td>
+<td>✅ 奖励分+分类器</td>
+<td>✅ 规则+模型评估</td>
+</tr>
+<tr>
+<td><strong>过滤阈值 / 特征</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+</tr>
+<tr>
+<td><strong>评测去污染做法</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+</tr>
+<tr>
+<td><strong>合成数据占比</strong></td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+<td>✗</td>
+</tr>
+<tr>
+<td><strong>打包 / 文档掩码</strong></td>
+<td>✅★★★ 两者都写了<br>+ 点名引用来源</td>
+<td>✗</td>
+<td>✅ 代码拼接 + 交错打包</td>
+<td>✅ 主题相关文档打包</td>
+<td>✗</td>
+</tr>
+<tr>
+<td><strong>词表变化</strong></td>
+<td>✅ 保持 128 K</td>
+<td>✅ 保持 160 K</td>
+<td>✗</td>
+<td>✗</td>
+<td>✅ 约 15 万（换了变体）</td>
+</tr>
+<tr>
+<td>★ <strong>整体披露程度</strong></td>
+<td>★★ 中（但打包这块最细）</td>
+<td>★★ 中（数据管线细、数字少）</td>
+<td>★★★ 高</td>
+<td>★★ 中</td>
+<td>★★★ 高</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 把表三竖着读，有四行是【五家全部为 ✗】的 ——
+     ★ 这四行就是你无论翻哪份报告都查不到的东西：
+
+     · 数据配比的百分比
+     · 过滤阈值与特征
+     · ★★ 评测去污染的具体做法（一家都没写）
+     · 合成数据占语料的比例
+
+  ⟹ ★★ 这不是巧合。16.8 会逐条说为什么偏偏是这四项。
+  ⟹ ★ 而&quot;打包/文档掩码&quot;那一行恰好相反：★ 两家写得相当具体
+       —— 说明这件事在业界已经从&quot;实现细节&quot;升级成&quot;值得写进报告的做法&quot;。
 </code></pre></div>
 
 <hr />
 <h2 id="162-deepseek-v4">16.2 DeepSeek-V4：本教程最好的一处一手佐证</h2>
-<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>DeepSeek-V4-正文提取.txt</code></a> §4.1 Data Construction。</p>
+<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>DeepSeek-V4-正文提取.txt</code></a>，<strong>报告 §4.1 Data Construction</strong> 一节。</p>
 <div class="codehilite"><pre><span></span><code>✅ 报告明确写到的几件事：
 
 ① 网页数据：★ 过滤掉【批量自动生成的内容和模板化内容】，
@@ -335,7 +546,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ⟹ 呼应 [09.7 节](09-Tokenizer与词表.md)：预留 token 的价值就在这里体现
 </code></pre></div>
 
-<h3 id="_1">★★★ 最值得单独拎出来的两句</h3>
+<h3 id="_3">★★★ 最值得单独拎出来的两句</h3>
 <blockquote>
 <p>✅ <strong>报告原文（我按原意转述）：</strong><br />
 ```<br />
@@ -345,6 +556,28 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ★★★【样本级注意力掩码（sample-level attention masking）】。」<br />
 ```</p>
 </blockquote>
+<h3 id="1">★★★ 我把第①句里那条引用查实了</h3>
+<div class="codehilite"><pre><span></span><code>✅ 第①句的英文原文其实带了一个来源，中文转述时很容易漏掉：
+
+   &quot;★ Inspired by Ding et al. 2024, we pack documents from different
+     sources into appropriate sequences to minimize sample truncation.&quot;
+
+✅ 我去报告的参考文献里把 &quot;Ding et al. 2024&quot; 查出来了：
+
+   &quot;H. Ding, Z. Wang, G. Paolini, V. Kumar, A. Deoras, D. Roth, and S. Soatto.
+    Fewer truncations improve language modeling.
+    arXiv preprint arXiv:2404.10830, 2024.&quot;
+
+★★★ 也就是说：[13.1 节](13-打包与文档掩码.md)那篇 Best-fit Packing
+     （2404.10830，AWS）★ 正是 DeepSeek-V4 自己点名引用、并照着做的论文。
+
+⟹ ★★ 这比&quot;某报告也提到了打包&quot;分量重得多：
+     它是一条【学术方法 → 前沿实验室实装】的完整采纳链条。
+⚠️ 边界：✅&quot;引用了它并据此打包&quot;是原文+参考文献，是事实；
+   ⚠️&quot;所以用的就是论文里的 Best-fit Packing 算法本身&quot;★ 是我的推断
+      —— 报告只写了 &quot;inspired by&quot;，没给算法细节。
+</code></pre></div>
+
 <p><strong>为什么这两句极其重要？</strong></p>
 <div class="codehilite"><pre><span></span><code>★★★ 这就是 [13 章](13-打包与文档掩码.md)整章讲的东西，出现在一份前沿模型报告里：
 
@@ -362,7 +595,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <hr />
 <h2 id="163-kimi-k3">16.3 Kimi K3：改写型合成数据的完整配方</h2>
-<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>Kimi-K3-正文提取.txt</code></a> §3.1 Pre-Training Data。</p>
+<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>Kimi-K3-正文提取.txt</code></a>，<strong>报告 §3.1 Pre-Training Data</strong> 一节。</p>
 <div class="codehilite"><pre><span></span><code>✅ 四个文本域 + 一个视觉语料：
    Web Text（网页）/ Code（代码）/ Mathematics（数学）/ Knowledge（知识）
    + 大规模视觉语料（图文交错文档、OCR、感知、视频、视觉编码数据）
@@ -401,7 +634,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ⟹ 工业界比论文多做的那一步，就是【验证】。
 </code></pre></div>
 
-<h3 id="_2">✅ 长上下文数据的专门管线</h3>
+<h3 id="_4">✅ 长上下文数据的专门管线</h3>
 <blockquote>
 <p>✅ 报告直白地说明了一件很多人不知道的事：<strong>自然来源的长文档和视频里有大量低质内容</strong>——近重复、二进制块、截断文件、无效的机器生成日志。</p>
 </blockquote>
@@ -423,9 +656,68 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
      短文档会在打包时把长文档&quot;稀释&quot;掉
 </code></pre></div>
 
+<h3 id="kimi">✅ ★★ 而且 Kimi 紧接着说了一句更狠的：光靠"长"是不够的</h3>
+<blockquote>
+<p>✅ <strong>报告原文大意</strong>：「<strong>单凭长度并不能带来长程能力。</strong>为此我们<strong>合成</strong>额外的长上下文数据——<br />
+★ 做法是<strong>精心地对多模态文档和子任务做置换与拼接</strong>，<br />
+<strong>使得其中嵌入的任务只有靠关注散布在整个 1 M 上下文里的信息才能解出来</strong>。」</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>★★★ 这一句把 13 章的&quot;打包&quot;推到了另一个用途上，值得和 MiniMax 那条并读：
+
+  13 章的打包目标是【省 padding / 少切文档】——★ 是个效率措施
+  Kimi 这里的拼接目标是【制造&quot;必须跨越全窗口才能解的任务&quot;】
+    ⟹ ★★ 它在用拼接【合成长程依赖的监督信号】
+    ⟹ ★★★ 否则模型只会学到&quot;窗口很长但注意力退化成局部&quot;
+       （✅ 报告原话就是 &quot;prevents it from degenerating into local patterns&quot;）
+
+★ 所以 16.7 共识⑥ 那句&quot;长上下文数据是构造出来的&quot;，★ 在这里有第二个一手佐证。
+</code></pre></div>
+
+<h3 id="_5">✅ 上下文课程：五家里路径写得最细的一家</h3>
+<p>✅ 报告明确给了<strong>四阶段</strong>的窗口增长路径（⚠️ 但<strong>没给各段的 token 预算</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>✅ 窗口</th>
+<th>在哪一段训练里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>8 K</strong></td>
+<td>预训练起点</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>64 K</strong></td>
+<td>预训练后段</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>256 K</strong></td>
+<td>★ cooldown（冷却期）</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>1 M</strong></td>
+<td>★ cooldown</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>✅ 报告给的理由很工程：「把昂贵的长序列计算【集中在整体训练预算的一小部分里】，
+   让课程既省钱、又能让模型逐步适应越来越长的依赖。」
+⟹ ★★ 和 16.1 表一观察到的&quot;预算急剧递减&quot;是同一个逻辑。
+
+✅ 另外一个和 09 章相关的细节：Kimi K3 的词表是【160 K，与 K2 完全相同】
+   （报告 Table 1 里写的是 &quot;Vocabulary Size 160K 160K =&quot;）
+   ⟹ ★ 这一条下面 16.4 之后要用到，★ 它推翻了一个很容易脱口而出的说法。
+</code></pre></div>
+
 <hr />
 <h2 id="164-glm-52">16.4 GLM-5.2：质量分类器用得最细的一家</h2>
-<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>GLM-5-正文提取.txt</code></a> §2.2 Pre-training Data。</p>
+<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>GLM-5-正文提取.txt</code></a>，<strong>报告 §2.2 Pre-training Data</strong> 一节。</p>
 <div class="codehilite"><pre><span></span><code>✅【网页】两个分类器：
   ① ★ 一个基于【句子嵌入】的 DCLM 分类器
      ⟹ 直接点名 [07 章](07-质量过滤.md)讲的 DCLM（2406.11794）！
@@ -446,8 +738,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ⟹ ★★ 注意它汇报的指标是【去重后的唯一 token】，
          而不是&quot;数据量增加了多少&quot; —— 这正是 [11 章](11-喂多少-ScalingLaw.md)
          强调的那个真正稀缺的资源。这个措辞本身就说明了行业共识的变化。
+      ⚠️⚠️ 但这个 28% 的【分母要说清】，否则很容易被引错：
+         · 它是【代码语料】的增幅，★ 不是整个 27 T 语料的增幅
+         · 它是相对【GLM-4.5 那一版的代码语料】，★ 不是相对某个绝对基线
+         · 它按【token 数】计，★ 不是按文档数、也不是按字节数
+         ⟹ ★ 本教程后面说&quot;+28%&quot;时，一律指&quot;代码语料的去重后唯一 token
+              相对上一代的增幅&quot;。⚠️ 报告没给绝对值，所以算不出具体是多少 T。
   · 修复 Software Heritage 代码文件的【元数据对齐】问题
-    ⟹ 呼应 [08.5 节](08-去污染与隐私许可.md)：元数据是一等公民
+    ⟹ 呼应 [08 章](08-去污染与隐私许可.md)的【数据溯源】一节：元数据是一等公民
   · 采用更准确的【编程语言分类】管线
     ⟹ 呼应 [05 章](05-语言识别与启发式过滤.md)：语言识别在代码上同样是个难题
   · ★ 为 Scala / Swift / Lua 等【低资源编程语言】单独训分类器
@@ -484,11 +782,46 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    区别在于你【知不知道它是怎么来的、有没有验证过】。
 </code></pre></div>
 
-<p>✅ <strong>Mid-training</strong>：分三段逐级扩上下文——<strong>32 K（1 T token）→ 128 K（500 B）→ 200 K（50 B）</strong>。<br />
+<h3 id="glm">⚠️⚠️ 一个必须立刻补上的限定：GLM 并不是"全面反合成"</h3>
+<blockquote>
+<p>⚠️ 上面那句「严格避免合成」很容易被引成"GLM-5.2 不用合成数据"。<strong>这是错的。</strong><br />
+✅ 那句话出现在报告的 <strong>Math &amp; Science（数学与科学）</strong> 这一小段里，<strong>作用范围只是这一类数据</strong>。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>✅ 同一份报告在【长上下文数据】那一段写的是完全相反的做法：
+
+   「我们的长上下文训练集【同时包含自然数据和合成数据】。……在合成数据构造上，
+     受 NextLong 和 EntropyLong 的启发，我们用多种技术来【构造长程依赖】。
+     ★ 把高度相似的文本通过【交错打包（interleaved packing）】聚合成序列，
+     以缓解【lost-in-the-middle】现象。」
+   ✅ 并且在 200 K 那一段还额外掺入了少量【MRCR 式的合成数据】。
+
+★★★ 所以正确的表述是【分场景的】，不是一句&quot;避免合成&quot;：
+   · 预训练的数学与科学语料 → ✅ 严格避免合成 / AI 生成 / 模板化
+   · mid-training 的长上下文数据 → ✅ 明确、主动地【使用合成】
+
+⟹ ⚠️ 这正是 16.4 前面那张&quot;张力表&quot;最容易出错的地方：
+     ★ 五家的差异【不在&quot;用不用合成&quot;，而在&quot;在哪类数据上用&quot;】。
+</code></pre></div>
+
+<h3 id="mid-trainingglm">✅ Mid-training：GLM 也在做"代码拼接"和"相关文档打包"</h3>
+<p>✅ <strong>上下文扩展</strong>：分三段逐级扩——<strong>32 K（1 T token）→ 128 K（500 B）→ 200 K（50 B）</strong>。<br />
 ★ 注意那个<strong>急剧递减的 token 预算</strong>：扩上下文的边际成本很高，所以越到后面给的量越少。</p>
+<div class="codehilite"><pre><span></span><code>✅ 而软件工程数据那一段，报告写的做法和 [13 章](13-打包与文档掩码.md)直接相关：
+
+   「沿用把【仓库级代码文件、commit diff、GitHub issue、pull request
+     和相关源文件】拼接成统一训练序列的范式。」
+   ✅ 放宽了仓库级过滤标准 → 得到约【1000 万】个 issue-PR 对
+   ✅ 过滤后，issue-PR 那部分约【160 B 唯一 token】
+
+★★★ 这一条很重要，因为它改写了一个常见说法：
+   ⚠️ &quot;代码拼接&quot;不是 MiniMax 独有的做法（16.5），★ GLM 也在做，
+      而且 GLM 还把【交错打包相似文本】明确写成了长上下文构造手段。
+   ⟹ ★ 所以 16.7 的共识⑥ 要算【四家】，不是三家。
+</code></pre></div>
+
 <hr />
 <h2 id="165-minimax-m3">16.5 MiniMax-M3：把"打包"写进了报告</h2>
-<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>MiniMax-M2-正文提取.txt</code></a> §3 Pre-Training Data。</p>
+<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>MiniMax-M2-正文提取.txt</code></a>，<strong>报告 §3 Pre-Training Data</strong> 一节。</p>
 <div class="codehilite"><pre><span></span><code>✅ 语料来源：网页文档、学术文献、书籍、编程代码、结构化问答内容
 
 ✅ 质量评估：★【模型打的奖励分 + 辅助分类器】组合，多维度评估
@@ -502,7 +835,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ⟹ [10.3 节](10-数据配比.md)人工配比的第③条：&quot;代码给 5~20%&quot;，一手印证
 </code></pre></div>
 
-<h3 id="_3">✅ ★★★ 长上下文数据的三个来源</h3>
+<h3 id="_6">✅ ★★★ 长上下文数据的三个来源</h3>
 <blockquote>
 <p>✅ 报告写道，衰减阶段（decay phase，9.3 T token）的长上下文训练样本主要来自三处：</p>
 </blockquote>
@@ -528,34 +861,69 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ★【真正天然的长文档太少了，不够训 192 K 的上下文窗口】。
    于是&quot;把相关短文档拼成假的长文档&quot;成了必需的手段。
    ⚠️ 但报告没有说明此时是否关闭文档掩码，这一点无法从原文确认。
+
+★★★ 而且这条路【不是 MiniMax 一家在走】—— 三家各有一个说法，但做的是同一件事：
+   · MiniMax-M3 ：✅「thematically related document packing」（主题相关文档打包）
+   · GLM-5.2    ：✅「把高度相似的文本通过【交错打包】聚合成序列」
+                   ✅ 目标写得更具体：★ 缓解 lost-in-the-middle
+   · Kimi K3    ：✅「置换并拼接多模态文档与子任务，★ 使任务只有关注
+                      散布在整个 1M 上下文里的信息才能解出」
+   ⟹ ★★ 三家都在【用打包制造长程依赖的监督信号】，
+        而不是把打包当成省 padding 的技巧。
+   ⟹ ★★★ 这是本章对 [13 章](13-打包与文档掩码.md)最重要的一条延伸。
 </code></pre></div>
 
 <p>✅ 上下文扩展路径：<strong>8 K → 32 K → 192 K</strong>；恒定阶段 <strong>19.9 T</strong>、衰减阶段 <strong>9.3 T</strong>。</p>
 <hr />
 <h2 id="166-openpangu-20">16.6 openPangu-2.0：披露最完整、也最贴合本教程的一家</h2>
-<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>openPangu-2.0-正文提取.txt</code></a> §3.1 Data Construction。</p>
-<div class="codehilite"><pre><span></span><code>✅ 语料 34 T token，★ 三阶段课程（这是五家里写得最清楚的一份）：
-
-┌─ Phase 1 · General（25 T）────────────────────────────────┐
-│    建立通用知识与广泛语言能力的基础                        │
-│    ✅ 序列长度 4 K                                         │
-├─ Phase 2 · Reasoning（8 T）───────────────────────────────┤
-│    ✅ 提高高质量 STEM 与代码数据的比例                     │
-│    ✅ 序列长度 8 K                                         │
-├─ Phase 3 · Annealing（1.4 T）────────────────────────────┤
-│    ✅ 精炼模型行为与 agentic 能力                          │
-│    ✅★ 【刻意把长文档和复杂轨迹数据留到这最后一个阶段】    │
-│    ✅ 上下文逐级扩到 32 K(800 B) → 128 K(400 B) → 512 K(200 B) │
-└──────────────────────────────────────────────────────────┘
+<p>✅ 出处：<a href="../业界模型技术报告/papers/"><code>openPangu-2.0-正文提取.txt</code></a>，<strong>报告 §3.1 Data Construction</strong> 一节。</p>
+<p>✅ 语料<strong>约 34 T</strong> token，★ <strong>三阶段课程</strong>（这是五家里写得最清楚的一份）：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>✅ token 预算</th>
+<th>✅ 序列长度</th>
+<th>✅ 这一段在干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Phase 1 · General</strong></td>
+<td><strong>25 T</strong></td>
+<td><strong>4 K</strong></td>
+<td>建立通用知识与广泛语言能力的基础</td>
+</tr>
+<tr>
+<td><strong>Phase 2 · Reasoning</strong></td>
+<td><strong>8 T</strong></td>
+<td><strong>8 K</strong></td>
+<td>✅ 提高高质量 STEM 与代码数据的比例</td>
+</tr>
+<tr>
+<td><strong>Phase 3 · Annealing</strong></td>
+<td><strong>1.4 T</strong></td>
+<td>✅ 逐级扩：<strong>32 K</strong>(800 B)<br>→ <strong>128 K</strong>(400 B) → <strong>512 K</strong>(200 B)</td>
+<td>✅ 精炼模型行为与 agentic 能力<br>✅★ <strong>刻意把长文档和复杂轨迹数据留到这最后一个阶段</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 两处可以自己验算的自洽性：
+  ① 退火段的 800 B + 400 B + 200 B = 1.4 T ✅ 正好等于 Phase 3 的预算
+     ⟹ 说明上下文扩展整个就在退火段里做完
+  ② 25 + 8 + 1.4 = 34.4 T，★ 而报告总量写的是 &quot;roughly 34 trillion&quot;
+     ⚠️ 差 0.4 T —— 原文用了 &quot;roughly&quot;，★ 引用时别把 34 T 当精确值
 
 ★★ &quot;刻意把最好的数据留到最后&quot;—— 这正是 [10.6 节](10-数据配比.md)
    我给出的那个直觉解释（学习率低时数据影响权重更大），
    ✅ 在这里得到了一家厂商的明确表述。
+   ⚠️ 但要分清：★ 报告只写了【做法】（把长文档和复杂轨迹留到退火段），
+      ⚠️【&quot;因为学习率低时数据影响权重更大&quot;这个解释是我给的】，报告没说理由。
 </code></pre></div>
 
 <p>✅ <strong>语料来源</strong>：网页、书籍、PDF、多语言文本、代码仓库、STEM 文献、<strong>行业领域数据</strong>、agentic 任务、<strong>以及合成数据</strong>。<br />
 ★ 重点扩容的是 <strong>ARC</strong>（<strong>A</strong>gent、<strong>R</strong>easoning、<strong>C</strong>ode）数据，做法是"<strong>彻底重做基于规则的启发式 + 整合基于模型的评估管线</strong>"——即 <a href="05-语言识别与启发式过滤.html">05 章</a> + <a href="07-质量过滤.html">07 章</a> 的组合。</p>
-<h3 id="_4">✅ ★★★ 两处对本教程的直接印证</h3>
+<h3 id="_7">✅ ★★★ 两处对本教程的直接印证</h3>
 <blockquote>
 <p>✅ <strong>印证一（对应 <a href="12-合成数据.html">12.5 节</a> Nemotron-CC 的"分诊"）——报告原文大意：</strong><br />
 「为了<strong>保留那些清洁度或流畅度分数较低的样本里有价值的长尾知识</strong>，我们训练了几个专门的微调模型，让它们<strong>改写并规范化文本格式，同时严格保持原有的语义</strong>。」</p>
@@ -582,7 +950,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <hr />
-<h2 id="167">16.7 ★★ 把五家读完之后的六个共识</h2>
+<h2 id="167">16.7 ★★ 把五家读完之后的七条结论</h2>
 <div class="codehilite"><pre><span></span><code>① ★ 多阶段是标配，单一固定配比已经消失
    五个不同的名字（mid-training / cooldown / decay / annealing / 三阶段课程），
    ★ 做的是同一件事 —— [10.6 节](10-数据配比.md)
@@ -604,12 +972,27 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ⟹ 和 [12.5 节](12-合成数据.md) Nemotron-CC 的分诊思想完全一致。
    ★ 这是 2024-2026 这一波数据工作最重要的方向性变化。
 
-⑥ ★★ 长上下文数据是【构造】出来的，不是&quot;找&quot;出来的：
-   MiniMax 主题相关文档打包 + 代码拼接；
-   Kimi 上采样长文档并专门清洗；
-   openPangu 把长文档留到退火阶段。
-   ⟹ 三家的手段不同，但都在回答同一个问题：
-      ★【天然的长文档不够用怎么办】
+⑥ ★★★ 长上下文数据是【构造】出来的，不是&quot;找&quot;出来的 —— ★ 四家都在做：
+   · MiniMax：★ 主题相关文档打包 + 代码拼接 + 天然长 PDF
+   · GLM：    ★ 仓库级代码/issue/PR 拼接 + 【交错打包高度相似文本】
+              ✅ 并明确说长上下文集&quot;同时包含自然与合成数据&quot;
+   · Kimi：   ★ 上采样长文档并专门清洗，
+              ✅★★ 再【置换+拼接文档与子任务】造出&quot;必须跨全窗口才能解&quot;的任务
+   · openPangu：★ 把长文档与复杂轨迹【留到退火阶段】
+   ⟹ ★ 四家手段不同，但都在回答同一个问题：
+      ★★【天然的长文档不够用怎么办】
+   ⟹ ★★★ 而且三家（MiniMax / GLM / Kimi）给的答案是同一类：
+        【把短的相关文档拼成长的】
+        —— ★ 这正好是 [13 章](13-打包与文档掩码.md)那个&quot;打包&quot;动作，
+           ⟹ ★★ 只是目标从&quot;省 padding&quot;换成了&quot;造长程依赖信号&quot;。
+
+⑦ ⚠️ 一个要分清的非共识：★【对合成数据的态度不是分歧，而是&quot;看哪类数据&quot;】
+   · openPangu 语料里明确含合成；Kimi 主动改写知识与数学语料
+   · GLM 在【数学与科学】上严格避免合成，★ 但在【长上下文】上主动合成
+   · DeepSeek-V4 过滤的是【网上来源不明】的 AI 内容
+   ⟹ ★★ 五家在一件事上完全一致：
+      【自产、可追溯、经过验证的合成数据是资产；
+        野生、来源不明的 AI 内容是污染。】
 </code></pre></div>
 
 <hr />
@@ -624,9 +1007,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ② ★★ 过滤阈值与规则细节
    &quot;启发式规则&quot;&quot;质量分类器&quot;都提了，但★ 阈值、特征、训练种子一概不给。
 
-③ ★ 去污染的具体做法
-   ⚠️ 五家的数据章节里，我【没有找到】对评测去污染方法的具体描述。
-   ★ 这不代表没做，但确实意味着 [08 章](08-去污染与隐私许可.md)说的那个问题
+③ ★★ 去污染的具体做法 —— ✅ 这一条我做了全文检索，不只是&quot;没看到&quot;
+   ✅ 我在五份正文提取文件里检索了 decontaminat / contaminat /
+      leakage / n-gram 这几个词，结果是：
+        · DeepSeek-V4：只在【参考文献标题】里出现（MathArena 那篇）
+        · Kimi K3 / MiniMax-M3：★ 完全没有出现
+        · GLM-5.2：唯一一处 &quot;decontaminated&quot; 是在说
+          ★ SWE-rebench【这个评测集本身】去污染做得好，
+          ⚠️ 不是在说自己的训练语料
+        · openPangu-2.0：唯一一处 &quot;contaminating&quot; 是在说
+          ★ DSA 训练时不要污染【KL loss】，⚠️ 和数据去污染无关
+   ⟹ ★★★ 所以可以把话说得比&quot;没找到&quot;更硬一点：
+        【五份报告的数据章节里，没有任何一家描述自己语料的评测去污染方法。】
+   ★ 这仍然不代表没做，但确实意味着 [08 章](08-去污染与隐私许可.md)说的那个问题
      ——&quot;各家报的&#39;已去污染&#39;根本不是一回事&quot;——在这一代依然成立。
 
 ④ ★ 合成数据的比例与生成细节
@@ -643,17 +1036,40 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="169">16.9 小结</h2>
 <div class="codehilite"><pre><span></span><code>① ✅ 规模：DeepSeek-V4 &gt;32T（Flash 32T/Pro 33T）/ GLM-5.2 27T→28.5T /
-   MiniMax-M3 19.9T+9.3T≈29.2T / openPangu-2.0 34T / ⚠️ Kimi K3 未披露
-   ★★ 收敛在 28~34 T ⟹ ⚠️ 更像供给上限而非最优值
+   ✅ MiniMax-M3 **29.2T**（报告自己给的数，= 19.9T + 9.3T，自洽）/
+   ✅ openPangu-2.0 约 34T（⚠️ 原文 &quot;roughly&quot;；三段相加是 34.4T，差 0.4T）/
+   ⚠️ Kimi K3 **未披露总量**
+   ★★ 给了总量的【四家】收敛在 28~34 T
+      ⟹ ⚠️ 我的判断：更像供给上限而非最优值（不是哪家的结论）
+   ★★★ 16.1 换成了【三张列相同的表】：规模与阶段 / 清洗手段 / 披露程度
+      ⟹ ★ 横向对照的价值全在&quot;口径一致&quot;，不在逐家叙述
 
 ② ★★★ DeepSeek-V4 是本教程最强的一处一手佐证：
    ✅「把不同来源的文档【打包】以最小化样本截断」= 13.3
    ✅「★ 与 V3 不同，我们采用【样本级注意力掩码】」= 13.5
    ⟹ ★ &quot;与 V3 不同&quot;说明上一代还没做 —— 13 章那个坑是真实的
    ✅ 另外：网页过滤【批量自动生成内容】以防【模型坍塌】= 12.6
-   ✅ 词表【保持 128K 不变】（五家里唯一没扩词表的）
+   ★★★ 而且那句打包带了来源：✅「Inspired by **Ding et al. 2024**」
+      ⟹ ✅ 我从报告参考文献里查实它就是
+        【Fewer truncations improve language modeling, arXiv:2404.10830】
+        —— ★ 即 13.1 那篇 Best-fit Packing（AWS）
+      ⟹ ★★ 这是一条【学术方法被前沿实验室点名采纳】的完整链条
+      ⚠️ 但报告只说 &quot;inspired by&quot;、没给算法细节，★ 别写成&quot;用的就是该算法&quot;
+   ✅ 词表【保持 128K 不变】
+      ⚠️⚠️ 更正一处旧说法：★ 这【不是】&quot;五家里唯一没扩词表的&quot;。
+         ✅ Kimi K3 的词表也是【160K，与 K2 完全相同】（报告 Table 1：
+            &quot;Vocabulary Size 160K 160K =&quot;）；
+         ✅ 而 openPangu-2.0 的词表相对 1.0 其实是【变小】了
+            （[9.5 节](09-Tokenizer与词表.md)的表：153,376 → 149,600）
+         ⟹ ★ 正确的说法是：【这一代没有一家在扩词表】
 
 ③ ✅ Kimi K3：四域（Web/Code/Math/Knowledge）+ 视觉；
+   ✅ 上下文四阶段：预训练内 8K→64K，cooldown 内 256K→1M
+      ✅ 理由：把昂贵的长序列计算【集中在训练预算的一小部分】
+   ✅★★ 「单凭长度不带来长程能力」⟹ 用【置换+拼接文档与子任务】
+      合成&quot;必须跨越整个 1M 上下文才能解&quot;的任务，
+      ✅ 以防注意力【退化成局部模式】
+   ✅ 词表 160K，★ 与 K2 完全相同（没扩）；
    过滤 = ★【规则 + 分类器打分 + 去重】；★ 采样率由小模型消融定
    ✅ 改写配方三要素：风格视角多样化提示 / 分块自回归生成 /
       ★★★【对照源文档做保真度验证】—— 12.6 风险二的解药
@@ -662,10 +1078,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ④ ✅ GLM-5.2：★ 点名用 DCLM 分类器（07 章那篇）+
    ★★【世界知识分类器】从中低质数据里【蒸馏长尾知识】
    ✅ 代码：★【模糊去重后唯一 token +28%】—— 注意这个汇报口径
+      ⚠️ 分母要说清：是【代码语料】相对【GLM-4.5 那一版】、按【token】计的增幅，
+         ★ 不是整个 27 T 语料的增幅，⚠️ 报告也没给绝对值
    ✅ 低资源编程语言单独训分类器；长文档【分块打分再聚合】
    ✅★★★「严格避免合成/AI 生成/模板化数据」
+      ⚠️⚠️ 但这句话的【作用范围只是数学与科学那一小段】！
+         ✅ 同一份报告在长上下文那段明确写「同时包含自然与合成数据」，
+            ✅ 还受 NextLong / EntropyLong 启发做【交错打包相似文本】
+            以缓解 lost-in-the-middle，★ 200K 段还掺了 MRCR 式合成数据
+         ⟹ ★ 正确表述是【分场景】，不是&quot;GLM 不用合成数据&quot;
       ⟹ ★ 与 12 章不矛盾：【自产已验证的合成数据是资产，
         野生来源不明的 AI 内容是污染】
+   ✅ 软件工程数据：★ 把仓库级代码/commit diff/issue/PR 拼成统一序列
+      ⟹ ★★ 所以&quot;代码拼接&quot;不是 MiniMax 独有的（见 ⑦）
 
 ⑤ ✅ MiniMax-M3：模型奖励分 + 辅助分类器多维评估；
    ✅「上调高质量★同时保留类别多样性」= 07.6 分布窄化风险的显式约束
@@ -680,12 +1105,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ·【每篇文档标注质量/难度/类别/教育价值，驱动课程采样】= 07.5
       ★ 标注是因，课程是果
 
-⑦ ★★ 六个共识：多阶段标配 / 规模收敛 / ★三件套过滤 /
+⑦ ★★ 七条结论：多阶段标配 / 规模收敛 / ★三件套过滤 /
    ★★汇报口径变成【唯一 token】/ ★★★从&quot;筛掉&quot;转向&quot;抢救&quot; /
-   ★长上下文数据是【构造】出来的
+   ★★★长上下文数据是【构造】出来的（★ 四家都在做：
+     MiniMax 主题打包+代码拼接 / GLM 仓库拼接+交错打包 /
+     Kimi 置换拼接造长程任务 / openPangu 长文档留到退火）/
+   ⚠️ 合成数据不是分歧而是【分场景】
 
-⑧ ⚠️ 五家都没说的四件事：★ 具体配比数字 / 过滤阈值 /
-   ★ 去污染的具体做法（一家都没写）/ ★ 合成数据的比例
+⑧ ⚠️ 五家都没说的四件事（★ 16.1 表三竖着读，这四行全是 ✗）：
+   ★ 具体配比数字 / 过滤阈值与特征 /
+   ★★ 去污染的具体做法（✅ 我对五份提取文件做了关键词全文检索，
+      确认【没有任何一家描述自己语料的评测去污染方法】）/
+   ★ 合成数据占语料的比例
+   ⟹ ★★ 反过来，&quot;打包/文档掩码&quot;那一行有两家写得很细
+      —— ★ 说明这件事已经从&quot;实现细节&quot;升级成&quot;值得写进报告的做法&quot;
 </code></pre></div>
 
 <hr />

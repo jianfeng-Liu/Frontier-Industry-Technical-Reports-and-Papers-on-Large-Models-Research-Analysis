@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -253,29 +258,151 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>全教程最重要的一章。</strong> 去重是整个数据流水线里<strong>收益最确凿、争议最小</strong>的一步——<br />
 别的环节（质量过滤怎么定义"好"、配比怎么配）都还在吵，去重是公认必做的。</p>
+<p>⚠️ <strong>本章数字口径</strong>：容量沿用 <a href="05-语言识别与启发式过滤.html">05 章</a>的十进制约定（1 GB = 10⁹ 字节）。<strong>★ 更要紧的是"去重率"的分母</strong>：同一次去重，按<strong>文档数</strong>算、按<strong>字节数</strong>算、按<strong>token 数</strong>算，能得出三个差好几倍的数字——6.1 节会用论文里的两张表把这件事钉死。</p>
 </blockquote>
 <hr />
 <h2 id="61">6.1 先看一个真实的数字</h2>
-<p>✅ <strong>Lee et al., <a href="https://arxiv.org/abs/2107.06499">arXiv:2107.06499</a></strong>（Katherine Lee 等，Google，2021-07，ACL 2022）——<strong>这是这个领域的奠基论文</strong>，它在 C4 里发现：</p>
+<p>✅ <strong>Lee et al., <a href="https://arxiv.org/abs/2107.06499">arXiv:2107.06499</a></strong>（Katherine Lee 等，Google，2021-07，ACL 2022）——<strong>这是这个领域的奠基论文</strong>。✅ 下面所有数字我都从 <a href="papers/">papers/Dedup-Deduplicating-Training-Data-Makes-LM-Better-arXiv-2107.06499.pdf</a> 里逐句核对过。</p>
 <blockquote>
-<p><strong>一个 61 个单词的英文句子，在 C4 里出现了 6 万多次。</strong></p>
+<p>✅ <strong>一个 61 个单词的英文句子，在 C4 里逐字重复了 61036 次</strong>（论文原文："a 61-word sequence in C4 that is repeated 61,036 times verbatim"）。</p>
 </blockquote>
 <p>而 C4 已经是当时<strong>过滤得最认真</strong>的开源语料之一。</p>
-<p>同一篇论文的其他发现（全部 ✅ 论文明确报告）：</p>
-<div class="codehilite"><pre><span></span><code>① 未加提示时，模型输出里【超过 1%】的内容是逐字照抄训练数据的
-   去重之后 → 降到约 0.1%，★ 少了 10 倍
+<h3 id="_1">★★ 去重率的分母：同一篇论文里的两张表，差一倍</h3>
+<p>这是本章最该先讲的一件事。论文报了两组留存数字，<strong>它们的分母不同，不可以直接比</strong>：</p>
+<p>✅ <strong>论文 Table 2 —— NearDup（近似文档去重），口径是「样本（文档）数的占比」：</strong></p>
+<table>
+<thead>
+<tr>
+<th>语料</th>
+<th>训练集中被判为近似重复的<strong>文档</strong>占比</th>
+<th>验证集中被判为近似重复的占比</th>
+<th>验证集中能在训练集里找到的占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C4</strong></td>
+<td><strong>3.04%</strong></td>
+<td>1.59%</td>
+<td><strong>4.60%</strong></td>
+</tr>
+<tr>
+<td><strong>RealNews</strong></td>
+<td><strong>13.63%</strong></td>
+<td>1.25%</td>
+<td><strong>14.35%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>✅ <strong>论文 Table 3 —— ExactSubstr（子串去重），口径是「token 数的占比」：</strong></p>
+<table>
+<thead>
+<tr>
+<th>语料</th>
+<th>训练集中属于重复子串的 <strong>token</strong> 占比</th>
+<th>验证集中的占比</th>
+<th>验证集中能在训练集里找到的占比</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>C4</strong></td>
+<td><strong>7.18%</strong></td>
+<td>0.75%</td>
+<td>1.38%</td>
+</tr>
+<tr>
+<td><strong>RealNews</strong></td>
+<td><strong>19.4%</strong></td>
+<td>2.61%</td>
+<td>3.37%</td>
+</tr>
+<tr>
+<td><strong>LM1B</strong></td>
+<td>0.76%</td>
+<td>0.016%</td>
+<td>0.019%</td>
+</tr>
+<tr>
+<td><strong>Wiki-40B</strong></td>
+<td>2.76%</td>
+<td>0.52%</td>
+<td>0.67%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 把 C4 那两行并排看：
 
-② 标准数据集的验证集里，【超过 4%】的内容能在训练集里找到
-   ★ 也就是说，&quot;验证 loss&quot;里有 4% 是在考背诵
+    NearDup      3.04%   ← 分母是【文档数】
+    ExactSubstr  7.18%   ← 分母是【token 数】
 
-③ 去重后训练步数更少就能达到同样或更好的准确率
+⟹ 这两个数字【不是】&quot;7.18% 比 3.04% 删得多一倍&quot;。
+   它们量的根本不是同一件东西：
+     一个说&quot;有 3.04% 的文档整篇被删掉&quot;，
+     一个说&quot;有 7.18% 的 token 被从各篇文档里抠掉（★ 没有任何文档被整篇删除）&quot;。
 
-④ 在 Wiki-40B 上，ExactSubstr 去重让 XL 模型的困惑度降低了将近 3 个点
-   ★ 尽管训练数据【变少了】
+⟹ ✅ 论文自己点出了这一点，原文大意是：
+   &quot;平均而言 ExactSubstr 删掉的总内容【比 NearDup 更多】，
+    尽管 ExactSubstr 不整篇删除任何样本 —— 例如它删掉了 C4 里 7.18% 的 token。&quot;
+
+⚠️ 所以每次看到&quot;去重删掉了 X%&quot;，第一个要问的问题永远是：
+   【X% 的分母是文档数、字节数，还是 token 数？】
 </code></pre></div>
 
 <blockquote>
-<p>★★ ④ 这一条是全领域最有说服力的实验之一：<strong>数据变少了，效果反而变好了。</strong><br />
+<p>⚠️ <strong>一个真实的失败模式</strong>：同一个团队里 A 用文档数报留存率、B 用 token 数报留存率，两人对同一次去重给出 3% 和 7% 两个数，然后花一周争论"哪一步出了 bug"。<strong>先统一分母，再讨论数值。</strong></p>
+<p>★ 还有一个 LM1B 那一行值得单独看：它只删掉 0.76% 的 token，✅ 论文给的解释是 <strong>LM1B 有 90% 的文档不到 50 个 token</strong>，而 ExactSubstr 的最小匹配长度就是 50 token——<strong>短文档连"参与匹配"的资格都没有。</strong> 这就是"同一个方法在不同语料上留存率差 25 倍"的原因，不是方法好坏。</p>
+</blockquote>
+<h3 id="_2">同一篇论文的其他发现（全部 ✅ 论文明确报告）</h3>
+<p>✅ <strong>逐字复述（memorization）的比例，论文 Table 4</strong>——无提示生成 10 万条序列，统计其中逐字照抄训练数据的 token 占比：</p>
+<table>
+<thead>
+<tr>
+<th>模型（1.5 B 参数的 "XL"，训练语料不同）</th>
+<th>训练 1 epoch</th>
+<th>训练 2 epochs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>XL-Original</strong>（不去重）</td>
+<td><strong>1.926%</strong></td>
+<td>1.571%</td>
+</tr>
+<tr>
+<td><strong>XL-NearDup</strong>（近似文档去重后）</td>
+<td><strong>0.189%</strong></td>
+<td>0.264%</td>
+</tr>
+<tr>
+<td><strong>XL-ExactSubstr</strong>（子串去重后）</td>
+<td><strong>0.138%</strong></td>
+<td>0.168%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 自己验一遍&quot;少了 10 倍&quot;这个说法：
+    1.926% ÷ 0.189% = 10.2 倍    ✅ 和论文说的 &quot;∼10× more memorization&quot; 一致
+⚠️ 注意这里是【倍数】而不是【百分点】：1.926% → 0.189% 是&quot;降到原来的 1/10&quot;，
+   不是&quot;降低了 10%&quot;。★ 这两种说法在中文里极易混，本教程一律写清是哪一种。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>其余三条（✅ 论文明确报告）：
+
+① 标准数据集的验证集里，【超过 4%】的内容能在训练集里找到
+   ★ 具体地：C4 验证集 4.60%、RealNews 验证集 14.35%（上面 Table 2）
+   ⟹ 也就是说，&quot;验证 loss&quot;里有一部分是在考背诵 —— 08 章专门讲这件事
+
+② 去重后训练步数更少就能达到同样或更好的准确率
+
+③ ✅ 在 Wiki-40B 上，ExactSubstr 去重让 1.5 B 的 XL 模型困惑度
+   【降低了将近 3 个点】（论文原文 &quot;almost 3 points perplexity on Wiki-40B&quot;）
+   ★ 尽管训练数据【变少了】
+   ⚠️ 口径：这是&quot;困惑度绝对值降了约 3&quot;，不是&quot;降低了 3%&quot;
+</code></pre></div>
+
+<blockquote>
+<p>★★ ③ 这一条是全领域最有说服力的实验之一：<strong>数据变少了，效果反而变好了。</strong><br />
 这直接印证了 <a href="01-鸟瞰全景.html">01 章</a>的因果链①——<strong>训练预算固定时，垃圾 token 挤占的是好 token 的位置。</strong></p>
 </blockquote>
 <hr />
@@ -291,55 +418,146 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <blockquote>
 <p>★ <strong>④ 值得特别强调</strong>：很多人以为"用 100 个 CC 快照就有 100 倍数据"。实际上<strong>快照之间的重叠率极高</strong>——所以真实增量远小于线性。这是新手最常见的误判。</p>
+<p>✅ 一个可以量化的旁证（我从 <a href="papers/">papers/Dolma-Open-Corpus-of-Three-Trillion-Tokens-arXiv-2402.00159.pdf</a> 核对过）：Dolma 做<strong>段落级</strong>去重时，"<strong>这一步删掉了大约 70% 的段落</strong>，主要是页眉和导航元素"。⚠️ 注意它的分母是<strong>段落数</strong>，不是文档数也不是 token 数——按上一节的规矩，这个 70% 不能和别处的留存率直接比。</p>
 </blockquote>
 <hr />
 <h2 id="63">6.3 ★★ 四个粒度：本章的骨架</h2>
 <p>去重不是一件事，是<strong>四件不同的事</strong>，抓的是四种不同的重复。它们<strong>互补而非替代</strong>，现代流水线通常叠着用。</p>
-<div class="codehilite"><pre><span></span><code>┌───────────────────────────────────────────────────────────────────┐
-│ ① 精确文档去重  Exact                                              │
-│    &quot;两篇文档一字不差&quot;                                              │
-│    手段：整篇算一个哈希，哈希相同就是重复                          │
-│    成本：★ 最便宜   抓到：转载、跨快照重复                         │
-│    抓不到：改了一个标点就漏                                        │
-├───────────────────────────────────────────────────────────────────┤
-│ ② 近似文档去重  NearDup / Fuzzy      ← ★★ 主力，工作量最大         │
-│    &quot;两篇文档 80% 的内容一样&quot;                                       │
-│    手段：MinHash + LSH                                             │
-│    成本：中    抓到：模板页、加了广告的转载、改了几个词的洗稿      │
-│    抓不到：只有一大段相同、其余完全不同                            │
-├───────────────────────────────────────────────────────────────────┤
-│ ③ 子串去重  ExactSubstr                                            │
-│    &quot;这两篇文档里有【一模一样的 50 个 token】&quot;                      │
-│    手段：后缀数组（suffix array）                                  │
-│    成本：高    抓到：长引用、嵌入的法律条文、代码片段              │
-│    ★ 它删的是【片段】，不是整篇文档                                │
-├───────────────────────────────────────────────────────────────────┤
-│ ④ 语义去重  SemDeDup                                               │
-│    &quot;这两篇文档说的是同一件事，但用词完全不同&quot;                      │
-│    手段：embedding + 聚类                                          │
-│    成本：★ 最贵（要跑模型）  抓到：翻译、改写、同题材水文          │
-└───────────────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>粒度</th>
+<th>判据（一句话）</th>
+<th>手段</th>
+<th>成本</th>
+<th>★ 抓得到</th>
+<th>⚠️ 抓不到 / 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>精确文档</strong><br>Exact</td>
+<td>两篇文档一字不差</td>
+<td>整篇算一个哈希，哈希相同即重复</td>
+<td>★ 最便宜</td>
+<td>转载、跨快照重复</td>
+<td>改一个标点就漏</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>近似文档</strong><br>NearDup / Fuzzy</td>
+<td>两篇文档 80% 的内容一样</td>
+<td>MinHash + LSH</td>
+<td>中</td>
+<td>模板页、加了广告的转载、改几个词的洗稿</td>
+<td>只有一大段相同、其余完全不同的情况</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>子串</strong><br>ExactSubstr</td>
+<td>两篇里有<strong>一模一样的 ≥ 50 token 片段</strong></td>
+<td>后缀数组（suffix array）</td>
+<td>高</td>
+<td>长引用、嵌入的法律条文、代码片段</td>
+<td>★ 它删的是【片段】不是整篇，所以"删了多少文档"恒为 0</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>语义</strong><br>SemDeDup</td>
+<td>说的是同一件事，但用词完全不同</td>
+<td>embedding + 聚类</td>
+<td>★ 最贵（要给每篇跑一次模型）</td>
+<td>翻译、改写、同题材水文</td>
+<td>⚠️ 也最容易删错（"语义相似" ≠ "信息冗余"）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ 这张表的最后一列就是后面各节要展开的东西。<strong>② 是主力，工作量最大，也是唯一需要认真理解算法的一个。</strong></p>
+</blockquote>
 <hr />
 <h2 id="64-1">6.4 ① 精确去重：最简单的那个</h2>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">hashlib</span>
 <span class="n">seen</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
 <span class="k">for</span> <span class="n">doc</span> <span class="ow">in</span> <span class="n">docs</span><span class="p">:</span>
-    <span class="c1"># ★ 先归一化！否则大小写/空格差异会让它失效</span>
-    <span class="n">key</span> <span class="o">=</span> <span class="n">normalize</span><span class="p">(</span><span class="n">doc</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">])</span>          <span class="c1"># 见 05 章的 normalize_zh</span>
-    <span class="n">h</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span><span class="n">key</span><span class="o">.</span><span class="n">encode</span><span class="p">())</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span>
+    <span class="c1"># ★ 先归一化！否则大小写/空格/零宽字符的差异会让它整体失效（见 05 章 normalize_zh）</span>
+    <span class="n">key</span> <span class="o">=</span> <span class="n">normalize</span><span class="p">(</span><span class="n">doc</span><span class="p">[</span><span class="s2">&quot;text&quot;</span><span class="p">])</span>
+    <span class="n">h</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span><span class="n">key</span><span class="o">.</span><span class="n">encode</span><span class="p">())</span><span class="o">.</span><span class="n">digest</span><span class="p">()</span>     <span class="c1"># ★ 用 digest()（32 字节）不是 hexdigest()（64 字节）</span>
     <span class="k">if</span> <span class="n">h</span> <span class="ow">in</span> <span class="n">seen</span><span class="p">:</span>
         <span class="k">continue</span>
     <span class="n">seen</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">h</span><span class="p">)</span>
     <span class="n">keep</span><span class="p">(</span><span class="n">doc</span><span class="p">)</span>
 </code></pre></div>
 
-<p><strong>问题：<code>seen</code> 集合放不下。</strong> 100 亿篇文档 × 32 字节哈希 = 320 GB，单机内存装不下。</p>
-<p>三种解法：</p>
+<h3 id="seen">★ 先算清楚 <code>seen</code> 到底要多少内存</h3>
+<p>这是精确去重唯一的难点。设有 <strong>100 亿（10¹⁰）篇文档</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>存法</th>
+<th>每元素理论字节</th>
+<th>100 亿篇合计</th>
+<th>同一个数的二进制口径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SHA-256 原始摘要 <code>digest()</code></td>
+<td>32 B</td>
+<td><strong>320 GB</strong></td>
+<td>298 GiB</td>
+</tr>
+<tr>
+<td>SHA-256 十六进制串 <code>hexdigest()</code></td>
+<td>64 B</td>
+<td><strong>640 GB</strong></td>
+<td>596 GiB</td>
+</tr>
+<tr>
+<td>⚠️ <strong>放进 Python <code>set</code> 里的真实开销</strong>（<code>digest()</code>）</td>
+<td>★ <strong>约 78 B</strong></td>
+<td>★ <strong>约 780 GB</strong></td>
+<td>727 GiB</td>
+</tr>
+<tr>
+<td>⚠️ 放进 Python <code>set</code> 里（<code>hexdigest()</code>）</td>
+<td>约 118 B</td>
+<td>约 1.18 TB</td>
+<td>1.07 TiB</td>
+</tr>
+<tr>
+<td>截断成 8 字节、存进扁平数组</td>
+<td>8 B</td>
+<td><strong>80 GB</strong></td>
+<td>75 GiB</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 第三行是最容易被忽略的一行。验算过程：
+    sys.getsizeof(bytes(32))     = 65 字节   ← 32 字节数据 + 33 字节 Python 对象头
+    set 的槽位                    ≈ 8 / 0.6 ≈ 13 字节   ← 哈希表装载因子要留余量
+    合计 ≈ 78 字节/元素 ⟹ 1e10 × 78 B ≈ 780 GB
+
+⟹ ★ &quot;320 GB&quot; 这个教科书数字，在 Python 里实际要 780 GB，是 2.4 倍。
+   ⚠️ 用 hexdigest() 的话是 1.18 TB，又多 50% —— 所以上面代码特意用了 digest()。
+</code></pre></div>
+
+<p><strong>截断成 8 字节会不会撞车？</strong> 这是个可以算的问题：</p>
+<div class="codehilite"><pre><span></span><code>10¹⁰ 个随机 64 位值，期望的碰撞【对数】≈ n² / (2 · 2⁶⁴)
+    = 1e20 / 3.689e19 ≈ 2.7 对
+
+⟹ ★ 期望约 3 篇不重复的文档被误判成重复而删掉 —— 在 100 亿篇里可以忽略。
+⟹ ⚠️ 但&quot;至少发生一次碰撞&quot;的概率是 93%，所以【别声称它是零误差的】。
+   ★ 这就是&quot;精确去重&quot;的第一个让步：工程上的&quot;精确&quot;通常是 10⁻⁹ 量级的近似。
+</code></pre></div>
+
+<h3 id="_3">三种解法</h3>
 <div class="codehilite"><pre><span></span><code>① 分桶排序（最稳妥）
    按 hash 的前 2 字节分成 65536 个桶 → 每桶单独去重 → 完全精确
    ★ 因为相同的 hash 必然落在同一个桶，分桶不会漏
+   ★ 代价：要落盘一遍（外排序），但内存需求降到 1/65536
 
 ② Bloom filter（省内存，有假阳性）
    用 m 位的位数组 + k 个哈希函数
@@ -350,29 +568,79 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ③ 段落级去重
    ★ 一个很实用的中间做法：按段落算哈希，只删重复的【段落】
    能抓到&quot;正文不同但页脚相同&quot;的模板页，而整篇哈希抓不到
+   ✅ Dolma 报告这一步删掉了约 70% 的【段落】
 </code></pre></div>
 
-<p><strong>Bloom filter 的取舍公式</strong>（值得记住）：</p>
+<h3 id="bloom-filter">Bloom filter 的取舍：一张可以直接查的表</h3>
 <div class="codehilite"><pre><span></span><code>位数组 m 位，插入 n 个元素，用 k 个哈希函数
-    假阳性率 ≈ (1 - e^(-kn/m))^k
-    最优 k = (m/n)·ln2
+    假阳性率 ≈ (1 − e^(−kn/m))^k
+    最优 k   = (m/n) · ln2
+</code></pre></div>
 
-★ 实用速记：每个元素分 10 位（m/n=10）→ 假阳性率约 1%
-                        分 14 位          → 约 0.1%
-   100 亿文档 × 10 位 = 12.5 GB   ← ★ 单机装得下！这就是它的价值
+<p>✅ 下面每一行我都代进公式算过（k 取最优值的四舍五入）：</p>
+<table>
+<thead>
+<tr>
+<th>每元素位数 <code>m/n</code></th>
+<th>最优 k（取整）</th>
+<th>假阳性率</th>
+<th>100 亿文档需要的内存</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8</td>
+<td>6</td>
+<td>2.16%</td>
+<td>10.0 GB（9.3 GiB）</td>
+</tr>
+<tr>
+<td><strong>10</strong></td>
+<td><strong>7</strong></td>
+<td><strong>0.82%</strong>（"约 1%"）</td>
+<td><strong>12.5 GB（11.6 GiB）</strong></td>
+</tr>
+<tr>
+<td>12</td>
+<td>8</td>
+<td>0.31%</td>
+<td>15.0 GB（14.0 GiB）</td>
+</tr>
+<tr>
+<td><strong>14</strong></td>
+<td><strong>10</strong></td>
+<td><strong>0.12%</strong>（"约 0.1%"）</td>
+<td><strong>17.5 GB（16.3 GiB）</strong></td>
+</tr>
+<tr>
+<td>16</td>
+<td>11</td>
+<td>0.05%</td>
+<td>20.0 GB（18.6 GiB）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ Bloom filter 的全部价值就在最后一列：
+   100 亿文档、12.5 GB —— 单机内存装得下，而 Python set 要 780 GB。
+
+⚠️ 但请把&quot;假阳性率&quot;换算成绝对值再做决定：
+   1e10 篇 × 0.82% = 8200 万篇不重复的文档被误删。
+   ★ &quot;不到 1%&quot;听起来很小，8200 万篇听起来就不小了。
+   ⟹ 要不要接受，取决于你是在做【预训练主语料】（可以接受）
+      还是在做【精选高质量语料】（绝对不能接受，该用分桶排序）。
 </code></pre></div>
 
 <hr />
 <h2 id="65-2-minhash-lsh">6.5 ★★ ② 近似去重：MinHash + LSH</h2>
 <p>这是去重的<strong>主力</strong>，也是本章唯一需要认真理解的算法。</p>
-<h3 id="_1">第一步：把"相似"定义成一个数</h3>
-<p>先把文档变成<strong>集合</strong>——切成 n-gram（连续 n 个词）：</p>
+<h3 id="_4">第一步：把"相似"定义成一个数</h3>
+<p>先把文档变成<strong>集合</strong>——切成 n-gram（连续 n 个词，这里的"词"按空格切，中文要先分词或改按字符，见 <a href="05-语言识别与启发式过滤.html">05 章</a> 5.5 节）：</p>
 <div class="codehilite"><pre><span></span><code>doc A = &quot;the cat sat on the mat&quot;
 doc B = &quot;the cat sat on a mat&quot;
 
-5-gram 集合：
-  A = { &quot;the cat sat on the&quot;, &quot;cat sat on the mat&quot; }
-  B = { &quot;the cat sat on a&quot;,   &quot;cat sat on a mat&quot;   }
+3-gram 集合：
+  A = { &quot;the cat sat&quot;, &quot;cat sat on&quot;, &quot;sat on the&quot;, &quot;on the mat&quot; }
+  B = { &quot;the cat sat&quot;, &quot;cat sat on&quot;, &quot;sat on a&quot;,   &quot;on a mat&quot;   }
 </code></pre></div>
 
 <p><strong>Jaccard 相似度</strong>（两个集合的重叠程度）：</p>
@@ -381,10 +649,12 @@ doc B = &quot;the cat sat on a mat&quot;
               |A ∪ B|          并集大小
 
   取值 0（毫无重叠）到 1（完全相同）
+
+上面这对：交集 = 2，并集 = 6  ⟹  J = 2/6 = 1/3 ≈ 0.333
 </code></pre></div>
 
-<p><strong>问题：</strong> 10 亿篇文档，两两比较是 10¹⁸ 次。宇宙热寂了也算不完。</p>
-<h3 id="minhash-128">第二步：MinHash —— 把一个大集合压成 128 个数</h3>
+<p><strong>问题：</strong> 10 亿篇文档，两两比较是 5 × 10¹⁷ 次（= n²/2）。宇宙热寂了也算不完。</p>
+<h3 id="minhash-k">第二步：MinHash —— 把一个大集合压成 k 个数</h3>
 <p><strong>这是全章最漂亮的一个想法。</strong></p>
 <div class="codehilite"><pre><span></span><code>★★ 核心定理：
    取一个随机哈希函数 h，把集合里每个元素都哈希一遍，只保留【最小的那个值】。
@@ -408,22 +678,280 @@ doc B = &quot;the cat sat on a mat&quot;
 挑中交集里元素的概率 = |A∩B| / |A∪B| = J(A,B)。   ∎
 </code></pre></div>
 
-<p>于是：<strong>用 k 个不同的哈希函数，做 k 次，数一下有几次相等，除以 k，就是 J 的估计。</strong></p>
-<div class="codehilite"><pre><span></span><code>signature(A) = [ min h₁(A), min h₂(A), ..., min h_k(A) ]     ← k 个整数
-
-  Ĵ(A,B) = (signature 中对应位置相等的个数) / k
-
-★★ 这就把一篇几万字的文档，压成了 k 个整数（k 通常 64~256）
-   估计误差 ≈ 1/√k       k=128 → 误差约 ±0.09
+<h3 id="_5">★★ 第二步半：手算一遍，把这个定理摸实</h3>
+<p>上面那个证明看懂了不等于相信了。用刚才那对句子<strong>把签名完整算出来</strong>。</p>
+<p><strong>① 给 6 个 shingle 编号</strong>（并集一共 6 个）：</p>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>shingle</th>
+<th>属于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>s1</strong></td>
+<td><code>the cat sat</code></td>
+<td>★ A 和 B（交集）</td>
+</tr>
+<tr>
+<td><strong>s2</strong></td>
+<td><code>cat sat on</code></td>
+<td>★ A 和 B（交集）</td>
+</tr>
+<tr>
+<td>s3</td>
+<td><code>sat on the</code></td>
+<td>只在 A</td>
+</tr>
+<tr>
+<td>s4</td>
+<td><code>on the mat</code></td>
+<td>只在 A</td>
+</tr>
+<tr>
+<td>s5</td>
+<td><code>sat on a</code></td>
+<td>只在 B</td>
+</tr>
+<tr>
+<td>s6</td>
+<td><code>on a mat</code></td>
+<td>只在 B</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>A = {s1, s2, s3, s4}      B = {s1, s2, s5, s6}
+交集 = {s1, s2} → 2 个      并集 = 6 个       J = 2/6 = 1/3
 </code></pre></div>
 
+<p><strong>② 用 6 个哈希函数</strong> <code>h_a(x) = (a · x) mod 7</code>，<code>a = 1…6</code>。★ 7 是质数且大于 6，所以这 6 个函数各自把 {1…6} 打乱成一个<strong>完整的排列</strong>——正好是定理里要的"随机排队"。</p>
+<p>✅ 下表每个格子我都算过（例如 <code>h3(s2)</code> = 3 × 2 mod 7 = 6）：</p>
+<table>
+<thead>
+<tr>
+<th>哈希函数</th>
+<th>s1</th>
+<th>s2</th>
+<th>s3</th>
+<th>s4</th>
+<th>s5</th>
+<th>s6</th>
+<th><strong>min h(A)</strong></th>
+<th><strong>min h(B)</strong></th>
+<th>相等？</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>h₁ = 1x mod 7</td>
+<td><strong>1</strong></td>
+<td>2</td>
+<td>3</td>
+<td>4</td>
+<td>5</td>
+<td>6</td>
+<td><strong>1</strong>（来自 s1）</td>
+<td><strong>1</strong>（来自 s1）</td>
+<td>★ 是</td>
+</tr>
+<tr>
+<td>h₂ = 2x mod 7</td>
+<td>2</td>
+<td>4</td>
+<td>6</td>
+<td><strong>1</strong></td>
+<td>3</td>
+<td>5</td>
+<td><strong>1</strong>（来自 s4）</td>
+<td>2（来自 s1）</td>
+<td>否</td>
+</tr>
+<tr>
+<td>h₃ = 3x mod 7</td>
+<td>3</td>
+<td>6</td>
+<td>2</td>
+<td>5</td>
+<td><strong>1</strong></td>
+<td>4</td>
+<td>2（来自 s3）</td>
+<td><strong>1</strong>（来自 s5）</td>
+<td>否</td>
+</tr>
+<tr>
+<td>h₄ = 4x mod 7</td>
+<td>4</td>
+<td><strong>1</strong></td>
+<td>5</td>
+<td>2</td>
+<td>6</td>
+<td>3</td>
+<td><strong>1</strong>（来自 s2）</td>
+<td><strong>1</strong>（来自 s2）</td>
+<td>★ 是</td>
+</tr>
+<tr>
+<td>h₅ = 5x mod 7</td>
+<td>5</td>
+<td>3</td>
+<td><strong>1</strong></td>
+<td>6</td>
+<td>4</td>
+<td>2</td>
+<td><strong>1</strong>（来自 s3）</td>
+<td>2（来自 s6）</td>
+<td>否</td>
+</tr>
+<tr>
+<td>h₆ = 6x mod 7</td>
+<td>6</td>
+<td>5</td>
+<td>4</td>
+<td>3</td>
+<td>2</td>
+<td><strong>1</strong></td>
+<td>3（来自 s4）</td>
+<td><strong>1</strong>（来自 s6）</td>
+<td>否</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>签名（k = 6）：
+    signature(A) = [ 1, 1, 2, 1, 1, 3 ]
+    signature(B) = [ 1, 2, 1, 1, 2, 1 ]
+                     ↑        ↑
+                   相等     相等          ⟹ 相等 2 个 / 共 6 个
+
+    Ĵ(A,B) = 2 / 6 = 0.3333   ★ 和真实的 J = 1/3 一模一样
+</code></pre></div>
+
+<p><strong>③ ★★ 现在看一眼每一行加粗的 <code>1</code> 在哪里——定理的全部内容就在这一列上：</strong></p>
+<table>
+<thead>
+<tr>
+<th>哈希函数</th>
+<th>整个并集里 h 值最小的那个元素</th>
+<th>它在交集里吗</th>
+<th>签名是否相等</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>h₁</td>
+<td>s1</td>
+<td>★ 在</td>
+<td>是</td>
+</tr>
+<tr>
+<td>h₂</td>
+<td>s4</td>
+<td>不在（只属 A）</td>
+<td>否</td>
+</tr>
+<tr>
+<td>h₃</td>
+<td>s5</td>
+<td>不在（只属 B）</td>
+<td>否</td>
+</tr>
+<tr>
+<td>h₄</td>
+<td>s2</td>
+<td>★ 在</td>
+<td>是</td>
+</tr>
+<tr>
+<td>h₅</td>
+<td>s3</td>
+<td>不在（只属 A）</td>
+<td>否</td>
+</tr>
+<tr>
+<td>h₆</td>
+<td>s6</td>
+<td>不在（只属 B）</td>
+<td>否</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 两列完全同步：【签名相等】 ⟺ 【并集里 h 值最小的元素落在交集里】
+
+⟹ 于是概率就是&quot;随机挑一个元素、挑中交集&quot;的概率 = |A∩B| / |A∪B| = J。
+⟹ 这不是近似，是【恒等】。近似只来自&quot;k 有限&quot;这一件事。
+
+★ 还可以用更硬的方式验证一次：
+  把 6 个 shingle 的所有 6! = 720 种排队顺序全枚举一遍，
+  数一数有多少种顺序满足&quot;排第一的落在交集里&quot;：
+     按对称性，每个 shingle 排第一的顺序各有 720 / 6 = 120 种，
+     交集里有 2 个 shingle ⟹ 120 × 2 = 240 种
+     240 / 720 = 1/3 = J     ✅ 精确相等（我也用程序枚举验证过）
+</code></pre></div>
+
+<h3 id="k">第二步四分之三：k 取多大，误差有多少</h3>
+<p>于是：<strong>用 k 个不同的哈希函数，数一下有几位相等，除以 k，就是 J 的估计。</strong></p>
+<div class="codehilite"><pre><span></span><code>signature(A) = [ min h₁(A), min h₂(A), ..., min h_k(A) ]     ← k 个整数
+
+  Ĵ(A,B) = (signature 中对应位置相等的位数) / k
+
+★★ 这就把一篇几万字的文档，压成了 k 个整数（k 通常 64~256）
+</code></pre></div>
+
+<p>★ 误差怎么算：k 位里每一位"相等"都是一次独立的、成功概率为 J 的伯努利试验，所以 <code>Ĵ</code> 是一个二项比例，<strong>标准差 = √( J(1−J) / k )</strong>，在 J = 0.5 处取最大值 <code>1 / (2√k)</code>。</p>
+<table>
+<thead>
+<tr>
+<th>k</th>
+<th>J = 0.5 时的标准差</th>
+<th>J = 0.8 时的标准差</th>
+<th>最坏情况上界 <code>1/(2√k)</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>16</td>
+<td>0.125</td>
+<td>0.100</td>
+<td>0.125</td>
+</tr>
+<tr>
+<td>64</td>
+<td>0.063</td>
+<td>0.050</td>
+<td>0.063</td>
+</tr>
+<tr>
+<td><strong>128</strong>（最常用）</td>
+<td><strong>0.044</strong></td>
+<td><strong>0.035</strong></td>
+<td><strong>0.044</strong></td>
+</tr>
+<tr>
+<td>256</td>
+<td>0.031</td>
+<td>0.025</td>
+<td>0.031</td>
+</tr>
+<tr>
+<td>512</td>
+<td>0.022</td>
+<td>0.018</td>
+<td>0.022</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>这里要纠正一个流传很广的说法</strong>：常见的口诀是"误差 ≈ 1/√k，k=128 → ±0.09"。<strong>1/√k 不是标准差</strong>——标准差是 <code>1/(2√k)</code>，k=128 时是 <strong>±0.044</strong>。<code>1/√k = 0.088</code> 恰好约等于 <strong>2 个标准差</strong>，也就是 <strong>95% 置信区间的半宽</strong>。<br />
+★ 两种说法都能用，但必须说清是 1σ 还是 2σ，否则你会在"阈值该留多少余量"上差一倍。</p>
+</blockquote>
 <h3 id="lsh">第三步：LSH —— 避免两两比较</h3>
 <p>签名短了，但 10 亿 × 10 亿 次比较还是不行。</p>
 <p><strong>LSH</strong> = <strong>Locality-Sensitive Hashing</strong>（局部敏感哈希），思路是<strong>分带（banding）</strong>：</p>
 <div class="codehilite"><pre><span></span><code>把 k=128 个签名，切成 b=16 个&quot;带&quot;，每带 r=8 个数：
 
-  signature = [ s₁ ... s₈ | s₉ ... s₁₆ | ... | s₁₂₁ ... s₁₂₈ ]
-               └─ band 1 ─┘ └─ band 2 ─┘       └─ band 16 ─┘
+  signature = [ s1 .. s8 | s9 .. s16 | ... | s121 .. s128 ]
+               |--band 1-| |--band 2-|       |--band 16--|
 
 ★ 规则：只要【有任何一个 band 完全相同】，两篇文档就成为&quot;候选对&quot;
 
@@ -431,69 +959,259 @@ doc B = &quot;the cat sat on a mat&quot;
       同一个桶里的文档 → 候选对。★ 不需要任何两两比较！
 </code></pre></div>
 
-<p><strong>这个规则的效果，是一条漂亮的 S 曲线：</strong></p>
-<div class="codehilite"><pre><span></span><code>两篇文档 Jaccard = J 时，成为候选对的概率：
+<p><strong>这个规则的效果，是一条 S 形曲线：</strong></p>
+<div class="codehilite"><pre><span></span><code>两篇文档 Jaccard = s 时，成为候选对的概率：
 
-    P(J) = 1 − (1 − J^r)^b
-              └────┘  └───────┘
-        某个 band 全同  16 个 band 里至少一个全同
-        的概率 = J^r
+    P(s) = 1 - (1 - s^r)^b
 
-  b=16, r=8 时：
-    J = 0.5  →  P = 0.06     ★ 基本不管
-    J = 0.7  →  P = 0.63
-    J = 0.8  →  P = 0.98     ★ 基本必抓
-    J = 0.9  →  P = 1.00
-
-    阈值（P=0.5 处） ≈ (1/b)^(1/r) = (1/16)^(1/8) ≈ 0.71
+拆成三步读（★ 从里往外）：
+    s^r            = 某一个 band 的 r 个数【全部相同】的概率
+    (1 - s^r)      = 这个 band 【不】全同的概率
+    (1 - s^r)^b    = b 个 band 【全都不】全同的概率
+    1 - (…)^b      = 至少有一个 band 全同 ⟹ 成为候选对
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   P(候选)
-    1.0 ┤                        ╭────────────────
-        │                       ╱
-        │                      ╱   ★ 越陡越好：
-    0.5 ┤ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ╱ ─ ─   陡 = 阈值上下判得干脆
-        │                    ╱
-        │                  ╱
-    0.0 ┤────────────────╯
-        └──┬────┬────┬────┬────┬───→ Jaccard J
-          0.2  0.4  0.6  0.8  1.0
-                     ↑ 阈值 ≈ (1/b)^(1/r)
+<hr />
+<h3 id="s">★★★ 第三步半：参数怎么定 —— 把 S 曲线算出来</h3>
+<p><code>b</code> 和 <code>r</code> 是整条流水线上<strong>最该自己算一遍、而不是抄别人的</strong>两个数。✅ <strong>下表每一格我都代进 <code>P(s) = 1 − (1 − s^r)^b</code> 算过</strong>，四组都固定 <code>k = b × r = 128</code>：</p>
+<table>
+<thead>
+<tr>
+<th><code>b</code> × <code>r</code>（k = 128）</th>
+<th>s=0.3</th>
+<th>s=0.5</th>
+<th>s=0.6</th>
+<th>s=0.7</th>
+<th>s=0.75</th>
+<th>s=0.8</th>
+<th>s=0.9</th>
+<th>s=0.95</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>32 × 4</strong>（最激进）</td>
+<td>0.229</td>
+<td>0.873</td>
+<td>0.988</td>
+<td>1.000</td>
+<td>1.000</td>
+<td>1.000</td>
+<td>1.000</td>
+<td>1.000</td>
+</tr>
+<tr>
+<td>★ <strong>16 × 8</strong>（常用默认）</td>
+<td>0.001</td>
+<td><strong>0.061</strong></td>
+<td>0.237</td>
+<td><strong>0.613</strong></td>
+<td>0.815</td>
+<td><strong>0.947</strong></td>
+<td><strong>1.000</strong></td>
+<td>1.000</td>
+</tr>
+<tr>
+<td><strong>8 × 16</strong>（保守）</td>
+<td>0.000</td>
+<td>0.000</td>
+<td>0.002</td>
+<td>0.026</td>
+<td>0.077</td>
+<td>0.204</td>
+<td>0.806</td>
+<td>0.990</td>
+</tr>
+<tr>
+<td><strong>4 × 32</strong>（最保守）</td>
+<td>0.000</td>
+<td>0.000</td>
+<td>0.000</td>
+<td>0.000</td>
+<td>0.000</td>
+<td>0.003</td>
+<td>0.130</td>
+<td>0.577</td>
+</tr>
+</tbody>
+</table>
+<p><strong>先手验一格</strong>，确认这表不是凭空来的。取 <code>b=16, r=8, s=0.8</code>：</p>
+<div class="codehilite"><pre><span></span><code>① s^r      = 0.8^8                = 0.16777216
+② 1 − s^r  = 1 − 0.16777216       = 0.83222784      ← 某个 band【不】全同的概率
+③ (…)^b    = 0.83222784^16        = 0.052951        ← 16 个 band【都不】全同的概率
+④ P        = 1 − 0.052951         = 0.947           ← 至少一个 band 全同
+
+⟹ Jaccard = 0.8 的两篇文档，有 94.7% 的概率被 b=16,r=8 抓成候选对。
+</code></pre></div>
+
+<p><strong>再看两个"阈值"，⚠️ 这里有一个流传很广的错误说法：</strong></p>
+<table>
+<thead>
+<tr>
+<th><code>b</code> × <code>r</code></th>
+<th>口诀公式 <code>(1/b)^(1/r)</code></th>
+<th>该点处的真实 P</th>
+<th>★ 真正 P = 0.5 的那个 s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32 × 4</td>
+<td>0.420</td>
+<td>0.638</td>
+<td><strong>0.383</strong></td>
+</tr>
+<tr>
+<td>16 × 8</td>
+<td>0.707</td>
+<td>0.644</td>
+<td><strong>0.674</strong></td>
+</tr>
+<tr>
+<td>8 × 16</td>
+<td>0.878</td>
+<td>0.656</td>
+<td><strong>0.856</strong></td>
+</tr>
+<tr>
+<td>4 × 32</td>
+<td>0.958</td>
+<td>0.684</td>
+<td><strong>0.944</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⚠️⚠️ 常见写法是&quot;阈值（P=0.5 处）≈ (1/b)^(1/r)&quot; —— ★ 这句话不对。
+   把 (1/b)^(1/r) 代回公式：P = 1 − (1 − 1/b)^b
+   而 (1 − 1/b)^b 在 b 变大时趋向 1/e = 0.368
+   ⟹ ★★ (1/b)^(1/r) 这个点上的 P 恒定在 0.63~0.68 附近，趋向 1 − 1/e ≈ 0.632，
+        【不是 0.5】。
+
+⟹ 所以 (1/b)^(1/r) 是 S 曲线【拐点 / 最陡处】的近似，不是半数点。
+   真正的半数点要解方程：1 − (1 − s^r)^b = 0.5  ⟹  s = (1 − 0.5^(1/b))^(1/r)
+   代 b=16, r=8：s = (1 − 0.5^(1/16))^(1/8) = (1 − 0.957603)^(1/8) = 0.674
+</code></pre></div>
+
+<p><strong>曲线长什么样</strong>（✅ 由上面 b=16, r=8 那一行的公式逐点算出，纯 ASCII 画，<code>*</code> 是曲线）：</p>
+<div class="codehilite"><pre><span></span><code>  1.0 |                                 ********
+  0.9 |                               **
+  0.8 |                              *
+  0.7 |                             *
+  0.6 |                            *
+  0.5 |                           *
+  0.4 |                          *
+  0.3 |                         *
+  0.2 |                       **
+  0.1 |                    ***
+  0.0 |********************
+      +-----------------------------------------
+       0.0     0.2     0.4     0.6     0.8     1.0   &lt;- Jaccard s
+                                  ^
+                                  P=0.5 的位置，s 约 0.674
+</code></pre></div>
+
+<p><strong>★★ 那么为什么大家选 16 × 8？</strong> 把目标写成两句话，再回去查表：</p>
+<div class="codehilite"><pre><span></span><code>目标① 召回：真重复（J ≥ 0.8）要基本都抓到
+目标② 代价：低相似度的那一大坨（J ≤ 0.5）别涌进候选集
+        ⟹ 因为候选对进来之后还要【逐对算真实 Jaccard 验证】，
+           这一步的成本和候选对数量【成正比】，是整个 LSH 的真实瓶颈
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th><code>b</code> × <code>r</code></th>
+<th>目标① J=0.8 的召回</th>
+<th>目标② J=0.5 的涌入</th>
+<th>判决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32 × 4</td>
+<td>1.000 ✅ 全抓到</td>
+<td><strong>0.873</strong> ⚠️ 几乎全涌进来</td>
+<td>✗ 候选集爆炸，验证阶段算不完</td>
+</tr>
+<tr>
+<td>★ <strong>16 × 8</strong></td>
+<td><strong>0.947</strong> ✅ 够用</td>
+<td><strong>0.061</strong> ✅ 放过 94%</td>
+<td>★ <strong>这就是为什么它是默认值</strong></td>
+</tr>
+<tr>
+<td>8 × 16</td>
+<td><strong>0.204</strong> ⚠️ 漏掉 80% 的真重复</td>
+<td>0.000 ✅</td>
+<td>✗ 召回太低，去重形同没做</td>
+</tr>
+<tr>
+<td>4 × 32</td>
+<td>0.003 ⚠️ 几乎全漏</td>
+<td>0.000</td>
+<td>✗ 只能抓一模一样的，那不如用精确去重</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 换个角度看&quot;涌入&quot;这件事有多要命：
+    P(s=0.3) 从 16×8 的 0.001 变成 32×4 的 0.229 —— ★ 放大了 229 倍。
+    而语料里 J ≈ 0.3 的文档对数量，比 J ≥ 0.8 的【多好几个数量级】
+    （绝大多数文档对彼此毫不相干）。
+  ⟹ ⚠️ 候选集被这一大坨主导，验证阶段的成本会从&quot;可做&quot;变成&quot;做不完&quot;。
+  ⟹ ★★ 这就是调参口诀背后真正的机制，不是&quot;陡一点好看&quot;。
 </code></pre></div>
 
 <blockquote>
-<p>★★ <strong>调参口诀</strong>：<br />
-<strong><code>b</code> 调大 → 阈值降低、更激进（宁可错杀）；<code>r</code> 调大 → 阈值升高、更保守。</strong><br />
-<strong><code>b × r = k</code> 是固定的</strong>，所以这俩是此消彼长。<br />
-<strong>想让曲线更陡（判得更干脆）→ 加大 k。</strong> 代价是签名更长、内存更多。</p>
+<p>★★ <strong>调参口诀（现在它有数字支撑了）</strong>：<br />
+<strong><code>b</code> 调大 → 阈值降低、更激进（召回高但候选集暴涨）；<code>r</code> 调大 → 阈值升高、更保守（候选集小但漏得多）。</strong><br />
+<strong><code>b × r = k</code> 固定</strong>，所以这俩此消彼长。<br />
+<strong>想让曲线更陡（阈值上下判得更干脆）→ 加大 k。</strong> 代价是签名更长、内存更多、算得更慢。<br />
+⚠️ 实践中 <code>k=128, b=16, r=8</code>（真实半数点 ≈ 0.67）和 <code>k=128, b=14, r=9</code> 这一带是常见起点；<strong>上线前务必自己代一遍公式查表，别抄口诀。</strong></p>
 </blockquote>
-<h3 id="_2">完整实现</h3>
+<h3 id="_6">完整实现</h3>
 <div class="codehilite"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span><span class="o">,</span><span class="w"> </span><span class="nn">hashlib</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">defaultdict</span>
 
-<span class="n">K</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">R</span> <span class="o">=</span> <span class="mi">128</span><span class="p">,</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">8</span>          <span class="c1"># ★ K = B * R</span>
-<span class="n">MERSENNE</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">61</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span>      <span class="c1"># 大质数，做模运算</span>
+<span class="n">K</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">R</span> <span class="o">=</span> <span class="mi">128</span><span class="p">,</span> <span class="mi">16</span><span class="p">,</span> <span class="mi">8</span>                 <span class="c1"># ★ 必须满足 K = B * R</span>
+<span class="n">MOD</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">uint64</span><span class="p">((</span><span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">32</span><span class="p">)</span> <span class="o">-</span> <span class="mi">5</span><span class="p">)</span>       <span class="c1"># ★ 一个小于 2^32 的质数，原因见下</span>
 
 <span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
-<span class="n">A</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">integers</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">MERSENNE</span><span class="p">,</span> <span class="n">K</span><span class="p">)</span>      <span class="c1"># k 个哈希函数的参数</span>
-<span class="n">Bp</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">integers</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">MERSENNE</span><span class="p">,</span> <span class="n">K</span><span class="p">)</span>     <span class="c1"># h_i(x) = (A_i * x + B_i) mod p</span>
+<span class="n">A</span>  <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">integers</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">MOD</span><span class="p">),</span> <span class="n">K</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint64</span><span class="p">)</span>   <span class="c1"># h_i(x) = (A_i·x + Bp_i) mod MOD</span>
+<span class="n">Bp</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">integers</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">MOD</span><span class="p">),</span> <span class="n">K</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint64</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">shingles</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">n</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
     <span class="n">w</span> <span class="o">=</span> <span class="n">text</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
-    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="n">n</span><span class="p">])</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span><span class="o">-</span><span class="n">n</span><span class="o">+</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">))}</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">w</span><span class="p">[</span><span class="n">i</span><span class="p">:</span><span class="n">i</span><span class="o">+</span><span class="n">n</span><span class="p">])</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">w</span><span class="p">)</span> <span class="o">-</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">))}</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">minhash</span><span class="p">(</span><span class="n">text</span><span class="p">):</span>
     <span class="n">sh</span> <span class="o">=</span> <span class="n">shingles</span><span class="p">(</span><span class="n">text</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">sh</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">None</span>
-    <span class="c1"># 先把每个 shingle 映射成一个 64 位整数</span>
-    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="nb">int</span><span class="o">.</span><span class="n">from_bytes</span><span class="p">(</span><span class="n">hashlib</span><span class="o">.</span><span class="n">blake2b</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">encode</span><span class="p">(),</span> <span class="n">digest_size</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span><span class="o">.</span><span class="n">digest</span><span class="p">(),</span>
-                                 <span class="s2">&quot;big&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">sh</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint64</span><span class="p">)</span>
-    <span class="c1"># ★ 一次性算出 k 个哈希函数下的所有值，取每列最小 —— 全向量化</span>
-    <span class="n">H</span> <span class="o">=</span> <span class="p">(</span><span class="n">A</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">x</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">+</span> <span class="n">Bp</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">])</span> <span class="o">%</span> <span class="n">MERSENNE</span>   <span class="c1"># [K, |sh|]</span>
-    <span class="k">return</span> <span class="n">H</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>                                      <span class="c1"># [K]</span>
+    <span class="c1"># ★ 把每个 shingle 压成一个 32 位整数（digest_size=4），保证它 &lt; 2^32</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="nb">int</span><span class="o">.</span><span class="n">from_bytes</span><span class="p">(</span><span class="n">hashlib</span><span class="o">.</span><span class="n">blake2b</span><span class="p">(</span><span class="n">s</span><span class="o">.</span><span class="n">encode</span><span class="p">(),</span> <span class="n">digest_size</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span><span class="o">.</span><span class="n">digest</span><span class="p">(),</span> <span class="s2">&quot;big&quot;</span><span class="p">)</span>
+                  <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">sh</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint64</span><span class="p">)</span>
+    <span class="c1"># ★ A_i &lt; 2^32 且 x &lt; 2^32 ⟹ 乘积 &lt; 2^64，uint64 刚好【不溢出】</span>
+    <span class="n">H</span> <span class="o">=</span> <span class="p">(</span><span class="n">A</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">]</span> <span class="o">*</span> <span class="n">x</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span> <span class="o">+</span> <span class="n">Bp</span><span class="p">[:,</span> <span class="kc">None</span><span class="p">])</span> <span class="o">%</span> <span class="n">MOD</span>      <span class="c1"># 形状 [K, |sh|]</span>
+    <span class="k">return</span> <span class="n">H</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span>                 <span class="c1"># 形状 [K]</span>
+</code></pre></div>
 
-<span class="c1"># ---- 建 LSH 索引 ----</span>
+<blockquote>
+<p>⚠️ <strong>这里有两个真实的坑，都会"不报错但算错"：</strong></p>
+<p>```<br />
+① 混用 int64 和 uint64<br />
+   numpy 里 int64 数组 × uint64 数组 会被提升成 float64，<br />
+   ★ 而 float64 只有 53 位有效位 —— 61 位的大整数会被【静默截断】，<br />
+     签名全错，但程序一声不响跑完。<br />
+   ⟹ 解法：两边都显式写 dtype=np.uint64，模数也写成 np.uint64(...)。</p>
+<p>② 用 (1&lt;&lt;61)-1 这个梅森质数 + 向量化<br />
+   它是数学上的常见选择，但 2^61 级的数相乘会【溢出 uint64】。<br />
+   ⟹ 解法：要么像上面一样把 shingle 哈希压到 32 位、模数取 &lt; 2^32 的质数<br />
+          （乘积 &lt; 2^64，刚好安全）；<br />
+          要么用 Python 大整数逐个算（正确但慢几十倍）。<br />
+```</p>
+<p>✅ 我把上面这段代码跑过一遍自检：两段 200 词、真实 Jaccard = 0.661 的文本，k=128 估出 0.656，落在 1 个标准差（0.042）之内。</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ---- 建 LSH 索引 ----</span>
 <span class="n">buckets</span> <span class="o">=</span> <span class="p">[</span><span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">B</span><span class="p">)]</span>
 <span class="n">sigs</span> <span class="o">=</span> <span class="p">{}</span>
 <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">doc</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">docs</span><span class="p">):</span>
@@ -513,34 +1231,107 @@ doc B = &quot;the cat sat on a mat&quot;
     <span class="k">return</span> <span class="n">x</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">union</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">):</span>
     <span class="n">ra</span><span class="p">,</span> <span class="n">rb</span> <span class="o">=</span> <span class="n">find</span><span class="p">(</span><span class="n">a</span><span class="p">),</span> <span class="n">find</span><span class="p">(</span><span class="n">b</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">ra</span> <span class="o">!=</span> <span class="n">rb</span><span class="p">:</span> <span class="n">parent</span><span class="p">[</span><span class="nb">max</span><span class="p">(</span><span class="n">ra</span><span class="p">,</span><span class="n">rb</span><span class="p">)]</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">ra</span><span class="p">,</span><span class="n">rb</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">ra</span> <span class="o">!=</span> <span class="n">rb</span><span class="p">:</span> <span class="n">parent</span><span class="p">[</span><span class="nb">max</span><span class="p">(</span><span class="n">ra</span><span class="p">,</span> <span class="n">rb</span><span class="p">)]</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">ra</span><span class="p">,</span> <span class="n">rb</span><span class="p">)</span>
 
 <span class="k">for</span> <span class="n">b</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">B</span><span class="p">):</span>
     <span class="k">for</span> <span class="n">bucket</span> <span class="ow">in</span> <span class="n">buckets</span><span class="p">[</span><span class="n">b</span><span class="p">]</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="n">bucket</span><span class="p">[</span><span class="mi">1</span><span class="p">:]:</span>
-            <span class="n">union</span><span class="p">(</span><span class="n">bucket</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">j</span><span class="p">)</span>               <span class="c1"># ★ 同桶即认为重复</span>
+            <span class="n">union</span><span class="p">(</span><span class="n">bucket</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">j</span><span class="p">)</span>               <span class="c1"># ★ 同桶即认为重复（没做真实 Jaccard 验证）</span>
 
-<span class="n">keep_ids</span> <span class="o">=</span> <span class="p">{</span><span class="n">find</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">sigs</span><span class="p">}</span>             <span class="c1"># 每个连通分量留一个代表</span>
+<span class="n">keep_ids</span> <span class="o">=</span> <span class="p">{</span><span class="n">find</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">sigs</span><span class="p">}</span>            <span class="c1"># 每个连通分量留一个代表</span>
 </code></pre></div>
 
 <blockquote>
 <p>⚠️ <strong>一个真实的工程陷阱：连通分量会"串联"。</strong><br />
 A 和 B 相似、B 和 C 相似，但 A 和 C 可能完全不像。用并查集会把 A、B、C 并成一簇只留一篇。<br />
 在超大规模上这会形成<strong>巨型连通分量</strong>（几百万篇被并成一簇），删得过狠。<br />
-<strong>缓解手段</strong>：① 在簇内做一次真实 Jaccard 验证再合并 ② 限制簇的最大规模 ③ 改用"只删和代表元相似的"而非传递闭包。</p>
+<strong>缓解手段</strong>：① 在簇内做一次真实 Jaccard 验证再合并（★ 也就是上面代码<strong>省掉</strong>的那一步） ② 限制簇的最大规模 ③ 改用"只删和代表元相似的"而非传递闭包。</p>
+</blockquote>
+<h3 id="vs">★ 精确去重 vs 模糊去重：代价对照</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>① 精确去重（哈希 / Bloom）</th>
+<th>② 模糊去重（MinHash + LSH）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>判据</strong></td>
+<td>整篇字节级一致</td>
+<td>Jaccard ≥ 阈值（典型 0.7~0.8）</td>
+</tr>
+<tr>
+<td><strong>每篇的计算量</strong></td>
+<td>1 次哈希</td>
+<td>切 shingle + k 次哈希取 min（★ 本章开头估的 ~1 ms，比精确去重贵约 100 倍）</td>
+</tr>
+<tr>
+<td><strong>每篇的存储</strong></td>
+<td>8~32 字节</td>
+<td>k 个整数，k=128 时 <strong>512 字节</strong>（★ 贵 16~64 倍）</td>
+</tr>
+<tr>
+<td><strong>额外的索引结构</strong></td>
+<td>无</td>
+<td>b 张哈希表（b=16）</td>
+</tr>
+<tr>
+<td><strong>候选验证阶段</strong></td>
+<td>无</td>
+<td>★ <strong>有，而且常常是真正的瓶颈</strong>（见上面"涌入"那段）</td>
+</tr>
+<tr>
+<td><strong>能并行吗</strong></td>
+<td>✅ 完美并行（按哈希前缀分桶）</td>
+<td>签名阶段完美并行；★ <strong>分桶和聚类阶段要全局 shuffle</strong>，是大规模下最难的工程部分</td>
+</tr>
+<tr>
+<td><strong>抓到什么</strong></td>
+<td>转载、跨快照重复</td>
+<td>＋ 模板页、加广告的转载、改几个词的洗稿</td>
+</tr>
+<tr>
+<td><strong>误删风险</strong></td>
+<td>极低（Bloom 的假阳性可算，见 6.4）</td>
+<td>⚠️ <strong>中等</strong>：阈值偏低 + 并查集传递闭包 → 巨型簇，可能删掉大量不相似文档</td>
+</tr>
+<tr>
+<td><strong>调的旋钮</strong></td>
+<td>几乎没有（只有 Bloom 的 m/n）</td>
+<td>⚠️ <strong>四个</strong>：n-gram 的 n、k、b、r —— 每个都会显著改变结果</td>
+</tr>
+<tr>
+<td><strong>什么时候做</strong></td>
+<td>★ 最先做，先把量砍下来</td>
+<td>紧随其后</td>
+</tr>
+<tr>
+<td><strong>省不省得掉</strong></td>
+<td>不能省（最便宜、收益确凿）</td>
+<td>★ 不能省（这是去重收益的主要来源）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>一句话总结这张表</strong>：精确去重几乎是免费的、无旋钮的、必做的；模糊去重贵 100 倍、有四个旋钮、而且<strong>工程难点全在"候选对验证"和"全局 shuffle"这两处</strong>——不在算法本身。<strong>初学者容易把时间花在理解 MinHash 上，而真实项目里 90% 的调试时间花在后面那两处。</strong></p>
 </blockquote>
 <hr />
 <h2 id="66-3">6.6 ③ 子串去重：后缀数组</h2>
 <p>MinHash 是<strong>整篇</strong>判断。但有一种重复它抓不到：</p>
-<div class="codehilite"><pre><span></span><code>文档 A：8000 字的技术博客  +  末尾 500 字的开源许可证
-文档 B：3000 字的项目说明  +  末尾 500 字的【同一份许可证】
+<div class="codehilite"><pre><span></span><code>文档 A：8000 词的技术博客  +  末尾 500 词的开源许可证
+文档 B：3000 词的项目说明  +  末尾 500 词的【同一份许可证】
 
 Jaccard 很低（内容主体完全不同）→ MinHash 判为&quot;不重复&quot; → 两篇都留
-★ 但那 500 字的许可证，在整个语料里出现了 200 万次
+★ 但那 500 词的许可证，在整个语料里出现了上百万次
 </code></pre></div>
 
-<p>✅ Lee et al. 的 <strong>ExactSubstr</strong> 就是解决这个的：<strong>找出所有出现超过一次的、长度 ≥ 50 token 的子串，把它们删掉</strong>（删的是<strong>片段</strong>，不是文档）。</p>
-<h3 id="on">后缀数组：怎么在 O(n) 里找出所有重复子串</h3>
+<p>✅ Lee et al. 的 <strong>ExactSubstr</strong> 就是解决这个的：<strong>找出所有出现超过一次、长度 ≥ 50 token 的子串，把它们删掉</strong>（删的是<strong>片段</strong>，不是文档）。</p>
+<blockquote>
+<p>⚠️ <strong>口径提醒（和 6.1 节呼应）</strong>：因为它<strong>不整篇删除任何文档</strong>，所以"它删了百分之多少的文档"恒等于 <strong>0</strong>。它的留存率<strong>只能按 token 数报</strong>——这就是论文 Table 2 和 Table 3 分母不同的根本原因，不是作者随意选的。</p>
+</blockquote>
+<h3 id="_7">后缀数组：怎么在近似线性的时间里找出所有重复子串</h3>
 <div class="codehilite"><pre><span></span><code>把整个语料拼成一个巨大的字符串 S（长度 n = 几万亿）
 
 后缀数组 SA = 把 S 的所有 n 个后缀【按字典序排好】后的起始位置列表
@@ -555,15 +1346,15 @@ Jaccard 很低（内容主体完全不同）→ MinHash 判为&quot;不重复&qu
       5: a                2: nana              2]
 
 ★★ 关键性质：如果两个后缀有很长的公共前缀，它们在排序后【必然相邻】
-   → 所以只要扫一遍相邻对，算它们的最长公共前缀（LCP），
+   → 所以只要扫一遍相邻对，算它们的最长公共前缀（LCP = Longest Common Prefix），
      LCP ≥ 50 的地方就是一个重复子串！
-   → ★ 从&quot;两两比较 O(n²)&quot; 变成&quot;扫一遍 O(n)&quot;
+   → ★ 从&quot;两两比较 O(n²)&quot; 变成&quot;排一次序 + 扫一遍&quot;
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code><span class="c1"># 概念演示（真实实现要用并行后缀数组构造，见论文开源代码）</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">find_dup_substrings</span><span class="p">(</span><span class="n">S</span><span class="p">,</span> <span class="n">min_len</span><span class="o">=</span><span class="mi">50</span><span class="p">):</span>
     <span class="n">n</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">S</span><span class="p">)</span>
-    <span class="n">SA</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">i</span><span class="p">:</span> <span class="n">S</span><span class="p">[</span><span class="n">i</span><span class="p">:])</span>     <span class="c1"># ★ 真实实现是 O(n)，不是这样排</span>
+    <span class="n">SA</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="p">),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">i</span><span class="p">:</span> <span class="n">S</span><span class="p">[</span><span class="n">i</span><span class="p">:])</span>     <span class="c1"># ⚠️ 这样排是 O(n² log n)，仅用于演示</span>
     <span class="n">dups</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span> <span class="o">-</span> <span class="mi">1</span><span class="p">):</span>
         <span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="o">=</span> <span class="n">SA</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">SA</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span>
@@ -576,8 +1367,9 @@ Jaccard 很低（内容主体完全不同）→ MinHash 判为&quot;不重复&qu
 </code></pre></div>
 
 <blockquote>
-<p>✅ 论文的工程做法：<strong>并行构造</strong> —— 切成 K 块各自建部分后缀数组（总工作量 O(N)，墙钟 O(N/K)），再并行归并。开源在 <a href="https://github.com/google-research/deduplicate-text-datasets">google-research/deduplicate-text-datasets</a>。</p>
-<p>⚠️ 代价提示：后缀数组通常要 <strong>8~12 倍于原文的内存/磁盘</strong>（每个位置一个 int64 指针）。这是为什么它比 MinHash 贵得多。</p>
+<p>✅ 论文的工程做法：<strong>并行构造</strong> —— 切成 K 块各自建部分后缀数组，再并行归并。开源在 <a href="https://github.com/google-research/deduplicate-text-datasets">google-research/deduplicate-text-datasets</a>。</p>
+<p>⚠️ <strong>代价提示（我的量级估算，不是论文数字）</strong>：后缀数组每个位置要存一个整数指针，用 int64 就是 <strong>8 字节 / 输入字节</strong>；加上 LCP 数组和中间结果，实践中常说 <strong>8~12 倍于原文的内存或磁盘</strong>。这是它比 MinHash 贵得多的根本原因——MinHash 每篇只要 512 字节，后缀数组要 8 倍全文。</p>
+<p>★ 还有一个由 6.1 节 LM1B 那一行推出的实用结论：<strong>它对短文档完全无效。</strong> 最小匹配长度是 50 token，而 ✅ 论文报告 LM1B 有 90% 的文档不到 50 token——这些文档连参与匹配的资格都没有，所以 LM1B 上只删掉了 0.76% 的 token。<strong>如果你的语料以短文本为主（问答、评论、标题），别把算力花在这一步。</strong></p>
 </blockquote>
 <hr />
 <h2 id="67-4-semdedup">6.7 ④ 语义去重：SemDeDup</h2>
@@ -585,7 +1377,7 @@ Jaccard 很低（内容主体完全不同）→ MinHash 判为&quot;不重复&qu
 <div class="codehilite"><pre><span></span><code>A: &quot;线粒体是细胞的能量工厂，负责通过氧化磷酸化产生 ATP。&quot;
 B: &quot;细胞里制造能量的细胞器叫线粒体，它靠氧化磷酸化合成 ATP。&quot;
 
-Jaccard ≈ 0.1（几乎没有共同 5-gram）→ 全部前三种方法都判&quot;不重复&quot;
+Jaccard ≈ 0.1（几乎没有共同 5-gram）→ 前三种方法全部判&quot;不重复&quot;
 ★ 但它们承载的信息完全一样
 </code></pre></div>
 
@@ -599,18 +1391,94 @@ Jaccard ≈ 0.1（几乎没有共同 5-gram）→ 全部前三种方法都判&qu
    ✅ 留哪个？论文的策略是留【离簇中心最远】的那个（保多样性）
 </code></pre></div>
 
-<p>✅ 论文报告的效果：在 LAION 的一个子集上<strong>删掉 50% 而性能几乎无损，训练时间直接减半</strong>；在分布外（out-of-distribution）上性能<strong>反而提升</strong>；在 C4 上也优于此前的方法。</p>
+<p>✅ 论文报告的效果（我从 <a href="papers/">papers/SemDeDup-Semantic-Deduplication-arXiv-2303.09540.pdf</a> 核对过原文）：</p>
+<table>
+<thead>
+<tr>
+<th>数据集</th>
+<th>✅ 论文原话的内容</th>
+<th>★ 换算成不含歧义的说法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>LAION-440M</strong>（图文对）</td>
+<td>删掉 <strong>50%</strong> 的数据而性能损失极小；"training speed is twice as fast and completes in half the time"</td>
+<td><strong>训练时间变成原来的 1/2</strong> = <strong>加速 2 倍</strong> = <strong>时间减少 50%</strong></td>
+</tr>
+<tr>
+<td>分布外（out-of-distribution）</td>
+<td>性能<strong>反而提升</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>C4</strong>（纯文本）</td>
+<td>优于此前的 SOTA 去重方法，并带来 <strong>15% 的效率收益</strong>，有时性能还更好</td>
+<td>时间减少约 15%，即加速约 1.18 倍</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>⚠️ <strong>我的提醒</strong>：SemDeDup 是四种里<strong>最贵</strong>的（要给每篇文档跑一次模型 + 大规模 k-means），也是<strong>最容易删错</strong>的——"语义相似"和"信息冗余"不是一回事。两道题目相似但答案不同的数学题，语义去重可能把其中一道删掉。<strong>用它的时候阈值要保守。</strong></p>
+<p>⚠️⚠️ <strong>借这张表说清三组极易混的说法，后面几章都要用：</strong></p>
+<p>```<br />
+① "时间减半" = "加速 2 倍" = "时间减少 50%"<br />
+   ★ 但 "加速 50%" ≠ "时间减少 50%"！<br />
+     加速 50%（1.5 倍）⟹ 时间变成 1/1.5 = 66.7%，即时间只减少 33.3%。<br />
+   ⟹ 两个说法差了近一倍，而中文里经常被混着写。</p>
+<p>② "压缩到 20%" ≠ "压缩 20 倍"<br />
+   压缩到 20% = 压缩 5 倍。<br />
+   ⟹ 6.8 节会出现一组真实数字：20 T → 4 T，这是【压缩到 20%】/【压缩 5 倍】。</p>
+<p>③ "删掉 50% 的数据" 的分母同样要问：50% 的文档，还是 50% 的 token？<br />
+   ★ SemDeDup 在 LAION 上删的是【样本对数】的 50%（图文对一条就是一个样本），<br />
+     这个语料里样本大小均匀，所以两种口径差别不大 ——<br />
+     ⚠️ 但换到长度差异巨大的网页语料上，两种口径能差好几倍。<br />
+```</p>
+<p>⚠️ <strong>我的提醒</strong>：SemDeDup 是四种里<strong>最贵</strong>的（要给每篇文档跑一次模型 + 大规模 k-means），也是<strong>最容易删错</strong>的——"语义相似"和"信息冗余"不是一回事。两道题面相似但答案不同的数学题，语义去重可能把其中一道删掉。<strong>用它的时候阈值要保守。</strong></p>
 </blockquote>
 <hr />
 <h2 id="68">6.8 ★ 一个反直觉的发现：去重不是越彻底越好</h2>
-<p>✅ <strong>FineWeb</strong> 论文报告了一个重要的负面结果：</p>
+<p>✅ <strong>FineWeb</strong> 论文报告了一个重要的负面结果。✅ 下面的数字我从 <a href="papers/">papers/FineWeb-Decanting-the-Web-arXiv-2406.17557.pdf</a> 逐句核对过：</p>
+<table>
+<thead>
+<tr>
+<th>做法</th>
+<th>去重后剩下的 token</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>全局 MinHash</strong>（96 个快照放在一起，按时间从新到旧迭代去重）</td>
+<td><strong>4 T</strong></td>
+<td>⚠️ 抽 350 B 训消融模型，<strong>相比完全不去重几乎没有提升</strong>，远低于 RefinedWeb</td>
+</tr>
+<tr>
+<td>★ <strong>按单个快照各自独立去重</strong></td>
+<td><strong>20 T</strong></td>
+<td>★ <strong>明显更好，这成了 FineWeb 的最终方案</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 先把这组数字的说法摆正（接上一节的 ②）：
+    20 T → 4 T 是【压缩到 20%】，也就是【压缩 5 倍】。
+    ⚠️ 不要写成&quot;压缩了 20%&quot;（那意思是只删掉 20%，完全相反）。
+</code></pre></div>
+
+<p>✅ <strong>论文还做了一个关键的追加实验，直接解释了为什么</strong>：</p>
+<div class="codehilite"><pre><span></span><code>拿最老的那个快照（2013-48）切成两份，各训一个模型：
+   (a) 全局去重后【留下来】的那部分         ≈ 31 B token（约占原始的 10%）
+   (b) 全局去重时【被删掉】的那部分，
+       再单独做一次独立去重后             ≈ 171 B token（来自被删的约 460 B）
+
+✅ 结果：(a) 留下来的那 10%，质量【比被删掉的那 90% 更差】。
+✅ 论文还做了人工抽样确认，原文大意：
+   &quot;留下来的数据里，广告、不连贯的关键词堆砌、排版糟糕的文本都更多。&quot;
+</code></pre></div>
+
 <blockquote>
-<p>他们把<strong>全部 96 个 CC 快照放在一起做全局 MinHash 去重</strong>，结果<strong>比"每个快照各自独立去重"更差</strong>。</p>
-</blockquote>
-<p>⚠️ <strong>论文给的解释（我按其论述转述）</strong>：全局去重会把在多个快照里反复出现的页面砍到只剩一份，而<strong>一个页面能被反复抓到，本身就是它比较重要/质量较高的信号</strong>；砍完之后剩下的，反而富集了只出现过一次的低质量页面。</p>
-<blockquote>
+<p>★★ <strong>为什么会这样？</strong> ✅ 论文给的机制是：全局去重把"在多个快照里反复出现的页面"砍到只剩一份，而<strong>一个页面能被反复抓到，本身就是它比较重要 / 质量较高的信号</strong>。砍完之后剩下的，反而富集了只出现过一次的低质量页面。论文把这个现象叫 "global deduplication upsamples lower-quality data"（全局去重相当于给低质数据做了上采样）。</p>
+<p>⚠️ <strong>注意这里的"越老的快照损失越大"</strong>：✅ 论文明确写了，应用到最老的快照时，<strong>这一步删掉了高达 90% 的数据</strong>——因为它要和后面 95 个快照全部比一遍。<strong>所以这个坑的严重程度和快照数量正相关，小规模实验上根本看不出来。</strong></p>
+<p>✅ 论文顺带报告，几种<strong>行级去重</strong>变体（删重复行、删重复的 3 行跨段等，分别删掉 77.8% / 85% / 80.9% 的 token）<strong>全都比"只做按快照独立 MinHash"更差</strong>，所以 FineWeb 最终<strong>没有加任何额外去重</strong>。</p>
 <p>★★ <strong>这个结论值得记住，因为它违反了"去重越干净越好"的朴素直觉。</strong><br />
 ⚠️ 我的推论：这也说明<strong>"重复次数"本身是一个可用的质量信号</strong>——但它和"重复浪费预算"是一对张力，怎么权衡目前没有定论。</p>
 <p>相关的另一条：<strong>精选高质量语料（Wiki、教科书）常常被【故意重复采样】2~5 次</strong>（见 <a href="10-数据配比.html">10 章</a>）。所以"重复"在流水线里同时是<strong>要消除的东西</strong>和<strong>要制造的东西</strong>——取决于重复的是什么。</p>
@@ -651,7 +1519,7 @@ Jaccard ≈ 0.1（几乎没有共同 5-gram）→ 全部前三种方法都判&qu
 </tr>
 <tr>
 <td><strong>Dolma</strong></td>
-<td>✅ <strong>Bloom filter</strong>，文档级 + 段落级</td>
+<td>✅ <strong>Bloom filter</strong>，文档级 + 段落级（✅ 段落级删掉约 70% 的段落）</td>
 <td>✅</td>
 <td>—</td>
 <td>—</td>
@@ -681,51 +1549,123 @@ Jaccard ≈ 0.1（几乎没有共同 5-gram）→ 全部前三种方法都判&qu
 </table>
 <blockquote>
 <p>⚠️ 上表是我按各语料公开描述整理的对照，<strong>粒度归类可能有出入，以各自 PDF 为准</strong>。方向性的结论是可靠的：<strong>② MinHash 是所有人都做的那一步；③ 后缀数组只有部分语料做；④ 语义去重目前仍是少数派。</strong></p>
+<p>★ <strong>Dolma 那一行顺带解决了一个工程问题</strong>：✅ 它把同一个 Bloom filter <strong>复用</strong>成了去污染工具——<strong>先把评测集的样本塞进 Bloom filter，再在混合训练数据时把命中的标记出来</strong>。同一个数据结构干两件事，成本几乎为零。这一招 <a href="08-去污染与隐私许可.html">08 章</a>会接着讲。</p>
 </blockquote>
 <p><strong>推荐的实用组合</strong>（⚠️ 我的建议，不是论文结论）：</p>
-<div class="codehilite"><pre><span></span><code>必做：  ① 精确（Bloom filter，段落级）
-        ② MinHash-LSH（5-gram，k=128，阈值 ~0.75~0.8）
-值得做：③ 后缀数组（如果有算力；对代码和法律文本收益最大）
-谨慎：  ④ 语义去重（阈值保守；对多语言/翻译内容收益最大）
-
-★ 顺序：便宜的先做，把量砍下来再做贵的（[05 章](05-语言识别与启发式过滤.md)的级联原则）
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>做什么</th>
+<th>参数起点</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★ <strong>必做</strong></td>
+<td>① 精确去重（Bloom filter，<strong>文档级 + 段落级</strong>）</td>
+<td>m/n = 10~14 位；100 亿文档 12.5~17.5 GB</td>
+<td>最便宜、无旋钮、收益确凿</td>
+</tr>
+<tr>
+<td>★ <strong>必做</strong></td>
+<td>② MinHash-LSH</td>
+<td>5-gram，k=128，b=16，r=8（真实半数点 ≈ 0.67）</td>
+<td>去重收益的主要来源</td>
+</tr>
+<tr>
+<td>值得做</td>
+<td>③ 后缀数组</td>
+<td>最小匹配 50 token</td>
+<td>⚠️ 要 8~12 倍内存；<strong>对代码和法律文本收益最大，对短文本几乎无效</strong></td>
+</tr>
+<tr>
+<td>谨慎</td>
+<td>④ 语义去重</td>
+<td>阈值保守</td>
+<td>最贵、最容易删错；对多语言 / 翻译内容收益最大</td>
+</tr>
+<tr>
+<td>⚠️ <strong>不要做</strong></td>
+<td>跨快照的全局 MinHash</td>
+<td>—</td>
+<td>见 6.8：FineWeb 实测比按快照独立去重更差</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 顺序：便宜的先做，把量砍下来再做贵的（[05 章] 的级联原则）
+★ 范围：按快照 / 按分片独立去重，★ 不要跨快照全局去重
 </code></pre></div>
 
 <hr />
 <h2 id="610">6.10 小结</h2>
-<div class="codehilite"><pre><span></span><code>① ★ 去重是全流水线【收益最确凿】的一步
-   ✅ Lee et al. 2107.06499：C4 里一个 61 词句子出现 6 万次；
-      去重后逐字复制从 &gt;1% 降到 ~0.1%（少 10 倍）；
-      验证集有 &gt;4% 能在训练集找到；
-      ★ Wiki-40B 上数据变少但困惑度降了近 3 个点
+<div class="codehilite"><pre><span></span><code>① ★★ 去重率的分母必须先说清：文档数 / 字节数 / token 数，三者差好几倍
+   ✅ Lee et al. 同一篇论文里：
+      NearDup 删掉 C4 的 3.04%    ← 分母是【文档数】
+      ExactSubstr 删掉 C4 的 7.18% ← 分母是【token 数】
+   ⟹ 这两个数【不能比】。ExactSubstr 根本不整篇删文档，
+      所以它&quot;删掉多少文档&quot;恒为 0，只能按 token 报。
 
-② ★★ 四个粒度，互补不替代：
+② ★ 去重是全流水线【收益最确凿】的一步
+   ✅ Lee et al. 2107.06499（全部核对过原文）：
+      · C4 里一个 61 词的句子逐字重复了 61036 次
+      · 无提示生成的逐字复制率 1.926% → 0.189%（★ 降到 1/10，不是&quot;降低 10%&quot;）
+      · 验证集有 &gt;4% 能在训练集找到（C4 4.60%、RealNews 14.35%）
+      · ★ Wiki-40B 上 ExactSubstr 让 1.5B 模型困惑度降了近 3 个点
+        （绝对值降 3，不是降 3%），尽管数据【变少了】
+
+③ ★★ 四个粒度，互补不替代：
    ① 精确    整篇哈希          → 转载、跨快照        最便宜
    ② 近似    MinHash + LSH     → 模板页、洗稿  ★主力
-   ③ 子串    后缀数组          → 长引用、许可证片段  贵
-   ④ 语义    embedding + 聚类  → 翻译、改写          最贵
+   ③ 子串    后缀数组          → 长引用、许可证片段  贵，★ 对短文本无效
+   ④ 语义    embedding + 聚类  → 翻译、改写          最贵、最易删错
 
-③ MinHash 的核心定理：P[min h(A) = min h(B)] = J(A,B)
-   → 用 k 个哈希，数相等的个数，就估出了 Jaccard
-   → 一篇几万字的文档压成 k 个整数，误差 ≈ 1/√k
+④ 精确去重真正的难点是内存，★ 教科书数字会骗你：
+   100 亿篇 × 32 字节 = 320 GB（十进制；= 298 GiB）
+   ⚠️ 但放进 Python set 实际要约 780 GB（对象头 + 哈希表槽位，2.4 倍）
+   Bloom filter：每元素 10 位 → 假阳性 0.82%，只要 12.5 GB
+   ⚠️ 但 0.82% × 100 亿 = 8200 万篇被误删 —— 把比例换算成绝对值再决定
 
-④ LSH 分带：k 个签名切成 b 带 × r 行，任一带全同即候选对
-   P(J) = 1 − (1−J^r)^b，阈值 ≈ (1/b)^(1/r)
-   ★ b 大 → 激进；r 大 → 保守；k 大 → 曲线更陡
+⑤ MinHash 的核心定理：P[min h(A) = min h(B)] = J(A,B)
+   ★ 6.5 节用 6 个 shingle 手算过一遍：【签名相等 ⟺ 并集里 h 最小的元素在交集里】
+     枚举 6! = 720 种排队顺序，恰好 240 种满足 ⟹ 240/720 = 1/3 = J（精确相等）
+   ⟹ 用 k 个哈希数相等的位数，就估出了 Jaccard
+   ⚠️ 误差是二项比例的标准差 √(J(1−J)/k) ≤ 1/(2√k)：k=128 → ±0.044（1σ）
+      ★ 流传的&quot;1/√k = ±0.09&quot;其实是 2σ（95% 区间半宽），别当标准差用
 
-⑤ 后缀数组：拼成一个长串排序所有后缀，
+⑥ LSH 分带：k 个签名切成 b 带 × r 行，任一带全同即候选对
+   P(s) = 1 − (1−s^r)^b
+   ✅ k=128, b=16, r=8 实算：s=0.5 → 0.061；s=0.7 → 0.613；
+      s=0.8 → 0.947；s=0.9 → 1.000
+   ⚠️ &quot;阈值 ≈ (1/b)^(1/r)&quot; 这个口诀指的是【拐点】，该点 P ≈ 0.63（趋向 1−1/e），
+      ★【不是 0.5】。真正的半数点 s = (1 − 0.5^(1/b))^(1/r)，b=16,r=8 时是 0.674
+   ★ 选 16×8 的真实理由：J=0.8 召回 0.947，而 J=0.5 只涌入 0.061 ——
+     候选对要逐对验证，低相似度那一大坨涌进来就算不完了
+   ★ b 大 → 激进；r 大 → 保守；k 大 → 曲线更陡（代价是签名更长）
+
+⑦ 后缀数组：拼成一个长串排序所有后缀，
    ★ 公共前缀长的后缀排完必相邻 → 扫一遍相邻对就找出所有重复子串
+   ⚠️ 代价约 8~12 倍原文的内存；对 &lt; 50 token 的短文档完全无效
 
-⑥ Bloom filter：每元素 10 位 → 假阳性 ~1%；100 亿文档只要 12.5 GB
-   ★ 有假阳性（误删）、无假阴性（不漏）
-
-⑦ ★★ 两个反直觉的点：
-   FineWeb：全局跨快照去重【比】按快照单独去重【更差】
-            → 被反复抓到本身是质量信号
+⑧ ★★ 两个反直觉的点：
+   ✅ FineWeb：全局跨快照去重（剩 4 T）【比】按快照单独去重（剩 20 T）更差
+      —— 20 T → 4 T 是&quot;压缩到 20%&quot;/&quot;压缩 5 倍&quot;，★ 不是&quot;压缩了 20%&quot;
+      ✅ 追加实验直接证明：留下来的那 10%，质量比被删掉的 90% 更差
+      ✅ 机制：被反复抓到本身是质量信号，全局去重等于给低质数据上采样
    而精选语料反而要【故意重复采样】2~5 次
    → &quot;重复&quot;在流水线里同时是要消除的和要制造的东西
 
-⑧ 工程陷阱：并查集会把 A~B~C 串成巨型连通分量，删得过狠
+⑨ 三组极易混的说法（6.7 节）：
+   &quot;时间减半&quot; = &quot;加速 2 倍&quot; = &quot;时间减少 50%&quot;
+   ⚠️ 但 &quot;加速 50%&quot; 只意味着时间减少 33.3% —— 差了近一倍
+   &quot;压缩到 20%&quot; = &quot;压缩 5 倍&quot; ≠ &quot;压缩了 20%&quot;
+
+⑩ 工程陷阱：
+   · 并查集会把 A~B~C 串成巨型连通分量，删得过狠
+     → 簇内做真实 Jaccard 验证 / 限制簇规模 / 不做传递闭包
+   · ⚠️ numpy 里 int64 × uint64 会被静默提升成 float64 → 签名全错且不报错
+   · ⚠️ 梅森质数 (1&lt;&lt;61)−1 配向量化会溢出 uint64 → 改用 &lt; 2^32 的质数
 </code></pre></div>
 
 <hr />

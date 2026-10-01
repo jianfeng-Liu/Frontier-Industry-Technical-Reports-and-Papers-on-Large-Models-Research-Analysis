@@ -260,7 +260,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
    ★ 名词：token（词元）
      ⟹ 模型处理文本的最小单位。⚠️ 粗略换算：
-        英文约 1 个 token ≈ 0.75 个单词；中文约 1 个汉字 ≈ 1~2 个 token。
+        英文约 1 个 token ≈ 0.75 个单词；中文约 1 个汉字 ≈ 1~2 个 token；
+        ⚠️ 一行 Python 代码大致 10~15 个 token。
+     ⚠️⚠️ 不同模型用不同的分词器，token 数【互相不可比】。
+        ✅ SWE-agent 论文专门加了一条脚注说这件事：
+           &quot;Token counts for different models are not directly comparable
+            since they use different tokenizers.&quot;
 </code></pre></div>
 
 <p>★★★ 为什么"窗口再大也不够"？✅ SWE-bench 论文 Table 1 给了原因（★ 逐字数据）：</p>
@@ -303,11 +308,63 @@ be fit into an LMs context window."</p>
 <p>⟹ <strong>代码库的 token 量（平均 438K 行）远超模型上下文窗口通常能装下的量。</strong></p>
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 请注意上表最刺眼的对比：
 
-      仓库有 438,000 行  ──▶  但答案平均只改 32.8 行。
+      仓库有 438,000 行  ──&gt;  但答案平均只改 32.8 行。
 
-      ⟹ ★★ 也就是说，99.99% 的代码是【噪音】。
+      ⟹ ★★ 1 − 32.8/438000 = 99.9925%，
+         也就是说 99.99% 的代码和这道题的改动无关。
       ⟹ 🔑 上下文管理的全部任务就是：
          【在有限的窗口里，尽量装那 32.8 行附近的东西。】
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️ 但&quot;99.99% 是噪音&quot;这句话是【修辞】，不能当工程指标用：
+
+      ★★ 它不等于&quot;只需要给模型看 32.8 行&quot;。
+      ⟹ 要【找到】那 32.8 行，模型得先看过调用方、看过类定义、
+         看过测试、看过报错 —— 这些都不在那 32.8 行里。
+      ✅ 旁证：论文 Table 11 发现 agent 交出来的补丁
+         【比人写的标准答案更大】（加的行更多、改的区块更多），
+         ★ 论文把主要原因归给&quot;额外写的复现代码&quot;。
+      ⟹ ★★★ 所以准确的说法是：
+         【要看的远多于 32.8 行，但远少于 438,000 行。
+           上下文管理就是在这两个数之间找落点。】
+</code></pre></div>
+
+<p>★ 顺带把"窗口有多大"这件事量化一下，才知道这个矛盾有多硬：</p>
+<table>
+<thead>
+<tr>
+<th>口径</th>
+<th>值</th>
+<th>★ 折算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ GPT-4 Turbo 窗口（论文 §4 写明）</td>
+<td>128K token</td>
+<td>约 <strong>9,800 行</strong>代码</td>
+</tr>
+<tr>
+<td>✅ Claude 3 Opus 窗口（同上）</td>
+<td>200K token</td>
+<td>约 15,400 行</td>
+</tr>
+<tr>
+<td>✅ DeepSeek-V4 跑分时设的上限（07 章）</td>
+<td>512K token</td>
+<td>约 39,400 行</td>
+</tr>
+<tr>
+<td><strong>一个 SWE-bench 仓库（均值）</strong></td>
+<td>⚠️ 约 <strong>5.7M token</strong></td>
+<td><strong>438,000 行</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 就算 512K 的窗口，也只装得下一个平均仓库的 9%。
+   ⚠️ 上面的&quot;行 ↔ token&quot;换算按 13 token/行 粗估，不是实测。
+   ⟹ 🔑 结论：★★ 这不是&quot;等窗口变大就解决了&quot;的问题。
+      窗口涨了 4 倍，差距还是两个数量级。
 </code></pre></div>
 
 <hr />
@@ -321,90 +378,156 @@ history while reducing unnecessary context, which allows for more interaction<br
 cycles and avoids showing outdated file information."</p>
 </blockquote>
 <p>⟹ <strong>为进一步提升上下文相关性，最近 5 条之前的观察，每条都被折叠成一行。通过移除此前观察的大部分内容，我们保留了关于计划和动作历史的关键信息，同时减少了不必要的上下文，这让交互轮次可以更多，也避免了展示过时的文件信息。</strong></p>
-<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 拆开看，这一句话里藏了三个理由：
+<p>★★ 拆开看，这一句话里藏了三个理由，而且<strong>它们的重要程度不一样</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>理由</th>
+<th>✅ 论文的原词</th>
+<th>★ 它在说什么</th>
+<th>重要度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>省地方</strong></td>
+<td><em>"reducing unnecessary context, which allows for more interaction cycles"</em></td>
+<td>腾出的空间可以多转几轮循环</td>
+<td>★ 一般</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>保留骨架</strong></td>
+<td><em>"we maintain essential information about the plan and action history"</em></td>
+<td>★★ 折叠成"一行"，<strong>不是删掉</strong>。模型仍知道"我第 3 步打开过 X 文件"，只是看不到内容了</td>
+<td>★★ 重要</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>避免过时信息</strong></td>
+<td><em>"avoids showing outdated file information"</em></td>
+<td>★★★ 见下方</td>
+<td>★★★ 最重要</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 第 ③ 条为什么最关键 ——
+      直接用 [02 章 §2.2b](02-agent循环怎么转.md) 那条轨迹来看：
 
-   ┌──────────────────────────────────────────────────────────┐
-   │ ① 省地方  ⟹ 腾出的空间可以多转几轮循环                   │
-   │ ② ★★ 保留骨架 ⟹ 折叠成&quot;一行&quot;，不是删掉。               │
-   │    模型仍知道&quot;我第 3 步打开过 X 文件&quot;，只是看不到内容了  │
-   │ ③ ★★★ 避免过时信息 ⟹ 这一条最关键，见下方              │
-   └──────────────────────────────────────────────────────────┘
-</code></pre></div>
-
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 第 ③ 条为什么最关键：
-
-      第 3 步：模型 open 了 foo.py，看到第 100 行是 `return None`
-      第 7 步：模型 edit 了 foo.py，把第 100 行改成了 `return x`
-      第 9 步：★★ 如果第 3 步的旧内容还留在上下文里——
-              模型的&quot;记忆&quot;里，同一个文件的同一行有【两个互相矛盾的版本】。
+      第 2 轮：模型 open 了 pvsystem.py，看到 412 行是
+               irradiance.aoi(self.surface_azimuth, self.surface_tilt, ...)
+      第 4 轮：模型 edit 了 412 行，自动回显里它已经是
+               irradiance.aoi(self.surface_tilt, self.surface_azimuth, ...)
+      第 5 轮：★★ 如果第 2 轮的旧内容还留在上下文里——
+               模型的&quot;记忆&quot;里，同一个文件的同一行有【两个互相矛盾的版本】。
 
       ⟹ ★★★ 这不是&quot;浪费空间&quot;，这是【喂给它错误信息】。
+      ⟹ 🔑 而折叠之后，第 2 轮那条观察变成一行
+         &quot;(Open file: pvlib/pvsystem.py)&quot; ——
+         ★★ 骨架留着（它知道自己看过这个文件），
+         ★★★ 但那份【已经过时的内容】没了。
 </code></pre></div>
 
-<p>✅ <strong>实测代价</strong>（论文 Table 3，SWE-bench Lite + GPT-4 Turbo）：</p>
+<p>✅ <strong>实测代价</strong>（论文 Table 3，SWE-bench Lite 300 题 + GPT-4 Turbo，口径同 <a href="03-工具集与ACI.html">03 章 §3.4</a>）：</p>
 <table>
 <thead>
 <tr>
 <th>上下文策略</th>
+<th>✅ 论文里的设定名</th>
 <th>分数</th>
+<th>★ 约几道题（共 300）</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>★ 只保留最近 5 条观察</td>
+<td><code>Last 5 Obs.</code></td>
 <td><strong>18.0</strong></td>
+<td>54 道</td>
 </tr>
 <tr>
 <td>★★★ 保留全部历史</td>
+<td><code>Full history</code></td>
 <td><strong>15.0（↓ 3.0）</strong></td>
+<td>45 道（少 9 道）</td>
 </tr>
 </tbody>
 </table>
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 这就是本章的立论：
-      【主动扔掉信息，比留着更好。而且值 3 个点。】
+      【主动扔掉信息，比留着更好。而且值 3.0 个点。】
 
    ⚠️ 对新手最反直觉的一点：
       你会本能地觉得&quot;多给模型一点信息总没坏处&quot;。
       ★★ 这个实验说明不是——旧信息会【主动骗它】。
+
+   ⚠️ 必须跟的限定（和 03 章 §3.4 ③ 是同一条）：
+      ★★ 3.0 个点在 300 题上等于 9 道题，
+      ✅ 而基线重跑 6 遍的极差是 4 道题（1.34 个百分点）。
+      ⟹ ★ 所以这个差异压过了重跑噪声，但别把&quot;3.0&quot;当成精确值。
 </code></pre></div>
 
-<p>★★ 顺带，02 章讲过的那条也属于同一类设计：</p>
+<p>★★ 顺带，<a href="02-agent循环怎么转.html">02 章 §2.3</a> 讲过的那条也属于同一类设计：</p>
 <div class="codehilite"><pre><span></span><code>   ✅ &quot;Once received, all past error messages except the first are omitted.&quot;
    ⟹ 格式报错重试成功后，除第一条外的所有报错都从上下文里删掉。
    ⟹ ★★ 同一个思路：【已经没用的东西，主动清掉。】
+   ⟹ 🔑 注意这两条的共同点：★★★ 它们扔掉的都是
+      【已经被后来的事实取代了的信息】，不是&quot;不重要的信息&quot;。
 </code></pre></div>
 
 <hr />
 <h2 id="43">4.3 三种上下文管理策略</h2>
 <p>⚠️ 这个三分法是我对公开实现的归纳，不是某篇论文的分类。但每一格都有 ✅ 实例。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 策略① 截断 / 折叠（truncate）───────────────────────┐
-   │  ★ 做法：超过 N 条的旧内容，直接删或压成一行。        │
-   │  ✅ 实例：SWE-agent 的&quot;最近 5 条观察&quot;                 │
-   │  ✅ 实例：Codex 的 tool_output_token_limit            │
-   │          （单条工具输出在历史里能占多少 token 的预算）│
-   │  ⟹ ★★ 优点：便宜、确定。缺点：★★★ 信息真的没了。     │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 策略② 压缩总结（compact）───────────────────────────┐
-   │  ★★ 做法：快满时，【再调一次模型】，让它把前面的      │
-   │     对话总结成一段短文，用总结替换掉原文。            │
-   │  ✅ 实例：Claude Code 的 auto-compact（自动压缩）     │
-   │  ✅ 实例：Codex 的 model_auto_compact_token_limit     │
-   │  ⟹ ★★ 优点：保留语义。                               │
-   │     缺点：★★★【压缩本身就是一次大请求，很贵】        │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 策略③ 隔离（isolate）──────────────────────────────┐
-   │  ★★★ 做法：把会产生大量垃圾输出的活，                │
-   │     丢给一个【独立上下文】的子 agent 去做，           │
-   │     只把它的结论拿回来。                              │
-   │  ✅ 实例：Claude Code 的 subagent（子 agent）         │
-   │  ⟹ ★★★ 优点：主对话完全不脏。                       │
-   │     缺点：子 agent 看不到主对话的上下文。            │
-   └───────────────────────────────────────────────────────┘
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>★ 做法</th>
+<th>✅ 实例</th>
+<th>★★ 优点</th>
+<th>★★★ 缺点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 截断 / 折叠</strong><br>（truncate / fold）</td>
+<td>超过 N 条的旧内容，直接删或压成一行</td>
+<td>✅ SWE-agent 的 <code>Last 5 Obs.</code>（最近 5 条之外每条折一行）<br>✅ Codex 的 <code>tool_output_token_limit</code>（单条工具输出在历史里能占多少 token）</td>
+<td>便宜、确定、不用再调一次模型</td>
+<td>★★★ <strong>信息真的没了</strong>，而且<strong>不可逆</strong></td>
+</tr>
+<tr>
+<td><strong>② 压缩总结</strong><br>（compact / summarize）</td>
+<td>快满时<strong>再调一次模型</strong>，让它把前面的对话总结成一段短文，用总结替换原文</td>
+<td>✅ Claude Code 的 <strong>auto-compact</strong> + <code>/compact</code><br>✅ Codex 的 <code>model_auto_compact_token_limit</code></td>
+<td>保留语义，比折叠记得多</td>
+<td>★★★ <strong>压缩本身就是一次大请求，很贵</strong>；而且 ⚠️ 总结是模型写的，<strong>可能写错或漏掉关键字符串</strong></td>
+</tr>
+<tr>
+<td><strong>③ 隔离</strong><br>（isolate）</td>
+<td>把会产生大量垃圾输出的活，丢给一个<strong>独立上下文</strong>的子 agent 去做，只把它的结论拿回来</td>
+<td>✅ Claude Code 的 <strong>subagent</strong>（子 agent）</td>
+<td>★★★ 主对话完全不脏</td>
+<td>子 agent <strong>看不到主对话的上下文</strong>，⚠️ 可能重复做已经做过的事；⚠️ 它的返回值仍然会进主上下文</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★ 还有一个常被归进来的第四种，但它和上面三种不是一个层次：
+
+   ④ 检索回填（retrieve / RAG-style）
+      ★ 做法：不预先往上下文里塞，而是等模型说&quot;我要看 X&quot;时再去查。
+      ⟹ ★★ 严格说这不是&quot;管理已有的上下文&quot;，而是&quot;一开始就不放进来&quot;。
+      ✅ 实例：SWE-bench 的 RAG 基线（BM25 检索 + 一轮盲写）就是极端版。
+      ⚠️ 而 agent 的搜索工具（search_dir / Grep）本质也是它 ——
+         ★★★ 把&quot;去仓库里查&quot;这件事做成一个动作，交给模型自己决定什么时候用。
+      ⟹ 🔑 这就是为什么 03 章说搜索界面值 6.0 个点：
+         ★★ 搜索工具是上下文管理的【入口闸门】。
 </code></pre></div>
 
 <hr />
 <h2 id="44-2claude-code-auto-compact">4.4 ✅ 策略②实例：Claude Code 的 auto-compact</h2>
-<p>★★ 以下全部来自 Claude Code 官方文档（<code>costs</code> 页），✅ 逐字引用：</p>
+<p>★★ 以下全部来自 Claude Code 官方文档（<code>costs</code> 页），✅ 逐字引用。⚠️ 口径截至 <strong>2026-08-27</strong>，产品行为变化快，配置名和默认值可能随版本变。</p>
 <blockquote>
 <p>"Claude Code automatically optimizes costs through prompt caching, which reduces<br />
 costs for repeated content like system prompts, and auto-compaction, which<br />
@@ -416,9 +539,13 @@ summarizes conversation history when approaching context limits."</p>
         用总结替换原文，腾出空间继续干。
 
    ★ 名词：prompt caching（提示词缓存）
-     ⟹ 每一轮都要把【整段对话】重新发给模型（模型没有记忆）。
-        缓存的作用是：重复的那部分不必重新计算，按更便宜的价格算。
-     ⚠️ 注意它不省 token，只省钱。
+     ⟹ 每一轮都要把【整段对话】重新发给模型（模型没有记忆，
+        见 02 章 §2.1）。缓存的作用是：重复的那部分不必重新计算，
+        按更便宜的价格算。
+     ⚠️⚠️ ★★★ 注意它【不省 token，只省钱】。
+        ⟹ 窗口该满照样满，撞上限照样撞。
+        ⟹ 🔑 这是本章最容易被误解的一点：缓存解决的是【账单】，
+           压缩和折叠解决的是【容量】。两件事，不能互相替代。
 </code></pre></div>
 
 <p>✅ 文档里还有一句，把"为什么长会话越来越贵"讲得很直白（★ 逐字）：</p>
@@ -431,9 +558,20 @@ uses tools it sends another request carrying that batch of tool results."</p>
 
       一个任务转 20 轮 = 发出 20 次请求，
       第 20 次请求里装着前 19 轮的【全部内容】。
-      ⟹ ★★ 成本不是线性的，是【接近平方级】的。
+      ⟹ ★★ 发出去的 token 总量不是线性的，是【接近平方级】的。
 
-   ⟹ 这也是为什么&quot;折叠旧观察&quot;能省这么多——
+   ⚠️⚠️ 但&quot;成本接近平方级&quot;这个说法要加一个很重要的限定：
+
+      ★★★ 【token 量】接近平方级 —— 这一条是确定的，
+         §4.4b 会把它算出来。
+      ⚠️ 【钱】不一定按平方涨 —— 因为那个一直在重发的&quot;固定前缀&quot;
+         （系统提示 + 工具声明 + 项目说明）正好是缓存最擅长的部分。
+      ⟹ ★★ 所以准确的说法是：
+         【token 量平方级增长；钱的增长被缓存削平了一部分，
+           削掉多少取决于缓存命中率和厂商折扣】。
+      ⚠️ 具体折扣比例随厂商和时间变，这里不写死数字。
+
+   ⟹ ★★ 这也是为什么&quot;折叠旧观察&quot;能省这么多——
       省的不是一次，是【后面每一次请求都省】。
 </code></pre></div>
 
@@ -469,8 +607,363 @@ uses tools it sends another request carrying that batch of tool results."</p>
 </tbody>
 </table>
 <hr />
+<h2 id="44b-token">4.4b ⭐⭐⭐ 一个任务的逐轮 token 账：算到撞窗口</h2>
+<p>★★★ 本章最该花时间的一节。⚠️⚠️ <strong>下面全部是我构造的算例，不是实测</strong>：token 数按"英文 1 token ≈ 0.75 词、一行代码约 13 token"粗估，窗口刻意设得很小好算。★★ 用它看<strong>结构和趋势</strong>，不要引用任何绝对值。</p>
+<h3 id="1">① 设定</h3>
+<div class="codehilite"><pre><span></span><code>   ★ 任务：一个需要改两个文件、跑三次测试的 bug 修复，12 轮收工。
+
+   ★ 固定前缀 P = 2,500 token（★★ 每一轮都要重发一遍）
+   ├── 系统提示词          1,200
+   ├── 工具声明（10 个工具）  800
+   └── issue 文本            500
+
+   ★ 上下文窗口 = 16,000 token
+      ⚠️ 真实产品是 128K / 200K / 512K。
+         ★★ 这里缩小到 16K，是为了让&quot;撞墙&quot;在 12 轮内发生、
+         能手算出来。★★★ 结构和真实情况完全一样，只是刻度不同。
+
+   ★ 三种策略并排比：
+   ├── A  保留全部历史                （= 论文的 Full history）
+   ├── B  折叠：最近 5 条观察留原文，更早的每条压成 25 token 一行
+   │                                   （= 论文的 Last 5 Obs.）
+   └── C  B ＋ 单条工具输出上限 2,000 token
+                                       （= Codex 的 tool_output_token_limit）
+</code></pre></div>
+
+<h3 id="2-12">② 这 12 轮各自产生了多少</h3>
+<table>
+<thead>
+<tr>
+<th>轮</th>
+<th>动作</th>
+<th>模型输出<br>（想法+工具调用）</th>
+<th>工具返回（原始）</th>
+<th>⚠️ C 策略下截断成</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>search_dir</code> 定位</td>
+<td>120</td>
+<td>800</td>
+<td>800</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>open</code> 文件 A（100 行）</td>
+<td>110</td>
+<td>1,300</td>
+<td>1,300</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>scroll_down</code></td>
+<td>90</td>
+<td>1,300</td>
+<td>1,300</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>edit</code> + 自动回显</td>
+<td>260</td>
+<td>1,400</td>
+<td>1,400</td>
+</tr>
+<tr>
+<td><strong>5</strong></td>
+<td><strong><code>pytest</code> 全量</strong></td>
+<td>100</td>
+<td>⚠️ <strong>4,000</strong></td>
+<td>★★ <strong>2,000</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>open</code> 文件 B</td>
+<td>110</td>
+<td>1,300</td>
+<td>1,300</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>edit</code> + 自动回显</td>
+<td>280</td>
+<td>1,400</td>
+<td>1,400</td>
+</tr>
+<tr>
+<td><strong>8</strong></td>
+<td><strong><code>pytest</code> 全量</strong></td>
+<td>100</td>
+<td>⚠️ <strong>4,000</strong></td>
+<td>★★ <strong>2,000</strong></td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>search_file</code></td>
+<td>100</td>
+<td>500</td>
+<td>500</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>edit</code> + 自动回显</td>
+<td>260</td>
+<td>1,400</td>
+<td>1,400</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>pytest -k</code>（只跑相关）</td>
+<td>110</td>
+<td>600</td>
+<td>600</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>submit</code></td>
+<td>80</td>
+<td>40</td>
+<td>40</td>
+</tr>
+</tbody>
+</table>
+<h3 id="3-token">③ ⭐⭐ 主表：每一轮那次请求要发出去多少 token</h3>
+<p>★★★ <strong>「这一轮发出去多少」= 固定前缀 2,500 ＋ 到上一轮为止的可见历史。</strong></p>
+<table>
+<thead>
+<tr>
+<th>轮</th>
+<th><strong>A 全留</strong><br>发出 token</th>
+<th><strong>B 折叠</strong><br>发出 token</th>
+<th><strong>C 折叠+单条上限</strong><br>发出 token</th>
+<th>⚠️ 这一轮发生了什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>2,500</td>
+<td>2,500</td>
+<td>2,500</td>
+<td>★ 只有固定前缀，它还没看过一行代码</td>
+</tr>
+<tr>
+<td>2</td>
+<td>3,420</td>
+<td>3,420</td>
+<td>3,420</td>
+<td>三种策略还没分家</td>
+</tr>
+<tr>
+<td>3</td>
+<td>4,830</td>
+<td>4,830</td>
+<td>4,830</td>
+<td></td>
+</tr>
+<tr>
+<td>4</td>
+<td>6,220</td>
+<td>6,220</td>
+<td>6,220</td>
+<td></td>
+</tr>
+<tr>
+<td>5</td>
+<td>7,880</td>
+<td>7,880</td>
+<td>7,880</td>
+<td>★ 前 5 轮的观察都在"最近 5 条"里，B 还没开始折</td>
+</tr>
+<tr>
+<td>6</td>
+<td>11,980</td>
+<td>11,980</td>
+<td><strong>9,980</strong></td>
+<td>★★ 第 5 轮那 4,000 token 的 pytest 输出进来了。<strong>C 在这里第一次省下 2,000</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td>13,390</td>
+<td>12,615</td>
+<td>10,615</td>
+<td>★★ B 开始折了（第 1 轮那条观察压成 25）</td>
+</tr>
+<tr>
+<td>8</td>
+<td>15,070</td>
+<td>13,020</td>
+<td>11,020</td>
+<td>⚠️ A 已经逼近 16,000</td>
+</tr>
+<tr>
+<td><strong>9</strong></td>
+<td>⚠️⚠️ <strong>19,170</strong></td>
+<td><strong>15,845</strong></td>
+<td><strong>11,845</strong></td>
+<td>★★★ <strong>A 在这一轮撞墙</strong>（超窗口 3,170）。⚠️ B 只剩 <strong>155 token</strong> 余量 —— 因为第 5、8 轮两次 4,000 token 的 pytest 输出<strong>同时落在"最近 5 条"里</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td>19,770</td>
+<td>15,070</td>
+<td>11,070</td>
+<td>★ B 缓过来了：第 5 轮那条被折掉了</td>
+</tr>
+<tr>
+<td>11</td>
+<td>21,430</td>
+<td>12,755</td>
+<td>10,755</td>
+<td></td>
+</tr>
+<tr>
+<td>12</td>
+<td>22,140</td>
+<td>12,190</td>
+<td>10,190</td>
+<td>★★ B 和 C 都<strong>反而在下降</strong></td>
+</tr>
+<tr>
+<td><strong>12 轮合计发出</strong></td>
+<td>⚠️ <strong>147,800</strong></td>
+<td><strong>118,325</strong></td>
+<td>★★★ <strong>100,325</strong></td>
+<td></td>
+</tr>
+<tr>
+<td><strong>峰值</strong></td>
+<td>⚠️ <strong>22,140</strong>（撞墙）</td>
+<td>15,845（擦边过）</td>
+<td>★ <strong>11,845</strong>（宽裕）</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>★ 第 9 轮那三个数字可以自己验算，算式全在这里：</p>
+<div class="codehilite"><pre><span></span><code>A（全留）第 9 轮 = 2,500 + 前 8 轮全部
+  前 8 轮 = (120+800)+(110+1300)+(90+1300)+(260+1400)
+          + (100+4000)+(110+1300)+(280+1400)+(100+4000)
+          = 920+1410+1390+1660+4100+1410+1680+4100
+          = 16,670
+  ⟹ 2,500 + 16,670 = 19,170   ⚠️ 超出 16,000 窗口 3,170
+
+B（折叠）第 9 轮 = 2,500 + 全部想法 + 最近 5 条观察原文 + 更早 3 条各 25
+  全部想法 = 120+110+90+260+100+110+280+100 = 1,170
+  最近 5 条观察 = 第 4~8 轮 = 1400+4000+1300+1400+4000 = 12,100
+  更早 3 条（第 1~3 轮）= 3 × 25 = 75
+  ⟹ 2,500 + 1,170 + 12,100 + 75 = 15,845   ★ 只剩 155 token
+
+C（再加单条上限 2,000）第 9 轮
+  最近 5 条观察 = 1400+2000+1300+1400+2000 = 8,100   ← 两次 pytest 各省 2,000
+  ⟹ 2,500 + 1,170 + 8,100 + 75 = 11,845   ★ 宽裕
+</code></pre></div>
+
+<h3 id="4">④ 🔑🔑🔑 从这张账里必须带走的六件事</h3>
+<div class="codehilite"><pre><span></span><code>   ① ★★★ 最终上下文很小，但【发出去的总量】大得离谱。
+      A 策略最后一轮只装 19,640 token 的历史，
+      但 12 轮一共发出 147,800 token —— ★★ 7.5 倍。
+      ⟹ 🔑 这就是 agent 贵的全部原因。
+
+   ② ★★★ 这个倍数随轮数【越来越大】，是平方级的。
+      ★ 粗算：如果同样的节奏再走 12 轮（共 24 轮），
+        A 的总量大约会到 51 万 token —— ★★ 轮数翻倍，总量变 3.5 倍。
+      ⚠️ 为什么不是整 4 倍：因为固定前缀那部分（2,500 × 轮数）
+         是【线性】的，它把平方项稍微拉平了一点。
+
+   ③ ★★★ 撞墙不是&quot;慢慢挤满&quot;，是【某一轮突然跳上去】。
+      ★★ 第 8 轮 A 还是 15,070（能过），第 9 轮直接 19,170（过不去）。
+      ⟹ 🔑 原因是第 8 轮那次 pytest 吐了 4,000 token。
+      ⟹ ★★★ 所以上下文爆掉的触发者，通常是【一条工具返回】，
+         不是&quot;对话太长&quot;。⚠️ 这和直觉相反。
+
+   ④ ★★ 折叠（B）救不了&quot;短期内连着两次大输出&quot;。
+      ★★★ 第 9 轮 B 只剩 155 token 余量 ——
+      因为第 5 轮和第 8 轮两次 4,000 token 的 pytest 输出
+      【同时落在&quot;最近 5 条&quot;这个窗口里】。
+      ⟹ 🔑 这就是为什么 Codex 除了折叠还要有
+         tool_output_token_limit：★★ 两个旋钮管的是不同的事 ——
+         折叠管【历史有多长】，单条上限管【单次有多大】。
+
+   ⑤ ★★ B 和 C 的曲线在后半段是【下降】的。
+      ⟹ 第 10~12 轮，发出的 token 在变少。
+      ⟹ 🔑 因为大块观察陆续被折掉的速度，
+         超过了新内容进来的速度。
+      ⟹ ★★★ 这就是&quot;折叠&quot;真正的价值：它让上下文【有上界】，
+         而不只是&quot;长得慢一点&quot;。
+
+   ⑥ ⚠️ 固定前缀不可忽视，但它是最便宜的那部分。
+      ★ 2,500 × 12 = 30,000，占 A 总量的 20%、占 C 总量的 30%。
+      ⟹ ★★ 而它每轮一个字不变 ⟹ 正好是【提示词缓存】最擅长的部分。
+      ⟹ 🔑 所以 §4.4 那句&quot;钱不一定按平方涨&quot;落在这里：
+         ★★★ 平方增长的是【历史】那部分，而历史是最难缓存的
+         （每轮都新增内容，前缀匹配每轮都在变长）。
+</code></pre></div>
+
+<h3 id="5">⑤ ⚠️ 三种裁剪策略，各自到底丢了什么</h3>
+<p>★★★ 上面算的是"省了多少"。这一节算<strong>代价</strong> —— 每种策略丢掉的东西不一样，被咬的方式也不一样。</p>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>★ 保留了什么</th>
+<th>⚠️⚠️ 丢掉了什么</th>
+<th>★★★ 什么时候会咬你</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 截断 / 折叠</strong></td>
+<td>★★ 动作骨架：「我第 2 轮 open 过文件 A」</td>
+<td>那条观察的<strong>全部具体内容</strong>：文件里的代码、报错全文、搜索命中列表。⚠️ <strong>不可逆</strong></td>
+<td>★★★ 模型后来想回看文件 A 的<strong>另一段</strong>，但它已经看不见第 2 轮那 100 行了 ⟹ <strong>得重新 <code>open</code> 一次，多烧一轮</strong><br>⚠️ 更坏的情况：它<strong>不知道自己忘了</strong>，于是基于那条"一行骨架"硬猜</td>
+<td>★ 零（不用调模型）</td>
+</tr>
+<tr>
+<td><strong>② 压缩总结</strong></td>
+<td>★★ 语义：「我改了 <code>get_aoi</code> 里的参数顺序，测试过了」</td>
+<td>★★★ <strong>精确的字符串</strong>：行号 412、函数签名的确切拼写、报错码 <code>E999</code>、文件的确切路径。⚠️ 而且总结是<strong>另一次模型调用写的</strong>，它可能漏、可能写错</td>
+<td>★★★ 模型需要精确值时：「刚才那个报错是哪一行？」—— 总结里写的是"有个缩进问题"，没有 412 这个数字 ⟹ 它只能重新去查<br>⚠️⚠️ 最坏情况：总结把一个<strong>已经被否决的方案</strong>写成了"我们决定这么做" ⟹ 模型照着错的方向继续</td>
+<td>⚠️⚠️ <strong>一次大请求</strong>（要把被压缩的全部内容发过去）</td>
+</tr>
+<tr>
+<td><strong>③ 隔离（子 agent）</strong></td>
+<td>★★ 子 agent 交回来的<strong>结论</strong>：「2 个测试挂了，在 X 和 Y」</td>
+<td>★★★ 子 agent 看到的<strong>全部中间过程</strong>。主对话完全不知道它试过什么、排除过什么</td>
+<td>★★ 主对话想追问"那个测试具体报什么错" ⟹ 结论里没有 ⟹ 要么再派一个（它又是瞎的），要么自己跑一遍<br>⚠️⚠️ ✅ 文档明说的坑：子 agent <strong>看不到主对话</strong>，所以它可能<strong>重复做已经做过的事</strong>（§4.5）</td>
+<td>★★ 一整条独立轨迹的钱</td>
+</tr>
+<tr>
+<td><strong>④ 检索回填</strong></td>
+<td>★ 什么都不预存，要什么现查</td>
+<td>★★★ 「我该查什么」这个判断<strong>本身</strong>。⚠️ 检索召回不到就等于不存在</td>
+<td>★★★ ✅ 实测证据最硬：SWE-bench 的 BM25 检索基线只有 <strong>1.96%</strong>，而把正确文件直接喂给它（oracle）是 <strong>4.80%</strong>（见 <a href="../评测入门/07-agentic编码评测与SWE-bench.html">评测入门 07 章 §7.9</a>）</td>
+<td>★ 一次检索</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 把这张表压成一句话：
+
+      ★★ 截断丢【细节】，压缩丢【精度】，
+         隔离丢【过程】，检索丢【你不知道要查的东西】。
+
+   ⟹ 🔑 所以现代产品是三件套一起用，不是挑一个：
+      ① 截断 处理【每条工具返回别太大】
+      ② 压缩 处理【历史别太长】
+      ③ 隔离 处理【某一类活会产生一大堆你不想看的输出】
+      ⟹ ★★ 而 ④ 检索 是入口闸门，决定【一开始放多少进来】。
+
+   ⚠️ 一条很实用的取舍判据（这是我的归纳，不是论文结论）：
+      ★★★ 后面还要【精确引用】的东西 ⟹ 不能交给压缩，
+            要么留原文，要么让模型显式记到文件里。
+      ★★ 后面只需要【知道做过】的东西 ⟹ 折叠就够了。
+</code></pre></div>
+
+<hr />
 <h2 id="45-3claude-code-agent">4.5 ✅ 策略③实例：Claude Code 的子 agent</h2>
-<p>★★★ 官方文档 <code>sub-agents</code> 页，把上下文隔离说得很明确（✅ 逐字）：</p>
+<p>★★★ 官方文档 <code>sub-agents</code> 页，把上下文隔离说得很明确（✅ 逐字）。⚠️ 口径截至 <strong>2026-08-27</strong>。</p>
 <blockquote>
 <p>"Each subagent runs in its own context window with a custom system prompt,<br />
 specific tool access, and independent permissions."</p>
@@ -487,15 +980,22 @@ already read."</p>
        results, logs, or file contents you won&#39;t reference again&quot;
       ⟹【当一个支线任务会用搜索结果、日志、或你不会再看的文件内容
          淹没你的主对话时，用一个子 agent。】
+</code></pre></div>
 
-   ┌────────────────────────────────────────────────────────┐
-   │ 不用子 agent：                                          │
-   │   主对话 ──▶ 跑测试 ──▶ 3000 行日志涌进主上下文 💀      │
-   │                                                        │
-   │ 用子 agent：                                            │
-   │   主对话 ──▶ 派一个子 agent ──▶ 它自己那边收 3000 行    │
-   │           ◀── 只回来一句&quot;有 2 个测试挂了，在 X 和 Y&quot; ✅ │
-   └────────────────────────────────────────────────────────┘
+<p>★ 用 §4.4b 第 8 轮那次 pytest 当例子，把"用"和"不用"摆开：</p>
+<div class="codehilite"><pre><span></span><code>   不用子 agent：
+   ├── 主对话 --&gt; 跑 pytest
+   ├──        &lt;-- 3,000 行日志全部涌进主上下文（约 4,000 token）
+   └── ⚠️ 这 4,000 token 在接下来 5 轮里【每一轮都要重发一次】
+          ⟹ ★★ 光这一条返回，就让后面 5 轮多发出约 20,000 token
+
+   用子 agent：
+   ├── 主对话 --&gt; 派一个子 agent：「跑全量测试，只告诉我挂了哪几个」
+   ├── 子 agent 那边 --&gt; 自己收下 3,000 行日志（★★ 在它自己的窗口里）
+   ├──               --&gt; 自己读完、挑出结论
+   └── 主对话 &lt;-- 只回来一句「2 个测试挂了：test_aoi_tuple 和
+                  test_aoi_scalar，都是 IndentationError at line 412」
+          ⟹ ★★★ 约 40 token。主上下文【干净】
 </code></pre></div>
 
 <p>★★ 但文档也明确写了它的代价（✅ 逐字，文档里是一条 <strong>Warning</strong>）：</p>
@@ -504,20 +1004,51 @@ already read."</p>
 many subagents that each return detailed results can consume significant context."</p>
 </blockquote>
 <p>⟹ <strong>子 agent 完成时，结果会回到你的主对话。如果跑很多子 agent、每个都返回详细结果，一样会吃掉大量上下文。</strong></p>
-<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 🔑 隔离不是免费的：
-      ① 返回值还是会进主上下文
-      ② ★★★ 子 agent 看不到主对话，所以它可能【重复做已经做过的事】
-      ③ ✅ 文档另一处：&quot;a subagent&#39;s context window is sized by its own
-         model&quot; ⟹ 派给小模型，窗口也跟着变小
+<table>
+<thead>
+<tr>
+<th>⚠️ 隔离的三个代价</th>
+<th>说的是什么</th>
+<th>✅ / ⚠️</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>返回值还是会进主上下文</strong></td>
+<td>子 agent 返回一段 2,000 token 的"详细报告"，等于什么都没省</td>
+<td>✅ 文档的 Warning 原文</td>
+</tr>
+<tr>
+<td>② ★★★ <strong>子 agent 是瞎的</strong></td>
+<td>它看不到主对话，所以它可能<strong>重复做已经做过的事</strong>（主对话第 2 轮已经 <code>open</code> 过文件 A，子 agent 会再 <code>open</code> 一次）</td>
+<td>✅ 文档原文："It doesn't see your conversation history..."</td>
+</tr>
+<tr>
+<td>③ <strong>窗口大小跟着它自己的模型</strong></td>
+<td>✅ 文档另一处："a subagent's context window is sized by its own model" ⟹ 派给小模型，窗口也跟着变小</td>
+<td>✅ 文档原文</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 所以子 agent 用得好不好，全看【你让它返回什么】：
+
+      ★★★ 好的用法：「只告诉我挂了哪几个测试，每个一行」
+         ⟹ 返回 40 token，省下 4,000。
+      ⚠️ 坏的用法：「把测试结果详细报告给我」
+         ⟹ 返回 2,000 token，白跑一趟还多花一条轨迹的钱。
+
+   ⟹ ★★ 这一条和 02 章 §2.4 那条设计原则是同一件事：
+      ✅ &quot;Environment feedback should be informative but concise.&quot;
+      ⟹ 🔑 子 agent 的返回值，就是主对话眼里的&quot;环境反馈&quot;。
 </code></pre></div>
 
 <hr />
 <h2 id="46-codex">4.6 ✅ Codex 这一块的配置面</h2>
-<p>★★ Codex 是把上下文管理做成<strong>配置项</strong>暴露出来的，这些名字在官方 <code>config-reference</code> 文档里可查：</p>
+<p>★★ Codex 是把上下文管理做成<strong>配置项</strong>暴露出来的，这些名字在官方 <code>config-reference</code> 文档里可查。⚠️⚠️ 口径截至 <strong>2026-08-27</strong>：★★ <strong>配置项名、默认值、取值枚举都可能随版本变，照抄前请对一遍当前官网。</strong></p>
 <table>
 <thead>
 <tr>
-<th>配置项（<code>config.toml</code> 里）</th>
+<th>配置项（写在 <code>config.toml</code> 里）</th>
 <th>类型 / 取值</th>
 <th>作用</th>
 </tr>
@@ -536,7 +1067,7 @@ many subagents that each return detailed results can consume significant context
 <tr>
 <td><code>model_auto_compact_token_limit_scope</code></td>
 <td><code>total</code> | <code>body_after_prefix</code></td>
-<td>★★ 上面那个阈值是量【整个上下文】(<code>total</code>，默认) 还是只量【固定前缀之后新长出来的部分】</td>
+<td>★★ 上面那个阈值是量【整个上下文】(<code>total</code>，⚠️ 文档标为默认) 还是只量【固定前缀之后新长出来的部分】</td>
 </tr>
 <tr>
 <td><code>compact_prompt</code></td>
@@ -546,7 +1077,7 @@ many subagents that each return detailed results can consume significant context
 <tr>
 <td><code>experimental_compact_prompt_file</code></td>
 <td>路径</td>
-<td>同上，但从文件读（实验特性）</td>
+<td>同上，但从文件读（⚠️ 名字里带 <code>experimental</code>，★★ 实验特性最容易被改掉）</td>
 </tr>
 <tr>
 <td><code>tool_output_token_limit</code></td>
@@ -559,60 +1090,128 @@ many subagents that each return detailed results can consume significant context
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 请特别注意 model_auto_compact_token_limit_scope 这一项。
 
       它区分【总量】和【前缀之后的增量】——
-      ⚠️ 我的解读：因为系统提示词 + 工具定义 + 项目说明这一大坨&quot;前缀&quot;
-      是每轮都一样的，它被提示词缓存住了，便宜。
-      ★★ 真正在长的是后面那截。按哪个口径算阈值，
-      直接决定【多久压缩一次】，也就直接决定成本和信息损失。
+      ⟹ 回到 §4.4b 第 ⑥ 条那笔账就很清楚了：
+         固定前缀 2,500 token 每轮一字不变，占总量的 20%~30%，
+         ★★ 而且正好是提示词缓存最擅长的部分，便宜。
+         ★★★ 真正在长、真正贵、真正撑爆窗口的是【前缀之后那截】。
+
+      ⟹ ★★ 按哪个口径算阈值，直接决定【多久压缩一次】：
+         按 total 算 ⟹ 前缀越大，越早触发压缩（哪怕历史还很短）
+         按 body_after_prefix 算 ⟹ 前缀不计入，压缩来得更晚
+      ⟹ 🔑 也就直接决定成本和信息损失。
 
    ⟹ ★★★ 这就是本目录 README 说的&quot;闭源产品公开的是【配置面】&quot;：
       你看不到它压缩算法怎么写的，
       但你能看到它把哪些旋钮交到了你手上——
       ★★ 而这些旋钮，每一个都会动分数。
+   ⟹ ⚠️ 所以报一个 agentic 分数时，这几个配置项的取值属于
+      [01 章 §1.4b](01-两个harness不是一个东西.md) 第 ② 项「脚手架版本与配置」必须披露的内容。
 </code></pre></div>
 
 <hr />
 <h2 id="47">4.7 三家做法对照</h2>
-<div class="codehilite"><pre><span></span><code>   ┌────────────┬──────────────┬───────────────┬──────────────┐
-   │            │ SWE-agent    │ Claude Code   │ Codex        │
-   ├────────────┼──────────────┼───────────────┼──────────────┤
-   │ 截断/折叠  │ ✅ 最近5条    │ ⚠️ 未公开细节 │ ✅ tool_output│
-   │            │   其余折一行 │               │  _token_limit│
-   ├────────────┼──────────────┼───────────────┼──────────────┤
-   │ 压缩总结   │ ❌ 没有       │ ✅ auto-compact│ ✅ model_auto│
-   │            │              │  + /compact   │  _compact_*  │
-   ├────────────┼──────────────┼───────────────┼──────────────┤
-   │ 子agent隔离│ ❌ 没有       │ ✅ subagent    │ ✅ 有 subagents│
-   │            │              │  独立上下文窗口│  文档页      │
-   ├────────────┼──────────────┼───────────────┼──────────────┤
-   │ 可查证程度 │ ✅✅ 论文+源码│ ✅ 行为/⚠️实现 │ ✅ 配置面    │
-   └────────────┴──────────────┴───────────────┴──────────────┘
-
-   ⟹ ★★ 一句话看懂这张表：
+<p>⚠️ 这张表里的「有 / 没有」是<strong>功能是否存在</strong>的判断；⚠️ 它和本目录 ✅（可查证）/ ⚠️（我的推断）那套记号是两回事，<strong>别把「有」读成「✅」</strong>。可查证程度单独放在最后一行。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>SWE-agent</strong>（2024）</th>
+<th><strong>Claude Code</strong>（2026-08 口径）</th>
+<th><strong>Codex</strong>（2026-08 口径）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 截断 / 折叠</strong></td>
+<td><strong>有</strong>：✅ 最近 5 条观察留原文，其余每条折成一行</td>
+<td><strong>有</strong>（行为上有），⚠️ <strong>具体策略未公开</strong></td>
+<td><strong>有</strong>：✅ <code>tool_output_token_limit</code></td>
+</tr>
+<tr>
+<td><strong>② 压缩总结</strong></td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>：✅ <code>auto-compact</code> + <code>/compact</code> + <code>/compact &lt;指令&gt;</code></td>
+<td><strong>有</strong>：✅ <code>model_auto_compact_token_limit</code> 系列 4 个配置项</td>
+</tr>
+<tr>
+<td><strong>③ 子 agent 隔离</strong></td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>：✅ <code>subagent</code>，✅ 文档明说"独立上下文窗口"</td>
+<td><strong>有</strong>：✅ 官方有 <code>agent-configuration/subagents</code> 文档页</td>
+</tr>
+<tr>
+<td><strong>④ 压缩前后的钩子</strong></td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>：✅ <code>PreToolUse</code> 等；⚠️ 是否有专门的压缩钩子未核</td>
+<td><strong>有</strong>：✅ <code>PreCompact</code> / <code>PostCompact</code></td>
+</tr>
+<tr>
+<td><strong>⑤ 让用户指定"压缩时保留什么"</strong></td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>：✅ <code>/compact &lt;指令&gt;</code>、<code>CLAUDE.md</code> 的 <code># Compact instructions</code></td>
+<td><strong>有</strong>：✅ <code>compact_prompt</code></td>
+</tr>
+<tr>
+<td><strong>🔑 可查证程度</strong></td>
+<td>✅✅ <strong>论文 ＋ 开源实现</strong>，连消融数字都公开</td>
+<td>✅ 行为与配置名可查 ／ ⚠️ 实现查不到</td>
+<td>✅ 配置面可查（配置项名 + 取值枚举）／ ⚠️ 实现查不到</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 一句话看懂这张表：
       2024 年只有【截断】；2026 年的产品是【截断 + 压缩 + 隔离】三件套。
+
+   ⟹ 🔑🔑 ★★★ 但要注意一个很容易被忽略的事实：
+      ★★ 那个唯一有【实测分数】的策略，恰好是最老、最简单的那个。
+      ✅ &quot;只保留最近 5 条观察 = 18.0，保留全部历史 = 15.0&quot; 是论文量过的。
+      ⚠️⚠️ 而&quot;auto-compact 值几个点&quot;&quot;子 agent 值几个点&quot;——
+         ★★★ 两家都【没有公开任何实测数字】。
+      ⟹ 🔑 所以这张表右边两列是【功能清单】，不是【效果证据】。
+         ⚠️ 别把&quot;有这个功能&quot;读成&quot;这个功能被证明有效&quot;。
 </code></pre></div>
 
 <hr />
 <h2 id="48">4.8 本章总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 六条带走：
+<div class="codehilite"><pre><span></span><code>    🔑 八条带走：
 
-    ① ★★★ ✅ 仓库均 438K 行，答案均改 32.8 行。
+    ① ★★★ ✅ 仓库均 438K 行，答案均改 32.8 行（99.99% 无关）。
        ⟹ 上下文管理的任务 = 在有限窗口里装那 32.8 行附近的东西。
+       ⚠️ 但&quot;99.99% 是噪音&quot;是修辞：★★ 要【找到】那 32.8 行，
+          得先看调用方、类定义、测试、报错。
+          ⟹ 🔑 准确说法是【远多于 32.8 行，远少于 438,000 行】。
 
-    ② ★★★ ✅ SWE-agent：只留最近 5 条观察 = 18.0，
-       留全部历史 = 15.0。⟹ 主动扔，值 3 个点。
+    ② ★★★ 窗口变大解决不了这件事：✅ 512K 的窗口也只装得下
+       一个平均仓库的 9%。窗口涨 4 倍，差距还是两个数量级。
 
-    ③ ★★★ 🔑 扔的最大理由不是省地方，是【旧信息会骗它】——
-       文件改过之后，旧版本还留在上下文里就是错误信息。
+    ③ ★★★ ✅ SWE-agent：只留最近 5 条观察 = 18.0，
+       留全部历史 = 15.0。⟹ 主动扔，值 3.0 个点（约 9 道题）。
 
-    ④ ★★ 三种策略：截断（便宜、真丢信息）/ 压缩（保语义、贵）/
-       隔离（主对话干净、但子 agent 是瞎的）。
+    ④ ★★★ 🔑 扔的最大理由不是省地方，是【旧信息会骗它】——
+       ✅ 论文原词 &quot;avoids showing outdated file information&quot;。
+       ⟹ 文件改过之后，旧版本还留在上下文里就是错误信息。
 
-    ⑤ ★★★ ✅ &quot;每次请求都发完整对话&quot; ⟹ agent 成本接近平方级增长。
-       ⟹ 折叠旧内容省的是【后面每一次请求】。
+    ⑤ ★★ 四种手段：截断（便宜、真丢信息、不可逆）/
+       压缩（保语义、贵、丢精确字符串）/ 隔离（主对话干净、
+       但子 agent 是瞎的）/ 检索（入口闸门）。
+       ⟹ 🔑 §4.4b ⑤：★★★ 截断丢【细节】，压缩丢【精度】，
+          隔离丢【过程】，检索丢【你不知道要查的东西】。
 
-    ⑥ ★★ ✅ 闭源产品公开的是【旋钮】不是【算法】：
+    ⑥ ★★★ ✅ &quot;每次请求都发完整对话&quot; ⟹ 发出的 token 接近平方级增长。
+       ⟹ ✅ §4.4b 的算例：12 轮里最终历史只有 19,640 token，
+          但一共发出 147,800 token（7.5 倍）；轮数翻倍，总量变 3.5 倍。
+       ⚠️⚠️ 但【钱】不一定按平方涨：★★ 提示词缓存会削掉一部分，
+          ⟹ 🔑 缓存解决【账单】，折叠和压缩解决【容量】，不可互换。
+
+    ⑦ ★★★ ✅ §4.4b ③：撞窗口通常是【某一条工具返回】触发的，
+       不是&quot;对话慢慢变长&quot;。⟹ 🔑 所以除了折叠历史，
+       还必须给单条工具输出设上限（Codex 的 tool_output_token_limit）。
+
+    ⑧ ★★ ✅ 闭源产品公开的是【旋钮】不是【算法】：
        Codex 的 model_auto_compact_token_limit_scope 这种配置项，
        名字和取值可查，实现查不到。
+       ⚠️⚠️ 而且 §4.7 最后一条：★★★ auto-compact 和子 agent
+       【没有任何公开实测分数】—— 功能清单不等于效果证据。
 </code></pre></div>
 
 <hr />

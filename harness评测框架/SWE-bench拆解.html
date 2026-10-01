@@ -248,11 +248,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="swe-bench">SWE-bench 拆解</h1>
 <blockquote>
-<p>★ 版本：<code>swebench</code> 5.0.2（源码在 <a href="源码/swebench-5.0.2/">源码/swebench-5.0.2/</a>）<br />
+<p>★ 版本口径：<code>swebench</code> <strong>5.0.2</strong>（源码在 <a href="源码/swebench-5.0.2/">源码/swebench-5.0.2/</a>，本文所有行号都是对着这一份数的）<br />
 ★★ 定位：<strong>agentic 评测</strong>的事实标准。Claude Code、Codex 这类工具的分数就来自它。</p>
 <p>⚠️ 它和 <a href="lm-eval-harness拆解.html">lm-eval-harness</a> <strong>机制上完全不同</strong>：<br />
 ★★★ 那边是「拼提示词 → 抽答案 → 比字符串」；这边是「起容器 → 打补丁 → 跑测试」。</p>
 <p>标记：✅ = 源码/论文原文可查证 ｜ ⚠️ = 我的推断 ｜ ★ = 重点 ｜ 🔑 = 关键结论</p>
+<p>⚠️⚠️ <strong>行号会过期</strong>。5.0.2 相对老版本动过结构（比如 <code>TestSpec</code> 从 <code>harness/test_spec.py</code> 搬到了 <code>swebench/types.py</code>，<code>eval_script</code> 改成由数据集直接提供）。★★ 对不上时以你手上那份源码为准，并把版本号一起记下来。</p>
+<p>★ 本篇是<strong>源码侧</strong>拆解。概念与方法论侧在 <a href="评测入门/07-agentic编码评测与SWE-bench.html">评测入门 07 章</a>，两边有意不重复：那边讲「这套评测为什么这么设计」，这边讲「代码到底怎么跑的」。</p>
 </blockquote>
 <hr />
 <h2 id="1">1. 它在测什么</h2>
@@ -276,27 +278,170 @@ problems drawn from real GitHub issues and corresponding pull requests across<br
 <strong>12 popular Python repositories</strong>. … <strong>Claude 2</strong> … resolves a mere <strong>1.96%</strong><br />
 of the issues."</p>
 </blockquote>
+<h3 id="12">✅ 一道题在数据集里长什么样：12 个字段</h3>
+<p>★★ 这是全篇的起点 —— 后面每一步都只是在读写这 12 个字段里的某几个。✅ 源码 <code>swebench/types.py:9-21</code> 原文：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">SWEbenchInstance</span><span class="p">(</span><span class="n">TypedDict</span><span class="p">):</span>
+    <span class="n">repo</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">instance_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">base_commit</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">patch</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">test_patch</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">problem_statement</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">hints_text</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">created_at</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">version</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">FAIL_TO_PASS</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">PASS_TO_PASS</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">environment_setup_commit</span><span class="p">:</span> <span class="nb">str</span>
+</code></pre></div>
+
+<p>★ 逐个字段说清它是干什么的，以及<strong>谁能看到它</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>中文</th>
+<th>是什么</th>
+<th>★★★ 模型/agent 能看吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>repo</code></td>
+<td>仓库名</td>
+<td>比如 <code>django/django</code></td>
+<td>✅ 能</td>
+</tr>
+<tr>
+<td><code>instance_id</code></td>
+<td>题号</td>
+<td>比如 <code>django__django-11099</code></td>
+<td>✅ 能</td>
+</tr>
+<tr>
+<td><code>base_commit</code></td>
+<td>基准提交</td>
+<td>★★★ bug <strong>还没修</strong>时的那个 commit</td>
+<td>✅ 能（必须从这里开始干活）</td>
+</tr>
+<tr>
+<td><code>patch</code></td>
+<td>官方修复</td>
+<td>人类当年真实合入的那个 diff</td>
+<td>❌ <strong>绝对不能</strong>，这就是标准答案</td>
+</tr>
+<tr>
+<td><code>test_patch</code></td>
+<td>测试补丁</td>
+<td>那个 PR 里新增/改动的测试文件</td>
+<td>❌ <strong>绝对不能</strong>，见 §9 的坑②</td>
+</tr>
+<tr>
+<td><code>problem_statement</code></td>
+<td>问题陈述</td>
+<td>issue 的文字</td>
+<td>✅ 能，这是题干</td>
+</tr>
+<tr>
+<td><code>hints_text</code></td>
+<td>提示文本</td>
+<td>issue 下面的讨论跟帖</td>
+<td>⚠️ 看你的脚手架给不给，<strong>给不给会影响分数</strong>，属于必须披露的口径</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>创建时间</td>
+<td>PR 的日期</td>
+<td>✅ 能（查污染要用）</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>版本</td>
+<td>该仓库的版本标签，决定装哪套依赖</td>
+<td>⚠️ 一般不给</td>
+</tr>
+<tr>
+<td><code>FAIL_TO_PASS</code></td>
+<td>尺子①</td>
+<td>打补丁前失败、打完应该通过的测试名单</td>
+<td>❌ <strong>绝对不能</strong></td>
+</tr>
+<tr>
+<td><code>PASS_TO_PASS</code></td>
+<td>尺子②</td>
+<td>打补丁前就通过、打完必须还通过的测试名单</td>
+<td>❌ <strong>绝对不能</strong></td>
+</tr>
+<tr>
+<td><code>environment_setup_commit</code></td>
+<td>环境提交</td>
+<td>用来装依赖的那个 commit（可能和 <code>base_commit</code> 不同）</td>
+<td>⚠️ 一般不给</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 把这张表的最后一列单独看一遍，你就明白了 SWE-bench 的
+      ★★★【信息隔离】设计：
+
+   ★★ 能给模型的只有 4 个字段（repo / instance_id / base_commit / problem_statement）
+      + 一个有争议的 hints_text。
+   ⚠️ 剩下的 7 个字段全是【判卷用的】，一旦漏给模型，分数立刻失去意义。
+
+   ⟹ ★★★ 而这个隔离，harness 代码【管不了】——
+      它只在你那一侧（脚手架）生效。见 §4。
+</code></pre></div>
+
 <hr />
 <h2 id="2">2. ★★★ 判卷：两把尺子，不是一把</h2>
 <p>★★ 这是整个 SWE-bench 设计里最值得学的一点。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 尺子① FAIL_TO_PASS（原本失败 → 应该变通过）───────────┐
-   │  ✅ constants/__init__.py:30                            │
-   │  ★★ 含义：这个 bug【修好了吗】？                        │
-   │  ⟹ 这批测试在打补丁前是失败的，打完应该全过。          │
-   └─────────────────────────────────────────────────────────┘
-   ┌─ 尺子② PASS_TO_PASS（原本通过 → 必须还通过）───────────┐
-   │  ✅ constants/__init__.py:32                            │
-   │  ★★★ 含义：你有没有【把别的功能搞坏】？                │
-   │  ⟹ 这批测试打补丁前就是过的，打完必须还是过的。        │
-   └─────────────────────────────────────────────────────────┘
-
-   ⟹ 🔑🔑 为什么必须有第二把尺子？
+<table>
+<thead>
+<tr>
+<th></th>
+<th>尺子① <code>FAIL_TO_PASS</code></th>
+<th>尺子② <code>PASS_TO_PASS</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>中文</td>
+<td>原本失败 → 应该变通过</td>
+<td>原本通过 → 必须还通过</td>
+</tr>
+<tr>
+<td>✅ 常量定义</td>
+<td><code>harness/constants/__init__.py:30</code></td>
+<td><code>harness/constants/__init__.py:32</code></td>
+</tr>
+<tr>
+<td>★★ 它在问什么</td>
+<td>这个 bug <strong>修好了吗</strong>？</td>
+<td>★★★ 你有没有<strong>把别的功能搞坏</strong>？</td>
+</tr>
+<tr>
+<td>打补丁<strong>前</strong>的状态</td>
+<td>全部失败</td>
+<td>全部通过</td>
+</tr>
+<tr>
+<td>打补丁<strong>后</strong>要求</td>
+<td>应该全过</td>
+<td><strong>必须</strong>还是全过</td>
+</tr>
+<tr>
+<td>✅ 判卷时允许打折吗</td>
+<td>★★ 允许（有 PARTIAL 一档）</td>
+<td>❌ <strong>一个都不许掉</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 为什么必须有第二把尺子？
       ⚠️ 因为「让这个测试通过」有一个作弊解法：★★★ 把断言删掉。
       ⟹ 只有尺子① 的话，删测试、改配置、注释掉校验都能得分。
       ⟹ ★★ 尺子② 堵死了这条路 —— 你一动别的东西，它立刻报警。
 </code></pre></div>
 
-<h3 id="harnessgradingpy309-328">✅ 判卷逻辑的完整源码（<code>harness/grading.py:309-328</code>）</h3>
+<h3 id="harnessgradingpy309-326">✅ 判卷逻辑的完整源码（<code>harness/grading.py:309-326</code>）</h3>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">get_resolution_status</span><span class="p">(</span><span class="n">report</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    Determine resolved status of an evaluation instance</span>
@@ -317,7 +462,7 @@ of the issues."</p>
         <span class="k">return</span> <span class="n">ResolvedStatus</span><span class="o">.</span><span class="n">NO</span><span class="o">.</span><span class="n">value</span>
 </code></pre></div>
 
-<p>✅ 两个比率的算法（<code>grading.py:288</code> 和 <code>:298</code>）：</p>
+<p>✅ 两个比率的算法（<code>grading.py:288-295</code> 和 <code>:298-306</code>，两个函数结构完全对称）：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">compute_fail_to_pass</span><span class="p">(</span><span class="n">report</span><span class="p">):</span>
     <span class="n">total</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="n">FAIL_TO_PASS</span><span class="p">][</span><span class="s2">&quot;success&quot;</span><span class="p">])</span> <span class="o">+</span> <span class="nb">len</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="n">FAIL_TO_PASS</span><span class="p">][</span><span class="s2">&quot;failure&quot;</span><span class="p">])</span>
     <span class="k">if</span> <span class="n">total</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
@@ -325,6 +470,7 @@ of the issues."</p>
     <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="n">FAIL_TO_PASS</span><span class="p">][</span><span class="s2">&quot;success&quot;</span><span class="p">])</span> <span class="o">/</span> <span class="n">total</span>
 </code></pre></div>
 
+<p>⚠️ ★★ 注意 <code>if total == 0: return 1</code> 这一行：<strong>名单为空时直接返回满分</strong>。✅ <code>compute_pass_to_pass</code> 里官方自己在这一行上留了 <code># TODO: Don't factor in p2p metrics</code>，说明他们知道这是个将就的处理。</p>
 <p>✅ 三种结果的枚举（<code>constants/__init__.py:6-9</code>）：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ResolvedStatus</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
     <span class="n">NO</span> <span class="o">=</span> <span class="s2">&quot;RESOLVED_NO&quot;</span>
@@ -332,7 +478,44 @@ of the issues."</p>
     <span class="n">FULL</span> <span class="o">=</span> <span class="s2">&quot;RESOLVED_FULL&quot;</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 请注意上面代码里【最狠的一个细节】：
+<p>★ 把三个分支摊成一张真值表，看清那个不对称：</p>
+<table>
+<thead>
+<tr>
+<th><code>f2p</code>（尺子①）</th>
+<th><code>p2p</code>（尺子②）</th>
+<th>⟹ 判定</th>
+<th>人话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>== 1</code> 全过</td>
+<td><code>== 1</code> 全过</td>
+<td>✅ <code>RESOLVED_FULL</code></td>
+<td>修好了，也没弄坏</td>
+</tr>
+<tr>
+<td><code>0 &lt; f2p &lt; 1</code> 部分过</td>
+<td><code>== 1</code> 全过</td>
+<td><code>RESOLVED_PARTIAL</code></td>
+<td>★★ 修了一半，没弄坏</td>
+</tr>
+<tr>
+<td><code>== 1</code> 全过</td>
+<td>⚠️ <code>&lt; 1</code> 掉了哪怕一个</td>
+<td>❌ <code>RESOLVED_NO</code></td>
+<td>★★★ <strong>修好了也判 NO</strong></td>
+</tr>
+<tr>
+<td><code>== 0</code> 全不过</td>
+<td>任意</td>
+<td>❌ <code>RESOLVED_NO</code></td>
+<td>没修对</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 请注意上面这张表里【最狠的一行】：第三行。
 
    ★★★ 三个分支里，p2p 的条件全部是 `p2p == 1`，一个都不放松。
 
@@ -340,30 +523,293 @@ of the issues."</p>
       不管 bug 修得多漂亮，直接判 NO。】
    ⟹ ★★ 而 f2p 是允许部分的（PARTIAL 那一档）。
 
-   ┌────────────────────────────────────────────────────┐
-   │  ★★★ 这个不对称设计翻译成人话就是：                │
-   │  「修不完可以商量，弄坏了没得商量。」               │
-   │                                                     │
-   │  ⚠️ 这恰好也是真实软件工程的规矩 ——                │
-   │     ★★ 回归（regression）比未完成更不可接受。      │
-   └────────────────────────────────────────────────────┘
+   ★★★ 这个不对称设计翻译成人话就是：
+      「修不完可以商量，弄坏了没得商量。」
+   ⚠️ 这恰好也是真实软件工程的规矩 ——
+      ★★ 回归（regression，指改动把原本好用的功能弄坏了）
+      比未完成更不可接受。
 
    ⚠️ 补充一个读榜单时的注意点：
    ★★ 榜单上报的 &quot;% Resolved&quot; 通常只算 FULL，PARTIAL 不计分。
 </code></pre></div>
 
 <hr />
-<h2 id="3-harness-agent">3. ★★★ 一个源码事实：harness 根本不知道 agent 长什么样</h2>
-<p>★★ 这一节直接回答"Claude Code 是怎么被评的"。</p>
-<p>✅ <code>harness/run_evaluation.py:699</code> 的 <code>main()</code> 签名，输入里<strong>只有一个文件路径</strong>：</p>
+<h2 id="3">3. ★★★ 一次评测从入口到出分：每一步谁改了什么状态</h2>
+<p>★★ 这一节是全篇的主线。⚠️ 源码拆解最容易变成「模块罗列」，所以这里换个问法：<strong>跑一次 <code>run_evaluation</code>，一条数据依次经过哪些对象和函数，每一步之后世界上多了什么东西？</strong></p>
+<blockquote>
+<p>★ 同一条流程的<strong>概念版</strong>（谁做、最容易出分歧在哪）在 <a href="评测入门/07-agentic编码评测与SWE-bench.html">评测入门 07 章</a> §7.2b，那张表讲的是「方法论上的分歧点」。这一节讲的是「代码上的状态变化」，两边配着看。</p>
+</blockquote>
+<h3 id="31">3.1 ✅ 函数级调用链</h3>
+<div class="codehilite"><pre><span></span><code>   命令行入口   python -m swebench.harness.run_evaluation
+        │
+        ▼
+   main()                                        run_evaluation.py:699
+        │   ★★★ 整个签名里只有 predictions_path 一个「模型侧」输入
+        ▼
+   get_predictions_from_file()                   harness/utils.py:37
+        │   读 JSONL  ⟹  dict{instance_id: pred}       （调用点 :740）
+        ▼
+   write_run_metadata()                          调用点 run_evaluation.py:744
+        │   落盘 run.json ——「这次跑的是哪个数据集、哪个 split」
+        ▼
+   get_dataset_from_preds()                      run_evaluation.py:542
+        │   ★★ 按 instance_id 把【预测】和【题目】对齐
+        │   ⚠️ 已经有 report.json 的题会被跳过（可续跑）
+        ▼
+   make_test_spec()                              harness/utils.py:251
+        │   dict  ⟹  TestSpec 对象（定义在 swebench/types.py:25）
+        ▼
+   run_instances()                               run_evaluation.py:432
+        │   线程池并发，--max_workers 默认 4
+        ▼
+   run_instance()  ← ★★★ 一道题的全部动作都在这个函数里
+        │                                        run_evaluation.py:229
+        ├─① create_container()                   调用点 :284（定义 :72）
+        ├─② patch_file.write_text(...)           :291
+        ├─③ copy_to_container()                  :295  （docker_utils.py:16）
+        ├─④ for git_apply_cmd in GIT_APPLY_CMDS  :301
+        ├─⑤ git apply --check --reverse 兜底      :323
+        ├─⑥ exec_run_with_timeout(&quot;/bin/bash /eval.sh&quot;)
+        │                                        :367（docker_utils.py:109）
+        └─⑦ get_eval_report()                    :399（grading.py:329）
+                 ├─ get_logs_eval()              grading.py:113
+                 ├─ get_eval_tests_report()      grading.py:179
+                 └─ get_resolution_status()      grading.py:309
+        │
+        ▼
+   make_run_report()                             reporting.py:16（调用点 :794）
+        │   汇总全部题目  ⟹  一个总报告 json
+        ▼
+   最终那个百分数
+</code></pre></div>
+
+<h3 id="32">3.2 ★★★ 状态怎么变：逐步表</h3>
+<p>★★ 同一条流程，按「这一步之后磁盘/容器里多了什么」摊开。⚠️ 这张表是本篇最该记住的东西 —— <strong>排查任何一次失败，都是回到这张表里找「卡在哪一行」</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>代码位置</th>
+<th>读了什么</th>
+<th>★★ 写出了什么状态（在哪）</th>
+<th>⚠️ 这一步失败时留下的痕迹</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>main()</code> :699</td>
+<td>命令行参数</td>
+<td>——</td>
+<td>★ 连 <code>run_id</code> 都没有就 <code>assert</code> 挂掉（:733）</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>get_predictions_from_file()</code> utils.py:37</td>
+<td>你的 <code>preds.jsonl</code></td>
+<td>内存里的 <code>{instance_id: pred}</code></td>
+<td>⚠️ JSONL 格式错 / <code>instance_id</code> 拼错 ⟹ 这题<strong>根本不会被跑</strong>，榜单上算 0 分但日志里什么都没有</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>write_run_metadata()</code> 调用点 :744</td>
+<td>数据集名、split</td>
+<td>磁盘：<code>run.json</code></td>
+<td>★ 这个文件是后面 <code>swebench report</code> 重新判卷的依据</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>get_dataset_from_preds()</code> :542</td>
+<td>预测 + 数据集</td>
+<td>内存里的待跑题目列表</td>
+<td>★★ 已有 <code>report.json</code> 的题被静默跳过 ⟹ <strong>改了脚手架重跑却没换 <code>--run_id</code>，拿到的是上次的旧分数</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>make_test_spec()</code> utils.py:251</td>
+<td>数据集那一行</td>
+<td><code>TestSpec</code> 对象：<code>eval_script_list</code> / <code>FAIL_TO_PASS</code> / <code>PASS_TO_PASS</code> / <code>log_parser</code></td>
+<td>⚠️ 5.0.2 里 <code>eval_script</code> 是<strong>数据集直接给的</strong>，harness 只负责解析（见 §3.3）</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>create_container()</code> :72 / 调用点 :284</td>
+<td><code>TestSpec.image</code></td>
+<td>★★★ 一个跑起来的容器，里面是该仓库在 <code>base_commit</code> 上、依赖装好的状态</td>
+<td>★★ 镜像拉不下来 / 装不上 ⟹ 进 <code>except Exception</code>（:418），这题<strong>报错，不是「答错」</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>patch_file.write_text()</code> :291</td>
+<td><code>pred["model_patch"]</code></td>
+<td>磁盘：<code>logs/run_evaluation/&lt;run_id&gt;/&lt;model_name&gt;/&lt;id&gt;/patch.diff</code></td>
+<td>★ <code>model_patch</code> 是空串也照写（<code>or ""</code>），⟹ 空补丁会一路走到判卷，稳定判 NO</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>GIT_APPLY_CMDS</code> 循环 :301</td>
+<td><code>patch.diff</code></td>
+<td>容器里的工作树被改动</td>
+<td>★★★ 四级全败 ⟹ 日志写入 <code>APPLY_PATCH_FAIL</code>，抛 <code>EvaluationError</code>（:333）。<strong>这是「格式问题」而不是「能力问题」，见 §5</strong></td>
+</tr>
+<tr>
+<td>7b</td>
+<td><code>git apply --check --reverse</code> :323</td>
+<td><code>patch.diff</code></td>
+<td>——</td>
+<td>★★ 5.0.2 新增的兜底：四条命令全报非零、但补丁其实已经打上去了，这里能救回来</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>git diff</code>（前） :342</td>
+<td>容器工作树</td>
+<td>日志里的 <code>Git diff before</code></td>
+<td>★ 用来和跑完测试之后对比，看测试本身有没有改动代码</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>exec_run_with_timeout()</code> :367</td>
+<td><code>/eval.sh</code></td>
+<td>磁盘：<code>test_output.txt</code>（<strong>原始测试输出</strong>）</td>
+<td>★★★ 超时 ⟹ <code>TESTS_TIMEOUT</code>，抛 <code>EvaluationError</code>（:377）。默认上限 <code>--timeout</code> = 1800 秒</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>get_logs_eval()</code> grading.py:113</td>
+<td><code>test_output.txt</code></td>
+<td>内存里的 <code>status_map</code>：每个测试名 → PASSED / FAILED / SKIPPED / ERROR / XFAIL</td>
+<td>★★ 见到 <code>APPLY_PATCH_FAIL</code> / <code>RESET_FAILED</code> / <code>TESTS_ERROR</code> / <code>TESTS_TIMEOUT</code> 任一标记就直接返回 <code>({}, False)</code>（:141）</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>get_eval_tests_report()</code> grading.py:179</td>
+<td><code>status_map</code> + 两份名单</td>
+<td>四个桶：F2P / P2P 各自的 <code>success</code> 和 <code>failure</code></td>
+<td>★ 名单里有、但日志里查不到的测试，怎么算取决于 <code>eval_type</code>（见 §3.4）</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>get_resolution_status()</code> grading.py:309</td>
+<td>四个桶</td>
+<td>一个字符串：<code>RESOLVED_FULL</code> / <code>PARTIAL</code> / <code>NO</code></td>
+<td>——</td>
+</tr>
+<tr>
+<td>13</td>
+<td>写 <code>report.json</code> :411</td>
+<td>上面全部</td>
+<td>磁盘：这题的 <code>report.json</code></td>
+<td>★★ 有了这个文件，这题下次就会被跳过（回到第 3 步）</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>make_run_report()</code> reporting.py:16</td>
+<td>所有题的 <code>report.json</code></td>
+<td>磁盘：总报告</td>
+<td>⟹ 这才是你看到的那个百分数</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 读完这张表，三件事应该变得很清楚：
+
+   ★★★ ① 分数是【第 12 步】算出来的，但能毁掉分数的地方
+      从【第 1 步】就开始了。
+      ⚠️ 第 1、3、6、7、9 步任意一步出问题，
+         最终都表现为「这题 0 分」，而原因完全不同。
+
+   ★★★ ② 唯一可靠的排查入口是磁盘上那三个文件：
+      patch.diff（你给了什么）
+      test_output.txt（测试真实输出）
+      report.json（判卷结论）
+      ⟹ 🔑 不看这三个文件，对着总分猜原因是浪费时间。
+
+   ★★★ ③ 第 5–14 步全是官方代码，谁跑都一样。
+      ⚠️ 而第 1 步那个 JSONL 【是你自己造的】——
+      ⟹ 所有的不可比性都藏在那个文件是怎么产生的里面。这就是 §4。
+</code></pre></div>
+
+<h3 id="33-eval_script">3.3 ⚠️ 一个必须讲的版本差异：<code>eval_script</code> 从哪来</h3>
+<p>★★ 这一条是读老资料时最容易被坑的地方。</p>
+<p>✅ 5.0.2 的 <code>make_test_spec()</code>（<code>harness/utils.py:251-272</code>）原文片段：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_test_spec</span><span class="p">(</span><span class="n">instance</span><span class="p">:</span> <span class="nb">dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">TestSpec</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Build a TestSpec from a dataset instance.</span>
+
+<span class="sd">    The instance dict must contain: instance_id, image, repo, version,</span>
+<span class="sd">    FAIL_TO_PASS, PASS_TO_PASS, log_parser, eval_type, eval_script.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 注意 docstring 里要求的字段：`image`、`eval_script`、`log_parser`。
+      ★★★ 这三个【不在】§1 那张 12 字段表里。
+
+   ⚠️ 含义：5.0.2 里，「用哪个镜像、跑什么测试命令、用哪个日志解析器」
+      是【数据集直接提供的】，harness 只做解析和加工。
+
+   ⟹ ★★ 而老版本（2.x 时代）是 harness 自己按
+      base_commit + test_patch + 仓库版本【现场拼出】这段脚本的。
+
+   ⟹ 🔑🔑 所以：★★★ 如果你读到的教程里讲「harness 会 git checkout
+      base_commit、再 apply test_patch」，⚠️ 那是老版本的行为。
+      5.0.2 里这些动作已经被固化进镜像和 eval_script 了。
+      ⟹ 这也是为什么镜像那么大（§6）。
+</code></pre></div>
+
+<p>✅ 加工的那一步也值得看一眼 —— <code>record_test_exit_code()</code>（<code>harness/utils.py:222-241</code>）的 docstring 原文：</p>
+<blockquote>
+<p>"Eval scripts end with a <code>git checkout</code> that resets the test files, and run<br />
+under <code>set -uxo pipefail</code> without <code>-e</code>, so the script's exit status is the<br />
+reset's, not the tests'."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 翻译：★★ 脚本最后会 git checkout 把测试文件还原回去，
+      而且没开 `set -e`，⟹ 整个脚本的退出码是【那个还原动作的】，
+      不是【测试的】。
+   ⟹ 🔑 所以 harness 在测试命令后面插了一行 `$?` 把真实退出码捞出来。
+      ★★★ 这是一个很典型的「脚本退出码不等于你以为的那个退出码」陷阱。
+</code></pre></div>
+
+<h3 id="34">3.4 ⚠️ 两个容易漏掉的判卷开关</h3>
+<p>✅ <code>constants/__init__.py:20-22</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">EvalType</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">PASS_AND_FAIL</span> <span class="o">=</span> <span class="s2">&quot;pass_and_fail&quot;</span>
+    <span class="n">FAIL_ONLY</span> <span class="o">=</span> <span class="s2">&quot;fail_only&quot;</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ★ PASS_AND_FAIL = 两把尺子都查（标准模式）。
+   ★★ FAIL_ONLY   = 只查 FAIL_TO_PASS。
+      ⚠️ 这一档下「名单里有、日志里没有」的测试会被当成【通过】。
+
+   ⟹ 🔑🔑 5.0.2 在 get_logs_eval() 里专门为此加了一道防线
+      （✅ grading.py:155-160 的注释原文）：
+      &quot;Under EvalType.FAIL_ONLY an absent test counts as success, so
+       without this a suite that never started (e.g. a browser that fails
+       to launch) scores every F2P test as resolved.&quot;
+
+   ⟹ ⚠️ 翻译：★★★ 测试套件【根本没启动】的情况下，
+      如果不加这道防线，每一个 F2P 测试都会被判成「过了」——
+      ⟹ 一道题凭「什么都没跑」拿到满分。
+   ⟹ 🔑 这类 bug 才是评测框架里最危险的：★★ 它不报错，它给高分。
+</code></pre></div>
+
+<p>✅ 另一道同类防线在 <code>grading.py:166-175</code>：测试日志里一个 FAILED 都没有、但测试命令的退出码非零 ⟹ 整题作废（<code>return {}, False</code>）。源码注释写明了动机：<strong>补丁自己可以打印假的 "PASSED" 行</strong>（比如塞一个 <code>conftest.py</code> 钩子）。</p>
+<hr />
+<h2 id="4-harness-agent">4. ★★★ 一个源码事实：harness 根本不知道 agent 长什么样</h2>
+<p>★★ 这一节直接回答「Claude Code 是怎么被评的」。</p>
+<p>✅ <code>harness/run_evaluation.py:699-712</code> 的 <code>main()</code> 签名，输入里<strong>只有一个文件路径</strong>是「模型侧」的：</p>
 <div class="codehilite"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span>
     <span class="n">dataset_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">split</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">instance_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">,</span>
     <span class="n">predictions_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>          <span class="c1"># ★★★ 就是它</span>
     <span class="n">max_workers</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
-    <span class="o">...</span>
-<span class="p">)</span>
+    <span class="n">open_file_limit</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">run_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">rewrite_reports</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+    <span class="n">modal</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+    <span class="n">report_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;.&quot;</span><span class="p">,</span>
+    <span class="n">task_repo</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">):</span>
 </code></pre></div>
 
 <p>✅ 每条预测的数据结构（<code>run_evaluation.py:244</code> 的 docstring 原文）：</p>
@@ -385,62 +831,58 @@ of the issues."</p>
       ❌ 用了什么脚手架、什么工具、什么提示词
       ❌ 跑了一次还是五十次
       ❌ 花了 $0.13 还是 $2.59
+      ❌ ★★★ 生成补丁的时候，有没有偷看 FAIL_TO_PASS 的测试内容
 
    ⟹ 🔑🔑 所以：★★★【SWE-bench 分数评的是「模型 + 脚手架」这一整套系统，
       而榜单通常只写模型的名字。】
 </code></pre></div>
 
 <h3 id="_1">✅ 这个结论有正反两面的实证</h3>
-<div class="codehilite"><pre><span></span><code>   ┌─ 正面（SWE-agent 论文 Table 1，✅ 原文数值）───────────┐
-   │  ★★★ 同一个 GPT-4 Turbo，在 SWE-bench Lite 上：       │
-   │     2.67%  ← RAG（检索增强，非交互）                   │
-   │     7.33%  ← 裸 shell，不给示范                        │
-   │    11.00%  ← 裸 shell + 示范                           │
-   │    18.00%  ← SWE-agent 完整 ACI                        │
-   │  ⚠️ 权重一个字节没改，分数差 6.7 倍。                  │
-   └────────────────────────────────────────────────────────┘
-   ┌─ 反面（DeepSeek-V3 报告，✅ 原文）─────────────────────┐
-   │  &quot;SWE-Bench verified is evaluated using the            │
-   │   **agentless framework**&quot;                             │
-   │  ⟹ ★★ 一线团队自己也知道必须披露脚手架。              │
-   └────────────────────────────────────────────────────────┘
-
-   ⟹ 详见 [08 章 §8.4.1](评测入门/08-ClaudeCode与Codex怎么被评.md)。
-</code></pre></div>
-
-<hr />
-<h2 id="4">4. 执行流水线：一道题是怎么跑完的</h2>
-<div class="codehilite"><pre><span></span><code>   ┌─ ① 读预测文件 ────────────────────────────────────────┐
-   │  ✅ get_dataset_from_preds()  run_evaluation.py:542    │
-   │  ⟹ 把 JSONL 里的补丁和数据集里的题目对齐              │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ② 起 Docker 容器 ────────────────────────────────────┐
-   │  ✅ import docker            run_evaluation.py:3       │
-   │  ⟹ ★★★ 每道题一个独立容器，装好该仓库该版本的全部依赖│
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ③ ★★ 把补丁写进去并尝试应用 ─────────────────────────┐
-   │  ✅ run_evaluation.py:291                              │
-   │     patch_file.write_text(pred[&quot;model_patch&quot;] or &quot;&quot;)   │
-   │  ✅ run_evaluation.py:301                              │
-   │     for attempt, git_apply_cmd in enumerate(GIT_APPLY_CMDS):│
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ④ 跑测试，抓日志 ────────────────────────────────────┐
-   │  ✅ get_logs_eval()          grading.py:113            │
-   │  ⟹ 用 log_parsers/ 里对应语言的解析器读测试输出       │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ⑤ 判卷 ──────────────────────────────────────────────┐
-   │  ✅ get_eval_report()        grading.py:329            │
-   │  ✅ get_resolution_status()  grading.py:309            │
-   └───────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<p><strong>正面：同一个权重，换脚手架差 6.7 倍</strong>（✅ SWE-agent 论文 arXiv:2405.15793 Table 1 原文数值，GPT-4 Turbo × <strong>SWE-bench Lite 300 题</strong>）</p>
+<table>
+<thead>
+<tr>
+<th>设定</th>
+<th>这个设定是什么</th>
+<th>% Resolved</th>
+<th>✅ $ Avg. Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RAG</td>
+<td>检索增强，非交互：先替模型挑好文件，一次性生成</td>
+<td><strong>2.67</strong></td>
+<td>$0.13</td>
+</tr>
+<tr>
+<td>Shell-only，不给示范</td>
+<td>裸 shell 交互，没有示范轨迹</td>
+<td>7.33</td>
+<td>$0.79</td>
+</tr>
+<tr>
+<td>Shell-only + 示范</td>
+<td>裸 shell 交互 + 一条示范轨迹</td>
+<td>11.00</td>
+<td>$1.46</td>
+</tr>
+<tr>
+<td>★★★ SWE-agent 完整 ACI</td>
+<td>专门为模型设计的编辑/搜索/翻页命令</td>
+<td><strong>18.00</strong></td>
+<td>$1.67</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 论文自己的措辞（★ 逐字）："compared to RAG on Lite, SWE-agent is 8-13x more costly but yields a <strong>6.7-fold improved % Resolved rate</strong>."</p>
+<p>⚠️⚠️ <strong>口径两条必须跟着一起写</strong>：① 这是 <strong>2024 年</strong>的 GPT-4 Turbo，证明的是「差异存在且量级很大」，<strong>不是</strong>「今天换个脚手架还能差 6.7 倍」；② ✅ 论文把 <code>$ Avg. Cost</code> 定义成 <strong>"averaged over all successfully resolved instances"</strong> —— 即<strong>只对解决了的题取平均</strong>，⟹ ★★ 它<strong>不是</strong>「每道题平均花这么多」，用它估全量预算会严重偏低。</p>
+<p><strong>反面：一线团队自己也知道必须披露脚手架</strong></p>
+<p>✅ DeepSeek-V3 报告原文：<em>"SWE-Bench verified is evaluated using the </em><em>agentless framework</em><em>"</em> ⟹ ★★ 连报告作者都明白，不写这一句，那个分数就没法被解读。</p>
+<p>⟹ 这条线完整展开在 <a href="评测入门/08-ClaudeCode与Codex怎么被评.html">评测入门 08 章</a> §8.4.1，以及 <a href="agent脚手架/README.html">agent 脚手架目录</a>（那一整个目录就是在讲 harness 不问的这一段）。</p>
 <hr />
 <h2 id="5">5. ★★ 一个特别有教育意义的细节：打补丁本身会失败</h2>
-<p>✅ <code>run_evaluation.py:54</code> 的完整原文：</p>
+<p>✅ <code>run_evaluation.py:54-59</code> 的完整原文：</p>
 <div class="codehilite"><pre><span></span><code><span class="n">GIT_APPLY_CMDS</span> <span class="o">=</span> <span class="p">[</span>
     <span class="s2">&quot;git apply --verbose&quot;</span><span class="p">,</span>
     <span class="s2">&quot;git apply --verbose --3way&quot;</span><span class="p">,</span>
@@ -449,60 +891,109 @@ of the issues."</p>
 <span class="p">]</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⚠️ 逐条解释这四级&quot;容错阶梯&quot;（越往下越宽松）：
-
-   ① git apply --verbose
-      ⟹ ★ 严格模式：上下文必须一字不差地对上。
-
-   ② git apply --verbose --3way
-      ⟹ ★★ 三方合并：允许用 git 的历史信息去推断该打在哪。
-
-   ③ git apply --verbose --reject
-      ⟹ ★★ 能打的部分先打上，打不上的丢到 .rej 文件里。
-
-   ④ patch --batch --forward --fuzz=5 -p1 -i
-      ⟹ ★★★ 换成古老的 patch 工具，fuzz=5 表示
-         【上下文允许有 5 行对不上】也照打。
-
-   ⟹ ✅ 源码在 L301 是一个循环：前一个失败就试下一个。
+<p>⚠️ 逐条解释这四级「容错阶梯」（越往下越宽松）：</p>
+<table>
+<thead>
+<tr>
+<th>档</th>
+<th>命令</th>
+<th>宽松到什么程度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><code>git apply --verbose</code></td>
+<td>★ 严格模式：上下文必须一字不差地对上</td>
+</tr>
+<tr>
+<td>②</td>
+<td><code>git apply --verbose --3way</code></td>
+<td>★★ 三方合并：允许用 git 的历史信息去推断该打在哪</td>
+</tr>
+<tr>
+<td>③</td>
+<td><code>git apply --verbose --reject</code></td>
+<td>★★ 能打的部分先打上，打不上的丢到 <code>.rej</code> 文件里</td>
+</tr>
+<tr>
+<td>④</td>
+<td><code>patch --batch --forward --fuzz=5 -p1 -i</code></td>
+<td>★★★ 换成古老的 <code>patch</code> 工具，<code>fuzz=5</code> 表示<strong>上下文允许有 5 行对不上</strong>也照打</td>
+</tr>
+</tbody>
+</table>
+<p>✅ <code>run_evaluation.py:301</code> 是一个循环：前一个失败就试下一个。✅ 并且 5.0.2 在 <code>:302-309</code> 加了一步<strong>清场</strong>——注释原文：</p>
+<blockquote>
+<p>"a failed attempt (notably --reject) leaves partial state behind, which makes<br />
+every later command fail; restart from a pristine tree"</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 翻译：★★ 第 ③ 档失败时会在工作树里留下打了一半的烂摊子，
+      ⟹ 不清掉的话，第 ④ 档必然也失败。
+   ⟹ 🔑 这是一个很实在的工程细节：★★★【重试之前必须先回到干净状态】，
+      否则「四级容错」在真实情况下退化成「一级」。
 </code></pre></div>
 
-<p>✅ 全部失败时的标记（<code>constants/__init__.py:44</code>）：</p>
+<p>✅ 全部失败时的标记（<code>constants/__init__.py:44</code>）和超时标记（<code>:50</code>）：</p>
 <div class="codehilite"><pre><span></span><code><span class="n">APPLY_PATCH_FAIL</span> <span class="o">=</span> <span class="s2">&quot;&gt;&gt;&gt;&gt;&gt; Patch Apply Failed&quot;</span>
+<span class="n">TESTS_TIMEOUT</span>    <span class="o">=</span> <span class="s2">&quot;&gt;&gt;&gt;&gt;&gt; Tests Timed Out&quot;</span>
 </code></pre></div>
 
-<p>✅ 超时的标记（<code>constants/__init__.py:50</code>）：</p>
-<div class="codehilite"><pre><span></span><code><span class="n">TESTS_TIMEOUT</span> <span class="o">=</span> <span class="s2">&quot;&gt;&gt;&gt;&gt;&gt; Tests Timed Out&quot;</span>
-</code></pre></div>
-
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 这个设计和 05 章的&quot;抽取失败&quot;是【同构】的：
-
-   ┌────────────────┬──────────────────────┬──────────────────────┐
-   │                │ lm-eval-harness      │ SWE-bench            │
-   ├────────────────┼──────────────────────┼──────────────────────┤
-   │ 模型答对了但   │ 抽取失败             │ 补丁应用失败          │
-   │ 格式不合规     │ → &quot;[invalid]&quot;        │ → APPLY_PATCH_FAIL   │
-   │ 结果           │ ★★ 判错             │ ★★ 判错             │
-   └────────────────┴──────────────────────┴──────────────────────┘
-
-   ⟹ ★★★ 两个框架都在做同一件事：
+<p>★★★ 这个设计和 <a href="评测入门/05-答案抽取与打分.html">评测入门 05 章</a> 讲的「抽取失败」是<strong>同构</strong>的：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>lm-eval-harness</th>
+<th>SWE-bench</th>
+<th>EvalScope 的 Arena Hard</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>场景</td>
+<td>模型答对了但格式不合规</td>
+<td>补丁思路对了但 diff 格式不合规</td>
+<td>裁判给了判决但格式不合规</td>
+</tr>
+<tr>
+<td>代码里发生什么</td>
+<td>抽取结果被填成 <code>"[invalid]"</code></td>
+<td>日志写入 <code>APPLY_PATCH_FAIL</code></td>
+<td>分数按默认值 <code>0.5</code> 算</td>
+</tr>
+<tr>
+<td>⟹ 最终分数</td>
+<td>★★ 判错</td>
+<td>★★ 判错</td>
+<td>⚠️ 判成平局</td>
+</tr>
+<tr>
+<td>★★★ 日志里分得清吗</td>
+<td>✅ 分得清（<code>--log_samples</code> 能看到）</td>
+<td>✅ <strong>分得清</strong>（有专门标记）</td>
+<td>❌ <strong>分不清</strong>，连标记都没留</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 三个框架都在做同一件事：
       【把&quot;格式问题&quot;和&quot;能力问题&quot;在最终分数上混成一个数】。
 
-   ⚠️ 但 SWE-bench 做得比 lm_eval 更好的一点：
+   ⚠️ 但 SWE-bench 做得比另两个好的一点：
       ★★ 它给了 APPLY_PATCH_FAIL 一个【专门的标记】，
       ⟹ 所以你翻日志能分清&quot;没修对&quot;和&quot;补丁根本没打上去&quot;。
       🔑 这正是 05 章希望 lm_eval 也能做到的事。
-</code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 排查建议：★★★ 自己跑 SWE-bench 时，
+   ⟹ 🔑 排查建议：★★★ 自己跑 SWE-bench 时，
       先统计日志里 APPLY_PATCH_FAIL 的比例。
       ⚠️ 比例高 ⟹ 你的脚手架输出 diff 的格式有问题，
          【不是模型不会修 bug】。
 </code></pre></div>
 
+<p>✅ 一个参照量级：SWE-bench 论文 Table 5 里，Claude 2 在 BM25 设定下的 <strong>% Apply 只有 43.07%</strong>（全量）/ <strong>33.00%</strong>（Lite）—— ⚠️ 也就是说<strong>一半以上的补丁根本没打进去</strong>。★★ 这个指标和 % Resolved 一样重要，但榜单上几乎从不出现。</p>
 <hr />
 <h2 id="6">6. 为什么这种评测这么贵</h2>
-<p>✅ 源码里的成本证据（<code>run_evaluation.py:61-68</code>）：</p>
+<p>✅ 源码里的成本证据（<code>run_evaluation.py:61-62</code>）：</p>
 <div class="codehilite"><pre><span></span><code><span class="n">DOCKER_CLIENT_TIMEOUT</span>   <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SWEBENCH_DOCKER_TIMEOUT&quot;</span><span class="p">,</span> <span class="s2">&quot;1800&quot;</span><span class="p">))</span>
 <span class="n">DOCKER_CLIENT_POOL_SIZE</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SWEBENCH_DOCKER_POOL_SIZE&quot;</span><span class="p">,</span> <span class="s2">&quot;128&quot;</span><span class="p">))</span>
 </code></pre></div>
@@ -511,52 +1002,154 @@ of the issues."</p>
 
    ★★ 单个容器操作的超时是 1800 秒 = 30 分钟。
       ⟹ 说明【一道题跑几十分钟是正常的】。
+      ✅ 命令行的 --timeout 默认值也是 1800（run_evaluation.py:843）。
    ★★ 连接池默认 128。
       ⟹ 说明设计上就预期【上百个容器并发】。
+      ⚠️ 但 --max_workers 默认只有 4（:833），help 里写着
+         &quot;should be &lt;= 75% of CPU cores&quot; ⟹ 实际并发受你的 CPU 限制。
 
    ⟹ 🔑 成本三件套：
       ① ★★★ 镜像：12 个仓库 × 多个历史版本，拉下来【几十 GB】
+         ⚠️ 5.0.2 里连 eval_script 都固化进镜像了（§3.3），所以更大
       ② ★★  时间：2,294 道题 × 每题分钟级
       ③ ★★★ 模型调用：agentic 是多轮的，一道题几十轮对话
-         ✅ SWE-agent 论文 Table 1：SWE-bench Lite 单题平均 $1.67
+         ✅ SWE-agent 论文把单题预算上限设成了 $4
+         ⚠️ 超过就自动把当前改动交卷
 
-   ⟹ 🔑🔑 对照 02 章那条定律：
+   ⟹ 🔑🔑 对照 [02 章](评测入门/02-三种评测范式.md) 那条定律：
       ★★★【越真实 ⟺ 越贵 ⟺ 越难复现】。
       ⚠️ MMLU 一道题的成本是它的几万分之一。
 </code></pre></div>
 
 <hr />
-<h2 id="7">7. ⚠️⚠️ 三个题集，绝对不能混着比</h2>
-<div class="codehilite"><pre><span></span><code>   ┌──────────────┬────────┬────────────────────────────────┐
-   │ 名字         │ 题数    │ 说明                            │
-   ├──────────────┼────────┼────────────────────────────────┤
-   │ SWE-bench    │ 2,294  │ ✅ 全量，论文原始版本            │
-   │ Lite         │   300  │ ✅ 论文给出的精简子集            │
-   │ Verified     │   500  │ ⚠️ 人工核验过&quot;题目本身可解&quot;的子集│
-   └──────────────┴────────┴────────────────────────────────┘
+<h2 id="7">7. ⚠️⚠️ 题集有好几个，绝对不能混着比</h2>
+<p>★★★ 这一节是读 SWE-bench 分数时<strong>第一个该问的问题</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>名字</th>
+<th>题数</th>
+<th>✅ 出处</th>
+<th>它是怎么来的</th>
+<th>⚠️ 读分数时要注意</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SWE-bench</strong>（全量）</td>
+<td><strong>2,294</strong></td>
+<td>✅ 论文 §2.1，从 ~90,000 个 PR 过滤而来</td>
+<td>12 个热门 Python 仓库的真实 issue + PR</td>
+<td>★ 最难，也最贵</td>
+</tr>
+<tr>
+<td><strong>SWE-bench Lite</strong></td>
+<td><strong>300</strong></td>
+<td>✅ <strong>就在原论文里</strong>：论文 §2.4 专节 + 论文 Appendix A.7 完整筛选条件</td>
+<td>从全量里抽样，挑<strong>更自包含</strong>的、聚焦<strong>功能性 bug 修复</strong>的题</td>
+<td>★★★ ✅ 论文原文：<strong>"covers 11 of the original 12 repositories"</strong> ⟹ <strong>只覆盖 12 个仓库里的 11 个</strong>，少一个</td>
+</tr>
+<tr>
+<td><strong>SWE-bench Verified</strong></td>
+<td><strong>500</strong></td>
+<td>⚠️ <strong>不在原论文里</strong>。由 <strong>OpenAI 于 2024 年 8 月</strong>另行发布</td>
+<td>请专业开发者人工逐题核验「题目本身是否可解、测试是否公允」后留下的子集</td>
+<td>★★★ 分数<strong>系统性高于</strong>全量和 Lite</td>
+</tr>
+<tr>
+<td><strong>SWE-bench Multimodal</strong></td>
+<td>⚠️ 未在本篇核实</td>
+<td>✅ 源码里有专门分支（<code>run_evaluation.py:716</code>）</td>
+<td>issue 里带图片的题</td>
+<td>⚠️ 官方建议用托管评测（<code>sb-cli</code>）提交</td>
+</tr>
+<tr>
+<td><strong>SWE-bench Multilingual</strong></td>
+<td>⚠️ 未在本篇核实</td>
+<td>✅ 源码别名表里有（<code>cli/_datasets.py:8</code>）</td>
+<td>非 Python 语言</td>
+<td>⚠️ 和上面几个完全不可比</td>
+</tr>
+</tbody>
+</table>
+<p>✅ Lite 的出处原文（论文 §2.4，★ 逐字）：</p>
+<blockquote>
+<p>"To encourage adoption of SWE-bench, we create a <strong>Lite</strong> subset of <strong>300 instances</strong><br />
+from SWE-bench that have been sampled to be more self-contained, with a focus on<br />
+evaluating functional bug fixes. … <strong>SWE-bench Lite covers 11 of the original 12<br />
+repositories</strong>, with a similar diversity and distribution of task instances across<br />
+repositories as the original."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 两个最容易搞错的点，单独拎出来：
 
-   ⚠️ ★★★ Verified 上的分数【系统性高于】全量，
-      因为它剔除了描述不清、信息不足、根本做不了的题。
+   ★★★ ① 「Lite 是后来社区搞的」是【错的】。
+      ⚠️ Lite 写在原论文 §2.4 里，筛选细节在 Appendix A.7。
+      ⟹ 它是官方的、第一天就有的。
+
+   ★★★ ② 「Verified 是 SWE-bench 作者做的」也是【错的】。
+      ⚠️ Verified 是 OpenAI 2024-08 另行发布的人工核验子集，
+         ⟹ 原论文（ICLR 2024）里【完全没有这个东西】。
+      ⟹ 🔑 所以引用 Verified 的分数时，别把它的来源记成那篇论文。
+
+   ⟹ ★★★ Verified 上的分数【系统性高于】全量和 Lite，
+      因为它主动剔除了描述不清、信息不足、测试不公允、根本做不了的题。
+      ⚠️ 这不是「模型变强了」，是【题变可做了】。
 
    ⟹ 🔑 看到 &quot;SWE-bench 42%&quot; 这样一个数，
       ★★★ 必须先问是哪个子集。⚠️ 差别可以是十几个点。
 </code></pre></div>
 
-<p>✅ 源码里还有第四个变体（<code>run_evaluation.py:716</code>）：SWE-bench Multimodal 有专门分支。</p>
+<p>⚠️⚠️ <strong>还有一个比子集更隐蔽的问题：题数直接决定了噪声下限。</strong></p>
+<table>
+<thead>
+<tr>
+<th>子集</th>
+<th>题数 n</th>
+<th>p=0.5 时的标准误 SE</th>
+<th>⟹ 差多少才值得当真</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lite</td>
+<td>300</td>
+<td>2.9 个百分点</td>
+<td>★★★ <strong>差 5 个点约等于噪声</strong></td>
+</tr>
+<tr>
+<td>Verified</td>
+<td>500</td>
+<td>2.2 个百分点</td>
+<td>差 4 个点以下要慎重</td>
+</tr>
+<tr>
+<td>全量</td>
+<td>2,294</td>
+<td>1.0 个百分点</td>
+<td>差 2 个点以下要慎重</td>
+</tr>
+</tbody>
+</table>
+<p>★ 算法是 <code>SE ≈ √(p(1−p)/n)</code>，完整的一张表和四条使用限制在 <a href="评测入门/附-速查表.html">评测入门 · 附-速查表</a> J 节。⟹ 🔑 <strong>这意味着 Lite 上那些「差 2、3 个点」的榜单名次，基本读不出信息。</strong></p>
 <hr />
 <h2 id="8">8. ⚠️ 一个必须警惕的坑：上下文是怎么给的</h2>
-<p>★★ 模型不可能把整个仓库塞进上下文。所以必须先【挑出可能相关的文件】。</p>
-<p>✅ 论文原文（关于 BM25 检索基线）：</p>
+<p>★★ 模型不可能把整个仓库塞进上下文 —— ✅ 论文 Table 1：一个仓库平均 <strong>3,010 个非测试文件 / 438K 行非测试代码</strong>，而官方修复平均只改 <strong>32.8 行</strong>。</p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 先把这个比例感受一遍：
+      438,000 行里只改 32.8 行  ⟹  ★★★ 99.99% 是噪音。
+   ⟹ ⚠️ 所以「挑出可能相关的文件」这一步，本身就是半个题目。
+</code></pre></div>
+
+<p>✅ 论文 §4.1 原文（关于 BM25 检索基线）：</p>
 <blockquote>
 <p>"We observe that in approximately <strong>40% of instances</strong>, BM25 retrieves a superset<br />
 of the oracle files for the 27,000-token context limit. However, in <strong>almost half<br />
 of the instances</strong> with the 27,000-token limit, it retrieves <strong>none of the files</strong><br />
 from the 'oracle' context."</p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>   ★ 名词：
-   ★ BM25 = 一种经典的关键词检索算法（不用神经网络）
-   ★★ oracle context（先知上下文）= 官方修复实际改动的那些文件
-      ⟹ 相当于&quot;标准答案涉及哪几个文件&quot;
+<div class="codehilite"><pre><span></span><code>   ★ 两个名词先说清：
+   ★ BM25（Best Matching 25）= 一种经典的关键词检索算法，不用神经网络。
+   ★★ oracle context（先知上下文）= 官方修复实际改动的那些文件，
+      ⟹ 相当于&quot;标准答案涉及哪几个文件&quot;。
 
    ⟹ 🔑🔑 论文这句话的意思是：
       ★★★ 用 BM25 检索时，接近一半的题目里，
@@ -566,39 +1159,94 @@ from the 'oracle' context."</p>
 
    ⟹ 🔑 所以：★★★ &quot;怎么给上下文&quot;本身就是脚手架的一部分，
       而且是【影响最大的那一部分】。
-      ⚠️ 这也解释了 §3 里 RAG 2.67% vs SWE-agent 18.00% 的巨大差距 ——
-         SWE-agent 让模型【自己去搜、自己去翻】，而不是提前替它决定看什么。
+      ⚠️ 这也解释了 §4 里 RAG 2.67% vs SWE-agent 18.00% 的巨大差距 ——
+         SWE-agent 让模型【自己去搜、自己去翻】，
+         而不是提前替它决定该看什么。
 </code></pre></div>
 
+<p>⟹ ★★ 回到 §3.2 那张状态表：<strong>这一整节讲的事情，发生在第 1 步之前</strong> —— 也就是 harness 完全看不见的那一段。</p>
 <hr />
 <h2 id="9">9. 如果你想自己跑一次</h2>
+<h3 id="91-502">9.1 ✅ 5.0.2 有了一个新的命令行入口</h3>
+<p>✅ <code>pyproject.toml:84-85</code> 注册了 <code>swebench</code> 这个命令（<code>swebench.cli.cli:main</code>）。✅ <code>cli/evaluate.py:49-57</code> 的 help 里自带示例：</p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># ① 装</span>
 pip<span class="w"> </span>install<span class="w"> </span>swebench
 
-<span class="c1"># ② 准备预测文件 preds.jsonl，每行：</span>
+<span class="c1"># ② ★★★ 先用官方修复跑一遍，确认你的环境是好的</span>
+<span class="c1">#    --gold 表示&quot;评测参考补丁&quot;，✅ cli/evaluate.py:18</span>
+swebench<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>verified<span class="w"> </span>--gold<span class="w"> </span>-i<span class="w"> </span>&lt;某个instance_id&gt;
+
+<span class="c1"># ③ 再跑自己的预测</span>
+swebench<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>verified<span class="w"> </span>-p<span class="w"> </span>preds.jsonl<span class="w"> </span>--run-id<span class="w"> </span>my-first-run<span class="w"> </span>-j<span class="w"> </span><span class="m">16</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 第 ② 步是最值得强调的一条建议：
+      先跑 --gold。
+   ⚠️ 如果官方修复在你这儿都判不出 RESOLVED_FULL，
+      ⟹ 那是你的环境/镜像/Docker 有问题，
+         【不是你的 agent 不行】。
+   ⟹ ★★ 这一步能省掉后面几小时的瞎猜。
+</code></pre></div>
+
+<p>⚠️ <strong>别名表里没有 <code>lite</code></strong>（✅ <code>cli/_datasets.py:5-10</code> 只有 <code>full</code> / <code>verified</code> / <code>multilingual</code> / <code>multimodal</code>），⟹ 跑 Lite 要写全名。★ 另外注意数据集的 HuggingFace 组织名<strong>改过</strong>：<code>run_evaluation.py:807</code> 现在的默认值是 <code>SWE-bench/SWE-bench_Lite</code>，老资料里的 <code>princeton-nlp/...</code> 是旧名。</p>
+<h3 id="92">9.2 老的模块式入口仍然可用</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 准备预测文件 preds.jsonl，每行三个字段：</span>
 <span class="c1"># {&quot;instance_id&quot;: &quot;...&quot;, &quot;model_patch&quot;: &quot;&lt;diff 文本&gt;&quot;,</span>
 <span class="c1">#  &quot;model_name_or_path&quot;: &quot;my-agent-v1&quot;}</span>
 
-<span class="c1"># ③ 跑（先只跑几道题）</span>
 python<span class="w"> </span>-m<span class="w"> </span>swebench.harness.run_evaluation<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--dataset_name<span class="w"> </span>princeton-nlp/SWE-bench_Lite<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--dataset_name<span class="w"> </span>SWE-bench/SWE-bench_Lite<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--predictions_path<span class="w"> </span>./preds.jsonl<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--max_workers<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--run_id<span class="w"> </span>my-first-run<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--instance_ids<span class="w"> </span>&lt;id1&gt;<span class="w"> </span>&lt;id2&gt;
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⚠️ 三个新手一定会踩的坑：
+<h3 id="93">9.3 ⚠️ 四个新手一定会踩的坑</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>坑</th>
+<th>⚠️ 后果</th>
+<th>★ 对应 §3.2 状态表的哪一行</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>★★★ 没让 agent 在 <code>base_commit</code> 上工作</td>
+<td>直接 clone 主分支 = 拿到的是<strong>已修复的代码</strong> = 分数假到离谱</td>
+<td>发生在第 1 步之前</td>
+</tr>
+<tr>
+<td>②</td>
+<td>★★★ 让 agent 看到了 <code>FAIL_TO_PASS</code> 的测试内容或 <code>test_patch</code></td>
+<td>等于把答案给它。🔑 <strong>更隐蔽的版本</strong>：跑 N 次然后用 f2p 测试挑最好的那次 —— ★★★ 这也是看答案，只是换了个姿势</td>
+<td>同上，harness 查不出来</td>
+</tr>
+<tr>
+<td>③</td>
+<td>★★ 重跑却没换 <code>--run_id</code></td>
+<td>已有 <code>report.json</code> 的题被静默跳过，你拿到的是<strong>上次的旧分数</strong></td>
+<td>第 3 步</td>
+</tr>
+<tr>
+<td>④</td>
+<td>★★ Docker 镜像会拉几十 GB</td>
+<td>磁盘/网络先确认；⚠️ <code>--max_workers</code> 开太大会把机器打满</td>
+<td>第 5 步</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 坑 ② 值得再说一遍，因为它是【唯一一个 harness 无法防御的作弊】：
 
-   ① ★★★ 必须让 agent 在【base commit】上工作。
-      ⚠️ 直接 clone 主分支 = 拿到的是已修复的代码 = 分数假到离谱。
-
-   ② ★★★ 绝对不能让 agent 看到 FAIL_TO_PASS 的测试内容。
-      ⚠️ 那等于把答案给它。
-      ⟹ 🔑 更隐蔽的版本：跑 N 次然后【用 f2p 测试挑最好的那次】——
-         ★★★ 这也是看答案，只是换了个姿势。
-
-   ③ ★★ Docker 镜像会拉几十 GB。⚠️ 先确认磁盘和网络。
+   ★★★ 第 §3.2 表的第 5–14 步全是官方代码，谁跑都一样。
+   ⚠️ 但「生成 preds.jsonl」这件事完全在你手里，
+      ⟹ 你偷看了答案，harness 一个字段都察觉不到。
+   ⟹ ★★ 所以 agentic 榜单的可信度，
+      最终取决于【报分的人愿不愿意如实披露口径】，
+      而不是取决于评测框架写得多严。
 </code></pre></div>
 
 <hr />
@@ -611,14 +1259,18 @@ python<span class="w"> </span>-m<span class="w"> </span>swebench.harness.run_eva
       —— 你没法&quot;说服&quot;一个单元测试。
 
    ⚠️ 但它换来了一个新问题：
-      ★★★ 由于 harness 只收补丁不问来源，
-      【分数从此变成了「模型 + 脚手架」的联合产物】，
+      ★★★ 由于 harness 只收补丁不问来源（§4），
+      【分数从此变成了「模型 + 脚手架 + 子集 + 预算」的联合产物】，
       ⟹ 而这一点，榜单上是看不出来的。
+
+   ⟹ 🔑🔑 所以本篇真正该带走的是 §3.2 那张状态表：
+      ★★★ 它告诉你分数是在哪一行算出来的，
+         也告诉你能毁掉分数的那几行【根本不在官方代码里】。
 </code></pre></div>
 
 <hr />
 <blockquote>
-<p>相关：<a href="评测入门/07-agentic编码评测与SWE-bench.html">评测入门 07 agentic 编码评测</a> ｜ <a href="评测入门/08-ClaudeCode与Codex怎么被评.html">08 Claude Code 和 Codex 怎么被评</a><br />
+<p>相关：<a href="评测入门/07-agentic编码评测与SWE-bench.html">评测入门 07 agentic 编码评测</a>（概念侧，与本篇互补） ｜ <a href="评测入门/08-ClaudeCode与Codex怎么被评.html">08 Claude Code 和 Codex 怎么被评</a> ｜ <a href="agent脚手架/README.html">agent 脚手架目录</a>（harness 不问的那一段） ｜ <a href="lm-eval-harness拆解.html">lm-eval-harness 拆解</a><br />
 返回 <a href="README.html">harness评测框架/</a></p>
 </blockquote>
 </div>

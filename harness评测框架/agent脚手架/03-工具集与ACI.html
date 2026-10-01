@@ -281,131 +281,866 @@ needs and abilities, and would benefit from specially-built interfaces"</p>
       ⟹ ★★★ 界面得按这个特点重做。
 </code></pre></div>
 
+<p>★ 把"人用的界面"和"模型用的界面"摆在一起，这件事就很具体了：</p>
+<table>
+<thead>
+<tr>
+<th>同一个需求</th>
+<th>★ 人的界面（UI）怎么做</th>
+<th>★★ 模型的界面（ACI）怎么做</th>
+<th>⚠️ 为什么不能照搬</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>看一个文件</strong></td>
+<td>编辑器里滚动条随便拖，眼睛一扫就定位</td>
+<td>✅ <code>open</code> 命令，一次给<strong>最多 100 行</strong>，每行带行号，并标注"上面省略了 357 行、下面还有 1,436 行"</td>
+<td>★★ 模型没有"眼睛扫一遍"这个动作，它必须把看到的每个字都读进上下文。给整个文件 = 把 1,893 行全塞进窗口</td>
+</tr>
+<tr>
+<td><strong>搜一个符号</strong></td>
+<td>搜索框里打字，结果列在侧边栏，点一个看一个</td>
+<td>✅ <code>search_dir</code> 返回<strong>汇总</strong>；✅ <strong>超过 50 条就一条都不给</strong>，改为提示"把查询写细"</td>
+<td>★★★ 人翻到第 5 页会放弃，模型会老老实实翻完 15 页 —— 然后预算就没了（§3.5）</td>
+</tr>
+<tr>
+<td><strong>改一行代码</strong></td>
+<td>鼠标点到那一行，直接敲字，所见即所得</td>
+<td>✅ <code>edit &lt;起始行&gt; &lt;结束行&gt; &lt;新内容&gt;</code>，一步换掉整段；改完<strong>自动回显</strong>改后的视窗</td>
+<td>★★ 模型没有"光标"。如果不回显，它不知道自己改成了什么样</td>
+</tr>
+<tr>
+<td><strong>发现自己敲错了</strong></td>
+<td>编辑器当场标红波浪线</td>
+<td>✅ 编辑命令内置 <strong>linter（语法检查器）</strong>；✅ 非法编辑<strong>直接丢弃不落盘</strong>，并把改前改后的片段给它看</td>
+<td>★★★ 人看到红线会立刻改；模型看不到颜色，必须把错误<strong>写成文字</strong>送给它</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="32-aci">3.2 ✅ 论文给出的四条 ACI 设计原则</h2>
-<p>★★★ 这四条是论文正文明确编号列出的（★ 逐字节选 + 中文翻译）：</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 原则 1 ────────────────────────────────────────────────┐
-   │ &quot;Actions should be simple and easy to understand         │
-   │  for agents.&quot;                                            │
-   │ ⟹ ★★ 动作要简单、模型容易理解。                        │
-   │                                                          │
-   │ ✅ 论文的理由：很多 bash 命令的文档有几十个选项。       │
-   │    &quot;Simple commands with a few options and concise      │
-   │     documentation are easier for agents to use&quot;          │
-   │ ⟹ 参数少、文档短的命令，模型更容易用对。               │
-   └──────────────────────────────────────────────────────────┘
-   ┌─ 原则 2 ────────────────────────────────────────────────┐
-   │ &quot;Actions should be compact and efficient.&quot;               │
-   │ ⟹ ★★★ 动作要紧凑高效——重要操作要合并成尽量少的动作。  │
-   │                                                          │
-   │ ✅ 论文的反面教材原话：                                  │
-   │    &quot;A poor design would therefore have many simple       │
-   │     actions that must be composed across multiple turns&quot; │
-   │ ⟹ ★★ 糟糕的设计 = 一堆小动作，必须跨好几轮才能拼出     │
-   │    一个有意义的操作。                                    │
-   └──────────────────────────────────────────────────────────┘
-   ┌─ 原则 3 ────────────────────────────────────────────────┐
-   │ &quot;Environment feedback should be informative but concise.&quot;│
-   │ ⟹ ★★ 环境反馈要有信息量，但要简洁。（02 章讲过）        │
-   └──────────────────────────────────────────────────────────┘
-   ┌─ 原则 4 ────────────────────────────────────────────────┐
-   │ &quot;Guardrails mitigate error propagation and hasten        │
-   │  recovery.&quot;                                              │
-   │ ⟹ ★★★ 护栏能抑制错误蔓延、加快恢复。                   │
-   │                                                          │
-   │ ✅ 论文举的例子：在编辑命令里内置一个语法检查器，       │
-   │    自动发现模型改出来的语法错误。                        │
-   └──────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<p>★★★ 这四条是论文正文明确编号列出的。下面每一条都是「✅ 英文逐字 + 中文 + 论文自己给的理由」。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>✅ 原则（逐字）</th>
+<th>中文</th>
+<th>✅ 论文给的理由 / 例子（逐字节选）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td><em>"Actions should be simple and easy to understand for agents."</em></td>
+<td>★★ 动作要简单、模型容易理解</td>
+<td><em>"Many bash commands have documentation that includes dozens of options. Simple commands with a few options and concise documentation are easier for agents to use, reducing the need for demonstrations or fine-tuning."</em><br>⟹ 很多 bash 命令的文档有几十个选项；参数少、文档短的命令模型更容易用对，还能少给示范、少做微调</td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td><em>"Actions should be compact and efficient."</em></td>
+<td>★★★ 动作要紧凑高效 —— 重要操作要合并成尽量少的动作</td>
+<td><em>"A poor design would therefore have many simple actions that must be composed across multiple turns for a higher order operation to take effect."</em><br>⟹ ★★ 糟糕的设计 = 一堆小动作，必须跨好几轮才能拼出一个有意义的操作</td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td><em>"Environment feedback should be informative but concise."</em></td>
+<td>★★ 环境反馈要有信息量，但要简洁</td>
+<td><em>"For instance, when editing a file, updating the agent about revised content is helpful."</em><br>⟹ 比如改完文件，把改后的内容回显给它，是有用的。（<a href="02-agent循环怎么转.html">02 章 §2.4</a> 讲过）</td>
+</tr>
+<tr>
+<td><strong>4</strong></td>
+<td><em>"Guardrails mitigate error propagation and hasten recovery."</em></td>
+<td>★★★ 护栏能抑制错误蔓延、加快恢复</td>
+<td><em>"Building in guardrails, such as a code syntax checker that automatically detects mistakes, can help agents recognize and quickly correct errors."</em><br>⟹ 在编辑命令里内置一个语法检查器，自动发现模型改出来的语法错误</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>   ★ 名词：guardrail（护栏）
      ⟹ 在工具内部加的自动检查：★★ 模型做了个明显错误的操作，
         工具【当场拦下来并告诉它错在哪】，而不是默默执行。
+     ★★★ 关键在&quot;当场&quot;和&quot;不落盘&quot;这两件事上，见 §3.6。
+
+   ★ 名词：linter（语法检查器 / 静态检查器）
+     ⟹ 不运行代码、只靠读代码就能找出一类错误的程序。
+        比如 Python 的 flake8 / pyflakes 能查出缩进错、变量名拼错、
+        括号没闭合。⚠️ 它查不出【逻辑错】——参数传反了它不管。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 四条原则里，第 2 条和第 4 条是最容易被忽略的：
+
+      第 2 条反对的是【把工具切得太细】。
+      ⚠️ 新手的直觉恰好相反：「工具拆得越细越灵活」。
+      ⟹ ★★ 但&quot;灵活&quot;的代价是轮数，而轮数就是钱和上下文（§3.3b）。
+
+      第 4 条说的是【工具要会说&quot;不&quot;】。
+      ⚠️ 新手的直觉也相反：「工具就该老老实实执行」。
+      ⟹ ★★★ 但默默执行一个错误操作，等于把错误写进了世界状态，
+         后面每一轮都基于这个错误状态推理（02 章 §2.2b 第 ④ 条）。
 </code></pre></div>
 
 <hr />
 <h2 id="33-swe-agent">3.3 ✅ SWE-agent 实际给了模型哪些工具</h2>
-<p>★★ 论文 §3 逐个描述了它的工具集。这不是猜的，是论文原文：</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ 搜索与导航 ─────────────────────────────────────────┐
-   │  find_file    ⟹ 按【文件名】在仓库里找               │
-   │  search_file  ⟹ 在【一个文件】里找字符串             │
-   │  search_dir   ⟹ 在【一个目录】里找字符串             │
-   │                                                       │
-   │  ✅ 关键设计：★★★ 搜索结果最多返回 50 条。            │
-   │     论文原话：&quot;The search commands return at most 50  │
-   │     results for each search query; if a search        │
-   │     exceeds this number, we do not report the results │
-   │     and instead suggest that the agent write a more   │
-   │     specific query.&quot;                                  │
-   │  ⟹ 超过 50 条就【一条都不给】，改为提示它&quot;把查询写细&quot;│
-   └───────────────────────────────────────────────────────┘
-   ┌─ 文件查看器（file viewer）───────────────────────────┐
-   │  open         ⟹ 打开一个文件                         │
-   │  scroll_down  ⟹ 视窗往下挪                           │
-   │  scroll_up    ⟹ 视窗往上挪                           │
-   │  goto         ⟹ 直接跳到某一行                       │
-   │                                                       │
-   │  ✅ 关键设计：★★★ 一次只显示【最多 100 行】。         │
-   │  ✅ 每次显示还带上：完整文件路径、总行数、            │
-   │     上面省略了多少行、下面省略了多少行、每行的行号。 │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 文件编辑器（file editor）───────────────────────────┐
-   │  create       ⟹ 新建文件                             │
-   │  edit         ⟹ ★★★ 三个参数：起始行、结束行、新内容 │
-   │                  一步把这段行整体换掉                │
-   │                                                       │
-   │  ✅ 关键设计一：改完【自动重新显示】改后的文件内容。  │
-   │     论文原话：&quot;the file viewer automatically displays │
-   │     the updated content, helping the agent observe    │
-   │     the effects of its edit immediately without       │
-   │     invoking additional commands.&quot;                    │
-   │                                                       │
-   │  ✅ 关键设计二：★★★ 内置语法检查（linter）。          │
-   │     论文原话：&quot;Invalid edits are discarded, and the   │
-   │     agent is asked to try editing the file again.&quot;    │
-   │  ⟹【非法的编辑直接丢弃，不写进文件】，让它重改。      │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 出口 ───────────────────────────────────────────────┐
-   │  submit       ⟹ 交卷                                 │
-   └───────────────────────────────────────────────────────┘
-
-   ⟹ ★★ 除此之外，模型还能直接用普通 Linux 命令（python、pytest 等）。
+<p>★★ 论文 §3 逐个描述了它的工具集。这不是猜的，是论文原文。</p>
+<table>
+<thead>
+<tr>
+<th>组</th>
+<th>工具名</th>
+<th>干什么</th>
+<th>✅ 关键设计（论文原文可查）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>搜索与导航</strong></td>
+<td><code>find_file</code></td>
+<td>按<strong>文件名</strong>在仓库里找</td>
+<td>★★★ 三个搜索命令<strong>最多返回 50 条</strong>。✅ 论文原话：<em>"The search commands return at most 50 results for each search query; if a search exceeds this number, we do not report the results and instead suggest that the agent write a more specific query."</em><br>⟹ 超过 50 条就<strong>一条都不给</strong>，改为提示它"把查询写细"</td>
+</tr>
+<tr>
+<td></td>
+<td><code>search_file</code></td>
+<td>在<strong>一个文件</strong>里找字符串</td>
+<td>同上</td>
+</tr>
+<tr>
+<td></td>
+<td><code>search_dir</code></td>
+<td>在<strong>一个目录</strong>里找字符串</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>文件查看器</strong><br>（file viewer）</td>
+<td><code>open</code></td>
+<td>打开一个文件</td>
+<td>★★★ 一次只显示<strong>最多 100 行</strong>。✅ 每次显示还带上：完整文件路径、总行数、上面省略了多少行、下面省略了多少行、每行的行号</td>
+</tr>
+<tr>
+<td></td>
+<td><code>scroll_down</code> / <code>scroll_up</code></td>
+<td>视窗上下挪</td>
+<td>★ 一次挪 100 行</td>
+</tr>
+<tr>
+<td></td>
+<td><code>goto</code></td>
+<td>直接跳到某一行</td>
+<td>★★ 这一条对应原则 2：不用连点好几次 <code>scroll_down</code></td>
+</tr>
+<tr>
+<td><strong>文件编辑器</strong><br>（file editor）</td>
+<td><code>create</code></td>
+<td>新建文件</td>
+<td>★ ✅ 论文观察到：模型常用它写<strong>复现脚本</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><code>edit</code></td>
+<td>★★★ 三个参数：起始行、结束行、新内容，一步把这段行整体换掉</td>
+<td><strong>设计一</strong>：改完<strong>自动重新显示</strong>改后的文件内容。✅ 原话：<em>"the file viewer automatically displays the updated content, helping the agent observe the effects of its edit immediately without invoking additional commands."</em><br><strong>设计二</strong>：★★★ 内置 <strong>linter</strong>。✅ 原话：<em>"Invalid edits are discarded, and the agent is asked to try editing the file again."</em> ⟹【非法的编辑直接丢弃，不写进文件】，让它重改。✅ 并且 <em>"Select errors from the linter are shown to the agent along with a snippet of the file contents before/after the error was introduced."</em> ⟹ 报错时连改前改后的片段一起给它看</td>
+</tr>
+<tr>
+<td><strong>出口</strong></td>
+<td><code>submit</code></td>
+<td>交卷</td>
+<td>见 <a href="02-agent循环怎么转.html">02 章 §2.5</a></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★ 除此之外，模型还能直接用普通 Linux 命令（python、pytest 等）。
       ✅ 论文原话：&quot;Built atop the Linux shell, SWE-agent also allows
          access to common Linux commands and utilities when needed.&quot;
+      ✅ 旁证：论文 Figure 7 的动作频次图里，直接出现了
+         python / python3 / pytest / find 这几个动作。
+
+   ⟹ 🔑 所以数一数：★★ 专用工具 10 个 + 整个 Linux shell。
+      ⚠️ 注意这和 DeepSeek-V4 跑分用的【2 个工具】是完全不同的取舍
+         （bash + 文件编辑，见 07 章）—— 两家都拿到了好成绩。
+      ⟹ ★★★ 所以&quot;工具越多越好&quot;也是错的。重点不是数量，是【顺不顺手】。
+</code></pre></div>
+
+<hr />
+<h2 id="33b">3.3b ⭐⭐⭐ 三种工具集设计，同一个任务各走一遍</h2>
+<p>★★★ 本章最该花时间的一节。用 <a href="02-agent循环怎么转.html">02 章 §2.2b</a> 的<strong>同一个任务</strong>，换三种工具集各走一遍。</p>
+<h3 id="1">① 任务与三种工具集</h3>
+<div class="codehilite"><pre><span></span><code>   ★ 任务（和 02 章完全一样）：
+      issue: PVSystem.get_aoi returns wrong angles
+      真正的 bug: pvlib/pvsystem.py 第 412 行，前两个参数顺序写反了
+         改前: irradiance.aoi(self.surface_azimuth, self.surface_tilt, ...)
+         改后: irradiance.aoi(self.surface_tilt, self.surface_azimuth, ...)
+      ⚠️ 这一行在一个缩进 8 个空格的函数体里面。
+         ★★ 记住这件事，三种工具集的差别全在它上面爆发。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>工具集</th>
+<th>✅ 对应论文消融表的哪一行</th>
+<th>✅ 实测分数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong></td>
+<td>★ <strong><code>bash</code> 一把梭</strong>：只给一个 shell，改文件靠 <code>sed</code> 或者整文件重定向覆盖</td>
+<td>✅ 论文的 <strong>Noedit</strong> 设定</td>
+<td><strong>10.3</strong></td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td>★★ <strong>细分 <code>read</code> / <code>write</code> / <code>edit</code></strong>：有结构化的 <code>edit &lt;起始行&gt; &lt;结束行&gt;</code>、有带行号的视窗、改完自动回显，<strong>但没有 linter 护栏</strong></td>
+<td>✅ 论文的 <strong>edit w/o linting</strong> 设定</td>
+<td><strong>15.0</strong></td>
+</tr>
+<tr>
+<td><strong>C</strong></td>
+<td>★★★ <strong>带 lint 的编辑器</strong>：B 的全部 ＋ 编辑命令内置 linter，非法编辑<strong>丢弃不落盘</strong></td>
+<td>✅ SWE-agent <strong>默认配置</strong></td>
+<td><strong>18.0</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 映射说明：A 和 C 是论文设定的原样。
+      B 严格说是&quot;把 C 的 linter 摘掉&quot;，结构化 edit 和自动回显都还在。
+      ★★ 我在下面的走查里按论文的口径来，不给 B 额外减配。
+</code></pre></div>
+
+<h3 id="2-a-bash">② 方案 A：只有 <code>bash</code>，走完要八轮，而且有一轮是<strong>静默失败</strong></h3>
+<table>
+<thead>
+<tr>
+<th>轮</th>
+<th>模型输出</th>
+<th>工具返回</th>
+<th>⚠️ 这一轮的麻烦在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>grep -rn "def get_aoi" .</code></td>
+<td>命中 2 处，但同时夹进 <code>.pyc</code>、<code>build/</code> 等目录的噪音行</td>
+<td>★ 还好，能看懂</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>sed -n '400,420p' pvlib/pvsystem.py</code></td>
+<td>21 行<strong>纯代码</strong>，⚠️⚠️ <strong>没有行号</strong></td>
+<td>★★★ 模型必须自己数"从 400 开始往下第 13 行"。✅ 论文附录记录到了真实的这类行为：模型用 <code>sed</code> 看完前 100 行，然后要接着看下 100 行，得自己算区间</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>sed -i '412s/self.surface_azimuth, self.surface_tilt/self.surface_tilt, self.surface_azimuth/' pvlib/pvsystem.py</code></td>
+<td><strong>（空输出）</strong></td>
+<td>⚠️⚠️⚠️ <strong>本节最要命的一格</strong>。<code>sed</code> 没匹配上也是<strong>成功退出、无输出</strong>。⟹ 模型看到的"成功"和真的改了，<strong>长得一模一样</strong>（02 章 §2.4 那个"空输出有歧义"）</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>sed -n '410,414p' pvlib/pvsystem.py</code></td>
+<td>5 行，412 行<strong>还是旧的</strong></td>
+<td>★★ 得专门花一轮去验证，才发现第 3 轮白做了</td>
+</tr>
+<tr>
+<td>5</td>
+<td>改用整文件重写：<code>cat &gt; /tmp/patch.py &lt;&lt;'EOF' … EOF</code> 再用 Python 脚本替换那一行</td>
+<td>无输出</td>
+<td>⚠️ ✅ 论文原话点了这条路的问题：<em>"Redirection involves copying and rewriting entire files for even minor changes, which is both inefficient and error-prone."</em><br>★★★ 改一行要把 1,893 行全写一遍，<strong>写漏一段就是静默丢代码</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>sed -n '410,414p' pvlib/pvsystem.py</code></td>
+<td>这次 412 行对了</td>
+<td>★ 又花一轮验证</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>python -m pytest pvlib/tests/test_pvsystem.py -k aoi</code></td>
+<td><code>3 passed</code></td>
+<td>——</td>
+</tr>
+<tr>
+<td>8</td>
+<td>交卷</td>
+<td>——</td>
+<td>——</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ✅ 论文对这一套的评语是逐字的（★ 值得读两遍）：
+
+      &quot;In the Noedit setting, editing options are restrictive and prone to
+       errors; the primary methods available are either replacing entire
+       files through redirection and overwriting or using utilities like
+       sed for single-line or search-and-replace edits. Both methods have
+       significant drawbacks. ... Although sed can facilitate specific
+       edits, executing multi-line edits is cumbersome and can lead to
+       unintended consequences that are challenging to detect.&quot;
+
+      ⟹ 中文：★★★ 两条路都有重大缺陷。整文件重定向：改一点点就要
+         复制重写整个文件，既低效又容易出错。sed 虽然能做定点修改，
+         但【多行编辑很别扭，而且会造成难以察觉的意外后果】。
+
+   ⟹ ★★★ &quot;难以察觉&quot;（challenging to detect）这四个字就是方案 A 的
+      全部问题：★★ 它的失败是【静默的】。
+</code></pre></div>
+
+<h3 id="3-b-3">③ 方案 B：有结构化编辑器但没护栏，走完要七轮，第 3 轮<strong>把文件改坏了</strong></h3>
+<table>
+<thead>
+<tr>
+<th>轮</th>
+<th>模型输出</th>
+<th>工具返回</th>
+<th>⚠️ 这一轮的麻烦在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>search_dir "def get_aoi"</code></td>
+<td>汇总式命中：<code>pvlib/pvsystem.py (line 408)</code>、<code>pvlib/tracking.py (line 173)</code></td>
+<td>★★ 比 A 的 <code>grep</code> 干净，★ <strong>而且直接给了行号</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>open pvlib/pvsystem.py 408</code></td>
+<td>第 358–457 行，★★ <strong>每行带行号</strong>，并标注总行数和上下省略行数</td>
+<td>★★★ 不用自己数行号，这一项就省掉了 A 的第 2 轮那种算术</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>edit 412:412</code> + 新内容（⚠️ 缩进写成 4 个空格，这个函数体要 8 个）</td>
+<td>⚠️⚠️ <strong>没有 linter，直接写进文件</strong>；自动回显改后的视窗</td>
+<td>★★★ 回显里 412 行的缩进其实"看着不太对"，但<strong>没有任何东西明确告诉它错了</strong>。⟹ 🔑 文件已经被改坏</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>python -m pytest pvlib/tests/test_pvsystem.py -k aoi</code></td>
+<td><code>ERROR collecting ... IndentationError: unexpected indent (pvsystem.py, line 412)</code>，⚠️ 整个文件<strong>连导入都失败了</strong></td>
+<td>★★ 失败终于可见了，但<strong>报的是"整个模块炸了"</strong>，不是"你刚才那次编辑错了"。⟹ 模型得自己把这两件事联系起来</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>open pvlib/pvsystem.py 408</code></td>
+<td>再看一遍，这次注意到缩进</td>
+<td>★ 又花一轮</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>edit 412:412</code> + 缩进修正</td>
+<td>写进文件 + 回显</td>
+<td>——</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>pytest</code> → <code>3 passed</code> → 交卷</td>
+<td>——</td>
+<td>——</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ B 比 A 好在哪、差在哪，要分开说：
+
+      ★★ B 比 A 好：① 搜索结果带行号，省掉数行号那一轮；
+         ② 改完自动回显，省掉&quot;再发一条命令去验证&quot;那一轮；
+         ③ ★★★ 失败最终是【可见的】——pytest 会炸。
+         ✅ 这就是 10.3 → 15.0 那 4.7 个点。
+
+      ⚠️ B 比 C 差的地方只有一件事，但很致命：
+         ★★★ 第 3 轮那次错误编辑【真的落盘了】。
+         ⟹ 第 4、5 轮里，模型看到的是【已经被自己改坏的文件】。
+         ⟹ 🔑 它现在要同时解决两个问题：原来的参数顺序 bug，
+            和自己新引入的缩进错。
+         ⚠️ 在这条顺利的走查里它解决了。✅ 论文的实测说：
+            很多时候它解决不了 —— 一次失败编辑之后，
+            最终改成功的概率从 90.5% 掉到 57.2%（§3.6）。
+</code></pre></div>
+
+<h3 id="4-c-lint-3">④ 方案 C：带 lint 的编辑器，走完六轮，第 3 轮<strong>当场被拦住且文件没动</strong></h3>
+<p>★ 这一条就是 <a href="02-agent循环怎么转.html">02 章 §2.2b</a> 那张五轮表 ＋ 第 6 轮交卷，这里只重放最关键的第 3 轮：</p>
+<div class="codehilite"><pre><span></span><code>   第 3 轮  模型输出：edit 412:412 + 新内容（缩进 4 个空格，错的）
+
+   脚手架做的事（★★ 顺序很重要）：
+   ├── ① 先在内存里算出&quot;改完会是什么样&quot;
+   ├── ② 对这个结果跑 linter
+   ├── ③ linter 报 E999 IndentationError at line 412
+   ├── ④ ★★★ 把这次编辑【整个丢弃】—— 磁盘上的文件一个字没动
+   └── ⑤ 把下面这段文字返回给模型：
+
+         Your proposed edit has introduced new syntax error(s):
+         - E999 IndentationError: unexpected indent (line 412)
+         This is how your edit would have looked:
+           (改前 3 行 / 改后 3 行 的并排片段)
+         Your changes have NOT been applied. Please fix ... and try again.
+
+   ⟹ 🔑🔑 ★★★ 对比 B 的第 3 轮，C 多做了三件事：
+      ① 【当场】说错了，不等到第 4 轮跑测试才炸
+      ② 【明确】说错在哪一行、是什么错，不用模型自己推
+      ③ ★★★ 【文件没被改坏】—— 第 4 轮模型面对的还是干净代码
+</code></pre></div>
+
+<h3 id="5">⑤ ⭐⭐ 三方对照总表</h3>
+<p>★★★ 这张表是本节的结论。<strong>最后一行是实测分数 —— 前面每一行都是它的原因。</strong></p>
+<table>
+<thead>
+<tr>
+<th>对比项</th>
+<th><strong>A：<code>bash</code> 一把梭</strong></th>
+<th><strong>B：细分编辑器，无护栏</strong></th>
+<th><strong>C：带 lint 的编辑器</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>走完这个任务要几轮</strong></td>
+<td>★★ <strong>8 轮</strong></td>
+<td><strong>7 轮</strong></td>
+<td>★ <strong>6 轮</strong></td>
+</tr>
+<tr>
+<td><strong>行号从哪来</strong></td>
+<td>⚠️ <strong>模型自己数</strong></td>
+<td>✅ 视窗自带</td>
+<td>✅ 视窗自带</td>
+</tr>
+<tr>
+<td><strong>改完能不能立刻看到结果</strong></td>
+<td>⚠️ 要<strong>再花一轮</strong>发命令去看</td>
+<td>✅ 自动回显</td>
+<td>✅ 自动回显</td>
+</tr>
+<tr>
+<td><strong>★★★ 哪一步最容易错</strong></td>
+<td>第 3 轮：<code>sed</code> 的正则里有 <code>.</code> <code>(</code> <code>)</code> 等特殊字符，没转义就匹配不上；或整文件覆盖时写漏</td>
+<td>第 3 轮：编辑本身写错（缩进、括号），<strong>没人拦</strong></td>
+<td>第 3 轮：一样会写错</td>
+</tr>
+<tr>
+<td><strong>★★★ 错了之后多久才知道</strong></td>
+<td>⚠️⚠️ <strong>可能永远不知道</strong>。<code>sed</code> 没匹配 = 成功退出 + 无输出，和改成功长得一样</td>
+<td>★★ <strong>隔一轮</strong>。要等跑测试时炸</td>
+<td>✅ <strong>当场</strong>，在同一轮的返回里</td>
+</tr>
+<tr>
+<td><strong>★★★ 文件会不会被改坏</strong></td>
+<td>★★★ <strong>会</strong>，而且可能静默改坏（整文件覆盖写漏）</td>
+<td>★★★ <strong>会</strong></td>
+<td>✅ <strong>不会</strong>。非法编辑丢弃不落盘</td>
+</tr>
+<tr>
+<td><strong>错了能不能自己恢复</strong></td>
+<td>⚠️⚠️ <strong>最难</strong>。它得先意识到"我以为改了其实没改"这件事</td>
+<td>★ <strong>能，但要绕一圈</strong>：pytest 报错 → 重新 open → 看出缩进 → 重改</td>
+<td>★★★ <strong>能，直接重发一次 <code>edit</code></strong></td>
+</tr>
+<tr>
+<td><strong>恢复时要解决几个问题</strong></td>
+<td>1 个（原 bug）＋ 1 个（我到底改了没有）</td>
+<td>★★★ <strong>2 个</strong>：原 bug ＋ 自己引入的语法错</td>
+<td>★ <strong>1 个</strong>：原 bug</td>
+</tr>
+<tr>
+<td><strong>✅ 对应消融表哪一行</strong></td>
+<td>Noedit</td>
+<td>edit w/o linting</td>
+<td>默认（基线）</td>
+</tr>
+<tr>
+<td><strong>✅ 实测 SWE-bench Lite 分数</strong></td>
+<td><strong>10.3</strong></td>
+<td><strong>15.0</strong></td>
+<td><strong>18.0</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 把这张表压成三句话：
+
+      ① A → B 的 4.7 个点，买的是【把错误变得可见】。
+      ② B → C 的 3.0 个点，买的是【让错误不落盘、当场说清】。
+      ③ ★★★ 两段加起来 7.7 个点，一行模型代码都没改。
+
+   ⟹ ⚠️ 必须跟一句限定：这三个数字是 2024 年的 GPT-4 Turbo
+      在 Lite 300 题上跑的（口径见 §3.4）。★★ 它证明的是
+      【工具集设计的影响量级很大】，⚠️ 不是&quot;今天换个编辑器还差 7.7 分&quot;。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 如果你要自己搭脚手架，这一节的可操作结论只有两条：
+
+      ① ★★★ 别只给一个 bash。至少要有【带行号的视窗】和
+         【按行号替换的结构化编辑命令】。✅ 这两项值 4.7 个点。
+      ② ★★★ 编辑命令里一定要塞一个 linter，而且必须做到
+         【非法编辑不落盘】。✅ 这一项值 3.0 个点。
+         ⚠️ 只报错但照样写进去，等于白做 —— 见 §3.6。
 </code></pre></div>
 
 <hr />
 <h2 id="34">3.4 ⭐⭐ 核心证据：消融实验表</h2>
-<p>★★★ 这是全目录最重要的一张表。✅ SWE-agent 论文 Table 3，<br />
-全部在 <strong>SWE-bench Lite（300 题）+ GPT-4 Turbo</strong> 上跑出来，<br />
-<strong>模型完全不变，只换界面</strong>。带 ★ 的是 SWE-agent 的默认配置。</p>
-<div class="codehilite"><pre><span></span><code>   ┌───────────────┬────────────────────────┬────────┬────────┐
-   │ 换掉哪一块     │ 换成什么                │ 分数   │ 变化   │
-   ├───────────────┼────────────────────────┼────────┼────────┤
-   │               │ ★ edit 带语法检查       │ 18.0   │ 基准   │
-   │ 编辑器        │ edit 不带语法检查       │ 15.0   │ ↓ 3.0  │
-   │               │ ★★★ 完全没有 edit 命令  │ 10.3   │ ↓ 7.7  │
-   ├───────────────┼────────────────────────┼────────┼────────┤
-   │               │ ★ 汇总式搜索            │ 18.0   │ 基准   │
-   │ 搜索          │ ★★★ 逐条翻页式搜索      │ 12.0   │ ↓ 6.0  │
-   │               │ 完全没有搜索命令        │ 15.7   │ ↓ 2.3  │
-   ├───────────────┼────────────────────────┼────────┼────────┤
-   │               │ 一次显示 30 行          │ 14.3   │ ↓ 3.7  │
-   │ 文件视窗大小  │ ★ 一次显示 100 行       │ 18.0   │ 基准   │
-   │               │ ★★★ 一次显示整个文件    │ 12.7   │ ↓ 5.3  │
-   ├───────────────┼────────────────────────┼────────┼────────┤
-   │               │ ★ 只保留最近 5 条观察   │ 18.0   │ 基准   │
-   │ 上下文管理    │ ★★★ 保留全部历史        │ 15.0   │ ↓ 3.0  │
-   │               │ 不给示范                │ 16.3   │ ↓ 1.7  │
-   └───────────────┴────────────────────────┴────────┴────────┘
+<p>★★★ 这是全目录最重要的一张表。✅ 来自 SWE-agent 论文 <strong>Table 3</strong>。</p>
+<h3 id="1_1">① 先把口径交代完整（⚠️ 没有这一节，下面那张表不能用）</h3>
+<table>
+<thead>
+<tr>
+<th>口径项</th>
+<th>✅ 论文写明的值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>评测集</td>
+<td>★★ <strong>SWE-bench Lite test split，300 题</strong></td>
+</tr>
+<tr>
+<td>模型</td>
+<td>★★ <strong>GPT-4 Turbo</strong>，模型 ID <code>gpt-4-1106-preview</code>（128K 窗口）</td>
+</tr>
+<tr>
+<td>指标</td>
+<td>% Resolved，等价于 <strong>pass@1</strong>（跑一遍）</td>
+</tr>
+<tr>
+<td>基线配置</td>
+<td>温度 <strong>0.0</strong>、文件视窗 <strong>100 行</strong>、历史策略 <strong>Last 5 Obs.</strong>、<strong>给了示范</strong></td>
+</tr>
+<tr>
+<td>每题预算</td>
+<td><strong>$4</strong>；超了就把现有改动自动交上去（<a href="02-agent循环怎么转.html">02 章 §2.5</a>）</td>
+</tr>
+<tr>
+<td>工具集</td>
+<td>§3.3 那 10 个专用工具 ＋ 通用 Linux 命令</td>
+</tr>
+<tr>
+<td>是否允许跑测试</td>
+<td>✅ 允许（<code>python</code> / <code>pytest</code> 在动作列表里）；⚠️ 判卷用的测试名单模型看不到</td>
+</tr>
+<tr>
+<td><strong>每行跑几遍</strong></td>
+<td>⚠️⚠️ <strong>一遍</strong>。✅ 对照：基线配置重跑 6 遍是 17.33 / 18.00 / 18.00 / 18.67 / 17.33 / 18.33（<a href="01-两个harness不是一个东西.html">01 章 §1.4b</a>）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="2">② 消融表本体</h3>
+<p>★★ 四个分组，<strong>每组各有一个基线（都是 18.0，就是完整的 SWE-agent）</strong>。「差值」是论文表里自带的。</p>
+<table>
+<thead>
+<tr>
+<th>换掉哪一块</th>
+<th>✅ 论文里的设定名</th>
+<th>中文</th>
+<th>分数</th>
+<th>差值</th>
+<th>★ 换算成几道题（共 300 题）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>编辑器</strong></td>
+<td><code>edit action w/ linting</code></td>
+<td>★ 带 linter 的 <code>edit</code>（基线）</td>
+<td><strong>18.0</strong></td>
+<td>基线</td>
+<td>54 道</td>
+</tr>
+<tr>
+<td></td>
+<td><code>edit w/o linting</code></td>
+<td>同样的 <code>edit</code>，但摘掉 linter</td>
+<td>15.0</td>
+<td>↓ 3.0</td>
+<td>45 道（少 9 道）</td>
+</tr>
+<tr>
+<td></td>
+<td><strong><code>Noedit</code></strong></td>
+<td>★★★ <strong>完全没有 <code>edit</code> 命令</strong>，只剩通用 shell</td>
+<td><strong>10.3</strong></td>
+<td>↓ <strong>7.7</strong></td>
+<td>31 道（少 23 道）</td>
+</tr>
+<tr>
+<td><strong>搜索</strong></td>
+<td><code>Summarized</code></td>
+<td>★ 汇总式搜索（基线）</td>
+<td><strong>18.0</strong></td>
+<td>基线</td>
+<td>54 道</td>
+</tr>
+<tr>
+<td></td>
+<td><strong><code>Iterative</code></strong></td>
+<td>★★★ 逐条翻页式搜索（<code>next</code> / <code>prev</code> 一条条看）</td>
+<td><strong>12.0</strong></td>
+<td>↓ <strong>6.0</strong></td>
+<td>36 道（少 18 道）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>No search</code></td>
+<td>完全不给搜索命令</td>
+<td>15.7</td>
+<td>↓ 2.3</td>
+<td>47 道（少 7 道）</td>
+</tr>
+<tr>
+<td><strong>文件视窗</strong></td>
+<td><code>30 lines</code></td>
+<td>一次显示 30 行</td>
+<td>14.3</td>
+<td>↓ 3.7</td>
+<td>43 道（少 11 道）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>100 lines</code></td>
+<td>★ 一次显示 100 行（基线）</td>
+<td><strong>18.0</strong></td>
+<td>基线</td>
+<td>54 道</td>
+</tr>
+<tr>
+<td></td>
+<td><code>Full file</code></td>
+<td>★★★ 一次显示整个文件</td>
+<td><strong>12.7</strong></td>
+<td>↓ <strong>5.3</strong></td>
+<td>38 道（少 16 道）</td>
+</tr>
+<tr>
+<td><strong>上下文</strong></td>
+<td><code>Last 5 Obs.</code></td>
+<td>★ 只保留最近 5 条观察（基线）</td>
+<td><strong>18.0</strong></td>
+<td>基线</td>
+<td>54 道</td>
+</tr>
+<tr>
+<td></td>
+<td><code>Full history</code></td>
+<td>★★★ 保留全部历史</td>
+<td><strong>15.0</strong></td>
+<td>↓ 3.0</td>
+<td>45 道（少 9 道）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>w/o demo.</code></td>
+<td>不给示范</td>
+<td>16.3</td>
+<td>↓ 1.7</td>
+<td>49 道（少 5 道）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 两处用词必须校正，否则很容易读错：
+
+   ① ★★★ 10.3 那一行在论文里叫 Noedit，意思是
+      【完全没有 edit 这个命令】，不是&quot;换了一个别的编辑器界面&quot;。
+      ⟹ 模型仍然可以用 shell 改文件（sed、重定向），
+         只是没有那个带护栏的专用命令。走查见 §3.3b 方案 A。
+
+   ② ★★ &quot;不给示范&quot;（w/o demo.）这一行，✅ 论文 Table 3 把它放在
+      【Context（上下文）】分组里，不是放在&quot;提示词&quot;分组里。
+      ⟹ ⚠️ 这个归类乍看奇怪，但论文的逻辑是统一的：
+         ★★ 示范（demonstration）也是【一开始就塞进上下文的东西】，
+         和&quot;保留多少条历史观察&quot;是同一类变量 —— 都在问
+         【这个窗口里该装什么】。
+
+   ★ 名词：demonstration（示范）
+     ⟹ 在系统提示词里先给模型看一条【完整的、做对了的轨迹】，
+        让它照着那个格式和节奏走。
+     ⚠️ 它不是 few-shot 答题示例，而是一整条&quot;怎么用这些工具&quot;的演示。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 请盯着这张表看三十秒。
+<h3 id="3">③ ⚠️⚠️ 这张表里哪几行<strong>压不过噪声</strong></h3>
+<p>★★★ 这一节是上一轮漏掉的，但它决定了这张表哪几行能用、哪几行只能当"方向性参考"。</p>
+<div class="codehilite"><pre><span></span><code>   ★ 三个噪声尺子，量的是三件不同的事：
 
-      同一个 GPT-4 Turbo。同样 300 道题。同样的判卷方式。
-      ★★ 只因为&quot;给模型看的界面&quot;不同，分数从 10.3 到 18.0。
+   ① 【一道题值多少】   1 / 300 = 0.333 个百分点
+      ⟹ ★★ 所以表里任何一个差值，先除以 0.333 看它是几道题。
 
-      ⟹ 这个跨度（7.7 个点），比很多&quot;新一代模型&quot;的提升还大。
+   ② 【换一批题会抖多少】（题目抽样标准误，SE）
+      SE ≈ sqrt(0.18 × 0.82 / 300) = sqrt(0.000492) ≈ 0.022
+      ⟹ ★★★ 约 2.2 个百分点。
+
+   ③ 【同一批题重跑会抖多少】（重跑噪声）
+      ✅ 论文 §B.5：基线重跑 6 遍 = 17.33 ~ 18.67，标准差 0.49。
+      ⟹ ★★ 极差 1.34 个百分点 = 4 道题。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>差值</th>
+<th>几道题</th>
+<th>对比 ③ 重跑噪声（极差 1.34）</th>
+<th>对比 ② 抽样 SE（2.2）</th>
+<th>⟹ 能不能当证据用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>↓ <strong>7.7</strong>（Noedit）</td>
+<td>23 道</td>
+<td>★★★ 远超</td>
+<td>★★★ 远超</td>
+<td>✅ <strong>能，而且很硬</strong></td>
+</tr>
+<tr>
+<td>↓ <strong>6.0</strong>（逐条翻页搜索）</td>
+<td>18 道</td>
+<td>★★★ 远超</td>
+<td>★★★ 远超</td>
+<td>✅ <strong>能</strong></td>
+</tr>
+<tr>
+<td>↓ <strong>5.3</strong>（整个文件）</td>
+<td>16 道</td>
+<td>★★ 远超</td>
+<td>★★ 超过</td>
+<td>✅ <strong>能</strong></td>
+</tr>
+<tr>
+<td>↓ <strong>3.7</strong>（30 行视窗）</td>
+<td>11 道</td>
+<td>★★ 超过</td>
+<td>★ 超过</td>
+<td>✅ 能</td>
+</tr>
+<tr>
+<td>↓ <strong>3.0</strong>（无 linter / 全历史）</td>
+<td>9 道</td>
+<td>★ 超过</td>
+<td>★ 勉强超过</td>
+<td>★★ 能用，但别当"精确值 3.0"</td>
+</tr>
+<tr>
+<td>↓ <strong>2.3</strong>（完全不给搜索）</td>
+<td>7 道</td>
+<td>★ 超过</td>
+<td>⚠️ <strong>和 SE 同量级</strong></td>
+<td>⚠️ <strong>方向可信，数值别当真</strong></td>
+</tr>
+<tr>
+<td>↓ <strong>1.7</strong>（不给示范）</td>
+<td>5 道</td>
+<td>⚠️ 只有极差的 1.3 倍</td>
+<td>⚠️⚠️ <strong>明显小于 SE</strong></td>
+<td>⚠️⚠️ <strong>不够硬。只能说"大概是负的"</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 带走一句：
+
+      ★★ 这张表前五行（7.7 / 6.0 / 5.3 / 3.7 / 3.0）是真结论。
+      ⚠️ 后两行（2.3 / 1.7）是【方向性线索】，
+         ★★★ 不要拿它们去论证&quot;某个设计值 2.3 个点&quot;。
+
+   ⚠️ 补一句对&quot;②和③为什么差四倍&quot;的解释，不然容易混：
+      ★★ ③ 只换随机种子，题目是同一批 300 道 ⟹ 抖得小。
+      ★★★ ② 是假设&quot;换 300 道别的题&quot; ⟹ 抖得大。
+      ⟹ 你拿两个配置在【同一批 300 题】上比，真实噪声在 ③ 和 ② 之间：
+         ⚠️ 因为两边做的是同一道道题（统计上叫&quot;配对&quot;），
+         那些&quot;两边都对&quot;&quot;两边都错&quot;的题互相抵消了。
+</code></pre></div>
+
+<h3 id="4">④ ⚠️ 顺带：论文自己的超参扫描，几乎每一行都在噪声里</h3>
+<p>★★ 很多人会引用论文 §B.1 Table 5 的超参扫描来说"温度/视窗值几个点"。✅ 先看它的口径：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ 论文原话：&quot;We performed a hyperparameter sweep using a subset of
+      37 instances sampled randomly from the dev split of SWE-bench.&quot;
+      ✅ 并且 Table 5 的表头写明：&quot;% Resolved shows the mean score
+         across 5 samples.&quot;
+
+   ⟹ ★★★ 只有 37 道题，而且是 dev split（不是 Lite，也不是 test）。
+   ⟹ ⚠️⚠️ 一道题 = 1/37 = 2.70 个百分点。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>温度</th>
+<th>视窗</th>
+<th>历史</th>
+<th>✅ % Resolved</th>
+<th>★ 相当于几道题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT-4 Turbo</td>
+<td>0.0</td>
+<td>100</td>
+<td>Full</td>
+<td>14.1</td>
+<td>5.2</td>
+</tr>
+<tr>
+<td><strong>GPT-4 Turbo</strong></td>
+<td><strong>0.0</strong></td>
+<td><strong>100</strong></td>
+<td><strong>Last 5</strong></td>
+<td><strong>15.1</strong>（✅ 最优，被选为正式配置）</td>
+<td>5.6</td>
+</tr>
+<tr>
+<td>GPT-4 Turbo</td>
+<td>0.0</td>
+<td>200</td>
+<td>Last 5</td>
+<td>10.8</td>
+<td>4.0</td>
+</tr>
+<tr>
+<td>GPT-4 Turbo</td>
+<td><strong>0.2</strong></td>
+<td>100</td>
+<td>Last 5</td>
+<td><strong>12.4</strong></td>
+<td>4.6</td>
+</tr>
+<tr>
+<td>GPT-4 Turbo</td>
+<td>0.2</td>
+<td>200</td>
+<td>Last 5</td>
+<td>10.8</td>
+<td>4.0</td>
+</tr>
+<tr>
+<td>Claude 3 Opus</td>
+<td>0.0</td>
+<td>100</td>
+<td>Last 5</td>
+<td>8.1</td>
+<td>3.0</td>
+</tr>
+<tr>
+<td>Claude 3 Opus</td>
+<td>0.2</td>
+<td>200</td>
+<td>Last 5</td>
+<td>6.8</td>
+<td>2.5</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ⚠️⚠️ ★★★ 请看最右边那一列：整张表的分数都落在
+      【做对 2.5 道题 到 5.6 道题】之间。
+
+      ★★ 15.1 vs 14.1（历史策略 Last-5 对 Full）差 1.0 个百分点
+         = ★★★ **0.37 道题**。
+      ★★ 15.1 vs 12.4（温度 0.0 对 0.2）差 2.7 个百分点
+         = 正好 **1 道题**。
+
+   ⟹ 🔑🔑 ★★★ 所以这张表【不能】用来说&quot;温度值 2.7 个点&quot;。
+      ✅ 论文自己也没这么用 —— 它只用这张表【挑一个配置】，
+         挑完就去 300 题的 Lite 和 2,294 题的全量上跑正式结果。
+      ⟹ ⚠️ 这是一个很好的反面教材：
+         ★★ 看到一个分数差，第一件事是问【分母是多少题】。
 </code></pre></div>
 
 <hr />
@@ -418,6 +1153,22 @@ match exhaustively, calling <code>next</code> until each result has been inspect
 inefficient behavior can exhaust an agent's cost budget or context window"</p>
 </blockquote>
 <p>⟹ <strong>给了一大堆搜索结果时，agent 倾向于挨个看完，一直按 <code>next</code> 直到看完每一条。这种低效行为会耗尽它的成本预算或上下文窗口。</strong></p>
+<p>★ 先说清"逐条翻页式"到底长什么样（✅ 论文原文描述）：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ 论文说它是&quot;directly inspired by traditional user interfaces for
+      search, e.g., Vim or VSCode&quot; —— ★★ 直接照搬人用的搜索界面。
+
+   ★ 它的行为：
+   ├── 一次只显示【一条】命中
+   ├── 每条命中显示：匹配的那一行 ＋ 上下各 n 行上下文
+   ├── 模型用 next / prev 翻到下一条 / 上一条
+   └── ★★ 好处是：看到相关代码可以【直接接着改】，不用再 open
+
+   ★ 对照：汇总式搜索（基线）
+   ├── 一次把【全部命中】列成一张清单（文件名 + 行号）
+   ├── ★★★ 超过 50 条就一条都不给，改为提示&quot;把查询写细&quot;
+   └── ⚠️ 坏处是：看不到命中行周围的代码，还得再 open 一次
+</code></pre></div>
+
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 这条给新手的教训最大：
       【给模型一个&quot;能用但用起来很笨&quot;的工具，
         比不给它这个工具还糟。】
@@ -425,6 +1176,10 @@ inefficient behavior can exhaust an agent's cost budget or context window"</p>
    ⚠️ 我的解读：因为模型没有&quot;算了不看了&quot;这种不耐烦。
       人翻到第 5 页会放弃，模型会老老实实翻完 15 页——
       ★★ 然后预算就没了。
+   ⟹ ★★ 注意&quot;逐条翻页&quot;本身并不蠢，它甚至有一个真优点（能直接接着改）。
+      ★★★ 它输在【没有上限】：汇总式搜索那个&quot;超过 50 条一条都不给&quot;
+      的设计，本质是一个【护栏】—— 它逼模型换个更细的查询，
+      而不是让模型自己决定什么时候停。
 </code></pre></div>
 
 <h3 id="2-127-100-180-53">② ★★★ 一次给整个文件（12.7），比一次只给 100 行（18.0）差 5.3</h3>
@@ -435,83 +1190,245 @@ inefficient behavior can exhaust an agent's cost budget or context window"</p>
    ⟹ ★★★ 两头都掉。中间有个甜点区。
 </code></pre></div>
 
-<h3 id="3-150-5-180-30">③ ★★★ 保留全部历史（15.0），比只留最近 5 条（18.0）差 3.0</h3>
-<div class="codehilite"><pre><span></span><code>   ⟹ 这一行留到 [04 章] 专门讲，那是整个上下文管理的立论依据。
-</code></pre></div>
-
-<hr />
-<h2 id="36">3.6 ✅ 护栏值多少钱：编辑失败的实测数据</h2>
-<p>★★ 论文 §5.2 给了一组非常具体的数字，说明"改错了之后能不能爬起来"有多要命：</p>
-<div class="codehilite"><pre><span></span><code>   ✅ 全部来自 SWE-agent w/ GPT-4 Turbo 在 SWE-bench 全量 2294 题上的轨迹：
-
-   ① ★★ 2294 道题里，1185 道（51.7%）的轨迹中出现过至少一次失败的编辑。
-      ⟹ 一半以上的任务，模型都改错过。
-
-   ② ★★★ 任何一次编辑尝试，最终改成功的概率是 90.5%。
-      ★★★ 但只要失败过一次，这个概率就掉到 57.2%。
-</code></pre></div>
-
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 这就是&quot;护栏&quot;存在的全部理由：
-
-      ┌────────────────────────────────────────────────────┐
-      │ 没有语法检查 → 错误的编辑被真写进文件               │
-      │   → 模型下一步看到的是【已经被自己改坏的代码】      │
-      │   → 它基于错误的状态继续改                          │
-      │   → ★★★ 错误滚雪球（论文叫 cascading errors）      │
-      └────────────────────────────────────────────────────┘
-
-      ⟹ 有了语法检查：非法编辑【当场丢弃、不落盘】，
-         并把错误信息 + 改前改后对比一起给它看。
-      ✅ 代价换来的收益：15.0 → 18.0，值 3 个点。
-</code></pre></div>
-
-<hr />
-<h2 id="37">3.7 ✅ 失败到底失败在哪：失败模式分布</h2>
-<p>★★ 论文 Figure 8 用 GPT-4o 自动给"没解决"的轨迹分类<br />
-（✅ 论文说明：人工校验集上机器判断与作者判断的一致率是 87%）：</p>
+<p>★ 用 <a href="02-agent循环怎么转.html">02 章 §2.2b</a> 那个任务算一笔具体的账，就看得出"给整个文件"为什么贵：</p>
 <table>
 <thead>
 <tr>
-<th>失败类型</th>
-<th>占比</th>
+<th>视窗设定</th>
+<th>一次返回多少行</th>
+<th>⚠️ 粗估多少 token</th>
+<th>五轮里出现两次就占掉</th>
+<th>⚠️ 代价</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Incorrect Implementation（改错了）</td>
-<td><strong>39.9%</strong></td>
+<td>30 行</td>
+<td>30</td>
+<td>≈ 390</td>
+<td>≈ 780</td>
+<td>★★ 便宜，但<strong>一个函数常常超过 30 行</strong> ⟹ 得多翻几次，烧轮数</td>
 </tr>
 <tr>
-<td><strong>Failed to Recover from Edit（编辑失败后没爬起来）</strong></td>
-<td><strong>23.4%</strong></td>
+<td>★ <strong>100 行</strong></td>
+<td>100</td>
+<td>≈ 1,300</td>
+<td>≈ 2,600</td>
+<td>★ 一个中等函数连上下文正好装得下</td>
 </tr>
 <tr>
-<td>Failed to Find Edit Location（没找到该改哪一行）</td>
-<td>12.9%</td>
-</tr>
-<tr>
-<td>Overly Specific Implementation（改得太特化，只对这个例子有效）</td>
-<td>12.1%</td>
-</tr>
-<tr>
-<td>Gave Up Prematurely（过早放弃）</td>
-<td>4.8%</td>
-</tr>
-<tr>
-<td>Failed to Find Relevant File（没找到相关文件）</td>
-<td>2.4%</td>
-</tr>
-<tr>
-<td>Can't Reproduce（复现不出问题）</td>
-<td>2.4%</td>
-</tr>
-<tr>
-<td>Ran Out of Time（超时）</td>
-<td>2.0%</td>
+<td><strong>整个文件</strong></td>
+<td>1,893（<code>pvsystem.py</code> 的真实行数量级）</td>
+<td>⚠️ ≈ <strong>24,600</strong></td>
+<td>⚠️⚠️ ≈ <strong>49,200</strong></td>
+<td>★★★ 两次 <code>open</code> 就吃掉 GPT-4 Turbo 128K 窗口的 <strong>38%</strong>，而且第二次里<strong>绝大部分和第一次一模一样</strong></td>
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 读这张表要读两件事：
+<div class="codehilite"><pre><span></span><code>   ⚠️ 上面的 token 数是按&quot;一行代码约 13 token&quot;粗估的，不是实测。
+      ★ 用它看量级，不要引用绝对值。
+
+   ⟹ 🔑 从这张账里能看出&quot;甜点区&quot;为什么存在：
+      ★★ 视窗太小 ⟹ 省了上下文，但【烧轮数】（每轮也要重发全部历史）。
+      ★★★ 视窗太大 ⟹ 省了轮数，但【每一轮都在重发一大堆无关代码】。
+      ⟹ 两个代价是反向的，所以中间必然有个最优点。
+      ⚠️ 100 行是论文在 37 道 dev 题上扫出来的（§3.4 ④），
+         ★★ 它不是一个普适常数 —— 换语言、换仓库、换模型都可能变。
+</code></pre></div>
+
+<h3 id="3-150-5-180-30">③ ★★★ 保留全部历史（15.0），比只留最近 5 条（18.0）差 3.0</h3>
+<div class="codehilite"><pre><span></span><code>   ⟹ 这一行留到 [04 章](04-上下文管理.md) 专门讲，那是整个上下文管理的立论依据。
+   ⟹ ★ 一句话预告：✅ 论文给的理由里最关键的一条不是&quot;省地方&quot;，
+      而是【避免给模型看已经过时的文件内容】。
+      ⟹ 回到 02 章 §2.2b 第 ③ 条：改过之后，旧版本还留在上下文里
+         就是【错误信息】。
+</code></pre></div>
+
+<hr />
+<h2 id="36">3.6 ✅ 护栏值多少钱：编辑失败的实测数据</h2>
+<p>★★ 论文 §5.2 给了一组非常具体的数字，说明"改错了之后能不能爬起来"有多要命。</p>
+<p>✅ 口径：SWE-agent w/ GPT-4 Turbo 在 <strong>SWE-bench 全量 2,294 题</strong>上的轨迹（⚠️ 注意这一组不是 Lite 300 题）。</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>✅ 数值</th>
+<th>⚠️ 它到底在说什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>轨迹里出现过<strong>至少一次失败编辑</strong>的题目</td>
+<td><strong>51.7%</strong>（2,294 题里的 <strong>1,185</strong> 题）</td>
+<td>★★ 一半以上的任务，模型都改错过</td>
+</tr>
+<tr>
+<td>任何一次编辑尝试，<strong>最终</strong>改成功的概率</td>
+<td><strong>90.5%</strong></td>
+<td>⚠️⚠️ 这是【总体】成功率，<strong>不是</strong>"护栏拦下了 90.5% 的错误"</td>
+</tr>
+<tr>
+<td><strong>已经失败过一次之后</strong>，最终改成功的概率</td>
+<td><strong>57.2%</strong></td>
+<td>★★★ 掉 <strong>33.3 个百分点</strong></td>
+</tr>
+</tbody>
+</table>
+<p>✅ 论文原句（★ 逐字，避免再被转述错）：</p>
+<blockquote>
+<p>"Any attempt at editing has a 90.5% chance of eventually being successful.<br />
+This probability drops off to 57.2% after a single failed edit."</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 顺便澄清两个容易混的词：
+      ★ &quot;最终改成功&quot;（eventually successful）指的是
+         ✅ 论文定义的 recovery：一连串失败编辑之后，紧接着来了一次成功编辑。
+      ⚠️ 它【不是】&quot;这道题最后解决了&quot;。
+         ★★ 编辑成功 ≠ 改对了 —— linter 只管语法，不管逻辑。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 这就是&quot;护栏&quot;存在的全部理由：
+
+   没有 linter 护栏的因果链：
+   ├── ① 错误的编辑被真写进文件
+   ├── ② 模型下一步看到的是【已经被自己改坏的代码】
+   ├── ③ 它基于错误的状态继续改
+   ├── ④ 于是它现在要同时解决两个问题：原 bug ＋ 自己造的新错
+   └── ⑤ ★★★ 错误滚雪球
+          ✅ 论文的原词是 &quot;cascading failed edits&quot;（层叠的失败编辑）
+
+   有 linter 护栏的因果链：
+   ├── ① 先在内存里算出&quot;改完会是什么样&quot;，对它跑 linter
+   ├── ② 非法 ⟹ ★★★ 【当场丢弃、不落盘】
+   ├── ③ 把错误信息 ＋ 改前改后对比一起返回给它
+   └── ④ ★★ 磁盘状态回到编辑前 ⟹ 它只需要解决原来那一个问题
+
+   ✅ 代价换来的收益：15.0 → 18.0，值 3.0 个点（§3.4）。
+   ⚠️ 这 3.0 个点在 300 题上等于 9 道题，刚刚压过噪声线（§3.4 ③）。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 一条很实用的推论，给要自己搭脚手架的人：
+
+      ★★★ 【只报错、照样写进文件】的护栏，收益会显著缩水。
+      ⚠️ 这是我的推断（论文没做这个中间档的消融），
+         但机理很清楚：§3.3b 方案 B 的第 3 轮就是这种情况 ——
+         ★★ 错误可见了，但磁盘已经脏了，模型要解决两个问题。
+      ⟹ ★★★ &quot;不落盘&quot;这三个字，是这个护栏里最值钱的部分。
+</code></pre></div>
+
+<hr />
+<h2 id="37">3.7 ✅ 失败到底失败在哪：失败模式分布</h2>
+<p>★★ ✅ 论文 Figure 8。<strong>先把口径交代清楚</strong> —— 这一节的数字最容易被跨口径乱引。</p>
+<table>
+<thead>
+<tr>
+<th>口径项</th>
+<th>✅ 论文写明的值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>统计对象</td>
+<td>SWE-agent w/ GPT-4 Turbo 在 <strong>SWE-bench Lite</strong> 上的<strong>未解决</strong>轨迹</td>
+</tr>
+<tr>
+<td>样本量</td>
+<td>⚠️⚠️ <strong>n = 248</strong>（★ 300 题里有 52 道解决了，余下 248 道是这张表的分母）</td>
+</tr>
+<tr>
+<td>分类方法</td>
+<td>★★ 用 <strong>GPT-4o 自动分类</strong>，类目表是论文 Table 9 里<strong>人工定义的 9 类</strong></td>
+</tr>
+<tr>
+<td>可信度</td>
+<td>✅ 论文原话：人工标注的校验集上，模型判断与作者判断的<strong>一致率是 87%</strong></td>
+</tr>
+<tr>
+<td>★ 一道题值多少</td>
+<td>1 / 248 = <strong>0.40 个百分点</strong></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>失败类型（✅ Figure 8 的标签）</th>
+<th>占比</th>
+<th>★ 约几道题</th>
+<th>⚠️ 中文与注意事项</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Incorrect Implementation</td>
+<td><strong>39.9%</strong></td>
+<td>99</td>
+<td>改错了 —— 改的地方是对的，但方案不对</td>
+</tr>
+<tr>
+<td><strong>Failed to Recover from Edit</strong></td>
+<td><strong>23.4%</strong></td>
+<td>58</td>
+<td>★★★ <strong>编辑失败后没爬起来</strong>。✅ 论文正文称之为 <em>"cascading failed edits"</em></td>
+</tr>
+<tr>
+<td>Failed to Find Edit Location</td>
+<td>12.9%</td>
+<td>32</td>
+<td>打开并看过了正确的文件，但没找到该改哪一行</td>
+</tr>
+<tr>
+<td>Overly Specific Implementation</td>
+<td>12.1%</td>
+<td>30</td>
+<td>改得太特化：这个例子对了，但改法会影响其他更一般的情况</td>
+</tr>
+<tr>
+<td>Gave Up Prematurely</td>
+<td>4.8%</td>
+<td>12</td>
+<td>遇到困难就放弃了</td>
+</tr>
+<tr>
+<td>Failed to Find Relevant File</td>
+<td>2.4%</td>
+<td>6</td>
+<td>从头到尾没打开过正确的文件</td>
+</tr>
+<tr>
+<td>Can't Reproduce</td>
+<td>2.4%</td>
+<td>6</td>
+<td>复现不出问题</td>
+</tr>
+<tr>
+<td><strong>Ran Out of Time</strong></td>
+<td><strong>2.0%</strong></td>
+<td><strong>5</strong></td>
+<td>⚠️⚠️ <strong>这个标签有歧义，见下方校正</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⚠️⚠️ ★★★ 两处必须校正的地方：
+
+   ① &quot;Ran Out of Time&quot; 不是【时钟超时】。
+      ✅ 论文 Table 9 里这一类的正式名字是 &quot;Ran Out of Budget&quot;，
+         描述是：&quot;The agent seemed to be on the right track to a
+         solution, but the episode ended before they could complete
+         their changes.&quot;
+      ⟹ ★★★ 它指的是【预算用尽被掐断】（02 章 §2.5 的 exit_cost），
+         ★★ 不是&quot;跑太久被计时器杀掉&quot;。
+      ⚠️ 我上一轮把它译成&quot;超时&quot;，那是错的。
+
+   ② 论文说类目有 9 类，但 Figure 8 上只画出了 8 个。
+      ★ 八项加总 = 39.9+23.4+12.9+12.1+4.8+2.4+2.4+2.0 = 99.9%。
+      ⟹ ⚠️ 第 9 类是 Table 9 里的 &quot;Other&quot;，在图上没有可见的占比
+         （四舍五入后约 0.1%）。
+      ⟹ ★ 另外 Figure 8 的标签和 Table 9 的类目名用词略有差异
+         （Failed to Recover from Edit ↔ Failed Edit Recovery、
+          Can&#39;t Reproduce ↔ Failed to Reproduce），指的是同一类。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 读这张表要读三件事：
 
    ① ★★★ 52.0%（39.9 + 12.1）是【方案本身不对】。
       ✅ 论文原话确认了这个加总：&quot;about half (52.0%) of unresolved
@@ -519,80 +1436,226 @@ inefficient behavior can exhaust an agent's cost budget or context window"</p>
          Overly Specific Implementation categories&quot;
       ⟹ ★★ 这部分脚手架帮不上忙，是模型能力问题。
 
-   ② ★★★ 但 23.4% 是【编辑失败后爬不起来】——第二大类。
+   ② ★★★ 但 23.4%（约 58 道题）是【编辑失败后爬不起来】——第二大类。
       ⟹ ★★ 这部分【纯粹是脚手架问题】。
-      ⟹ 🔑 这就是为什么 §3.6 那个护栏值 3 个点。
+      ⟹ 🔑 这就是为什么 §3.6 那个护栏值 3.0 个点。
+      ⚠️ 注意这两个数不能直接相加换算：23.4% 是&quot;未解决题里的占比&quot;，
+         而 3.0 个点是&quot;全部 300 题里的解决率变化&quot;。
+         ★★ 口径不同，一个分母是 248，一个分母是 300。
 
-   ③ ⚠️ 注意 &quot;Ran Out of Time&quot; 只有 2.0%。
-      ★★★ 和 02 章那句&quot;加预算不会明显提分&quot;完全对上了。
+   ③ ⚠️ 注意 &quot;Ran Out of Budget&quot; 只有 2.0% —— 约 5 道题。
+      ★★★ 和 [02 章 §2.6](02-agent循环怎么转.md) 那句&quot;加预算不会明显提分&quot;完全对上了。
+      ⚠️ 但也要诚实：5 道题 ÷ 248 的统计意义很弱，
+         ★★ 这一行只能说&quot;预算显然不是主要瓶颈&quot;，不能说&quot;正好 2.0%&quot;。
 </code></pre></div>
 
 <hr />
 <h2 id="38-claude-code">3.8 ✅ 现代产品的工具集长什么样：Claude Code 的内置工具</h2>
-<p>★★ Claude Code 是闭源的，但它的<strong>工具名字</strong>在官方文档里是公开的。<br />
-✅ 出处：Claude Code 官方文档 <code>sub-agents</code> 页，在讲"子 agent 能用哪些工具"时逐个列了出来：</p>
-<div class="codehilite"><pre><span></span><code>   ✅ 文档原文列出的内置工具（verbatim 工具名）：
-
-   ┌─ 文件与搜索 ─────────────────────────────────────────┐
-   │  Read（读文件）  Edit（改文件）  Write（写文件）      │
-   │  Grep（按内容搜）  Glob（按文件名搜）                │
-   │  NotebookEdit（改 Jupyter notebook）                 │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 执行 ───────────────────────────────────────────────┐
-   │  Bash（跑 shell 命令）  PowerShell（Windows 上）      │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 联网 ───────────────────────────────────────────────┐
-   │  WebFetch（抓一个网页）  WebSearch（搜索）            │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 组织与委派 ─────────────────────────────────────────┐
-   │  TodoWrite（写任务清单）  Skill（调用技能）           │
-   │  Agent（派子 agent）  Workflow（跑编排脚本）          │
-   │  Task/TaskStop/TaskOutput（管后台任务）              │
-   └───────────────────────────────────────────────────────┘
-   ┌─ 交互与流程 ─────────────────────────────────────────┐
-   │  AskUserQuestion（反问用户）                          │
-   │  EnterPlanMode / ExitPlanMode（进出计划模式）         │
-   │  EndConversation（结束会话）                          │
-   └───────────────────────────────────────────────────────┘
-</code></pre></div>
-
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 拿它和 SWE-agent 的工具集比，能看出三年里多了什么：
-
-   ┌──────────────────┬─────────────────┬────────────────────┐
-   │                  │ SWE-agent(2024) │ Claude Code(2026)  │
-   ├──────────────────┼─────────────────┼────────────────────┤
-   │ 搜索             │ ✅ 有           │ ✅ 有（Grep/Glob） │
-   │ 读文件（带视窗） │ ✅ 有           │ ✅ 有（Read）      │
-   │ 改文件（带护栏） │ ✅ 有           │ ✅ 有（Edit）      │
-   │ 跑命令           │ ✅ 有           │ ✅ 有（Bash）      │
-   │ ★★ 联网          │ ❌ 没有         │ ✅ 有              │
-   │ ★★ 任务清单      │ ❌ 没有         │ ✅ 有（TodoWrite） │
-   │ ★★★ 派子 agent   │ ❌ 没有         │ ✅ 有（Agent）     │
-   │ ★★ 反问用户      │ ❌ 没有         │ ✅ 有              │
-   └──────────────────┴─────────────────┴────────────────────┘
-
-   ⟹ ★★★ 多出来的四项，全都不是&quot;更会写代码&quot;，
+<p>★★ Claude Code 是闭源的，但它的<strong>工具名字</strong>在官方文档里是公开的。✅ 出处：Claude Code 官方文档 <code>sub-agents</code> 页，在讲"子 agent 能用哪些工具"时逐个列了出来。</p>
+<p>⚠️⚠️ <strong>本节口径截至 2026-08-27。产品行为变化快</strong>：工具名、是否存在、默认是否开启，都可能随版本变。★★ 引用具体工具名之前，请对一遍当前官网。</p>
+<table>
+<thead>
+<tr>
+<th>组</th>
+<th>✅ 文档里列出的工具名</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>文件与搜索</strong></td>
+<td><code>Read</code> / <code>Edit</code> / <code>Write</code></td>
+<td>读文件 / 改文件 / 写文件</td>
+</tr>
+<tr>
+<td></td>
+<td><code>Grep</code> / <code>Glob</code></td>
+<td>按内容搜 / 按文件名搜</td>
+</tr>
+<tr>
+<td></td>
+<td><code>NotebookEdit</code></td>
+<td>改 Jupyter notebook</td>
+</tr>
+<tr>
+<td><strong>执行</strong></td>
+<td><code>Bash</code></td>
+<td>跑 shell 命令</td>
+</tr>
+<tr>
+<td></td>
+<td>⚠️ <code>PowerShell</code></td>
+<td>Windows 上；⚠️ 这一项我没能在当前文档页核到，<strong>请自行复核</strong></td>
+</tr>
+<tr>
+<td><strong>联网</strong></td>
+<td><code>WebFetch</code> / <code>WebSearch</code></td>
+<td>抓一个网页 / 搜索</td>
+</tr>
+<tr>
+<td><strong>组织与委派</strong></td>
+<td><code>TodoWrite</code></td>
+<td>写任务清单</td>
+</tr>
+<tr>
+<td></td>
+<td><code>Skill</code></td>
+<td>调用技能</td>
+</tr>
+<tr>
+<td></td>
+<td><code>Agent</code></td>
+<td>派子 agent</td>
+</tr>
+<tr>
+<td></td>
+<td>⚠️ <code>Workflow</code></td>
+<td>跑编排脚本；⚠️ 同上，请自行复核</td>
+</tr>
+<tr>
+<td></td>
+<td>⚠️ <code>Task</code> / <code>TaskStop</code> / <code>TaskOutput</code></td>
+<td>管后台任务；⚠️ 同上，请自行复核</td>
+</tr>
+<tr>
+<td><strong>交互与流程</strong></td>
+<td><code>AskUserQuestion</code></td>
+<td>反问用户</td>
+</tr>
+<tr>
+<td></td>
+<td><code>EnterPlanMode</code> / <code>ExitPlanMode</code></td>
+<td>进出计划模式</td>
+</tr>
+<tr>
+<td></td>
+<td>⚠️ <code>EndConversation</code></td>
+<td>结束会话；⚠️ 同上，请自行复核</td>
+</tr>
+</tbody>
+</table>
+<h3 id="swe-agent">⭐ 和 SWE-agent 的工具集对照：三年里多了什么</h3>
+<p>⚠️ 这张表里的「有 / 没有」是<strong>功能是否存在</strong>的判断，⚠️ 和本目录 ✅（可查证）/ ⚠️（我的推断）那套记号是两回事，别混。右边两列单独标了可查证程度。</p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>SWE-agent（2024）</th>
+<th>Claude Code（2026-08 口径）</th>
+<th>可查证程度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>搜索</td>
+<td><strong>有</strong>（<code>search_dir</code> / <code>search_file</code> / <code>find_file</code>）</td>
+<td><strong>有</strong>（<code>Grep</code> / <code>Glob</code>）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+<tr>
+<td>读文件（带视窗）</td>
+<td><strong>有</strong>（<code>open</code> + 100 行视窗 + 行号）</td>
+<td><strong>有</strong>（<code>Read</code>）</td>
+<td>✅ 论文 ／ ✅ 文档有工具名，⚠️ 视窗策略未公开</td>
+</tr>
+<tr>
+<td>改文件（带护栏）</td>
+<td><strong>有</strong>（<code>edit</code> + linter，非法编辑丢弃）</td>
+<td><strong>有</strong>（<code>Edit</code>）</td>
+<td>✅ 论文 ／ ⚠️ 文档没说它的护栏怎么做</td>
+</tr>
+<tr>
+<td>跑命令</td>
+<td><strong>有</strong>（整个 Linux shell）</td>
+<td><strong>有</strong>（<code>Bash</code>）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+<tr>
+<td>★★ 联网</td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>（<code>WebFetch</code> / <code>WebSearch</code>）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+<tr>
+<td>★★ 任务清单</td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>（<code>TodoWrite</code>）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+<tr>
+<td>★★★ 派子 agent</td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>（<code>Agent</code>，✅ 独立上下文窗口）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+<tr>
+<td>★★ 反问用户</td>
+<td><strong>没有</strong></td>
+<td><strong>有</strong>（<code>AskUserQuestion</code>）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+<tr>
+<td>★ 先计划再动手</td>
+<td><strong>没有</strong>（它只有 ReAct 式的逐步想法）</td>
+<td><strong>有</strong>（<code>EnterPlanMode</code> / <code>ExitPlanMode</code>）</td>
+<td>✅ 论文 ／ ✅ 文档</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 多出来的这五项，全都不是&quot;更会写代码&quot;，
       而是【更会组织自己的工作】和【更会承认自己不知道】。
    ⚠️ 这是我的判断：脚手架这三年的进化方向，
       是从&quot;让模型能动手&quot;变成&quot;让模型能管好自己&quot;。
+
+   ⟹ 🔑🔑 不过有一件事三年没变，而且值得专门指出来：
+      ★★★ SWE-agent 2024 年就做对的那三件事 ——
+         带行号的视窗、按行号替换的结构化编辑、编辑后自动回显 ——
+      2026 年的产品一样在做。✅ §3.4 那张消融表量过它们值多少。
+   ⟹ ★★ 所以这一章的结论不是&quot;工具越新越好&quot;，
+      而是【那几个基本盘必须先做对，再谈组织能力】。
 </code></pre></div>
 
 <hr />
 <h2 id="39">3.9 本章总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 七条带走：
+<div class="codehilite"><pre><span></span><code>    🔑 八条带走：
 
-    ① ★★★ ACI = 专门为模型（而不是为人）设计的操作界面。
+    ① ★★★ ACI（Agent-Computer Interface，智能体-计算机接口）
+       = 专门为模型（而不是为人）设计的操作界面。
        ⟹ 模型是一类新的终端用户，需要重做界面。
+
     ② ★★ ✅ 四条设计原则：动作简单 / 动作紧凑 / 反馈简洁有料 / 加护栏。
-    ③ ★★★ ✅ 消融表：同一个模型，只换界面，10.3 ~ 18.0。
-    ④ ★★★ ✅ 逐条翻页式搜索(12.0) 比【完全没搜索】(15.7) 还差。
+       ⟹ 🔑 最容易做错的是第 2 和第 4 条：
+          【工具不能切太细】【工具要会说&quot;不&quot;】。
+
+    ③ ★★★ ✅ §3.3b：同一个任务，三种工具集各走一遍 ——
+       bash 一把梭 8 轮（且失败是静默的）／
+       细分编辑器无护栏 7 轮（文件被改坏）／
+       带 lint 的编辑器 6 轮（当场拦下、不落盘）。
+       ⟹ ✅ 对应实测 10.3 / 15.0 / 18.0。
+
+    ④ ★★★ ✅ 消融表：同一个 gpt-4-1106-preview，只换界面，10.3 ~ 18.0。
+       ⚠️⚠️ 但 §3.4 ③ 必须一起看：前五行（↓7.7 / 6.0 / 5.3 / 3.7 / 3.0）
+       是真结论；后两行（↓2.3 / 1.7）在噪声量级里，只能当方向性线索。
+
+    ⑤ ★★★ ✅ 逐条翻页式搜索(12.0) 比【完全没搜索】(15.7) 还差。
        ⟹ 🔑 难用的工具，比没有工具更糟。
-    ⑤ ★★★ ✅ 一次给 100 行(18.0) &gt; 给 30 行(14.3) &gt; 给整个文件(12.7)。
-       ⟹ 🔑 给得越多越好是错的，两头都掉。
-    ⑥ ★★★ ✅ 编辑失败后成功率从 90.5% 掉到 57.2%；
-       失败模式里 23.4% 是&quot;编辑失败后爬不起来&quot;。⟹ 护栏值 3 个点。
-    ⑦ ★★ ✅ 2026 年的工具集比 2024 年多的是【组织能力】：
-       任务清单、子 agent、反问用户——不是更会写代码。
+       ⟹ ★★ 它输在【没有上限】——汇总式搜索那个&quot;超 50 条一条不给&quot;
+          的设计，本质也是一个护栏。
+
+    ⑥ ★★★ ✅ 一次给 100 行(18.0) &gt; 给 30 行(14.3) &gt; 给整个文件(12.7)。
+       ⟹ 🔑 给得越多越好是错的，两头都掉：
+          视窗太小烧轮数，视窗太大每轮重发无关代码。
+       ⚠️ 100 行是在 37 道 dev 题上扫出来的，不是普适常数。
+
+    ⑦ ★★★ ✅ 编辑失败后，最终改成功的概率从 90.5% 掉到 57.2%
+       （掉 33.3 个百分点）；51.7% 的题都至少改错过一次。
+       ⟹ 护栏值 3.0 个点，而 🔑【&quot;不落盘&quot;是其中最值钱的部分】。
+
+    ⑧ ★★ ✅ 失败模式（口径：Lite 的 248 道未解决题，GPT-4o 自动分类，
+       与人工一致率 87%）：52.0% 是方案不对（帮不上忙），
+       ★★★ 23.4% 是编辑失败后爬不起来（纯脚手架问题）。
+       ⚠️⚠️ 校正：&quot;Ran Out of Time&quot;（2.0%）在 Table 9 里的正式名字是
+       Ran Out of Budget ⟹ 是【预算用尽】，不是【时钟超时】。
 </code></pre></div>
 
 <hr />

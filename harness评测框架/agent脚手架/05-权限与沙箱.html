@@ -278,21 +278,47 @@ effects, such as the unintentional removal of digital assets (e.g., <code>rm -rf
 <hr />
 <h2 id="52-vs">5.2 两道防线：许可 vs 沙箱</h2>
 <p>★★★ 这是本章最重要的一个区分。新手最容易把这两个混成一件事。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─────────────────────────────────────────────────────────┐
-   │ 防线① 许可（permission）                                │
-   │   ★ 在【执行之前】问一句：&quot;这条命令我能跑吗？&quot;          │
-   │   ⟹ 拦截者是【规则 / 人 / 另一个模型】                  │
-   │   ⚠️ 弱点：它拦的是【命令文本】。                       │
-   │      命令写得花一点就可能绕过去。                       │
-   ├─────────────────────────────────────────────────────────┤
-   │ 防线② 沙箱（sandbox）                                   │
-   │   ★ 让命令【就算跑起来了，也够不着不该碰的东西】。      │
-   │   ⟹ 拦截者是【操作系统内核】                            │
-   │   ⟹ ★★★ 强在：它不看命令长什么样，                     │
-   │      它在系统调用层面拦。绕不过去。                     │
-   └─────────────────────────────────────────────────────────┘
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>对比项</th>
+<th>防线① <strong>许可</strong>（permission，许可/授权）</th>
+<th>防线② <strong>沙箱</strong>（sandbox）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>什么时候起作用</td>
+<td>★ 在【执行之前】问一句："这条命令我能跑吗？"</td>
+<td>★ 在【执行的全过程】：让命令就算跑起来了，也够不着不该碰的东西</td>
+</tr>
+<tr>
+<td>谁在拦</td>
+<td>★ 规则 / 人 / 另一个模型</td>
+<td>★★★ 操作系统内核</td>
+</tr>
+<tr>
+<td>拦的是什么</td>
+<td>⚠️ <strong>命令文本</strong>。命令写得花一点就可能绕过去</td>
+<td>★★★ <strong>系统调用</strong>。不看命令长什么样，绕不过去</td>
+</tr>
+<tr>
+<td>被拦时你看到什么</td>
+<td>弹一个「允许 / 拒绝」等你点</td>
+<td>命令真的跑了，但读写或联网被拒，返回一个权限错误</td>
+</tr>
+<tr>
+<td>关掉它的后果</td>
+<td>模型不再停下来问你，但还是碰不到边界外的东西</td>
+<td>⚠️ 模型的每一条命令都拿到了你本人的全部权限</td>
+</tr>
+<tr>
+<td>一句话</td>
+<td>🔑 要不要<strong>问</strong>你</td>
+<td>🔑 问不问都<strong>够不着</strong></td>
+</tr>
+</tbody>
+</table>
 <p>✅ Claude Code 官方文档把这个分工写得非常清楚（★ 逐字）：</p>
 <blockquote>
 <p>"Permission modes decide whether Claude asks before an action, and the Bash sandbox<br />
@@ -347,7 +373,43 @@ deliberately engineered to exploit recent container escape vulnerabilities."</p>
 
 <hr />
 <h2 id="54-claude-code">5.4 ✅ Claude Code：六种许可模式</h2>
-<p>★★★ 以下模式名和描述，全部来自官方 <code>permission-modes</code> 文档（✅ 逐字表格）：</p>
+<p>★★ 这一节有一个数到底几种的问题，所以先把核实过程摆出来，再列表。</p>
+<p><strong>✅ 核实结论（2026-10-01，在本机对 Claude Code <code>2.1.227</code> 一手核实）：是【六种】，不是五种。</strong></p>
+<p>核实分三条，互相独立：</p>
+<div class="codehilite"><pre><span></span><code>   ✅ ① 命令行可取值 —— claude --help 的 --permission-mode 一节逐字：
+        (choices: &quot;acceptEdits&quot;, &quot;auto&quot;, &quot;bypassPermissions&quot;,
+                  &quot;manual&quot;, &quot;dontAsk&quot;, &quot;plan&quot;)
+      ⟹ 六个。
+
+   ✅ ② 程序内部的取值枚举 —— 从 claude 可执行文件里抽到的字符串表，
+        同一处连续出现两遍，紧跟着一句 &quot;Cannot set permission mode: must be one of &quot;：
+        acceptEdits / auto / bypassPermissions / default / dontAsk / plan
+      ⟹ 也是六个。
+
+   🔑 ★★★ ③ 对上面两份清单的差异的解释：manual 和 default 是【同一档的两个名字】。
+      ⟹ 命令行标志写 manual，设置文件 permissions.defaultMode 写 default，界面显示 Manual。
+      ⚠️ 所以&quot;五种&quot;这个数很可能就是这么来的：
+         把 manual 和 default 当成两档会数出七种，当成同一档又漏掉一档会数出五种。
+      ⟹ ★★ 正确的数法：【六档，其中第一档有两个名字。】
+</code></pre></div>
+
+<p>✅ 而且程序里有一处把六档一次性描述完的字段说明（逐字，这是本节最硬的一条来源）：</p>
+<blockquote>
+<p>"Permission mode for controlling how tool executions are handled. <code>'default'</code> - Standard behavior, prompts for dangerous operations. <code>'acceptEdits'</code> - Auto-accept file edit operations. <code>'bypassPermissions'</code> - Bypass all permission checks (requires <code>allowDangerouslySkipPermissions</code>). <code>'plan'</code> - Planning mode, no actual tool execution. <code>'dontAsk'</code> - Don't prompt for permissions, deny if not pre-approved. <code>'auto'</code> - Use a model classifier to approve/deny permission prompts."</p>
+</blockquote>
+<p>⟹ <strong>用于控制工具执行如何被处理的许可模式。<code>default</code> —— 标准行为，对危险操作弹出询问。<code>acceptEdits</code> —— 自动接受文件编辑操作。<code>bypassPermissions</code> —— 绕过所有许可检查（需要 <code>allowDangerouslySkipPermissions</code>）。<code>plan</code> —— 计划模式，不实际执行工具。<code>dontAsk</code> —— 不弹许可询问，没有预先批准过就直接拒绝。<code>auto</code> —— 用一个模型分类器来批准/拒绝许可询问。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 ★★★ 从这段逐字描述里额外捞到两条，都是前面漏掉的：
+      ① bypassPermissions 不是改个配置就能用：
+         ⚠️ 它还要求 allowDangerouslySkipPermissions 一起打开。
+      ② dontAsk 的要点不是&quot;不问&quot;，是【不问 + 直接拒绝】。
+         ⟹ ★★ 对照 default：default 是&quot;不确定就问你&quot;；
+            dontAsk 是&quot;不确定就当你说了不行&quot;。
+         ⟹ 🔑 所以 dontAsk 在无人值守的 CI 里是【安全】的那一档，
+            auto / bypassPermissions 才是放开的那一档。别把它们记混。
+</code></pre></div>
+
+<p>⚠️ 一条使用层面的更正：<strong>界面上的 <code>Shift+Tab</code> 不是在六档之间循环。</strong> 本机 2.1.227 的提示文案逐字是 "to cycle between manual mode, auto-accept edit mode, and plan mode"（在手动模式、自动接受编辑模式、计划模式之间循环），只有三档。⟹ ★★ 剩下三档（<code>auto</code> / <code>dontAsk</code> / <code>bypassPermissions</code>）得走 <code>--permission-mode</code> 或 <code>permissions.defaultMode</code>。⚠️ 循环里含哪几档随版本变，这条只对 2.1.227 成立。</p>
+<p>★★★ 下面这张表的模式名和"不问就能干的事"来自官方 <code>permission-modes</code> 文档（✅ 逐字表格），⚠️ 口径截至 2026-08-27：</p>
 <table>
 <thead>
 <tr>
@@ -409,6 +471,96 @@ deliberately engineered to exploit recent container escape vulnerabilities."</p>
         ⚠️危险                                      🐢慢
 </code></pre></div>
 
+<p>⚠️ 注意这条轴上<strong>少了 <code>dontAsk</code></strong>，因为它不在这条轴上：它既不便利也不监督，它是【不问 + 没批准就拒绝】。⟹ ★★ 一维的轴放不下它，所以下面换成矩阵。</p>
+<h3 id="54b">5.4b ⭐⭐⭐ 矩阵：同一个操作，在六档里分别会发生什么</h3>
+<p>★★★ 这张表是本节最该存下来的东西。⚠️ 它是我按上面那段逐字字段说明 + 官方文档的"不问就能干的事"一列<strong>推演</strong>出来的，不是哪一份文档里现成的表格，所以通篇按推演读。</p>
+<table>
+<thead>
+<tr>
+<th>模型想干的事</th>
+<th><code>default</code><br>(=<code>manual</code>)</th>
+<th><code>plan</code></th>
+<th><code>acceptEdits</code></th>
+<th><code>auto</code></th>
+<th><code>dontAsk</code></th>
+<th><code>bypassPermissions</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>读文件</strong>（Read/Glob/Grep）</td>
+<td>✅ 直接跑</td>
+<td>✅ 直接跑</td>
+<td>✅ 直接跑</td>
+<td>✅ 直接跑</td>
+<td>✅ 直接跑（注1）</td>
+<td>✅ 直接跑</td>
+</tr>
+<tr>
+<td><strong>写/改文件</strong>（Edit/Write）</td>
+<td>❓ 问你</td>
+<td>❌ 不执行（注2）</td>
+<td>✅ 直接跑</td>
+<td>🤖 分类器判</td>
+<td>⛔ 没预批就拒</td>
+<td>✅ 直接跑</td>
+</tr>
+<tr>
+<td><strong>跑常见文件系统命令</strong>（<code>mkdir</code> <code>cp</code> <code>mv</code>）</td>
+<td>❓ 问你</td>
+<td>❌ 不执行</td>
+<td>✅ 直接跑</td>
+<td>🤖 分类器判</td>
+<td>⛔ 没预批就拒</td>
+<td>✅ 直接跑</td>
+</tr>
+<tr>
+<td><strong>跑任意 shell 命令</strong>（Bash）</td>
+<td>❓ 问你</td>
+<td>❌ 不执行</td>
+<td>❓ 问你</td>
+<td>🤖 分类器判</td>
+<td>⛔ 没预批就拒</td>
+<td>✅ 直接跑</td>
+</tr>
+<tr>
+<td><strong>联网</strong>（WebFetch / <code>curl</code> / <code>pip install</code>）</td>
+<td>❓ 问你</td>
+<td>❌ 不执行</td>
+<td>❓ 问你</td>
+<td>🤖 分类器判</td>
+<td>⛔ 没预批就拒</td>
+<td>✅ 直接跑</td>
+</tr>
+<tr>
+<td><strong><code>rm</code> 打到关键路径</strong></td>
+<td>❓ 问你</td>
+<td>❌ 不执行</td>
+<td>❓ 问你</td>
+<td>❓ <strong>问你</strong></td>
+<td>⛔ 拒</td>
+<td>❓ ★★★ <strong>照样问你</strong></td>
+</tr>
+</tbody>
+</table>
+<p>注1：<code>dontAsk</code> 的"预先批准"在实践中通常把只读工具整类放行；⚠️ 但这取决于你写的 <code>permissions.allow</code>，不是这一档自带的性质。</p>
+<p>注2：<code>plan</code> 档那句逐字说明是 "no actual tool execution"（不实际执行工具）；⚠️ 官方 <code>permission-modes</code> 文档另有一句说 plan 档在 auto 可用时还能跑分类器批准过的命令 —— 两处口径不完全一致，我没能在一次会话里把这条验到底，所以标 ⚠️。</p>
+<div class="codehilite"><pre><span></span><code>   ★ 图例：✅ 不问就跑   ❓ 弹询问   ⛔ 直接拒绝不问   ❌ 这一档根本不执行
+           🤖 交给分类器（另一个模型）判，判不下来才弹给你
+
+   ⟹ 🔑🔑 ★★★ 把最后一行横着读一遍，这张表就讲完了：
+      【只有最后一行，六档的结果几乎一致。】
+      ⟹ ★★ 因为那一行不是许可档位管的，是【硬拦截】管的（见下）。
+
+   ⟹ 🔑 ★★★ 再把&quot;联网&quot;那一行和&quot;跑任意 shell 命令&quot;那一行对比：
+      ⚠️ 它们在许可层是【同一行】——因为 pip install 就是一条 bash 命令。
+      ⟹ ★★★ 所以&quot;能不能联网&quot;这件事，许可档位其实管不住：
+         你把 Bash 放行了，联网就跟着放行了。
+      ⟹ 🔑 要单独管网络，必须下到【沙箱层】（5.5 的 allowedDomains）。
+         这就是 5.2 那条&quot;许可拦文本、沙箱拦系统调用&quot;的实际后果。
+</code></pre></div>
+
+<h3 id="54c">5.4c ⭐⭐ 硬拦截：任何模式都不放行的那几件事</h3>
 <p>★★★ <strong>有些事任何模式都不会自动放行</strong>（✅ 文档 "Actions no mode auto-approves"，<br />
 包括 <code>bypassPermissions</code>）：</p>
 <ul>
@@ -422,6 +574,69 @@ deliberately engineered to exploit recent container escape vulnerabilities."</p>
       连&quot;跳过全部检查&quot;的模式，都在 rm 关键路径上留了一道硬拦截。
    ⟹ ★★ 对照 5.1 论文那句 `rm -rf asset/`——
       两年之后，这个具体场景被【专门写进产品里】了。
+</code></pre></div>
+
+<p><strong>⭐ 而"关键路径"这四个字具体指哪些情况，可以在 2.1.227 的可执行文件里数清楚 —— 一共六类，每一类都带一句一模一样的尾巴（✅ 逐字，六句话里这一句重复出现）：</strong></p>
+<blockquote>
+<p>"This requires explicit approval and cannot be auto-allowed by permission rules."</p>
+</blockquote>
+<p>⟹ <strong>这需要显式批准，无法被许可规则自动放行。</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>触发条件（✅ 程序里的提示文案逐字 ⟹ 中文）</th>
+<th>一个会踩中的例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>"This command would remove a critical system directory." ⟹ 这条命令会删除一个关键系统目录</td>
+<td><code>rm -rf /usr</code></td>
+</tr>
+<tr>
+<td>②</td>
+<td>"This command would remove a workspace directory (the working directory, an additional working directory, or one of their parent directories)." ⟹ 会删除工作区目录本身：当前工作目录、附加工作目录，或它们的任一父目录</td>
+<td>在 <code>~/proj</code> 里跑 <code>rm -rf ~/proj</code></td>
+</tr>
+<tr>
+<td>③</td>
+<td>"This command changes directories before the removal, so the relative glob target cannot be statically resolved." ⟹ 删除之前先切了目录，于是相对路径通配符的目标没法静态确定</td>
+<td><code>cd $X &amp;&amp; rm -rf *</code></td>
+</tr>
+<tr>
+<td>④</td>
+<td>"This command's removal target cannot be statically resolved to a directory." ⟹ 删除目标没法静态确定成一个目录</td>
+<td><code>rm -rf $(cat list.txt)</code></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>"This command's glob pattern traverses directories that cannot be statically enumerated." ⟹ 通配符要穿过没法静态枚举的目录</td>
+<td><code>rm -rf build/*/*/tmp</code></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>变量没赋值时会展开成文件系统根或某个顶层目录 ⟹ ✅ 程序里给的例子逐字就是：<code>e.g. `rm -rf $UNSET/*` becomes `rm -rf /*`</code></td>
+<td><code>rm -rf $PREFIX/*</code>，而 <code>$PREFIX</code> 恰好是空的</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 ★★★ 请注意这六类里只有 ①② 是&quot;目标太重要&quot;，
+      ③④⑤⑥ 全是同一个判断：【我算不出来你到底要删哪儿】。
+
+   ⟹ ★★★ 这是整章最值得学的一个设计思路，而且和模型无关：
+      ┌─ 它不是在维护一张&quot;危险路径黑名单&quot;
+      ├─ 而是在做一次【静态可解析性】检查
+      └─ 算不出目标 ⟹ 当成危险处理，不赌。
+
+   ⟹ ★★ 对照 5.1 论文的 &quot;unintentional&quot;（无意中）：
+      🔑 模型&quot;好心办坏事&quot;的典型形态，正是写出一条
+         【它自己也不知道会展开成什么】的命令。
+      ⟹ 所以拦在&quot;算不出来&quot;这一层，比拦在&quot;路径名&quot;这一层有效得多。
+
+   ⚠️ 版本提醒：以上六类来自 2.1.227 这一个版本的程序内文案。
+      它不是公开 API，下个版本可能增删。要按它写策略请自己重验一遍。
 </code></pre></div>
 
 <hr />
@@ -481,25 +696,95 @@ Windows is not supported."<br />
 <li>文件：<code>"read and write access to the current working directory and its subdirectories, plus the session temp directory"</code> ⟹ 只能读写当前工作目录及其子目录，加上会话临时目录。</li>
 <li>网络：★★★ <code>"Claude Code pre-allows no domains by default."</code> ⟹ <strong>默认一个域名都不放行。</strong>第一次要访问新域名时才问你。</li>
 </ul>
+<h3 id="55b">5.5b ⭐⭐⭐ 边界图：什么跑在沙箱里、什么跑在沙箱外、数据怎么进出</h3>
+<p>★★★ 新手对沙箱最大的误解是以为"Claude Code 整个跑在沙箱里"。<strong>不是。</strong> 沙箱只套住 Bash 命令那一截。</p>
+<div class="codehilite"><pre><span></span><code>   你的真电脑（宿主机）  ← ★★★ Claude Code 本体跑在这里，不在沙箱里
+   │
+   ├── Claude Code 进程本体
+   │     ├─ 和模型服务端通网络（这条连接不受沙箱的域名白名单约束）
+   │     ├─ Read / Edit / Write 这些内置工具 ⟹ 走许可层
+   │     │    ⚠️ 它们是否也受 sandbox.filesystem 的 deny 规则约束，
+   │     │       我没有在 2.1.227 上验到底，所以这一格标 ⚠️
+   │     └─ 许可层：5.4 那六档在这里做判断
+   │
+   └── 每一条 Bash 命令 + 它派生的所有子进程   ← ★★★ 只有这一截在沙箱里
+         │
+         ├─ 文件：✅ 可读写 = 当前工作目录及其子目录 + 会话临时目录
+         │         ⚠️ 其余一切不可写（$HOME 的其他部分、/etc、/usr……）
+         ├─ 网络：★★★ 默认放行 0 个域名；要访问新域名时才问你
+         ├─ 失败时：违规细节被附加到命令输出里，交回模型看（见下）
+         └─ 逃生舱：dangerouslyDisableSandbox 可以把这一条命令挪到沙箱外跑
+</code></pre></div>
+
+<p>★★ 把"数据怎么进出"单独列一遍，这是判断一个沙箱够不够用的唯一标准：</p>
+<table>
+<thead>
+<tr>
+<th>方向</th>
+<th>走哪条路</th>
+<th>⚠️ 要注意什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代码/文件 进</strong></td>
+<td>直接就在工作目录里 —— 沙箱不是另一台机器，它只是在同一个文件系统上划了一圈可写范围</td>
+<td>★★★ 所以沙箱里的进程看得见工作目录的<strong>真实内容</strong>，不是副本。改了就是真改了</td>
+</tr>
+<tr>
+<td><strong>文件 出</strong></td>
+<td>写回工作目录即可</td>
+<td>⚠️ 想往工作目录外写，要 <code>sandbox.filesystem.allowWrite</code> 显式加</td>
+</tr>
+<tr>
+<td><strong>网络 出</strong></td>
+<td>经由一个沙箱代理转发，域名白名单在代理上判</td>
+<td>✅ 这就是 Linux 上要装 <code>socat</code> 的原因：它是把流量路由到代理的中继</td>
+</tr>
+<tr>
+<td><strong>命令输出 回到模型</strong></td>
+<td>走 Claude Code 本体，不经沙箱</td>
+<td>🔑 ★★★ 所以沙箱<strong>不防提示词注入</strong>：被污染的文本照样进上下文</td>
+</tr>
+<tr>
+<td><strong>凭据 进</strong></td>
+<td>继承宿主的环境变量</td>
+<td>⚠️⚠️ 沙箱里的命令能读到你 shell 里的环境变量，<code>AWS_SECRET</code> 之类照样可见</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 最后两行是这张表存在的理由：
+      ⚠️ 沙箱挡住的是【写坏文件】和【连错域名】。
+      ⚠️ 它【没有】挡住：被注入的文本进上下文、环境变量里的密钥被读到。
+   ⟹ ★★★ 对照 5.3 SWE-agent 论文那句坦白&quot;只防意外、不防蓄意&quot;——
+      进程级沙箱的这条边界，比容器还要再松一点。
+      🔑 真要防蓄意，得换成 [07 章](07-DeepSeek的脚手架.md) 讲的 microVM / fullVM 那一档。
+</code></pre></div>
+
+<h3 id="55c">5.5c ⭐⭐ 两种沙箱模式，和那个逃生舱</h3>
 <p><strong>✅ 两种沙箱模式（注意：和 5.4 的许可模式是两套东西）：</strong></p>
 <table>
 <thead>
 <tr>
 <th>沙箱模式</th>
 <th>行为</th>
+<th>✅ 2.1.227 里对应的配置键</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>auto-allow</strong>（自动放行）</td>
 <td>能沙箱化的命令直接跑，不问</td>
+<td><code>autoAllowBashIfSandboxed</code>（✅ 程序里的提示文案逐字："Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)"）</td>
 </tr>
 <tr>
 <td><strong>regular permissions</strong>（常规许可）</td>
 <td>★★ 即使沙箱化了，也照样走许可流程</td>
+<td>把上面那个键关掉</td>
 </tr>
 </tbody>
 </table>
+<p>⟹ 🔑 ★★ 这个键名本身就印证了 5.5 开头那条商业逻辑：这个开关的名字不叫 <code>enableSandbox</code>，叫 <strong><code>autoAllowBashIfSandboxed</code></strong> ——「<strong>既然沙箱化了就自动放行</strong>」。⟹ ★★★ 沙箱在产品里的定位，被写进了配置键名里：它是【自动放行的前提条件】，不是一个独立的安全开关。</p>
 <p>★★★ 还有一个<strong>逃生舱</strong>（escape hatch），我认为设计上很值得注意（✅ 逐字）：</p>
 <blockquote>
 <p>"when a command fails because of sandbox restrictions, Claude analyzes the failure<br />
@@ -515,9 +800,31 @@ and may retry the command with the <code>dangerouslyDisableSandbox</code> parame
       【报错信息本身，是写给模型看的一条指令。】
       不是&quot;拒绝执行&quot;就完了，而是告诉它【为什么】，让它自己想办法。
 
-   ⚠️ 但重试是要重新走许可流程的，而且可以用
-      `&quot;allowUnsandboxedCommands&quot;: false` 完全关掉（文档称之为
-      **Strict sandbox mode**，严格沙箱模式）。
+   ⚠️ 但重试是要重新走许可流程的 —— ✅ 2.1.227 程序内文案逐字：
+      &quot;When a command fails due to sandbox restrictions, Claude can retry with
+       dangerouslyDisableSandbox to run outside the sandbox
+       (falling back to default permissions).&quot;
+      ⟹【…退回到默认许可。】⟹ ★★ 墙拆了，但&quot;问不问你&quot;这一层回来了。
+</code></pre></div>
+
+<p><strong>⭐ 而这个逃生舱可以整个焊死</strong>（文档称之为 <strong>Strict sandbox mode</strong>，严格沙箱模式）。✅ 2.1.227 里 <code>sandbox.allowUnsandboxedCommands</code> 这个键的字段说明逐字：</p>
+<blockquote>
+<p>"Allow commands to run outside the sandbox via the <code>dangerouslyDisableSandbox</code> parameter. When false, the <code>dangerouslyDisableSandbox</code> parameter is completely ignored and all commands must run sandboxed. Default: <code>true</code>."</p>
+</blockquote>
+<p>⟹ <strong>允许命令通过 <code>dangerouslyDisableSandbox</code> 参数在沙箱外运行。当它为 false 时，<code>dangerouslyDisableSandbox</code> 参数被完全忽略，所有命令都必须沙箱化运行。默认值：<code>true</code>。</strong></p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 请注意那个默认值：true。
+      ⟹ ★★【逃生舱默认是开着的。】
+      ⚠️ 也就是说开箱即用的沙箱，严格说是&quot;一道可以被模型自己
+         请求拆掉的墙&quot;——拆之前要过许可层，但墙本身不是硬的。
+      ⟹ 🔑 要硬，得自己把这个键设成 false。
+
+   ⚠️ 还有一个相邻的口子：sandbox.excludedCommands。
+      ✅ 程序内文案逐字：&quot;All bash commands invoked by the model must run in
+         the sandbox unless they are explicitly listed in excludedCommands.&quot;
+      ⟹【除了显式列在 excludedCommands 里的，模型调用的所有 bash 命令
+         都必须在沙箱里跑。】
+      ⟹ ★★ 这条清单是你自己写的 ⟹ 🔑 它是你自己给自己开的洞，
+         写进去的每一条都该当成&quot;这条命令以我的全部权限运行&quot;来审。
 </code></pre></div>
 
 <hr />
@@ -611,33 +918,112 @@ without removing the sandbox entirely"<br />
       codex --sandbox workspace-write --ask-for-approval on-request
 </code></pre></div>
 
+<h3 id="56b-3-3">5.6b ⭐⭐ 正交矩阵：3 × 3 一共九格，实际只有四格有意义</h3>
+<p>★★ 既然 Codex 把两个维度做成了独立配置项，就会有 9 种组合。⚠️ 下表是我按两组逐字定义<strong>推演</strong>的组合结果，不是文档里现成的表。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>approval_policy = untrusted</code>（不可信命令都问）</th>
+<th><code>approval_policy = on-request</code>（要越界才问）</th>
+<th><code>approval_policy = never</code>（永不问）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>read-only</code></strong>（只能看）</td>
+<td>几乎每一步都问 ⟹ 🐢 最慢最稳</td>
+<td>✅ 探索/审计代码的合理档：读不用问，想动手就问</td>
+<td>⚠️ <strong>哑档</strong>：不问、又不许动 ⟹ 它只能看，看完没法改</td>
+</tr>
+<tr>
+<td><strong><code>workspace-write</code></strong>（工作区内可改）</td>
+<td>⚠️ 沙箱内也照样被问 ⟹ 两层叠着，很啰嗦</td>
+<td>✅ ★★★ <strong>文档推荐的那一档</strong>（低风险本地自动化）</td>
+<td>⚠️ 工作区内无人看管地改 ⟹ 代码能被改坏，但改不出工作区</td>
+</tr>
+<tr>
+<td><strong><code>danger-full-access</code></strong>（无沙箱）</td>
+<td>⚠️ 墙拆了，靠"问你"当唯一防线 ⟹ 全押在你点得对</td>
+<td>⚠️ 墙拆了，"越界"这个概念没了 ⟹ 几乎等于不问</td>
+<td>⚠️⚠️⚠️ ★★★ <strong>全放开</strong>：没有墙，也不问 ⟹ 只能用在一次性容器/虚拟机里</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 这张表的看点是右上角和右下角两格：
+
+   ⚠️ 右上角（read-only + never）是个【哑档】——
+      两个旋钮各自都合法，组合起来却没有用。
+      ⟹ ★★ 这是&quot;正交设计&quot;的代价：
+         🔑 旋钮独立 = 你能拧出官方没设想过的组合，包括没意义的组合。
+
+   ⟹ ★★★ 对照 Claude Code 的做法：它是【六个预设档位】。
+      ┌─ 预设档位：不会拧出哑档，但你只能从菜单里挑
+      └─ 正交旋钮：能精确拧到你要的那一点，但要自己负责组合有没有意义
+   ⟹ 🔑 这不是谁对谁错，是【面向产品用户】和【面向脚本/CI】两种口味，
+      和 06 章要讲的那条分界线是同一条。
+</code></pre></div>
+
 <hr />
 <h2 id="57">5.7 三家对照</h2>
-<div class="codehilite"><pre><span></span><code>   ┌──────────┬───────────────┬──────────────────┬────────────────┐
-   │          │ SWE-agent     │ Claude Code      │ Codex          │
-   ├──────────┼───────────────┼──────────────────┼────────────────┤
-   │ 许可层   │ ❌ 没有        │ ✅ 6 种模式      │ ✅ 3 种审批策略│
-   │          │ （全自动跑）  │ default…bypass   │ untrusted/on-  │
-   │          │               │                  │ request/never  │
-   ├──────────┼───────────────┼──────────────────┼────────────────┤
-   │ 谁来审   │ —             │ ✅ 人 或 分类器  │ ✅ 人 或       │
-   │          │               │ （auto 模式）    │ auto_review    │
-   ├──────────┼───────────────┼──────────────────┼────────────────┤
-   │ 沙箱层   │ ✅ Docker     │ ✅ Seatbelt(mac) │ ✅ Seatbelt/   │
-   │          │  一次性容器   │  bwrap+socat     │  bwrap /       │
-   │          │               │  (Linux/WSL2)    │  Windows原生   │
-   ├──────────┼───────────────┼──────────────────┼────────────────┤
-   │ 默认网络 │ ⚠️ 容器内联网 │ ✅ 一个域名都不放│ ✅ 有允许清单  │
-   │          │  （装依赖需要）│  行，首次访问才问│  机制          │
-   ├──────────┼───────────────┼──────────────────┼────────────────┤
-   │ 隔离粒度 │ ★ 整个进程    │ ★★★ 单条 Bash    │ ★★ 工作区      │
-   │          │  在盒子里     │  命令+子进程     │  边界          │
-   └──────────┴───────────────┴──────────────────┴────────────────┘
-
-   ⟹ 🔑 ★★★ 看出演进方向了吗：
+<table>
+<thead>
+<tr>
+<th></th>
+<th>SWE-agent（2024 论文）</th>
+<th>Claude Code（2026 产品）</th>
+<th>Codex（2026 产品）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>许可层</strong></td>
+<td>❌ 没有（全自动跑）</td>
+<td>✅ <strong>6 档</strong>模式：<code>default</code>(=<code>manual</code>) … <code>bypassPermissions</code></td>
+<td>✅ <strong>3 档</strong> <code>approval_policy</code>：<code>untrusted</code> / <code>on-request</code> / <code>never</code></td>
+</tr>
+<tr>
+<td><strong>谁来审</strong></td>
+<td>—</td>
+<td>✅ 人 或 <strong>分类器</strong>（<code>auto</code> 模式）</td>
+<td>✅ 人 或 <strong>reviewer agent</strong>（<code>approvals_reviewer = "auto_review"</code>）</td>
+</tr>
+<tr>
+<td><strong>沙箱层</strong></td>
+<td>✅ Docker 一次性容器</td>
+<td>✅ Seatbelt（macOS）／<code>bwrap</code> + <code>socat</code>（Linux/WSL2）</td>
+<td>✅ Seatbelt／<code>bwrap</code>／⚠️ Windows 有原生方案</td>
+</tr>
+<tr>
+<td><strong>默认网络</strong></td>
+<td>⚠️ 容器内可联网（装依赖需要）</td>
+<td>✅ ★★★ 一个域名都不预先放行，首次访问才问</td>
+<td>✅ 有允许清单机制</td>
+</tr>
+<tr>
+<td><strong>隔离粒度</strong></td>
+<td>★ 整个 agent 进程在盒子里</td>
+<td>★★★ 单条 Bash 命令 + 它的子进程</td>
+<td>★★ 工作区边界</td>
+</tr>
+<tr>
+<td><strong>沙箱起不来时</strong></td>
+<td>⚠️ 没有这个情形（起不来就跑不了）</td>
+<td>✅ <code>sandbox.failIfUnavailable</code> 可配成硬失败</td>
+<td>⚠️ 我没核实到等价开关</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 ★★★ 看出演进方向了吗：
       2024：【把整个 agent 关进盒子】——粗，但简单。
       2026：【盒子拆细到每条命令，再叠一层&quot;要不要问你&quot;】。
       ⟹ ★★ 因为产品要跑在【你的真电脑上】，不能整台机器关进容器。
+
+   ⟹ ★★ 而代价就是 5.5b 那张&quot;数据怎么进出&quot;的表：
+      🔑 盒子拆细 = 盒子变薄。单条命令的沙箱共享宿主内核、
+         共享文件系统、共享环境变量。
+      ⟹ ★★★ 2024 的粗办法在【隔离强度】上其实更强，
+         它输在【不能跑在你的真电脑上】。
 </code></pre></div>
 
 <hr />
@@ -660,9 +1046,10 @@ without removing the sandbox entirely"<br />
       公开的 SWE-bench 提交记录里，通常不注明许可档位。
 </code></pre></div>
 
+<p>⚠️ 一条必须补上的限定：<strong>上面④是论证，不是实测。</strong> 我没有查到任何一份公开材料做过"同一个模型、同一批题，只换许可档位"的消融实验。⟹ ★★ 所以这一节能说的是【方向】（放开档位分数不会更低），不能说【量级】（差几个百分点）。🔑 <a href="08-脚手架怎么影响榜单分数.html">08 章 §8.1b</a> 那张主表里，"许可档位"这一行的量级一栏写的就是 ⚠️ 未知 —— 本章是那一格为什么是空的原因。</p>
 <hr />
 <h2 id="59">5.9 本章总结</h2>
-<div class="codehilite"><pre><span></span><code>    🔑 六条带走：
+<div class="codehilite"><pre><span></span><code>    🔑 七条带走：
 
     ① ★★★ 【许可】和【沙箱】是两件事：
        许可 = 执行前问不问你（拦命令文本）；
@@ -673,8 +1060,12 @@ without removing the sandbox entirely"<br />
        ephemeral Docker container（一次性容器），跑完即毁。
        ⚠️ 论文自己承认：只防意外，不防蓄意逃逸。
 
-    ③ ★★★ ✅ Claude Code = 6 种许可模式 × 2 种沙箱模式，
-       且【任何模式都不放行 rm 关键路径】。
+    ③ ★★★ ✅ Claude Code = 6 种许可模式 × 2 种沙箱模式。
+       ✅ &quot;6&quot; 这个数已在本机 2.1.227 上一手核实（见 5.4 开头三条）：
+          acceptEdits / auto / bypassPermissions / default(=manual) /
+          dontAsk / plan。🔑 manual 和 default 是同一档的两个名字。
+       ★★★ 且【任何模式都不放行 rm 的六类危险形态】，
+          其中四类的判据是&quot;算不出你要删哪儿&quot;，不是路径黑名单。
 
     ④ ★★★ ✅ Codex = sandbox_mode(3) × approval_policy(3) × approvals_reviewer(2)，
        三个维度正交。⚠️ 但 approvals_reviewer 只改路由，不改边界。
@@ -684,6 +1075,12 @@ without removing the sandbox entirely"<br />
 
     ⑥ ⚠️ ★★★ 我的推断：榜单分数必然出自最放开的档位。
        ⟹ 你日常用的档位和跑分档位不是同一个。
+       ⚠️ 但【方向】可推、【量级】不可推：没有公开的
+          &quot;只换许可档位&quot;消融实验。
+
+    ⑦ ★★★ 🔑 沙箱不是把 Claude Code 整个关起来，
+       它只套住【每一条 Bash 命令及其子进程】（5.5b 那张边界图）。
+       ⚠️ 所以它不挡提示词注入，也不挡环境变量里的密钥被读到。
 </code></pre></div>
 
 <hr />

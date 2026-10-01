@@ -248,38 +248,42 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="lm-evaluation-harness">lm-evaluation-harness 拆解</h1>
 <blockquote>
-<p>★ 版本：<code>lm_eval</code> 0.4.12（源码在 <a href="源码/lm_eval-0.4.12/">源码/lm_eval-0.4.12/</a>）<br />
+<p>★ 版本口径：<code>lm_eval</code> <strong>0.4.12</strong>（源码在 <a href="源码/lm_eval-0.4.12/">源码/lm_eval-0.4.12/</a>，本文所有行号都是对着这一份数的）<br />
 ★★ 定位：<strong>判别式 + 生成式</strong> 评测的事实标准。Hugging Face Open LLM Leaderboard 用的就是它。</p>
 <p>⚠️ 它<strong>不做</strong> agentic 评测（SWE-bench 那类）—— 那是 <a href="SWE-bench拆解.html">SWE-bench拆解.md</a> 的事。</p>
 <p>标记：✅ = 源码原文可查证 ｜ ⚠️ = 我的推断 ｜ ★ = 重点 ｜ 🔑 = 关键结论</p>
+<p>⚠️⚠️ <strong>行号会过期</strong>。这个项目迭代很快（0.4.x 内部就改过目录结构，比如命令行从 <code>__main__.py</code> 搬到了 <code>lm_eval/_cli/</code>）。★★ 对不上时以你手上那份源码为准，并把版本号一起记下来。</p>
 </blockquote>
 <hr />
-<h2 id="1">1. 一句话：它解决的是一个"组合爆炸"问题</h2>
-<div class="codehilite"><pre><span></span><code>   ★ 问题规模：
-      ✅ lm_eval/tasks/ 下有 218 个任务目录
-      ✅ lm_eval/models/ 下有 28 个模型后端文件
-         （huggingface / vllm / sglang / openai / anthropic / litellm /
-           megatron / nemo / trtllm / gguf / mamba / neuron …）
+<h2 id="1">1. 一句话：它解决的是一个「组合爆炸」问题</h2>
+<div class="codehilite"><pre><span></span><code>   ★ 问题规模（✅ 对 0.4.12 实际数过）：
+      ✅ lm_eval/tasks/ 下有 212 个任务目录
+         ⚠️ 目录里还有 6 个散文件（README 等），
+            所以 `ls | wc -l` 会得到 218，别把那 6 个也算成任务
+      ✅ lm_eval/models/ 下有 26 个文件带 @register_model 装饰器，
+         一共注册了 36 个后端名
+         （hf / vllm / sglang / openai-chat-completions / anthropic-chat /
+           litellm / megatron_lm / nemo_lm / trtllm / gguf / mamba_ssm /
+           neuronx / watsonx_llm / winml …）
 
-   ⚠️ 朴素做法要写 218 × 28 = 6,104 套适配代码。
+   ⚠️ 朴素做法要写 212 × 36 ≈ 7,600 套适配代码。
    ⟹ 🔑 实际代码量远小于此。★★★ 靠的就是下面这个设计。
 </code></pre></div>
 
 <hr />
-<h2 id="2">2. ★★★ 核心设计：三个原语构成的"窄腰"</h2>
-<div class="codehilite"><pre><span></span><code>              218 个任务（MMLU / GSM8K / HellaSwag / …）
+<h2 id="2">2. ★★★ 核心设计：三个原语构成的「窄腰」</h2>
+<p>★ 名词：<strong>窄腰（narrow waist）</strong>= 一种架构比喻。沙漏中间最细的那一段，上下两边都只认它，所以两边可以各自随便加东西。互联网的 IP 协议就是经典例子。</p>
+<div class="codehilite"><pre><span></span><code>              212 个任务（MMLU / GSM8K / HellaSwag / …）
                             │
                             ▼
-        ┌───────────────────────────────────────┐
-        │   ★★★ 只有三个原语（narrow waist）    │
-        │                                       │
-        │   ① loglikelihood                    │
-        │   ② loglikelihood_rolling            │
-        │   ③ generate_until                   │
-        └───────────────────────────────────────┘
+              ★★★ 只有三个原语（narrow waist）
+                            │
+                ├── ① loglikelihood
+                ├── ② loglikelihood_rolling
+                └── ③ generate_until
                             │
                             ▼
-              28 个模型后端（HF / vLLM / OpenAI / …）
+              36 个模型后端名（HF / vLLM / OpenAI / …）
 
    ⟹ 🔑🔑 上面加一个任务，不用动模型代码；
       下面加一个后端，只需实现三个方法。
@@ -289,18 +293,58 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h3 id="1_1">✅ 源码证据①：抽象基类只要求三个方法</h3>
 <p><code>lm_eval/api/model.py</code>：</p>
 <div class="codehilite"><pre><span></span><code>   L25   class LM(abc.ABC):
-   L40       def loglikelihood(self, requests) -&gt; list[tuple[float, bool]]
-   L58       def loglikelihood_rolling(self, requests) -&gt; list[float]
-   L100      def generate_until(self, requests) -&gt; list[str]
+   L40       def loglikelihood(self, requests: list[&quot;Instance&quot;]) -&gt; list[tuple[float, bool]]
+   L58       def loglikelihood_rolling(self, requests: list[&quot;Instance&quot;]) -&gt; list[float]
+   L100      def generate_until(self, requests: list[&quot;Instance&quot;]) -&gt; list[str]
 </code></pre></div>
 
+<p>★ 三个原语分别在问模型什么：</p>
+<table>
+<thead>
+<tr>
+<th>原语</th>
+<th>中文</th>
+<th>★★ 它问模型的问题</th>
+<th>返回什么</th>
+<th>典型用在</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>loglikelihood</code></td>
+<td>对数似然</td>
+<td>「<strong>给定这段上文，你觉得接下来是这段指定文字的可能性有多大</strong>」</td>
+<td><code>(对数概率, 是否是贪心首选)</code></td>
+<td>★★★ 选择题：每个选项算一次，比大小</td>
+</tr>
+<tr>
+<td><code>loglikelihood_rolling</code></td>
+<td>滚动对数似然</td>
+<td>「<strong>这整段文字在你眼里有多自然</strong>」（不给上文）</td>
+<td>一个对数概率</td>
+<td>困惑度类指标、语言建模评测</td>
+</tr>
+<tr>
+<td><code>generate_until</code></td>
+<td>生成直到</td>
+<td>「<strong>接着往下写，写到遇见这些停止符为止</strong>」</td>
+<td>生成出来的字符串</td>
+<td>★★★ 数学题、代码题、开放问答</td>
+</tr>
+</tbody>
+</table>
 <div class="codehilite"><pre><span></span><code>   ⟹ ★★ 一个新后端（比如接入一个新的推理引擎）
-      只要把这三个方法实现出来，218 个任务立刻全部可跑。
+      只要把这三个方法实现出来，212 个任务立刻全部可跑。
+   ⚠️ 反过来也成立：★★★ 后端【做不到】的事，
+      整个框架就做不到 —— 见 §9 的第三条。
 </code></pre></div>
 
 <h3 id="2-getattr">✅ 源码证据②：★★★ 调度是一行 <code>getattr</code></h3>
-<p><code>lm_eval/evaluator.py:596</code>：</p>
-<div class="codehilite"><pre><span></span><code>        <span class="c1"># run requests through model</span>
+<p><code>lm_eval/evaluator.py:584-596</code>：</p>
+<div class="codehilite"><pre><span></span><code>    <span class="c1"># execute each type of request</span>
+    <span class="k">for</span> <span class="n">reqtype</span><span class="p">,</span> <span class="n">reqs</span> <span class="ow">in</span> <span class="n">requests</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="o">...</span>
+        <span class="c1"># run requests through model</span>
         <span class="n">resps</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">lm</span><span class="p">,</span> <span class="n">reqtype</span><span class="p">)(</span><span class="n">cloned_reqs</span><span class="p">)</span>
 </code></pre></div>
 
@@ -315,79 +359,205 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ⚠️ 腰细到可以用一个字符串索引完成分派。
 </code></pre></div>
 
+<p>✅ 而那个字符串是从哪来的？<code>evaluator.py:560-562</code>：</p>
+<div class="codehilite"><pre><span></span><code>        <span class="k">for</span> <span class="n">instance</span> <span class="ow">in</span> <span class="n">task</span><span class="o">.</span><span class="n">instances</span><span class="p">:</span>
+            <span class="n">reqtype</span> <span class="o">=</span> <span class="n">instance</span><span class="o">.</span><span class="n">request_type</span>
+            <span class="n">requests</span><span class="p">[</span><span class="n">reqtype</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+</code></pre></div>
+
+<p>⟹ ★★ 它来自<strong>每个 <code>Instance</code> 对象自己带的 <code>request_type</code> 字段</strong>，在造请求的时候就定好了。</p>
 <h3 id="3">✅ 源码证据③：原语的类型定义</h3>
-<p><code>lm_eval/api/instance.py</code>：</p>
-<div class="codehilite"><pre><span></span><code>   L5-7    OutputType = Literal[
-               &quot;loglikelihood&quot;, &quot;loglikelihood_rolling&quot;,
-               &quot;generate_until&quot;, &quot;multiple_choice&quot;
-           ]
-   L11     @dataclass class Instance:
+<p><code>lm_eval/api/instance.py:5-7</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">OutputType</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span>
+    <span class="s2">&quot;loglikelihood&quot;</span><span class="p">,</span> <span class="s2">&quot;loglikelihood_rolling&quot;</span><span class="p">,</span> <span class="s2">&quot;generate_until&quot;</span><span class="p">,</span> <span class="s2">&quot;multiple_choice&quot;</span>
+<span class="p">]</span>
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>   ⚠️ 这里有个容易困惑的点，必须说清：
    ★ 列表里有四个值，但原语只有三个。multiple_choice 不是第四个原语。
+</code></pre></div>
 
-   ✅ 证据在 evaluator.py:571-576：
-      # &quot;multiple_choice&quot; task types dispatch (several) &quot;loglikelihood&quot; request types
-      reqtype = (&quot;loglikelihood&quot;
-                 if task.OUTPUT_TYPE == &quot;multiple_choice&quot;
-                 else task.OUTPUT_TYPE)
+<p>✅ 真正的证据在 <code>lm_eval/api/task.py:1433-1445</code> —— 一个 <code>multiple_choice</code> 任务造出来的是<strong>一串</strong> <code>Instance</code>，每一个的 <code>request_type</code> 都被写成 <code>"loglikelihood"</code>：</p>
+<div class="codehilite"><pre><span></span><code>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">OUTPUT_TYPE</span> <span class="o">==</span> <span class="s2">&quot;multiple_choice&quot;</span><span class="p">:</span>
+            <span class="n">request_list</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="n">Instance</span><span class="p">(</span>
+                    <span class="n">request_type</span><span class="o">=</span><span class="s2">&quot;loglikelihood&quot;</span><span class="p">,</span>   <span class="c1"># ★★★ 就是这里</span>
+                    <span class="n">doc</span><span class="o">=</span><span class="n">doc</span><span class="p">,</span>
+                    <span class="n">arguments</span><span class="o">=</span><span class="n">arg</span><span class="p">,</span>
+                    <span class="n">idx</span><span class="o">=</span><span class="n">i</span><span class="p">,</span>
+                    <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
+                <span class="p">)</span>
+                <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">arg</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">arguments</span><span class="p">)</span>
+            <span class="p">]</span>
 
-   ⟹ 🔑 ★★ multiple_choice 是【任务层的类型】，
+            <span class="k">return</span> <span class="n">request_list</span>
+</code></pre></div>
+
+<p>✅ 而那串 <code>arguments</code> 是一个选项一条（<code>api/task.py:1390</code>）：</p>
+<div class="codehilite"><pre><span></span><code>                <span class="n">arguments</span> <span class="o">=</span> <span class="p">[(</span><span class="n">ctx</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">target_delimiter</span><span class="si">}{</span><span class="n">cont</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">cont</span> <span class="ow">in</span> <span class="n">choices</span><span class="p">]</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 ★★ 所以 multiple_choice 是【任务层的类型】，
       到了模型层会被拆成【若干个 loglikelihood 请求】
       —— 一个选项一个请求，然后比大小。
    ⟹ 这正是 [02 章](评测入门/02-三种评测范式.md) 说的&quot;判别式&quot;的实现方式。
+
+   ⚠️⚠️ 一条勘误：★★ evaluator.py:571-576 那段
+      `reqtype = &quot;loglikelihood&quot; if task.OUTPUT_TYPE == &quot;multiple_choice&quot; else ...`
+      【不是】真正的分派代码。
+      ⟹ 它在 `if lm.world_size &gt; 1:` 块里面，只用来算
+         多卡场景下要补几个 padding 请求。
+      ⟹ 🔑 真正定下 request_type 的地方就是上面那段 :1433-1445。
 </code></pre></div>
 
 <hr />
-<h2 id="3_1">3. 一道题的完整流动路径</h2>
-<p>★★ 把 <code>lm_eval --tasks gsm8k</code> 这条命令拆成六步。</p>
-<div class="codehilite"><pre><span></span><code>   ┌─ ① 加载任务定义 ─────────────────────────────────────┐
-   │  读 tasks/gsm8k/gsm8k.yaml                            │
-   │  ⟹ 知道了：数据集在哪、几 shot、怎么拼提示词、        │
-   │     用哪个原语、怎么抽答案、怎么算分                   │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ② 拼提示词（fewshot_context）───────────────────────┐
-   │  ✅ api/task.py:447  def fewshot_context(...)         │
-   │  ⟹ 把 N 条示例 + 当前题目拼成一个字符串              │
-   │  ★★★ 04 章说的头号坑就在这一步                        │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ③ 造请求（construct_requests）──────────────────────┐
-   │  ✅ api/task.py:382  def construct_requests(...)      │
-   │  ⟹ 产出 Instance 对象，标好 request_type            │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ④ ★★★ 分派给模型 ──────────────────────────────────┐
-   │  ✅ evaluator.py:596  resps = getattr(lm, reqtype)(…) │
-   │  ⟹ 模型的原始输出存回 req.resps                      │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ⑤ 抽取 / 过滤（apply_filters）──────────────────────┐
-   │  ✅ evaluator.py:611  task.apply_filters()            │
-   │  ✅ api/task.py:505   def apply_filters(...)          │
-   │  ⟹ 正则把答案抠出来，存进 filtered_resps            │
-   │  ★★★ 05 章说的&quot;最脏的一步&quot;                            │
-   └───────────────────────────────────────────────────────┘
-                            ▼
-   ┌─ ⑥ 打分 + 汇总 ───────────────────────────────────────┐
-   │  ✅ api/task.py:403  def process_results(...)         │
-   │  ✅ api/task.py:416  def aggregation(...)             │
-   │  ⟹ 逐条对错 → 平均 → 输出                            │
-   └───────────────────────────────────────────────────────┘
+<h2 id="3_1">3. ★★★ 一次评测从入口到出分：每一步谁改了什么状态</h2>
+<p>★★ 这一节是全篇的主线。⚠️ 把 <code>lm_eval --tasks gsm8k</code> 这条命令拆开，看<strong>一道题的状态是怎么一步步被改写的</strong>。</p>
+<h3 id="31">3.1 ✅ 调用链</h3>
+<div class="codehilite"><pre><span></span><code>   命令行   lm_eval --model hf --tasks gsm8k --log_samples
+        │
+        ▼
+   加载任务定义  读 tasks/gsm8k/gsm8k.yaml
+        │   ⟹ 知道了：数据集在哪、几 shot、怎么拼提示词、
+        │      用哪个原语、怎么抽答案、怎么算分
+        ▼
+   ConfigurableTask.__init__  api/task.py:757-776
+        │   ★★ 把 yaml 里的 filter_list 编译成若干个 FilterEnsemble
+        ▼
+   fewshot_context()          api/task.py:447（基类）/ :933（Configurable）
+        │   把 N 条示例 + 当前题目拼成一个字符串 ctx
+        ▼
+   construct_requests()       api/task.py:382（基类）/ :1362（Configurable）
+        │   产出 Instance 对象，标好 request_type
+        ▼
+   【分派给模型】              evaluator.py:596
+        │   resps = getattr(lm, reqtype)(cloned_reqs)
+        │   ⟹ 模型原始输出写进 req.resps（:600）
+        ▼
+   task.apply_filters()       evaluator.py:611 → api/task.py:505 / :1160
+        │   ⟹ 每个 FilterEnsemble 跑一遍，
+        │      结果写进 req.filtered_resps[这把尺子的名字]
+        ▼
+   for filter_key in ...      evaluator.py:624
+        │   ★★★ 按【尺子】循环 —— 有几把尺子就出几份分数
+        ▼
+   process_results()          api/task.py:403（基类）/ :1455（Configurable）
+        │   逐条判对错
+        ▼
+   aggregation()              api/task.py:416 / :1666
+        │   取平均
+        ▼
+   最终那张表：每个 (metric, filter) 组合一行
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 记住 ④ 和 ⑤ 是分开的两步。★★★ 这个分离是有意义的：
+<h3 id="32">3.2 ★★★ 状态怎么变：逐步表</h3>
+<p>★★ 跟着 GSM8K 的一道真题走一遍。⚠️ 这张表是本篇最该记住的东西 —— <strong>排查「分数为什么低」，就是回来找卡在哪一行</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>代码位置</th>
+<th>读了什么</th>
+<th>★★ 写出了什么状态</th>
+<th>⚠️ 这一步出问题的典型表现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>读 <code>gsm8k.yaml</code></td>
+<td>配置文件</td>
+<td><code>TaskConfig</code> 对象</td>
+<td>★ yaml 里字段拼错 ⟹ 启动就报错（这是<strong>好事</strong>，早失败）</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>ConfigurableTask.__init__</code> task.py:757</td>
+<td><code>filter_list</code></td>
+<td>★★★ <code>self._filters</code> = 一个 <strong>FilterEnsemble 列表</strong>（GSM8K 是 2 个）</td>
+<td>★★ yaml 里<strong>没写</strong> <code>filter_list</code> ⟹ 自动塞一个名叫 <code>"none"</code> 的默认尺子（:776）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>下载/加载数据集</td>
+<td><code>dataset_path: openai/gsm8k</code></td>
+<td>内存里的 doc 列表</td>
+<td>⚠️ 网络 / 数据集版本不对 ⟹ 题目都变了，分数无从比较</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>fewshot_context()</code> task.py:447</td>
+<td><code>num_fewshot: 5</code> + <code>fewshot_split: train</code></td>
+<td>一个字符串 <code>ctx</code>：5 条示例 + 本题题干</td>
+<td>★★★ <strong>04 章的头号坑</strong>：chat 模型没加 <code>--apply_chat_template</code>，这一步拼出的是 base 模型的格式</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>construct_requests()</code> task.py:382</td>
+<td><code>ctx</code> + <code>output_type</code></td>
+<td><code>Instance</code> 对象（<code>request_type="generate_until"</code>，<code>arguments=(ctx, generation_kwargs)</code>）</td>
+<td>★ <code>output_type</code> 写错 ⟹ 走错整条链路</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>getattr(lm, reqtype)()</code> evaluator.py:596</td>
+<td><code>Instance.arguments</code></td>
+<td>★★★ <code>req.resps</code> = <strong>模型的原始输出</strong>（一字不改）</td>
+<td>★★ 停止符设错 ⟹ 答案被截断，或输出爆炸烧钱</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>FilterEnsemble.apply()</code> api/filter.py:45-56</td>
+<td><code>req.resps</code></td>
+<td>★★★ <code>req.filtered_resps["strict-match"]</code> 和 <code>req.filtered_resps["flexible-extract"]</code> —— <strong>两个 key</strong></td>
+<td>★★★ 正则没匹配上 ⟹ 填成 <code>"[invalid]"</code>，见 §6</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>for filter_key in ...</code> evaluator.py:624</td>
+<td><code>filtered_resps</code> 的 <strong>key 集合</strong></td>
+<td>对<strong>每把尺子</strong>各跑一遍第 8–9 步</td>
+<td>⟹ 🔑 这就是「同一次运行出两个分数」的物理原因</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>process_results()</code> task.py:403</td>
+<td><code>filtered_resps[filter_key]</code> + 标准答案</td>
+<td>每题一个 0/1</td>
+<td>★★ <code>regexes_to_ignore</code> 没配好 ⟹ <code>"1,000"</code> ≠ <code>"1000"</code>，算对的题被判错</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>acc["raw_metrics"][(metric, filter_key)]</code> evaluator.py:665</td>
+<td>每题的 0/1</td>
+<td>★★★ 按 <strong>(指标, 尺子)</strong> 二元组分桶</td>
+<td>——</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>aggregation()</code> task.py:416</td>
+<td>一桶 0/1</td>
+<td>一个百分数</td>
+<td>⟹ 这才是你看到的那个数</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 记住第 5 步和第 6 步是【分开的两步】。★★★ 这个分离是有意义的：
       ⚠️ 模型的原始输出（resps）和抽取后的答案（filtered_resps）
          【同时被保存下来】。
-      ⟹ 加 --log_samples 就能把两列都导出，
-         ★★ 对比这两列是排查&quot;抽取失败&quot;的唯一可靠办法。
+      ✅ 证据在 evaluator.py:645-648 —— --log_samples 导出的每条样本里
+         同时有 &quot;resps&quot; 和 &quot;filtered_resps&quot; 两个字段。
+      ⟹ ★★ 对比这两列是排查&quot;抽取失败&quot;的唯一可靠办法。
+
+   ⟹ 🔑🔑 再记住第 7 步：★★★ 循环的是【尺子】，不是题。
+      ⚠️ 所以 lm_eval 输出的从来不是&quot;一个分数&quot;，
+         而是【每个 (指标, 尺子) 组合一个分数】。
+      ⟹ 看到别人只报一个 GSM8K 数字，说明他省略了尺子名字。
 </code></pre></div>
 
 <hr />
 <h2 id="4-gsm8kyaml">4. ★★★ 一个任务定义长什么样：逐字段拆 gsm8k.yaml</h2>
-<p>★★ 这是全文最值得细看的一段。✅ 以下是 <code>tasks/gsm8k/gsm8k.yaml</code> 的<strong>完整原文</strong>：</p>
+<p>★★ 这是全文最值得细看的一段。✅ 以下是 <code>tasks/gsm8k/gsm8k.yaml</code> 的<strong>完整原文</strong>（含源码里那行注释）：</p>
 <div class="codehilite"><pre><span></span><code><span class="nt">tag</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">math_word_problems</span>
 <span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gsm8k</span>
@@ -398,7 +568,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <span class="nt">fewshot_split</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
 <span class="nt">test_split</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test</span>
 <span class="nt">doc_to_text</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Question:</span><span class="nv"> </span><span class="s">{{question}}\nAnswer:&quot;</span>
-<span class="nt">doc_to_target</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{{answer}}&quot;</span>
+<span class="nt">doc_to_target</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{{answer}}&quot;</span><span class="w"> </span><span class="c1">#&quot; {{answer.split(&#39;### &#39;)[-1].rstrip()}}&quot;</span>
 <span class="nt">metric_list</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">exact_match</span>
 <span class="w">    </span><span class="nt">aggregation</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mean</span>
@@ -435,73 +605,265 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <span class="w">  </span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3.0</span>
 </code></pre></div>
 
-<h3 id="40-5">逐字段解释：★★★ 这 40 行里藏着前 5 章的每一个坑</h3>
-<div class="codehilite"><pre><span></span><code>┌────────────────────────┬──────────────────────────────────────────────┐
-│ 字段                    │ 它对应教程里的哪个坑                          │
-├────────────────────────┼──────────────────────────────────────────────┤
-│ output_type:           │ ★★★ 03 章的三原语之一。                      │
-│   generate_until       │ ⟹ 说明这是【生成式】评测，需要抽取。          │
-├────────────────────────┼──────────────────────────────────────────────┤
-│ num_fewshot: 5         │ ★★★ 04 章。5-shot 是 GSM8K 的惯例。          │
-│ fewshot_split: train   │ ⟹ 示例从训练集里取（不能从测试集取，会泄漏）  │
-├────────────────────────┼──────────────────────────────────────────────┤
-│ doc_to_text:           │ ★★★ 04 章。提示词模板。                       │
-│  &quot;Question: {{q}}\n    │ ⚠️ 改一个字，分数就变。别人报的 GSM8K 分数    │
-│   Answer:&quot;             │    如果模板不同，【不可直接比较】。            │
-├────────────────────────┼──────────────────────────────────────────────┤
-│ until: [&quot;Question:&quot;,   │ ★★ 02 章。停止符。                            │
-│   &quot;&lt;/s&gt;&quot;, &quot;&lt;|im_end|&gt;&quot;]│ ⟹ 模型答完一题会想继续编下一题，              │
-│                        │    看到 &quot;Question:&quot; 就掐掉。                  │
-│                        │ ⚠️ 停止符设错 = 答案被截断 或 输出爆炸。      │
-├────────────────────────┼──────────────────────────────────────────────┤
-│ do_sample: false       │ ★★★ 10 章。greedy 解码，可复现。             │
-│ temperature: 0.0       │ ⚠️ 但 R1 那类长输出推理模型不适合这么跑。     │
-├────────────────────────┼──────────────────────────────────────────────┤
-│ repeats: 1             │ ★★ 每题只跑一遍。                             │
-│                        │ ⟹ 对比 DeepSeek 的 AIME：T=0.7 跑 16 遍取平均│
-├────────────────────────┼──────────────────────────────────────────────┤
-│ regexes_to_ignore:     │ ★★★ 05 章最经典的失败模式。                  │
-│   - &quot;,&quot;                │ ⟹ 模型答 &quot;1,000&quot;，标准答案是 &quot;1000&quot;。         │
-│   - &quot;\\$&quot;              │ ⚠️ 不忽略逗号，这题就【判错】——              │
-│                        │    但模型明明算对了。                          │
-│   - &quot;(?s).*#### &quot;      │ ⟹ 把 &quot;#### &quot; 之前的推理过程全部丢掉           │
-│   - &quot;\\.$&quot;             │ ⟹ 去掉结尾句号                                │
-└────────────────────────┴──────────────────────────────────────────────┘
+<h3 id="41">4.1 ★★★ 配置项 → 运行时行为映射表</h3>
+<p>★★ 这张表是本节的核心：<strong>每个 yaml 字段，在 §3.2 的第几步生效、改的是什么状态</strong>。⟹ 🔑 看懂它，你就看懂了「为什么改一行配置分数就变」。</p>
+<table>
+<thead>
+<tr>
+<th>yaml 字段</th>
+<th>★★ 在第几步生效</th>
+<th>它具体改了什么</th>
+<th>⚠️ 配错的后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataset_path</code> / <code>dataset_name</code> / <code>test_split</code></td>
+<td>第 2 步</td>
+<td>决定<strong>题目是哪些</strong></td>
+<td>⚠️ 换了版本 = 换了考卷，分数不可比</td>
+</tr>
+<tr>
+<td><code>output_type: generate_until</code></td>
+<td>第 4 步</td>
+<td>决定 <code>Instance.request_type</code>，也就是走哪条原语</td>
+<td>★★★ 决定了<strong>需不需要抽取</strong>（见 §5 的对照）</td>
+</tr>
+<tr>
+<td><code>num_fewshot: 5</code></td>
+<td>第 3 步</td>
+<td>拼几条示例进提示词</td>
+<td>★★★ 改成 0 ⟹ 模型不知道要写成 <code>#### 66</code> ⟹ <code>strict-match</code> 会大面积抠不到</td>
+</tr>
+<tr>
+<td><code>fewshot_split: train</code></td>
+<td>第 3 步</td>
+<td>示例从<strong>训练集</strong>取</td>
+<td>★★ 从测试集取 = 泄漏，分数虚高</td>
+</tr>
+<tr>
+<td><code>doc_to_text</code></td>
+<td>第 3 步</td>
+<td>提示词模板本体</td>
+<td>★★★ 改一个字分数就变。别人报的 GSM8K 分数如果模板不同，<strong>不可直接比较</strong></td>
+</tr>
+<tr>
+<td><code>doc_to_target</code></td>
+<td>第 8 步</td>
+<td>标准答案怎么从数据集字段里取</td>
+<td>⚠️ 这里取的是整段 <code>answer</code>（含推理过程），靠 <code>regexes_to_ignore</code> 去掉前缀</td>
+</tr>
+<tr>
+<td><code>generation_kwargs.until</code></td>
+<td>第 5 步</td>
+<td>停止符。模型答完一题会想继续编下一题，看到 <code>"Question:"</code> 就掐掉</td>
+<td>★★ 设错 = 答案被截断，或输出爆炸烧钱</td>
+</tr>
+<tr>
+<td><code>do_sample: false</code> / <code>temperature: 0.0</code></td>
+<td>第 5 步</td>
+<td>greedy（贪心）解码，可复现</td>
+<td>⚠️ 但 R1 那类长输出推理模型不适合这么跑，见 <a href="评测入门/10-DeepSeek的评测口径.html">10 章</a> §10.7b</td>
+</tr>
+<tr>
+<td><code>repeats: 1</code></td>
+<td>第 5 步</td>
+<td>每题只跑一遍</td>
+<td>★★ 对比 DeepSeek 的 AIME：T=0.6 跑 64 遍取平均 —— ⟹ 那种数和这种数<strong>不是一回事</strong></td>
+</tr>
+<tr>
+<td><code>filter_list</code>（两条）</td>
+<td>第 1 步编译、第 6 步执行</td>
+<td>★★★ 决定<strong>怎么从输出里抠答案</strong>，以及<strong>出几份分数</strong></td>
+<td>见 §4.2，这是本篇最重要的一段</td>
+</tr>
+<tr>
+<td><code>metric_list.metric: exact_match</code></td>
+<td>第 8 步</td>
+<td>判对错的方式：字符串完全相等</td>
+<td>★ 换 metric 就是换判卷标准</td>
+</tr>
+<tr>
+<td><code>regexes_to_ignore</code></td>
+<td>第 8 步</td>
+<td>比较<strong>之前</strong>先把这些模式从两边删掉</td>
+<td>★★★ 见下面的 4.1b，这是 05 章最经典的失败模式</td>
+</tr>
+<tr>
+<td><code>ignore_case: true</code></td>
+<td>第 8 步</td>
+<td>忽略大小写</td>
+<td>★ 数学题上无所谓，文本题上影响很大</td>
+</tr>
+<tr>
+<td><code>aggregation: mean</code></td>
+<td>第 10 步</td>
+<td>逐题 0/1 取平均</td>
+<td>——</td>
+</tr>
+<tr>
+<td><code>metadata.version: 3.0</code></td>
+<td>——</td>
+<td>★★ <strong>任务定义自己的版本号</strong></td>
+<td>⟹ 🔑 引用 GSM8K 分数时，这个号也该一起报</td>
+</tr>
+</tbody>
+</table>
+<h3 id="41b-regexes_to_ignore">4.1b ⚠️ <code>regexes_to_ignore</code> 这四条正则到底在干什么</h3>
+<table>
+<thead>
+<tr>
+<th>正则</th>
+<th>它删掉什么</th>
+<th>★★ 为什么必须删</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>","</code></td>
+<td>所有逗号</td>
+<td>★★★ 模型答 <code>"1,000"</code>，标准答案是 <code>"1000"</code>。⚠️ 不删这题就<strong>判错</strong>，但模型明明算对了</td>
+</tr>
+<tr>
+<td><code>"\\$"</code></td>
+<td>美元符号</td>
+<td>模型答 <code>"$18"</code>，答案是 <code>"18"</code></td>
+</tr>
+<tr>
+<td><code>"(?s).*#### "</code></td>
+<td>从开头一直到 <code>"#### "</code> 的全部内容</td>
+<td>★★★ 把推理过程整段丢掉，只留最后那个数。<code>(?s)</code> 让 <code>.</code> 也能匹配换行</td>
+</tr>
+<tr>
+<td><code>"\\.$"</code></td>
+<td>结尾的句号</td>
+<td>模型答 <code>"18."</code>，答案是 <code>"18"</code></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 这四行是一个很好的缩影：
+      ★★★【判别&quot;对不对&quot;这件事，在生成式评测里是靠一堆正则糊出来的。】
+   ⚠️ 少一条，一批算对的题就被判错；
+      多一条、写宽了，一批答错的题就被判对。
+   ⟹ ★★ 这就是 [05 章](评测入门/05-答案抽取与打分.md) 称它为&quot;最脏的一步&quot;的原因。
 </code></pre></div>
 
-<h3 id="filter">★★★ 最精妙的设计：两个并行的 filter</h3>
-<div class="codehilite"><pre><span></span><code>   ⚠️ 注意 filter_list 里有【两个】条目，不是一个：
-
-   ┌─ strict-match（严格匹配）────────────────────────────┐
-   │  regex_pattern: &quot;#### (\-?[0-9\.\,]+)&quot;               │
-   │  ⟹ ★ 只认 GSM8K 官方格式：答案必须写在 &quot;#### &quot; 后面 │
-   │  ⚠️ 模型不遵守这个格式 ⟹ 抽取失败 ⟹ 判错           │
-   └──────────────────────────────────────────────────────┘
-   ┌─ flexible-extract（宽松抽取）────────────────────────┐
-   │  regex_pattern: &quot;(-?[$0-9.,]{2,})|(-?[0-9]+)&quot;        │
-   │  group_select: -1                                     │
-   │  ⟹ ★★ 抓输出里【最后一个】数字，不管格式            │
-   └──────────────────────────────────────────────────────┘
-
-   ⟹ 🔑🔑🔑 这两个 filter 跑在【同一次模型输出】上，
-      ★★★ 所以你会得到【同一次运行的两个分数】。
-
-   ⟹ ★★★ 两个分数之间的差距，就是【纯粹由抽取规则造成的分数损失】。
-
-   ┌───────────────────────────────────────────────────────┐
-   │  ⚠️ 这直接量化了 05 章那句话：                        │
-   │  ★★★【抽取失败 ≠ 答错，但在分数上完全等价】          │
-   │                                                        │
-   │  strict 45%  /  flexible 62%                          │
-   │  ⟹ 那 17 个点【不是模型不会做】，                     │
-   │     是它没按 &quot;#### &quot; 的格式写答案。                    │
-   └───────────────────────────────────────────────────────┘
-
-   ⟹ 🔑 实践建议：★★★ 看到别人报 GSM8K 分数，
-      先问是 strict-match 还是 flexible-extract。
-      ⚠️ 这两个数差十几个点是常事。
+<h3 id="42">4.2 ★★★ 最精妙的设计：两把尺子在源码里是怎么并存的</h3>
+<p>⚠️ 注意 <code>filter_list</code> 里有【两个】条目，不是一个：</p>
+<p>✅ 两条正则原文（放在代码块里，免得表格里的竖线被当成分隔符）：</p>
+<div class="codehilite"><pre><span></span><code>   strict-match      regex_pattern: &quot;#### (\-?[0-9\.\,]+)&quot;
+   flexible-extract  regex_pattern: &quot;(-?[$0-9.,]{2,})|(-?[0-9]+)&quot;
+                     group_select:  -1
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>strict-match</code>（严格匹配）</th>
+<th><code>flexible-extract</code>（宽松抽取）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ 正则在找什么</td>
+<td>必须出现 <code>####</code> 再跟一串数字</td>
+<td>任意一串数字（两种写法取其一）</td>
+</tr>
+<tr>
+<td><code>group_select</code></td>
+<td>默认 <code>0</code>（取第一个匹配）</td>
+<td><strong><code>-1</code></strong>（取<strong>最后一个</strong>匹配）</td>
+</tr>
+<tr>
+<td>★ 它认什么</td>
+<td>只认 GSM8K 官方格式：答案必须写在 <code>"#### "</code> 后面</td>
+<td>抓输出里<strong>最后一个</strong>数字，不管格式</td>
+</tr>
+<tr>
+<td>⚠️ 模型不遵守格式时</td>
+<td>抽取失败 ⟹ 填 <code>"[invalid]"</code> ⟹ 判错</td>
+<td>大概率还能抠到</td>
+</tr>
+<tr>
+<td>⚠️ 它自己的失效模式</td>
+<td>对不写 <code>####</code> 的模型<strong>系统性低估</strong></td>
+<td>★★ 模型最后又写了句「所以答案是 18 元，比预算 20 少」⟹ 抠到 <code>20</code>，<strong>判错</strong></td>
+</tr>
+</tbody>
+</table>
+<h4 id="_1">✅ 源码侧：两把尺子为什么能并存，只需要三行代码</h4>
+<p>★★★ 这是本节真正的看点。⟹ 关键在于 <code>filtered_resps</code> <strong>不是一个值，是一个字典</strong>。</p>
+<p>✅ 第一步，<code>Instance</code> 上的字段（<code>api/instance.py:19-20</code>）：</p>
+<div class="codehilite"><pre><span></span><code>    <span class="n">resps</span><span class="p">:</span> <span class="nb">list</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>
+    <span class="n">filtered_resps</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">)</span>      <span class="c1"># ★★★ 是 dict</span>
+</code></pre></div>
+
+<p>✅ 第二步，yaml 里每个 <code>filter_list</code> 条目被编译成一个 <code>FilterEnsemble</code>，<strong>名字就是 yaml 里的 <code>name</code></strong>（<code>api/task.py:757-769</code>）：</p>
+<div class="codehilite"><pre><span></span><code>        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">filter_list</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_filters</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">for</span> <span class="n">filter_config</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">filter_list</span><span class="p">:</span>
+                <span class="n">filter_name</span> <span class="o">=</span> <span class="n">filter_config</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">]</span>          <span class="c1"># &quot;strict-match&quot; / &quot;flexible-extract&quot;</span>
+                <span class="o">...</span>
+                <span class="n">filter_pipeline</span> <span class="o">=</span> <span class="n">build_filter_ensemble</span><span class="p">(</span><span class="n">filter_name</span><span class="p">,</span> <span class="n">components</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_filters</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">filter_pipeline</span><span class="p">)</span>
+</code></pre></div>
+
+<p>✅ 第三步，每个 ensemble 把结果写进<strong>以自己名字为 key 的槽位</strong>（<code>api/filter.py:45-56</code>，含源码注释）：</p>
+<div class="codehilite"><pre><span></span><code>    <span class="k">def</span><span class="w"> </span><span class="nf">apply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">instances</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Instance</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">resps</span><span class="p">,</span> <span class="n">docs</span> <span class="o">=</span> <span class="nb">zip</span><span class="p">(</span><span class="o">*</span><span class="p">((</span><span class="n">inst</span><span class="o">.</span><span class="n">resps</span><span class="p">,</span> <span class="n">inst</span><span class="o">.</span><span class="n">doc</span><span class="p">)</span> <span class="k">for</span> <span class="n">inst</span> <span class="ow">in</span> <span class="n">instances</span><span class="p">))</span>
+        <span class="n">resps</span><span class="p">,</span> <span class="n">docs</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">resps</span><span class="p">),</span> <span class="nb">list</span><span class="p">(</span><span class="n">docs</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">filters</span><span class="p">:</span>
+            <span class="c1"># apply filters in sequence</span>
+            <span class="n">resps</span> <span class="o">=</span> <span class="n">f</span><span class="p">()</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">resps</span><span class="p">,</span> <span class="n">docs</span><span class="p">)</span>
+
+        <span class="c1"># add the end results after filtering to filtered_requests of their respective source instances.</span>
+        <span class="c1"># has key `self.name`: each FilterEnsemble applied in a given run should use a different name.</span>
+        <span class="k">for</span> <span class="n">inst</span><span class="p">,</span> <span class="n">resp</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">instances</span><span class="p">,</span> <span class="n">resps</span><span class="p">):</span>
+            <span class="n">inst</span><span class="o">.</span><span class="n">filtered_resps</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">resp</span>            <span class="c1"># ★★★ 就是这一行</span>
+</code></pre></div>
+
+<p>✅ 第四步，打分的时候按 key 循环（<code>evaluator.py:624</code> 和 <code>:665</code>）：</p>
+<div class="codehilite"><pre><span></span><code>        <span class="c1"># iterate over different filters used</span>
+        <span class="k">for</span> <span class="n">filter_key</span> <span class="ow">in</span> <span class="n">task</span><span class="o">.</span><span class="n">instances</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">filtered_resps</span><span class="p">:</span>
+            <span class="o">...</span>
+                <span class="n">metrics</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">process_results</span><span class="p">(</span>
+                    <span class="n">doc</span><span class="p">,</span> <span class="p">[</span><span class="n">req</span><span class="o">.</span><span class="n">filtered_resps</span><span class="p">[</span><span class="n">filter_key</span><span class="p">]</span> <span class="k">for</span> <span class="n">req</span> <span class="ow">in</span> <span class="n">requests</span><span class="p">]</span>
+                <span class="p">)</span>
+            <span class="o">...</span>
+                <span class="k">for</span> <span class="n">metric</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">metrics</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                    <span class="n">acc</span><span class="p">[</span><span class="s2">&quot;raw_metrics&quot;</span><span class="p">][(</span><span class="n">metric</span><span class="p">,</span> <span class="n">filter_key</span><span class="p">)]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑🔑 四步连起来看，机制就一句话：
+
+   ★★★ 模型只被调用【一次】（resps 只生成一遍），
+        但 filtered_resps 这个字典里有【几个 key】，
+        最终就出【几份分数】。
+
+   ⟹ ⚠️ 代价为零：不多花一次模型调用，
+      因为两把尺子量的是【同一批原始输出】。
+   ⟹ ★★ 这也是为什么 lm_eval 敢默认给 GSM8K 配两把尺子 ——
+      多一把尺子只多一点 CPU 正则时间。
+
+   ⟹ 🔑 反过来说：★★★ 两个分数之间的差距，
+      就是【纯粹由抽取规则造成的分数损失】，
+      和模型能力一点关系都没有。
+</code></pre></div>
+
+<h4 id="_2">★★ 这两把尺子到底能差多少：去看算过的例子</h4>
+<p>⚠️ <strong>这里不重复造数字。</strong> <a href="评测入门/01-为什么评测是个难题.html">评测入门 01 章</a> §1.3b 用 GSM8K 真实的这两条正则，在一个 4 题的迷你集上<strong>逐题算过一遍</strong>：同一批模型输出，<code>strict-match</code> <strong>25.0%</strong> / 取第一个匹配 <strong>50.0%</strong> / <code>flexible-extract</code> <strong>75.0%</strong> —— ⟹ ★★★ <strong>差 50.0 个百分点，只因为换了抽取规则</strong>。</p>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 那一节还顺手指出了一件更反直觉的事：
+      ★★ flexible-extract 在那批题上分最高（75%），
+      ⚠️ 但它在其中一道题上【把算对的判错了】——
+      ⟹ 因为模型最后又多写了一个数字，而它取的是最后一个。
+
+   ⟹ ★★★ 所以&quot;宽松的尺子分数更高&quot;不等于&quot;宽松的尺子更准&quot;。
+      两把尺子都有自己的系统性偏差，只是方向相反。
+</code></pre></div>
+
+<p>⟹ 🔑 实践建议：★★★ 看到别人报 GSM8K 分数，先问是 <code>strict-match</code> 还是 <code>flexible-extract</code>。⚠️ 这两个数差十几个点是常事。★★ 如果对方报的是<strong>一个</strong>数字又没说尺子名，那个数字就不该进对比表。</p>
 <hr />
 <h2 id="5-mmlu">5. 对照组：MMLU 的任务定义长什么样</h2>
 <p>✅ <code>tasks/mmlu/default/_default_template_yaml</code> 完整原文：</p>
@@ -522,15 +884,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <span class="w">  </span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span>
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 和 gsm8k.yaml 对比，三个决定性的差别：
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 和 gsm8k.yaml 对比，四个决定性的差别：
 
    ① output_type: multiple_choice（不是 generate_until）
       ⟹ ★★★ 走【判别式】路线：不让模型说话，只比四个选项的概率。
+      ✅ 实现见 §2 源码证据③：拆成 4 个 loglikelihood 请求。
 
    ② ★★★【完全没有 filter_list】
       ⚠️ 因为根本不需要抽取 —— 概率最高的那个选项就是模型的答案。
-      ⟹ 🔑🔑 这一条把 02 章的核心区别讲透了：
+      ⟹ 🔑🔑 这一条把 [02 章](评测入门/02-三种评测范式.md) 的核心区别讲透了：
          ★★★ 判别式评测【结构上不可能出现抽取失败】。
+      ⚠️ 但注意：没写 filter_list 不等于没有 filter ——
+         ✅ api/task.py:776 会塞一个名叫 &quot;none&quot; 的默认 take_first 尺子。
+         ⟹ 所以输出表里你会看到 filter 列是 &quot;none&quot;。
 
    ③ ★★★【完全没有 generation_kwargs】
       ⚠️ 因为不生成，所以没有温度、没有停止符、没有采样。
@@ -539,60 +905,184 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ④ fewshot_config: sampler: first_n
       ⟹ ★★ 示例取 dev 集的前 N 条，【不随机】。
       ⟹ 🔑 这是为了可复现：随机选示例 = 每次跑分数都不同。
+      ⚠️ 反观 gsm8k.yaml 【没有】这一项。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>   ┌──────────────┬───────────────────┬──────────────────┐
-   │              │ gsm8k.yaml        │ MMLU template    │
-   ├──────────────┼───────────────────┼──────────────────┤
-   │ 原语         │ generate_until    │ multiple_choice  │
-   │              │                   │ (→ loglikelihood)│
-   │ 需要抽取     │ ★★★ 是（两套）   │ ❌ 否            │
-   │ 采样参数     │ greedy, T=0       │ ⚠️ 不适用        │
-   │ 停止符       │ 三个              │ ⚠️ 不适用        │
-   │ few-shot     │ 5                 │ 由外层配置        │
-   │ 示例选取     │ 未指定            │ first_n（确定）  │
-   │ 闭源 API 可跑│ ✅ 可以           │ ⚠️ 通常不行      │
-   └──────────────┴───────────────────┴──────────────────┘
+<p>★ 两份配置逐项对照：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>gsm8k.yaml</code></th>
+<th>MMLU <code>_default_template_yaml</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原语</td>
+<td><code>generate_until</code></td>
+<td><code>multiple_choice</code> ⟹ 拆成多个 <code>loglikelihood</code></td>
+</tr>
+<tr>
+<td>需要抽取</td>
+<td>★★★ 是，而且配了<strong>两套</strong></td>
+<td>❌ 否（只有默认的 <code>"none"</code> 尺子）</td>
+</tr>
+<tr>
+<td>采样参数</td>
+<td>greedy，T=0</td>
+<td>⚠️ 不适用（不生成）</td>
+</tr>
+<tr>
+<td>停止符</td>
+<td>三个</td>
+<td>⚠️ 不适用</td>
+</tr>
+<tr>
+<td>few-shot 数</td>
+<td>5（写死在任务里）</td>
+<td>由外层配置（<code>--num_fewshot</code>）</td>
+</tr>
+<tr>
+<td>示例选取</td>
+<td>⚠️ 未指定</td>
+<td><code>first_n</code>（确定）</td>
+</tr>
+<tr>
+<td>判分指标</td>
+<td><code>exact_match</code> + 4 条忽略正则</td>
+<td><code>acc</code>（比概率大小，没有正则）</td>
+</tr>
+<tr>
+<td>★★ 闭源 API 上能跑吗</td>
+<td>✅ 可以（只要能生成文本）</td>
+<td>⚠️ <strong>通常不行</strong>，见 §9 第三条</td>
+</tr>
+<tr>
+<td>任务定义版本</td>
+<td><code>3.0</code></td>
+<td><code>1.0</code></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 把这张表读完，一句话结论：
+      ★★★ GSM8K 那一列里&quot;可能出错的地方&quot;比 MMLU 多了一倍，
+      ⚠️ 而这些地方【全都不在模型里，全都在配置里】。
 </code></pre></div>
 
 <hr />
 <h2 id="6-05">6. 过滤器家族（05 章的实现细节）</h2>
 <p>✅ <code>lm_eval/filters/</code> 目录下的文件：</p>
-<div class="codehilite"><pre><span></span><code>   ★ extraction.py     —— 正则抽取、答案定位（★★★ 最常用）
-   ★ selection.py      —— take_first、多数投票（self-consistency）
-   ★ transformation.py —— 大小写、标点等归一化
-   ★ decontamination.py—— 去污染相关
-   ★ custom.py         —— 自定义
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>干什么</th>
+<th>★ 常用函数名</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>extraction.py</code></td>
+<td>★★★ 正则抽取、答案定位（最常用）</td>
+<td><code>regex</code>、<code>regex_pos</code> 等</td>
+</tr>
+<tr>
+<td><code>selection.py</code></td>
+<td><code>take_first</code>、多数投票（self-consistency 自洽投票）</td>
+<td><code>take_first</code></td>
+</tr>
+<tr>
+<td><code>transformation.py</code></td>
+<td>大小写、标点等归一化</td>
+<td>——</td>
+</tr>
+<tr>
+<td><code>decontamination.py</code></td>
+<td>去污染相关</td>
+<td>——</td>
+</tr>
+<tr>
+<td><code>custom.py</code></td>
+<td>自定义</td>
+<td>——</td>
+</tr>
+</tbody>
+</table>
+<p>✅ <code>filters/extraction.py:24-37</code> 的构造函数原文 —— ★★★ 注意第三个参数：</p>
+<div class="codehilite"><pre><span></span><code>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">regex_pattern</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="sa">r</span><span class="s2">&quot;#### (\-?[0-9\.\,]+)&quot;</span><span class="p">,</span>
+        <span class="n">group_select</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+        <span class="n">fallback</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;[invalid]&quot;</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Compile `regex_pattern` and set the fallback for non-matches.</span>
+
+<span class="sd">        `fallback` defines the output returned if no matches for the regex are located.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
 </code></pre></div>
 
-<p>✅ <code>filters/extraction.py</code> 的关键三行：</p>
-<div class="codehilite"><pre><span></span><code>   L16    class RegexFilter(Filter):
-   L26        默认正则模式
-   L28        fallback: str = &quot;[invalid]&quot;
+<p>✅ 它在哪里被用上（<code>extraction.py:47-58</code>）：</p>
+<div class="codehilite"><pre><span></span><code>                <span class="n">match</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">regex</span><span class="o">.</span><span class="n">findall</span><span class="p">(</span><span class="n">resp</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">match</span><span class="p">:</span>
+                    <span class="n">match</span> <span class="o">=</span> <span class="n">match</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">group_select</span><span class="p">]</span>
+                    <span class="o">...</span>
+                    <span class="n">match</span> <span class="o">=</span> <span class="n">match</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">match</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fallback</span>          <span class="c1"># ★★★ 没匹配上就填这个</span>
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑🔑 ★★★ 这个 `fallback = &quot;[invalid]&quot;` 是全框架最该被看见的一行。
 
    ⚠️ 含义：正则没匹配上时，抽取结果被填成字符串 &quot;[invalid]&quot;。
    ⟹ 它和标准答案永远不相等 ⟹ ★★★【判错】。
+</code></pre></div>
 
-   ⟹ 所以：
-      ┌──────────────────────────────────────────────────┐
-      │  &quot;模型答错了&quot;      → filtered_resps = &quot;42&quot;（错的）│
-      │  &quot;抽取失败了&quot;      → filtered_resps = &quot;[invalid]&quot; │
-      │                                                   │
-      │  ★★★ 两者在最终分数上【完全等价】，              │
-      │  ⚠️ 但在 --log_samples 的输出里【清晰可辨】。    │
-      └──────────────────────────────────────────────────┘
+<p>★ 两种"判错"在代码里的区别：</p>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th><code>resps</code>（原始输出）</th>
+<th><code>filtered_resps</code>（抽取结果）</th>
+<th>最终分数</th>
+<th>★★ 能分辨吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型<strong>答错了</strong></td>
+<td><code>"…所以答案是 #### 42"</code></td>
+<td><code>"42"</code>（错的）</td>
+<td>0 分</td>
+<td>——</td>
+</tr>
+<tr>
+<td>★★★ <strong>抽取失败了</strong></td>
+<td><code>"…所以答案是 42。"</code>（没写 <code>####</code>）</td>
+<td><code>"[invalid]"</code></td>
+<td>0 分</td>
+<td>✅ <strong>能</strong>，加 <code>--log_samples</code> 就看得见</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ ★★★ 两者在最终分数上【完全等价】，
+      ⚠️ 但在 --log_samples 的输出里【清晰可辨】。
+      ✅ 两列都在导出里：evaluator.py:645-648 的 &quot;resps&quot; 和 &quot;filtered_resps&quot;。
 
    ⟹ 🔑 排查动作：统计 filtered_resps 里 &quot;[invalid]&quot; 的占比。
       ★★★ 超过 5% 就说明抽取规则和这个模型的输出格式不匹配，
       ⚠️ 此时分数低【不是模型的问题】。
+
+   ⟹ ⚠️ 顺手记一句 `group_select` 的默认值：0，也就是【取第一个匹配】。
+      ★★ GSM8K 的 flexible-extract 专门把它设成 -1（取最后一个）。
+      ⟹ 🔑 对会写思维链的模型，通常【最后一个】才是它的结论，
+         ⚠️ 但&quot;最后一个数字&quot;也可能是它顺手提到的别的数（§4.2）。
 </code></pre></div>
 
 <hr />
 <h2 id="7">7. 命令行：七个你真正会用到的参数</h2>
-<p>✅ 全部出自 <code>lm_eval/_cli/run.py</code>，行号已核对：</p>
+<p>✅ 全部出自 <code>lm_eval/_cli/run.py</code>（⚠️ 0.4.12 里命令行已经搬到这个目录，老资料里的 <code>lm_eval/__main__.py</code> 是旧位置），行号已核对：</p>
 <table>
 <thead>
 <tr>
@@ -603,6 +1093,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>--model</code></td>
+<td>L78</td>
+<td>—</td>
+<td>选后端（<code>hf</code> / <code>vllm</code> / <code>local-chat-completions</code> …）</td>
+</tr>
 <tr>
 <td><code>--tasks</code></td>
 <td>L66</td>
@@ -645,6 +1141,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>"Additional directory for external tasks"</td>
 <td>★★ 加载自己写的任务</td>
 </tr>
+<tr>
+<td><code>--output_path</code></td>
+<td>L171</td>
+<td>—</td>
+<td>结果落盘位置（<code>--log_samples</code> 要配合它）</td>
+</tr>
 </tbody>
 </table>
 <div class="codehilite"><pre><span></span><code>   ⟹ 🔑 三个参数的重要性远超其他：
@@ -652,47 +1154,49 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ★★★ --apply_chat_template
       ⚠️ 不加 = 用 base 模型的拼法去问 chat 模型 = 04 章的头号坑。
       ⟹ 分数可能腰斩，而且【看起来像模型不行】。
+      ⟹ ★ 对应 §3.2 状态表的第 3 步。
 
    ★★★ --log_samples
       ⟹ 唯一能看到 resps（原始输出）和 filtered_resps（抽取结果）
          这两列的办法。★★ 不加它，你对分数为什么低【一无所知】。
+      ⟹ ★ 对应第 5、6 步。
 
    ★★  --limit 20
       ⟹ 先跑 20 条确认流程通了，再跑全量。省钱省时间。
+      ⚠️ 但 --limit 的结果【不能当分数报】——
+         20 题的标准误大到约 11 个百分点（见速查表 J 节）。
 </code></pre></div>
 
 <hr />
 <h2 id="8">8. 自己加一个任务：最小步骤</h2>
-<div class="codehilite"><pre><span></span><code>   ① 建一个目录，比如 ./my_tasks/
-   ② 写一个 yaml，最小字段：
+<div class="codehilite"><pre><span></span><code><span class="c1"># ./my_tasks/my_task.yaml</span>
+<span class="nt">task</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_task</span>
+<span class="nt">dataset_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">json</span><span class="w">                    </span><span class="c1"># 或 HuggingFace 数据集名</span>
+<span class="nt">dataset_kwargs</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">data_files</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/abs/path/to/my.jsonl</span>
+<span class="nt">test_split</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">train</span>
+<span class="nt">output_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">generate_until</span>
+<span class="nt">doc_to_text</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;问题：{{input}}\n答案：&quot;</span>
+<span class="nt">doc_to_target</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;{{gold}}&quot;</span>
+<span class="nt">generation_kwargs</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">until</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;\n问题：&quot;</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">do_sample</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">  </span><span class="nt">temperature</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0</span>
+<span class="nt">metric_list</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">metric</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">exact_match</span>
+<span class="w">    </span><span class="nt">aggregation</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mean</span>
+<span class="w">    </span><span class="nt">higher_is_better</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<span class="nt">filter_list</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;flexible&quot;</span>
+<span class="w">    </span><span class="nt">filter</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">function</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;regex&quot;</span>
+<span class="w">        </span><span class="nt">regex_pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;([ABCD])&quot;</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">function</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;take_first&quot;</span>
+</code></pre></div>
 
-      task: my_task
-      dataset_path: json                    # 或 HuggingFace 数据集名
-      dataset_kwargs:
-        data_files: /abs/path/to/my.jsonl
-      test_split: train
-      output_type: generate_until
-      doc_to_text: &quot;问题：{{input}}\n答案：&quot;
-      doc_to_target: &quot;{{gold}}&quot;
-      generation_kwargs:
-        until: [&quot;\n问题：&quot;]
-        do_sample: false
-        temperature: 0.0
-      metric_list:
-        - metric: exact_match
-          aggregation: mean
-          higher_is_better: true
-      filter_list:
-        - name: &quot;flexible&quot;
-          filter:
-            - function: &quot;regex&quot;
-              regex_pattern: &quot;([ABCD])&quot;
-            - function: &quot;take_first&quot;
-
-   ③ 跑：
-      lm_eval --model hf --model_args pretrained=&lt;model&gt; \
-              --include_path ./my_tasks --tasks my_task \
-              --limit 20 --log_samples --output_path ./out
+<div class="codehilite"><pre><span></span><code>lm_eval<span class="w"> </span>--model<span class="w"> </span>hf<span class="w"> </span>--model_args<span class="w"> </span><span class="nv">pretrained</span><span class="o">=</span>&lt;model&gt;<span class="w"> </span><span class="se">\</span>
+<span class="w">        </span>--include_path<span class="w"> </span>./my_tasks<span class="w"> </span>--tasks<span class="w"> </span>my_task<span class="w"> </span><span class="se">\</span>
+<span class="w">        </span>--limit<span class="w"> </span><span class="m">20</span><span class="w"> </span>--log_samples<span class="w"> </span>--output_path<span class="w"> </span>./out
 </code></pre></div>
 
 <div class="codehilite"><pre><span></span><code>   ⚠️ ★★★ 但先读 [12 章](评测入门/12-自己搭一套评测.md) §12.5：
@@ -704,6 +1208,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ① 你要测的基准框架里已经实现了（省掉重写的功夫）
       ② ★★★ 你需要 loglikelihood（判别式）——手写这个很麻烦
       ③ 你要横向比多个后端（HF / vLLM / API）而不想写适配层
+
+   ⟹ 🔑 还有一个容易被忽略的理由：★★ 它自带【两把尺子并存】这套机制（§4.2）。
+      ⚠️ 自己手写的话，大多数人只会写一把，
+      ⟹ 于是永远看不到&quot;抽取规则吃掉了多少分&quot;。
 </code></pre></div>
 
 <hr />
@@ -712,15 +1220,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ⟹ 它的三个原语里没有&quot;执行代码&quot;&quot;开容器&quot;&quot;多轮工具调用&quot;。
       ⟹ SWE-bench 那类必须用另一套东西，见 [SWE-bench拆解.md](SWE-bench拆解.md)。
 
-   ❌ ★★ LLM-as-a-Judge 的完整工作流
+   ❌ ★★ LLM-as-a-Judge（大模型当裁判）的完整工作流
       ⟹ 可以勉强用 generate_until 拼，但没有内建的
          两两对战、位置交换、Elo 汇总。
       ⟹ 这些在 EvalScope / OpenCompass 里是一等公民，
          见 [OpenCompass与EvalScope拆解.md](OpenCompass与EvalScope拆解.md)。
 
    ⚠️ ★★ 闭源 API 上的判别式评测
-      ⟹ 不是框架的问题，是 API 不返回 logprobs。
+      ⟹ 不是框架的问题，是 API 不返回 logprobs（每个 token 的对数概率）。
       ⟹ 🔑 结构性限制，换框架也解决不了。
+      ⟹ ★★★ 回到 §2 那句话：后端做不到的事，窄腰以上全都做不到。
+
+   ❌ ★★ 它不负责判断【题目本身合不合理】，也不负责排除【数据污染】
+      ⚠️ filters/decontamination.py 只是个工具，
+      ⟹ 是否污染仍然要你自己判断，见 [06 章](评测入门/06-数据污染.md)。
 </code></pre></div>
 
 <hr />
@@ -734,11 +1247,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       （perplexity-based / generation-based / language-modeling-based）
       ★★★ 和它们【一一对应】。
       ⟹ 见 [10 章 §10.1](评测入门/10-DeepSeek的评测口径.md)。
+      ✅ OpenCompass 的 ppl / ll / gen 三个 Inferencer 也是同一批东西，
+         见 [OpenCompass与EvalScope拆解.md](OpenCompass与EvalScope拆解.md)。
+
+   ⟹ 🔑🔑 但本篇真正该带走的是 §4.2：
+      ★★★ 这个框架给 GSM8K 默认配了【两把尺子】，
+         因为它的作者清楚&quot;一把尺子量不准&quot;。
+      ⚠️ 而榜单上只报一个数 ——
+      ⟹ 那个数是哪把尺子量的，几乎从来没人写。
 </code></pre></div>
 
 <hr />
 <blockquote>
-<p>相关：<a href="评测入门/03-三个原语.html">评测入门 03 三个原语</a> ｜ <a href="评测入门/05-答案抽取与打分.html">05 答案抽取与打分</a><br />
+<p>相关：<a href="评测入门/01-为什么评测是个难题.html">评测入门 01 §1.3b 三把尺子算一遍</a> ｜ <a href="评测入门/03-三个原语.html">03 三个原语</a> ｜ <a href="评测入门/05-答案抽取与打分.html">05 答案抽取与打分</a> ｜ <a href="评测入门/附-速查表.html">附-速查表 J 节 噪声下限</a><br />
 返回 <a href="README.html">harness评测框架/</a></p>
 </blockquote>
 </div>

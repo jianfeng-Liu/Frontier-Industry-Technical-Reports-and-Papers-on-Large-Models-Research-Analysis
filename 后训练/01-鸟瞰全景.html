@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -252,7 +257,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="01-ckpt">01 · ⭐ 鸟瞰：从 ckpt 到上线模型</h1>
 <blockquote>
 <p><strong>这一章的目标只有一个：把"后训练"这条流水线的形状看清楚。</strong><br />
-读完你应该能回答：预训练完的模型到底缺什么？为什么要分七个阶段？为什么 2026 年各家的技术报告有一半篇幅在讲强化学习？</p>
+读完你应该能回答：预训练完的模型到底缺什么？为什么要分七个阶段？为什么 2026 年各家的技术报告有一半篇幅在讲强化学习？<br />
+<strong>读法</strong>：本章后半段的每个数字都给了出处和口径，<strong>除法都是能自己验算的</strong>。建议拿纸笔跟着算一遍 1.3 的三张表——算过一遍的数字才会变成直觉。</p>
+<p>⚠️ <strong>本章出现的缩写，先在这里一次性给全称</strong>，后面各章不再重复展开：<strong>ckpt</strong> = checkpoint（检查点，存到磁盘上的一份模型权重）· <strong>base</strong> = base model（基座模型，预训练跑完、还没做过任何对齐的权重）· <strong>SFT</strong> = Supervised Fine-Tuning（有监督微调）· <strong>RL</strong> = Reinforcement Learning（强化学习）· <strong>RLHF</strong> = Reinforcement Learning from Human Feedback（基于人类反馈的强化学习）· <strong>RLVR</strong> = Reinforcement Learning with Verifiable Rewards（基于可验证奖励的强化学习）· <strong>OPD</strong> = On-Policy Distillation（在策略蒸馏）· <strong>DPO</strong> = Direct Preference Optimization（直接偏好优化）· <strong>PPO</strong> = Proximal Policy Optimization（近端策略优化）· <strong>GRPO</strong> = Group Relative Policy Optimization（组相对策略优化）· <strong>RM</strong> = Reward Model（奖励模型）· <strong>CoT</strong> = Chain of Thought（思维链）。完整缩写总表见 <a href="附-速查表.html">附-速查表</a>。</p>
 </blockquote>
 <hr />
 <h2 id="11">1.1 先看一眼"预训练刚训完"的模型有多难用</h2>
@@ -269,87 +276,372 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p>★ 它没有做错任何事——它见过无数张试卷，"北京在哪？"后面<strong>统计上最可能</strong>跟着的就是下一道题。</p>
 <p><strong>所以 base 模型缺的不是知识，是三样别的东西：</strong></p>
-<div class="codehilite"><pre><span></span><code>① 缺【格式】：不知道&quot;轮到我说话了&quot;，也不知道&quot;我说完了&quot;
-② 缺【偏好】：不知道两个都对的回答里，哪个是人想要的
-③ 缺【能力的兑现】：知识在参数里，但不会在需要时把它组织成正确的推理
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>缺的东西</th>
+<th>具体表现</th>
+<th>谁来补</th>
+<th>为什么这件事补起来不难／很难</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>格式</strong></td>
+<td>不知道"轮到我说话了"，也不知道"我说完了"（不会停）</td>
+<td>SFT（<a href="02-SFT-监督微调.html">02 章</a>）</td>
+<td><strong>容易</strong>。这是一层很薄的"出场姿势"，几千条数据就能教会</td>
+</tr>
+<tr>
+<td>② <strong>偏好</strong></td>
+<td>两个都对的回答，不知道哪个是人想要的</td>
+<td>RLHF / DPO（<a href="04-偏好对齐-RLHF与DPO.html">04 章</a>）</td>
+<td><strong>中等</strong>。需要换一种数据形状（成对比较），但不需要模型变强</td>
+</tr>
+<tr>
+<td>③ <strong>能力的兑现</strong></td>
+<td>知识在参数里，但不会在需要时组织成正确的推理</td>
+<td>RLVR / Agentic RL（<a href="05-RLVR-可验证奖励.html">05</a> / <a href="07-AgenticRL-环境成为瓶颈.html">07 章</a>）</td>
+<td><strong>最难，也最贵</strong>。2026 年后训练算力的绝大部分砸在这一格</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★ <strong>第 ③ 点是最反直觉的</strong>。base 模型其实"会"做很多题，只是它做对的概率很低。<br />
-后训练里强化学习那部分，很大程度上在做的事是<strong>把已有的能力从"偶尔做对"变成"稳定做对"</strong>——<br />
-这件事到底算不算"提升能力"，是 2025～2026 年争得最凶的一个问题，见 <a href="05-RLVR-可验证奖励.html">05.6</a>。</p>
+<p>★★ <strong>第 ③ 点是最反直觉的</strong>。base 模型其实"会"做很多题，只是它做对的概率很低。后训练里强化学习那部分，很大程度上在做的事是<strong>把已有的能力从"偶尔做对"变成"稳定做对"</strong>——这件事到底算不算"提升能力"，是 2025～2026 年争得最凶的一个问题，见 <a href="05-RLVR-可验证奖励.html">05.6</a>。</p>
 </blockquote>
 <hr />
 <h2 id="12-2026">1.2 ★★★ 一张图：2026 年的标准后训练流水线</h2>
-<p><strong>先给全景。下面每一格后面都有一章专门讲。</strong></p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────────┐
-│  ① 预训练 base ckpt                                               │
-│     10~40 T token，几万卡·月。产出：&quot;会续写的语言模型&quot;              │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────────┐
-│  ② 中期训练 mid-training      ⭐ 2025 年才被单独命名的阶段          │
-│     几百 B ~ 1 T token 的【高质量 + 带任务味道】语料               │
-│     长上下文扩展、代码/数学加量、少量指令数据                       │
-│     目的：给后面的 SFT 和 RL 一个更好的起点                        │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │        ★ 到这为止都还是&quot;预测下一个 token&quot;
-═════════════════════════════╪══════════════════════════════════════
-                             │        ★ 从这开始才叫【后训练】
-┌────────────────────────────▼─────────────────────────────────────┐
-│  ③ SFT 监督微调                                     → 02 章       │
-│     10 万 ~ 700 万条「问题—标准回答」                              │
-│     产出：一个会对话、格式正确、但能力平平的模型                    │
-│     ★ 现代定位：不是为了性能，是为了给 RL 一个能用的起点            │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────────┐
-│  ④ RLVR 可验证奖励强化学习                          → 05 章       │
-│     数学、代码这类【能自动判对错】的任务                            │
-│     产出：推理能力大幅提升的模型                                    │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────────┐
-│  ⑤ Agentic RL 智能体强化学习      ⭐ 2026 年的主战场  → 07 章      │
-│     真的去跑一个沙箱：改代码、跑测试、查网页、调工具                 │
-│     产出：能完成多步任务的模型                                      │
-│     ★★ 五家 2026 年报告，一半篇幅砸在这一格                        │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────────┐
-│  ⑥ General RL / RLHF 通用对齐                       → 04 章       │
-│     语气、安全、拒答边界、写作质量——这些没法自动判对错的部分         │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │
-┌────────────────────────────▼─────────────────────────────────────┐
-│  ⑦ On-Policy 蒸馏收口 OPD        ⭐ 2026 年的新共识  → 08 章      │
-│     把前面几个阶段/几个专家的能力，合并回一个模型                    │
-│     ★★ 五家报告在这一格【高度趋同】，用的几乎是同一个数学式子       │
-└────────────────────────────┬─────────────────────────────────────┘
-                             ▼
-                        上线模型
+<p><strong>先给全景。下面每一格后面都有一章专门讲。</strong> ★ 这张图是<strong>左对齐的竖向流程</strong>，每一行自成一行，不需要跨行对齐——所以你放大缩小窗口它都不会错位。</p>
+<div class="codehilite"><pre><span></span><code>① 预训练 base ckpt
+│     输入：10~40 T token 的通用语料
+│     产出：会续写、但不会对话的语言模型
+▼
+② 中期训练 mid-training                    ⭐ 2025 年才被单独命名的阶段
+│     几百 B ~ 1 T token 的「高质量 + 带任务味道」语料
+│     长上下文扩展、代码/数学加量、少量指令数据
+│     目的：给后面的 SFT 和 RL 一个更好的起点
+▼
+════════════════════════════════════════════════════════════════
+   ★ 到这为止，训练目标都还是「预测下一个 token」
+   ★ 从这里开始才叫【后训练】；但注意 ③ 的目标其实也还是预测下一个 token
+════════════════════════════════════════════════════════════════
+▼
+③ SFT 监督微调                                              → 02 章
+│     10 万 ~ 700 万条「问题—标准回答」
+│     产出：一个会对话、格式正确、但能力平平的模型
+│     ★ 现代定位：不是为了性能，是为了给 RL 一个能用的起点
+▼
+④ RLVR 可验证奖励强化学习                                    → 05 章
+│     数学、代码这类【能自动判对错】的任务
+│     产出：推理能力大幅提升的模型
+▼
+⑤ Agentic RL 智能体强化学习                ⭐ 2026 年的主战场  → 07 章
+│     真的去跑一个沙箱：改代码、跑测试、查网页、调工具
+│     产出：能完成多步任务的模型
+│     ★★ 五家 2026 年报告，一半篇幅砸在这一格
+▼
+⑥ General RL / RLHF 通用对齐                                → 04 章
+│     语气、安全、拒答边界、写作质量——这些没法自动判对错的部分
+▼
+⑦ On-Policy 蒸馏收口 OPD                  ⭐ 2026 年的新共识  → 08 章
+│     把前面几个阶段/几个专家的能力，合并回一个模型
+│     ★★ 五家报告在这一格【高度趋同】，用的几乎是同一个数学式子
+▼
+   上线模型
 </code></pre></div>
 
+<h3 id="_1">同一条流水线，换成一张对照表看</h3>
+<p><strong>⚠️ 读这张表前先看口径</strong>：<strong>数据量一列全部换算成 token</strong>，不用「条」——「条」乘上平均长度才是 token，两者混用会直接错掉三个数量级（1.3 会把这笔账算一遍）。<strong>算力一列只有标 ✅ 的是一手披露的数字</strong>，其余是量级估计。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>阶段</th>
+<th>优化目标是什么</th>
+<th>数据量（统一按 token）</th>
+<th>算力量级（H800 卡·时）</th>
+<th>产出</th>
+<th>本教程</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>预训练</td>
+<td>下一 token 预测，<strong>每个 token 都算 loss</strong></td>
+<td>10¹³ ~ 4×10¹³</td>
+<td><strong>2.664 M</strong> ✅（V3 口径）</td>
+<td>会续写的 base</td>
+<td>—</td>
+</tr>
+<tr>
+<td>②</td>
+<td>中期训练</td>
+<td>同 ①，只是换了更好的语料</td>
+<td>10¹¹ ~ 10¹²</td>
+<td>10⁵ 量级 ⚠️</td>
+<td>更好的起点</td>
+<td>—</td>
+</tr>
+<tr>
+<td>③</td>
+<td>SFT</td>
+<td>下一 token 预测，<strong>只在 assistant 段算 loss</strong></td>
+<td>10⁸ ~ 10¹⁰</td>
+<td>10³ ~ 10⁴ ⚠️</td>
+<td>会对话、能力平平</td>
+<td><a href="02-SFT-监督微调.html">02</a></td>
+</tr>
+<tr>
+<td>④</td>
+<td>RLVR</td>
+<td>最大化「最终答案对不对」</td>
+<td>题池 10⁴~10⁵ 道；<strong>生成量</strong> 10¹⁰ 量级 ⚠️</td>
+<td><strong>101 K</strong> ✅（R1-Zero 口径）</td>
+<td>推理能力大涨</td>
+<td><a href="05-RLVR-可验证奖励.html">05</a></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>Agentic RL</td>
+<td>最大化「任务成没成」</td>
+<td>环境 10¹~10² 个；一条轨迹 10⁴~10⁵ token</td>
+<td>⚠️ 未披露，普遍认为是 ④ 的数倍</td>
+<td>能做多步任务</td>
+<td><a href="07-AgenticRL-环境成为瓶颈.html">07</a></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>RLHF / General RL</td>
+<td>最大化「人更喜欢哪个」</td>
+<td>偏好对 10⁴ ~ 10⁶ 对</td>
+<td>10³ ~ 10⁴ ⚠️</td>
+<td>语气 / 安全 / 写作</td>
+<td><a href="04-偏好对齐-RLHF与DPO.html">04</a></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>OPD 收口</td>
+<td>向教师的输出分布对齐</td>
+<td>学生自己 rollout，量级同 ④</td>
+<td>⚠️ 未披露</td>
+<td>多个专家合成一个</td>
+<td><a href="08-蒸馏与合并-OPD.html">08</a></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>看这张图最重要的一个认知</strong>：<br />
-<strong>③ SFT 只占整条流水线里很小的一段，而且它的地位在四年里一路下滑。</strong><br />
-2022 年的后训练几乎 = SFT + 一点 RLHF；2026 年的后训练 = <strong>一小段 SFT + 一大堆 RL + 一次蒸馏收口</strong>。</p>
+<p>🔑 <strong>看这张图和这张表最重要的三个认知</strong>：<br />
+<strong>① 真正换了优化目标的只有 ④⑤⑥⑦。</strong> ①②③ 全都是"预测下一个 token"，只有 loss 加在哪不一样（<a href="02-SFT-监督微调.html">02.1</a> 会把这件事拆到 token 级）。所以"后训练"这个词其实横跨了两种完全不同的训练范式。<br />
+<strong>② SFT 只占整条流水线里很小的一段，而且它的地位在四年里一路下滑。</strong> 2022 年的后训练几乎 = SFT + 一点 RLHF；2026 年的后训练 = <strong>一小段 SFT + 一大堆 RL + 一次蒸馏收口</strong>。<br />
+<strong>③ 数据量在 ③ 这一格断崖式下跌（10¹³ → 10⁹ 量级），算力却没有同比例下跌。</strong> 这个"数据少、算力不少"的组合，是后训练所有病（灾难性遗忘、过拟合、多样性坍缩）的共同根源。</p>
 </blockquote>
 <hr />
 <h2 id="13">1.3 每一格实际花多少算力</h2>
-<p>⚠️ <strong>下面这组数字是不同来源拼起来的量级对比，不是同一次实验的严格对照，看趋势就好。</strong></p>
+<p><strong>这一节是全章最该动笔算一遍的地方。</strong> 后训练领域流传着一堆"小六个数量级""只占 5%"的说法，它们大部分不是错，是<strong>口径没说清</strong>。下面三张表把口径全部摊开。</p>
+<h3 id="adeepseek-r1">表 A：DeepSeek-R1 的训练账单（✅ 全部一手披露）</h3>
+<p>✅ 来源：<strong>DeepSeek-R1 报告</strong>（<a href="https://arxiv.org/abs/2501.12948">arXiv:2501.12948</a>，<strong>论文 §B.4.4 + Table 7</strong>；PDF 已归档在 <a href="../harness评测框架/papers/">../harness评测框架/papers/</a>）。报告自己说明：<strong>按 H800 租金 $2 / 卡·时折算</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>H800 卡·时</th>
+<th>美元</th>
+<th>这个数怎么来的（✅ 报告原文给了可验算的拆解）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-R1-Zero</strong>（纯 RL 探路分支）</td>
+<td><strong>101 K</strong></td>
+<td>$202 K</td>
+<td>✅ 报告："64×8 H800"= <strong>512 卡</strong>，耗时 <strong>约 198 小时</strong> ⟹ 512 × 198 = <strong>101,376</strong> 卡·时</td>
+</tr>
+<tr>
+<td><strong>SFT 数据生产</strong>（拒绝采样造 80 万条）</td>
+<td><strong>5 K</strong></td>
+<td>$10 K</td>
+<td>✅ 报告原文 "To create the SFT datasets, we use 5K GPU hours"</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-R1</strong>（冷启动 SFT + RL 全流程）</td>
+<td><strong>41 K</strong></td>
+<td>$82 K</td>
+<td>✅ 报告：同样 <strong>512 卡</strong>，"about 4 days, or roughly <strong>80 hours</strong>" ⟹ 512 × 80 = <strong>40,960</strong> 卡·时</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>147 K</strong></td>
+<td><strong>$294 K</strong></td>
+<td>✅ Table 7</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>这张表最值得注意的一件事</strong>：<strong>探路的那一次（R1-Zero，101 K）比最终出货的那一次（R1，41 K）贵 2.5 倍。</strong> 后训练的账单里，很大一块是"为了搞清楚该怎么做"而不是"做出来"。这一点在 <a href="03-分训与合训.html">03 章</a>讲"分训的产物大多不上线"时还会再出现一次。</p>
+</blockquote>
+<h3 id="b">表 B：后训练到底占预训练的百分之几（⚠️ 除法是我做的，分子分母的来源都标了）</h3>
+<table>
+<thead>
+<tr>
+<th>分子 / 分母</th>
+<th>数值</th>
+<th>占预训练</th>
+<th>口径与出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>分母：DeepSeek-V3 预训练</strong></td>
+<td>2.664 M 卡·时</td>
+<td>100%</td>
+<td>✅ V3 技术报告（<a href="https://arxiv.org/abs/2412.19437">arXiv:2412.19437</a>）<strong>论文 §1</strong> 披露的预训练项</td>
+</tr>
+<tr>
+<td>（对照）V3 的<strong>全部</strong>训练开销</td>
+<td>2.788 M 卡·时</td>
+<td>104.7%</td>
+<td>✅ 同上报告的合计项 = 预训练 2.664 M + 长上下文扩展 0.119 M + V3 自己的后训练 0.005 M</td>
+</tr>
+<tr>
+<td><strong>R1 整条研究线</strong>（含探路的 R1-Zero）</td>
+<td>147 K</td>
+<td>147 / 2664 = <strong>5.5%</strong></td>
+<td>⚠️ 这个除法是我做的，不是报告的结论</td>
+</tr>
+<tr>
+<td><strong>只算 R1 这一版自己的后训练</strong></td>
+<td>41 K</td>
+<td>41 / 2664 = <strong>1.5%</strong></td>
+<td>⚠️ 同上</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"后训练只占预训练 5%"这句话要这么读</strong>：它是对的，但<strong>分子里包含了 R1-Zero 那次探路实验</strong>。如果只问"把一个 base 变成 R1 需要多少算力"，答案是 <strong>1.5%</strong>。两个数都对，差在口径——引用时请把口径一起带上。<br />
+⚠️ <strong>另外要分清 2.664 M 和 2.788 M</strong>：前者是"预训练"这一项，后者是"预训练 + 长上下文扩展 + 后训练"的总账。拿 2.788 M 当预训练数去算占比，会把后训练的占比算小一点点（147/2788 = 5.3%）——差别不大，但口径要说清。</p>
+</blockquote>
+<h3 id="c">表 C：把"卡·时"换成人能感知的时间（⚠️ 除法是我做的）</h3>
+<p><code>1 卡·月 = 24 × 30 = 720 卡·时</code>。<strong>这个换算在每份报告里都要自己做一遍，因为各家披露的单位不统一。</strong></p>
+<table>
+<thead>
+<tr>
+<th>任务</th>
+<th>卡·时</th>
+<th>÷ 720 = 卡·月</th>
+<th>配多少卡</th>
+<th>墙钟时间</th>
+<th>验算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>V3 预训练</td>
+<td>2.664 M</td>
+<td><strong>3700 卡·月</strong></td>
+<td>2048 卡</td>
+<td>3700 / 2048 = <strong>1.81 个月</strong></td>
+<td>2.664 M ÷ 2048 = 1301 小时 = 54.2 天 ✓</td>
+</tr>
+<tr>
+<td>R1-Zero 的 RL</td>
+<td>101 K</td>
+<td><strong>140 卡·月</strong></td>
+<td>512 卡</td>
+<td>140 / 512 = <strong>0.27 个月</strong></td>
+<td>✅ 报告直接给了 198 小时 = 8.25 天 ✓</td>
+</tr>
+<tr>
+<td>R1 的全流程</td>
+<td>41 K</td>
+<td><strong>57 卡·月</strong></td>
+<td>512 卡</td>
+<td><strong>0.11 个月</strong></td>
+<td>✅ 报告直接给了约 80 小时 = 3.3 天 ✓</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>一处需要更正的旧说法</strong>：本章早先的版本把预训练写成"几万卡·月"。<strong>按 V3 这个公开口径，预训练是 3700 卡·月，也就是"几千卡·月"量级</strong>，不是几万。"几万卡·月"要到比 V3 更大、训练 token 更多的任务上才成立（⚠️ 这类数字各家口径差异很大，没有一手披露的就别引用）。<strong><a href="附-速查表.html">附-速查表</a> 里"几万卡·月"那一行同样偏大，以本表为准。</strong></p>
+</blockquote>
+<h3 id="2026">2026 年变了什么</h3>
 <div class="codehilite"><pre><span></span><code>2025 年初（DeepSeek-R1 时代）
-   预训练 V3 基座 ────────────────────────────────────  278 万 H800 卡·时
-   R1 的 RL       ─                                     14.7 万 H800 卡·时
-   ⟹ 后训练 ≈ 预训练的 【5%】        ✅ 见 R1 报告 arXiv:2501.12948
+   预训练 ───────────────────────────────────── 2.664 M 卡·时   ✅ 2412.19437
+   后训练（整条研究线）─                           147 K 卡·时   ✅ 2501.12948
+   ⟹ 后训练 ≈ 预训练的 5.5%（口径见表 B）
 
 2026 年
-   ⟹ 单个【消融实验】就要 1~10 万卡·时
-   ⟹ 前沿实验室的 RL 训练任务规模已经报道到【十万卡量级】  ⚠️ 二手来源
+   ⟹ 单个【消融实验】就要 1~10 万卡·时            ⚠️ 二手来源
+   ⟹ 前沿实验室的 RL 训练任务规模已被报道到十万卡量级  ⚠️ 二手来源
    ⟹ 后训练算力占比从个位数百分比，涨到和预训练【同一量级】
+      ⚠️ 这一条是趋势判断。五家 2026 年报告都没有像 R1 那样
+         公布一张后训练算力表，所以具体百分比【无法回溯】。
 </code></pre></div>
 
-<p>★ <strong>这个变化是理解 2026 年这个领域的第一把钥匙</strong>：当 RL 的算力从 5% 涨到 50%，所有工程问题（异步、气泡、训推一致性、沙箱并发）才会突然变成"报告要写半本"的大事。</p>
+<p>★ <strong>这个变化是理解 2026 年这个领域的第一把钥匙</strong>：当 RL 的算力从个位数百分比涨到和预训练同量级，所有工程问题（异步、气泡、训推一致性、沙箱并发）才会突然变成"报告要写半本"的大事。⚠️ 这些工程问题本身不在本目录展开，它们有专门的一个目录：<a href="../强化学习训练框架/">../强化学习训练框架/</a>。</p>
+<hr />
+<h3 id="_2">⚠️ 顺手把三个会错一个数量级的除法说清楚</h3>
+<p><strong>这三个错在后训练的中文材料里非常常见，而且它们都只是除法做错，不是概念理解错。</strong></p>
+<h4 id="token">错误一：拿「token」除以「条」</h4>
+<table>
+<thead>
+<tr>
+<th>比法</th>
+<th>分子</th>
+<th>分母</th>
+<th>算出来</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>❌ 流传最广的算法</td>
+<td>预训练 10¹² <strong>token</strong></td>
+<td>后训练 10⁶ <strong>条</strong></td>
+<td>10⁶ ⟹ "小六个数量级"</td>
+<td>❌ <strong>token ÷ 条，量纲不同</strong>，这个商没有意义</td>
+</tr>
+<tr>
+<td>✅ 先把「条」换成 token（R1 口径）</td>
+<td>14.8 T = 1.48×10¹³ token ✅ V3 报告</td>
+<td>80 万条 × 约 2000 token/条 ≈ <strong>1.6×10⁹</strong> token（⚠️ 平均长度是我估的，R1 的 SFT 数据里有大量长 CoT）</td>
+<td>1.48×10¹³ ÷ 1.6×10⁹ ≈ <strong>9.3×10³</strong></td>
+<td>✅ 小 <strong>约四个</strong> 数量级</td>
+</tr>
+<tr>
+<td>✅ 数据最多的那一端</td>
+<td>同上</td>
+<td>700 万条 × 约 10³ token/条 ≈ <strong>7×10⁹</strong> token</td>
+<td>1.48×10¹³ ÷ 7×10⁹ ≈ <strong>2.1×10³</strong></td>
+<td>✅ 小 <strong>约三个</strong> 数量级</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>结论：按 token 算，后训练比预训练小「三到四个」数量级，不是六个。</strong></p>
+<blockquote>
+<p>★ <strong>还可以再扣一刀</strong>：SFT 里只有 assistant 段算 loss（<a href="02-SFT-监督微调.html">02.1</a>），一条多轮样本里 assistant 占比常在 30%~50%，所以<strong>真正产生梯度的 token 还要再打对折</strong> ⟹ 按"有效梯度 token"算，差距是<strong>四到五个</strong>数量级。这一刀在 <a href="../数据格式和数据处理/15-后训练数据格式.html">../数据格式和数据处理/15-后训练数据格式.md</a> 里算得更细。</p>
+</blockquote>
+<h4 id="x-x">错误二：把「时间减少 X%」说成「加速 X%」</h4>
+<div class="codehilite"><pre><span></span><code>加速倍数 = 1 / (1 − 时间减少比例)
+
+   时间减少 20%  ⟹  1 / 0.8  = 1.25×   （不是 1.2×）
+   时间减少 50%  ⟹  1 / 0.5  = 2.00×   （不是 1.5×）
+   时间减少 80%  ⟹  1 / 0.2  = 5.00×   （不是 1.8×）
+
+★ 反过来：加速 2× 意味着时间减少 50%，不是减少 200%（那不可能）。
+</code></pre></div>
+
+<h4 id="_3">错误三：把「百分点」说成「百分比」</h4>
+<div class="codehilite"><pre><span></span><code>某个评测从 60% 涨到 63%：
+
+   ✅ 涨了 3 个【百分点】
+   ✅ 相对提升 3 / 60 = 5%（这是【百分比】）
+   ❌ &quot;涨了 3%&quot;  —— 这句话有歧义，读者无法判断是 63% 还是 61.8%
+
+★★ 本教程的约定：涨跌一律写【百分点】，相对变化一律写明&quot;相对&quot;。
+   ⚠️ 引用别人的数字时，如果原文没说清是哪一个，就把这个不确定性一起标出来。
+</code></pre></div>
+
 <hr />
 <h2 id="14">1.4 ★★ 三个必须先建立的概念</h2>
 <p>后面每一章都会用到这三个词，这里一次性讲清楚。</p>
@@ -365,31 +657,88 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <p><strong>为什么 rollout 是 2026 年一切工程问题的源头</strong>：</p>
-<div class="codehilite"><pre><span></span><code>监督学习的一步：   前向 + 反向     ← 几百毫秒，长度固定
-强化学习的一步：   先生成几千个 token（甚至先跑十几轮工具调用）
-                   ↑ 这一步可能要几十秒到几十分钟，且【长短完全不可预测】
-                   然后才是前向 + 反向
-
-⟹ 一批 128 条 rollout，最慢的那条决定整批的时间（长尾问题）
-⟹ 于是有了异步 RL、partial rollout、可抢占 rollout ...  → 07 章
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th></th>
+<th>监督学习的一步</th>
+<th>强化学习的一步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>要做什么</td>
+<td>前向 + 反向</td>
+<td><strong>先生成几千个 token</strong>（Agentic 场景还要先跑十几轮工具调用），<strong>然后</strong>才是前向 + 反向</td>
+</tr>
+<tr>
+<td>一步多久</td>
+<td>几百毫秒</td>
+<td>几十秒 ~ 几十分钟</td>
+</tr>
+<tr>
+<td>长度可预测吗</td>
+<td>✅ 固定（padding / packing 到定长）</td>
+<td>❌ <strong>完全不可预测</strong>，同一批里能差几十倍</td>
+</tr>
+<tr>
+<td>一批里谁决定总时间</td>
+<td>所有样本一样快</td>
+<td>★★ <strong>最慢的那一条</strong>（长尾问题）</td>
+</tr>
+<tr>
+<td>需要推理引擎吗</td>
+<td>❌ 不需要</td>
+<td>✅ 需要，而且和训练引擎是两套代码</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ 一批 128 条 rollout，最慢的那条决定整批的时间；于是有了异步 RL、partial rollout（部分 rollout，把没写完的下一轮接着写）、可抢占 rollout……<strong>⚠️ 这些都是系统问题，本目录不展开</strong>，见 <a href="../强化学习训练框架/02-架构主轴-同步到全异步.html">../强化学习训练框架/02-架构主轴-同步到全异步.md</a> 和 <a href="../强化学习训练框架/03-权重同步.html">../强化学习训练框架/03-权重同步.md</a>。本目录只讲算法和数据那一半。</p>
 <h3 id="on-policy-vs-off-policy">概念二：on-policy vs off-policy</h3>
-<div class="codehilite"><pre><span></span><code>off-policy（离策略）：拿【别人写的】答案训我
-   典型：SFT。数据是人写的、或 GPT 写的、或上一版模型写的
-   ⚠️ 问题：模型自己根本不会那样开头，学到的东西&quot;用不上&quot;
-      这叫 exposure bias（曝光偏差）：
-      训练时它看到的永远是完美前缀，推理时它看到的是自己写歪的前缀
-
-on-policy（在策略）：拿【它自己刚写的】答案训我
-   典型：RL、on-policy 蒸馏
-   ✅ 好处：训练分布和推理分布一致，学到的东西直接可用
-   ⚠️ 代价：每一步都要重新 rollout，贵得多
-</code></pre></div>
-
+<p><strong>先把这两个词的字面意思摆平</strong>：policy（策略）在 RL 里就是"模型"本身；on-policy = 用<strong>当前这一版模型自己生成的</strong>数据训它自己，off-policy = 用<strong>别人或旧版模型生成的</strong>数据训它。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>off-policy（离策略）</th>
+<th>on-policy（在策略）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据谁写的</td>
+<td>人写的 / 更强的模型写的 / <strong>上一版自己</strong>写的</td>
+<td><strong>当前这一版自己</strong>刚写的</td>
+</tr>
+<tr>
+<td>典型代表</td>
+<td>SFT、DPO、普通蒸馏</td>
+<td>RLVR、Agentic RL、OPD</td>
+</tr>
+<tr>
+<td>训练分布 vs 推理分布</td>
+<td>❌ 不一致</td>
+<td>✅ 一致</td>
+</tr>
+<tr>
+<td>典型病</td>
+<td><strong>exposure bias（曝光偏差）</strong>：训练时它看到的永远是完美前缀，推理时它看到的是自己写歪的前缀 ⟹ 学到的东西"用不上"</td>
+<td>—</td>
+</tr>
+<tr>
+<td>代价</td>
+<td>便宜，数据可以反复用</td>
+<td>⚠️ 每一步都要重新 rollout，贵得多</td>
+</tr>
+<tr>
+<td>数据会不会过期</td>
+<td>⚠️ <strong>会</strong>。模型变了，数据还是老的（<a href="04-偏好对齐-RLHF与DPO.html">04.5</a> 会把这件事讲透）</td>
+<td>✅ 不会，信号永远新鲜</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>★★★ <strong>"从 off-policy 走向 on-policy"是这四年后训练最清晰的一条技术趋势。</strong><br />
-你会在 <a href="08-蒸馏与合并-OPD.html">08 章</a>看到它的终点：<strong>连"蒸馏"这种最典型的 off-policy 手段，2026 年也被改造成了 on-policy 的。</strong></p>
+<p>★★★ <strong>"从 off-policy 走向 on-policy"是这四年后训练最清晰的一条技术趋势。</strong> 你会在 <a href="08-蒸馏与合并-OPD.html">08 章</a>看到它的终点：<strong>连"蒸馏"这种最典型的 off-policy 手段，2026 年也被改造成了 on-policy 的。</strong></p>
 </blockquote>
 <h3 id="reward">概念三：奖励 reward</h3>
 <div class="codehilite"><pre><span></span><code>一条 rollout 出来了，怎么给它打分？这个问题的答案在过去四年换了三轮：
@@ -401,6 +750,40 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
 ★★ 这条线是全教程的脊柱，11 章会把它展开成一条完整的因果链。
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th>代</th>
+<th>奖励从哪来</th>
+<th>一个具体例子</th>
+<th>能不能规模化</th>
+<th>典型失效方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2022</td>
+<td><strong>人</strong>（标注员排序）→ 训 RM 模仿</td>
+<td>"这两个回答你更喜欢哪个"</td>
+<td>❌ 人不 scale</td>
+<td><strong>reward hacking</strong>：模型学会讨好 RM 而不是讨好人（<a href="04-偏好对齐-RLHF与DPO.html">04.2</a>）</td>
+</tr>
+<tr>
+<td>2024</td>
+<td><strong>规则 / 验证器</strong></td>
+<td>数学比对标准答案、代码跑单元测试</td>
+<td>✅ 完全自动</td>
+<td>只覆盖"有客观对错"的任务；验证器本身可能有漏洞（<a href="06-奖励从哪来.html">06.4</a>）</td>
+</tr>
+<tr>
+<td>2026</td>
+<td><strong>环境</strong></td>
+<td>把测试修好了没有、网页任务完成了没有</td>
+<td>⚠️ 自动，但<strong>环境本身要人造</strong></td>
+<td>瓶颈从"模型"转移到"环境"（<a href="07-AgenticRL-环境成为瓶颈.html">07.2</a>）</td>
+</tr>
+</tbody>
+</table>
 <hr />
 <h2 id="15">1.5 一条数据在后训练里的旅程</h2>
 <p><strong>跟着一道数学题走一遍，把上面的抽象概念落到实处：</strong></p>
@@ -418,7 +801,7 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
         ↓
    让模型自己写 8 个解法（8 次 rollout）
         ↓
-   把每个解法的最终答案和标准答案比：  ✓ ✗ ✗ ✓ ✗ ✓ ✗ ✗   → 3 对 5 错
+   把每个解法的最终答案和标准答案比：  对 错 错 对 错 对 错 错   → 3 对 5 错
         ↓
    GRPO：对的那 3 条，提高它们出现的概率；错的 5 条，降低
         ↓
@@ -443,6 +826,51 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
    学生朝专家的分布靠拢 → 三个专家合并成一个模型   → 08 章
 </code></pre></div>
 
+<p><strong>同一道题，四个阶段拿到的"监督信号"完全不同</strong>——这张表是理解整条流水线的另一个角度：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>给模型什么</th>
+<th>监督信号的粒度</th>
+<th>信号里有多少信息</th>
+<th>这个信号能不能告诉模型"更好的思路"</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SFT</td>
+<td>题目 + <strong>一个</strong>标准解法</td>
+<td>每个 assistant token 一个目标词</td>
+<td>最稠密</td>
+<td>❌ 不能。它只说"照这样写"</td>
+</tr>
+<tr>
+<td>RLVR</td>
+<td>题目（<strong>不给答案</strong>）</td>
+<td><strong>一整条轨迹一个标量</strong>（对 / 错）</td>
+<td>最稀疏</td>
+<td>✅ 能。靠 8 条里哪些对，比较出来</td>
+</tr>
+<tr>
+<td>Agentic RL</td>
+<td>任务 + 一个真实环境</td>
+<td>一整条轨迹一个标量，<strong>但轨迹长几十倍</strong></td>
+<td>更稀疏（长程信用分配问题，见 <a href="07-AgenticRL-环境成为瓶颈.html">07.6</a>）</td>
+<td>✅ 能，但归因很难</td>
+</tr>
+<tr>
+<td>OPD</td>
+<td>题目 + <strong>一个教师模型</strong></td>
+<td>学生写的<strong>每个 token</strong> 上一整个概率分布</td>
+<td>★★ 比 SFT 还稠密</td>
+<td>✅ 能，而且逐 token 地说</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>这张表解释了 2026 年为什么是"RL 练能力 + OPD 收口"这个组合</strong>：RL 的信号最有信息量但最稀疏（样本效率低），OPD 的信号最稠密（样本效率高）但需要有一个已经练好的教师。<strong>先用贵的稀疏信号把能力练出来，再用便宜的稠密信号把它复制进一个模型里。</strong></p>
+</blockquote>
 <hr />
 <h2 id="16">1.6 四年时间线（预告）</h2>
 <p><strong>这张表是 <a href="11-演进主线-三代范式.html">11 章</a>的缩略版，先扫一眼建立坐标系：</strong></p>
@@ -463,7 +891,7 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
 <tr>
 <td>2022-12</td>
 <td><strong>Constitutional AI</strong>（arXiv:2212.08073）</td>
-<td>打分的人<strong>开始被模型替代</strong>（RLAIF）</td>
+<td>打分的人<strong>开始被模型替代</strong>（RLAIF = Reinforcement Learning from AI Feedback）</td>
 </tr>
 <tr>
 <td>2023-05</td>
@@ -473,12 +901,12 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
 <tr>
 <td>2023-05</td>
 <td><strong>DPO</strong>（arXiv:2305.18290）</td>
-<td>偏好对齐<strong>不用 RL 也能做</strong>，门槛暴跌</td>
+<td>证明"最优策略"和"奖励函数"之间有<strong>闭式对应</strong>，于是偏好对齐<strong>不用 RL 也能做</strong>，门槛暴跌（<a href="04-偏好对齐-RLHF与DPO.html">04.4</a>）</td>
 </tr>
 <tr>
 <td>2024-02</td>
 <td><strong>DeepSeekMath / GRPO</strong>（arXiv:2402.03300）</td>
-<td>去掉 critic，RL 便宜了一大截</td>
+<td>去掉 critic（价值模型），RL 的显存账从 36 字节/参数降到 20 字节/参数（<a href="04-偏好对齐-RLHF与DPO.html">04.3</a>）</td>
 </tr>
 <tr>
 <td>2025-01</td>
@@ -493,7 +921,7 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
 <tr>
 <td>2025-10</td>
 <td><strong>ScaleRL</strong>（arXiv:2510.13786）</td>
-<td>RL 也有 <strong>scaling law</strong> 了</td>
+<td>RL 也有 <strong>scaling law</strong>（规模定律）了</td>
 </tr>
 <tr>
 <td>2026 全年</td>
@@ -503,15 +931,22 @@ on-policy（在策略）：拿【它自己刚写的】答案训我
 </tbody>
 </table>
 <hr />
-<h2 id="17">1.7 这一章的三句话总结</h2>
+<h2 id="17">1.7 这一章的四句话总结</h2>
 <div class="codehilite"><pre><span></span><code>① 后训练不是&quot;微调一下&quot;，它是一条七阶段的流水线，
    而且重心在过去四年从 SFT【彻底移到了 RL】。
+   ★ 但注意：①②③ 三格的训练目标其实都还是&quot;预测下一个 token&quot;，
+     真正换了优化目标的只有 ④⑤⑥⑦。
 
 ② 理解 2026 年这个领域的钥匙是两个词：
    【rollout 很贵】 和 【on-policy 更有效】。
    所有工程复杂度都来自第一个，所有算法演进都来自第二个。
 
 ③ 奖励从哪来（人 → 规则 → 环境），是这条演进线的真正主轴。
+
+④ ⚠️ 引用这个领域的任何数字前，先问三句话：
+   · 这是 token 还是「条」？（差三到四个数量级）
+   · 这是&quot;时间减少&quot;还是&quot;加速倍数&quot;？（加速 = 1/(1−减少比例)）
+   · 这是百分点还是相对百分比？
 </code></pre></div>
 
 <hr />

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,9 +256,26 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="10">10 · 评测、能力矩阵与回归</h1>
 <blockquote>
-<p><strong>这一章讲：怎么知道你这一轮后训练是"变好了"还是"变好了一半、坏了另一半"。</strong><br />
-读完你应该能回答：为什么后训练团队最怕的不是分数低而是分数高？pass@1 和 pass@k 该看哪个？以及<strong>为什么 SFT 阶段的分数不能拿来选 RL 的起点。</strong></p>
+<p><strong>这一章讲：怎么知道你这一轮后训练是"变好了"还是"变好了一半、坏了另一半"。</strong></p>
+<p>读完你应该能回答：为什么后训练团队最怕的不是分数低而是分数高？"掉了 2 分"算不算掉？pass@1 和 pass@k 该看哪个？以及<strong>为什么 SFT 阶段的分数不能拿来选 RL 的起点。</strong></p>
+<p>📖 <strong>和隔壁目录的分工</strong>（这一条很重要，别读重了）：<a href="../harness评测框架/">../harness评测框架/</a> 讲的是<strong>通用评测方法论</strong>——评测的三个原语、few-shot 怎么设、答案怎么抽取、LLM 当裁判、榜单怎么读、标准误和 pass@k 的完整推导。<strong>本章只讲后训练特有的三个问题</strong>：<br />
+<strong>①</strong> 怎么判断<strong>对齐税</strong>（为了安全和风格付出了多少硬能力）；<br />
+<strong>②</strong> 怎么发现<strong>能力回退</strong>（提了数学、掉了写作）；<br />
+<strong>③</strong> 怎么防<strong>过拟合到评测集</strong>（尤其是后训练这种数据量小、迭代快的场景）。<br />
+公式和表格本章只给<strong>能当场用的最小版本</strong>，完整版在那边。</p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>能力矩阵</strong>（capability matrix）—— 一张"训练轮次 × 能力维度"的表。后训练评测的主要工具，看的是<strong>哪一格塌了</strong>。</p>
+<p><strong>对齐税</strong>（alignment tax）—— 为了安全、风格、可读性而牺牲掉的一部分硬能力。<strong>本章给它一个可算的定义。</strong></p>
+<p><strong>回归</strong>（regression）—— 这里不是统计学的"回归分析"，而是软件工程意义上的<strong>退化</strong>：原来会的东西，这一轮改完不会了。</p>
+<p><strong>跷跷板效应</strong>（seesaw effect）—— 一个域涨、另一个域就掉。</p>
+<p><strong>SE</strong>（standard error，标准误）—— 同一套评测重跑一遍，分数典型的抖动幅度。<strong>比 SE 小的差异不能叫"提升"。</strong></p>
+<p><strong>pp</strong>（percentage point，百分点）—— 两个百分数相减的单位。⚠️ "从 40% 涨到 44%"是<strong>涨了 4 个百分点</strong>，不是"涨了 4%"（那是 10%）。</p>
+<p><strong>McNemar 检验</strong>（McNemar's test）—— 两个模型跑<strong>同一批题</strong>时的配对显著性检验，只看<strong>双方判断不同</strong>的那些题。</p>
+<p><strong>pass@1 / pass@k</strong> —— 答一次的正确率 / 答 k 次至少对一次的比例。</p>
+<p><strong>holdout 集</strong>（留出集）—— 不参与训练、只用来验收的那一份数据。</p>
+<p><strong>reward hacking</strong>（奖励作弊）—— 模型找到了"拿高分但没解决问题"的捷径。</p>
 <hr />
 <h2 id="101">10.1 ★ 后训练的评测，和预训练的评测不是一回事</h2>
 <div class="codehilite"><pre><span></span><code>【预训练评测】少数几个指标，看趋势
@@ -264,147 +286,851 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    目标：确认这一轮改动【没有把别的能力换掉】
 </code></pre></div>
 
-<p><strong>一张典型的后训练能力矩阵长这样</strong>（列是能力，行是训练轮次）：</p>
-<div class="codehilite"><pre><span></span><code>              数学   代码   指令  长文  工具  多轮  安全  中文  幻觉率↓
-base           41    35     52    48    12    44    61    55     22
-+SFT           68    62     84    71    58    79    88    76     15
-+RLVR          79    74     83    70    57    76    86    74     14
-                                   ↑     ↑     ↑     ↑
-                            ★ 这四格在 RLVR 之后【掉了】
-                              ⟹ 这就是&quot;跷跷板&quot;在评测上的样子
-+RLHF          78    73     88    73    61    83    94    79     11
-                                                      ↑
-                              ★ 数学掉 1 分换安全涨 8 分 = alignment tax
+<p><strong>一张典型的后训练能力矩阵长这样</strong>（⚠️ 下面所有数字都是为讲解构造的，不是任何一家的实测值；但<strong>每一格的加减法都能自己验算</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>数学</th>
+<th>代码</th>
+<th>指令</th>
+<th>长文</th>
+<th>工具</th>
+<th>多轮</th>
+<th>安全</th>
+<th>中文</th>
+<th>幻觉率 ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>base</td>
+<td>41</td>
+<td>35</td>
+<td>52</td>
+<td>48</td>
+<td>12</td>
+<td>44</td>
+<td>61</td>
+<td>55</td>
+<td>22</td>
+</tr>
+<tr>
+<td><strong>+SFT</strong></td>
+<td>68</td>
+<td>62</td>
+<td>84</td>
+<td>71</td>
+<td>58</td>
+<td>79</td>
+<td>88</td>
+<td>76</td>
+<td>15</td>
+</tr>
+<tr>
+<td><strong>+RLVR</strong></td>
+<td><strong>79</strong></td>
+<td><strong>74</strong></td>
+<td>83</td>
+<td>70</td>
+<td>57</td>
+<td>76</td>
+<td>86</td>
+<td>74</td>
+<td>14</td>
+</tr>
+<tr>
+<td><strong>+RLHF</strong></td>
+<td>78</td>
+<td>73</td>
+<td><strong>88</strong></td>
+<td><strong>73</strong></td>
+<td><strong>61</strong></td>
+<td><strong>83</strong></td>
+<td><strong>94</strong></td>
+<td><strong>79</strong></td>
+<td><strong>11</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>把变化量单独拉出来，这张表才有用</strong>（★ 这是实践中真正会看的那张表）：</p>
+<table>
+<thead>
+<tr>
+<th>这一步</th>
+<th>数学</th>
+<th>代码</th>
+<th>指令</th>
+<th>长文</th>
+<th>工具</th>
+<th>多轮</th>
+<th>安全</th>
+<th>中文</th>
+<th>幻觉率 ↓</th>
+<th>怎么读</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base → +SFT</code></td>
+<td>+27</td>
+<td>+27</td>
+<td>+32</td>
+<td>+23</td>
+<td>+46</td>
+<td>+35</td>
+<td>+27</td>
+<td>+21</td>
+<td>−7（好）</td>
+<td>★ 全涨。SFT 是"把能力接出来"，很少有代价</td>
+</tr>
+<tr>
+<td><strong><code>+SFT → +RLVR</code></strong></td>
+<td><strong>+11</strong></td>
+<td><strong>+12</strong></td>
+<td>−1</td>
+<td>−1</td>
+<td>−1</td>
+<td><strong>−3</strong></td>
+<td><strong>−2</strong></td>
+<td><strong>−2</strong></td>
+<td>−1（好）</td>
+<td>⚠️ <strong>两格涨、六格掉</strong> —— 这就是跷跷板</td>
+</tr>
+<tr>
+<td><strong><code>+RLVR → +RLHF</code></strong></td>
+<td><strong>−1</strong></td>
+<td><strong>−1</strong></td>
+<td>+5</td>
+<td>+3</td>
+<td>+4</td>
+<td>+7</td>
+<td><strong>+8</strong></td>
+<td>+5</td>
+<td>−3（好）</td>
+<td>★ 数学/代码各掉 1 分，换来安全 +8 = <strong>对齐税</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ★ 验算一行：多轮，+SFT 79 -&gt; +RLVR 76，差 = 76 − 79 = −3  ✓
+   ★ 验算&quot;六格&quot;：指令 −1、长文 −1、工具 −1、多轮 −3、安全 −2、中文 −2
+      =&gt; 一共【六格】在掉，不是四格。
+      ⚠️ 这是本节上一版写错过的地方：光看原始分表很容易数漏，
+         所以【必须把差值表单独算出来】，不能靠眼睛在原始表上扫。
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>后训练团队 90% 的时间在看这张表的"掉了的格子"，而不是"涨了的格子"。</strong><br />
-✅ 五家报告都描述了类似机制：GLM-5 的"累积性损害"、DeepSeek-V4 的"领域奖励冲突"、<br />
-Nemotron 3 Super 的"统一混合训练防止单任务回退"，说的都是这张表。</p>
+<p>🔑 <strong>后训练团队的注意力，大部分花在这张差值表的负数上，而不是正数上。</strong> 原因很简单：正数是你本来想要的（你就是为了提数学才做这一轮 RL），负数才是你不知道的。</p>
+</blockquote>
+<h3 id="_1">★★★ 对齐税：给它一个可以算的定义</h3>
+<p>"对齐税"这个词常被当形容词用。其实它可以写成一个<strong>交换率</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   ★★ 对齐税（交换率口径）
+        = 这一步【掉掉的硬能力分数】 ÷ 这一步【涨上来的对齐能力分数】
+
+   代入上表的 +RLVR -&gt; +RLHF 这一步：
+        硬能力损失 = 数学 1 分 + 代码 1 分 = 2 分
+        对齐收益   = 安全 8 分
+        =&gt; 交换率 = 2 ÷ 8 = 0.25 分硬能力 / 分安全
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>这一步</th>
+<th>硬能力净变化</th>
+<th>对齐能力净变化</th>
+<th><strong>交换率</strong></th>
+<th>怎么判断值不值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>+SFT → +RLVR</code></td>
+<td>数学+代码 <strong>+23</strong></td>
+<td>安全 −2、指令 −1</td>
+<td>⚠️ 反向：<strong>付了 3 分对齐换 23 分硬能力</strong></td>
+<td>★ 这一步很划算，但<strong>安全必须在后面补回来</strong></td>
+</tr>
+<tr>
+<td><code>+RLVR → +RLHF</code></td>
+<td>数学+代码 <strong>−2</strong></td>
+<td>安全 +8、多轮 +7、指令 +5</td>
+<td><strong>0.25 分硬能力 / 分安全</strong></td>
+<td>★ 这是"便宜的对齐税"</td>
+</tr>
+<tr>
+<td>⚠️ 警戒线</td>
+<td>—</td>
+<td>—</td>
+<td><strong>&gt; 1.0</strong></td>
+<td>★★ 掉的比涨的多 —— 要么奖励模型有问题，要么 KL 约束太松</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 为什么要写成交换率，而不是只说&quot;掉了 2 分&quot;：
+   因为&quot;掉 2 分&quot;本身没有信息 —— 掉 2 分换来 8 分安全是赚的，
+   掉 2 分换来 0.5 分安全是亏的。
+   ⟹ 🔑 只有比值能支撑&quot;这一轮要不要留&quot;的决定。
+
+⚠️ 这个&quot;交换率&quot;口径是我为了讲清这件事而定义的，不是业内标准术语
+   —— 各家报告里的&quot;alignment tax&quot;基本只是定性说法。
+   ★ 但它的好处是：你自己的两次迭代可以用同一个口径比。
+</code></pre></div>
+
+<h3 id="_2">★★★ 先过噪声门槛：上面那六个负号，有几个是真的</h3>
+<p><strong>这一节是整章最该先读的。</strong> 因为上面那张差值表里，<strong>大部分负号可能根本不是真的</strong>。</p>
+<div class="codehilite"><pre><span></span><code>   ★★★ 一个分数自己的抖动（标准误）：
+
+        SE ≈ sqrt( p × (1 − p) ÷ n )
+
+      n = 题数，p = 准确率。
+      ★ 不确定 p 时一律取 0.5 —— 这是【最保守】（SE 最大）的取法。
+
+   代入 n = 500、p = 0.5：
+        SE ≈ sqrt( 0.25 ÷ 500 ) = sqrt( 0.0005 ) = 0.0224
+        =&gt; 约 2.2 个百分点
+</code></pre></div>
+
+<p>⟹ 🔑🔑🔑 <strong>500 道题、成绩在五成上下时，单个分数自己就带着约 ±2.2 个百分点的抖动。</strong> 回头看那六个负号：</p>
+<table>
+<thead>
+<tr>
+<th>掉了的格</th>
+<th>差值</th>
+<th>和 2.2 pp 的噪声门槛比</th>
+<th>能不能叫"回退"</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>多轮</td>
+<td>−3</td>
+<td>勉强越过</td>
+<td>⚠️ <strong>可疑，要复测</strong></td>
+</tr>
+<tr>
+<td>安全</td>
+<td>−2</td>
+<td>在门槛内</td>
+<td>❌ 单看这一格，<strong>不能</strong></td>
+</tr>
+<tr>
+<td>中文</td>
+<td>−2</td>
+<td>在门槛内</td>
+<td>❌ 不能</td>
+</tr>
+<tr>
+<td>指令 / 长文 / 工具</td>
+<td>各 −1</td>
+<td>远在门槛内</td>
+<td>❌ 不能</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 那&quot;六格都在掉&quot;这件事本身算不算证据？—— 算一点，但不够。
+
+   把它当成一个【符号检验】（sign test）：
+   8 个能力列里 6 个朝下。如果这一轮改动其实毫无影响（每列朝上朝下各 50%）：
+
+        P(8 列里至少 6 列朝下)
+          = [ C(8,6) + C(8,7) + C(8,8) ] / 2^8
+          = ( 28 + 8 + 1 ) / 256
+          = 37 / 256
+          = 0.145
+
+   =&gt; ⚠️ 单边 p ≈ 0.145。【不够结实。】
+   ⟹ 🔑 所以&quot;一片负号&quot;给的是【要去查】的理由，不是【已经回退】的结论。
+</code></pre></div>
+
+<p><strong>那该怎么判？★★★ 用 McNemar 配对检验，不要把两个 SE 相加。</strong></p>
+<div class="codehilite"><pre><span></span><code>⚠️⚠️ 最常见的错误做法：
+     &quot;两个模型各有 2.2 pp 的 SE，所以差值要超过 2.2 + 2.2 = 4.4 pp 才算真。&quot;
+     =&gt; ❌ 这是错的，而且错得很保守，会让你漏掉真实的回退。
+
+★★★ 正确做法：两个模型跑的是【同一批题】，这叫配对比较。
+   题目本身偏难偏易这部分误差，两边共有，会互相抵消。
+   McNemar 检验只看【双方判断不同】的那些题：
+
+        SE(差) = sqrt( n01 + n10 ) ÷ n
+
+      n01 = 旧版对、新版错 的题数
+      n10 = 旧版错、新版对 的题数
+      ★ 双方都对、都错的题【完全不进这个公式】—— 它们不含信息。
+</code></pre></div>
+
+<p><strong>把"多轮 −3"这一格真的判一遍</strong>（⚠️ 分歧题数是构造的，但算术可验算）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>数值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>题数 n</td>
+<td>500</td>
+<td>同一批题，两版模型都跑过</td>
+</tr>
+<tr>
+<td>分数差</td>
+<td>79 → 76，<strong>−3 pp</strong></td>
+<td>= 少对了 <code>0.03 × 500 = 15</code> 道</td>
+</tr>
+<tr>
+<td>n01（旧对新错）</td>
+<td>30</td>
+<td>—</td>
+</tr>
+<tr>
+<td>n10（旧错新对）</td>
+<td>15</td>
+<td>★ 验算：<code>30 − 15 = 15</code> 道净减 ✓</td>
+</tr>
+<tr>
+<td><strong>McNemar SE</strong></td>
+<td><code>sqrt(45) ÷ 500 = 6.708 ÷ 500 =</code> <strong>1.34 pp</strong></td>
+<td>只用了 45 道分歧题</td>
+</tr>
+<tr>
+<td><strong>z 值</strong></td>
+<td><code>3.0 ÷ 1.34 =</code> <strong>2.24</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>判定</strong></td>
+<td>★ <code>z &gt; 1.96</code> ⟹ <strong>这个回退是真的</strong></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 对照一下三种算法给出的结论，差别大到会改变决策：
+
+   ① 两个 SE 相加（❌ 错误做法）
+        门槛 = 1.85 + 1.85 = 3.71 pp   （p=0.78 时单个 SE ≈ 1.85 pp）
+        =&gt; 3.0 &lt; 3.71，判为&quot;噪声&quot;       ❌ 漏报
+
+   ② 独立假设下的差值 SE（口径对，但没用上配对）
+        SE = sqrt(1.85² + 1.85²) = 1.85 × 1.414 = 2.62 pp
+        =&gt; z = 3.0 ÷ 2.62 = 1.15，判为&quot;噪声&quot;   ❌ 还是漏报
+
+   ③ ★★★ McNemar 配对（正确）
+        SE = 1.34 pp =&gt; z = 2.24，判为【真的掉了】   ✓
+
+   ⟹ 🔑 配对检验的灵敏度明显更高，因为它把&quot;题目难易&quot;这部分方差消掉了。
+      ⚠️ 用 ① 的团队会系统性地漏掉真实的能力回退 —— 这是实践中最常见的一个坑。
+
+   ★ 验算 ①：sqrt( 0.78 × 0.22 ÷ 500 ) = sqrt( 0.1716 ÷ 500 )
+                = sqrt( 0.0003432 ) = 0.01853 =&gt; 1.85 pp  ✓
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>两条可以直接抄进流程的纪律</strong>：<br />
+<strong>①</strong> 差值小于 <code>sqrt(p(1−p)/n)</code> 的，<strong>不写进报告里的"提升"</strong>，顶多写"持平"。<br />
+<strong>②</strong> 要判一个格子是不是真掉了，<strong>保留两版模型的逐题判对判错记录</strong>，做 McNemar。只存最终分数的话，这件事事后做不了。</p>
+<p>📖 完整的标准误表（各基准题量 × SE × 95% 区间）、以及"采样 k 次取平均消掉哪种噪声"的推导，在 <a href="../harness评测框架/评测入门/11-怎么读懂一张榜单.html">../harness评测框架/评测入门/11-怎么读懂一张榜单.md</a> 和那边的 <a href="../harness评测框架/评测入门/附-速查表.html">附-速查表</a>。<strong>本章和那边是同一个口径。</strong></p>
+</blockquote>
+<h3 id="_3">★ 这张矩阵要盯哪几列：后训练特有的四个"易塌点"</h3>
+<table>
+<thead>
+<tr>
+<th>易塌的能力</th>
+<th>为什么是它</th>
+<th>哪一步最容易塌</th>
+<th>单轮评测常漏掉的原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>长文 / 长上下文</strong></td>
+<td>★ SFT 数据绝大多数是<strong>短</strong>的，长样本稀少</td>
+<td>SFT、RLVR</td>
+<td>短基准根本测不到</td>
+</tr>
+<tr>
+<td><strong>多轮对话</strong></td>
+<td>RL 的题基本是<strong>单轮</strong>问答</td>
+<td>RLVR、Agentic RL</td>
+<td>单轮基准发现不了多轮退化</td>
+</tr>
+<tr>
+<td><strong>安全 / 拒答边界</strong></td>
+<td>奖励是"解题成功率"，安全行为对它毫无贡献</td>
+<td>★★ RLVR</td>
+<td>安全集通常不在常规能力矩阵里</td>
+</tr>
+<tr>
+<td><strong>写作 / 风格</strong></td>
+<td>没有可验证奖励，RLVR 完全不管它</td>
+<td>★★ RLVR</td>
+<td>自动指标测不出"读起来怎么样"</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ &quot;提了数学、掉了写作&quot;之所以是最经典的后训练事故，
+   原因就在上表最后一行：RLVR 的奖励函数里【没有任何一项代表写作】。
+   ⟹ 🔑 优化一个没有写作项的目标，写作就只是一个自由变量 —— 它往哪漂都不奇怪。
+
+⚠️ 所以能力矩阵的列【不能只放有基准的能力】。
+   没有好基准的能力（写作、风格、语气）要靠人工盲测占一列，
+   否则它会在表上&quot;不存在&quot;，于是永远不会被发现塌了。
+</code></pre></div>
+
+<blockquote>
+<p>✅ 多份 2026 技术报告都描述了同一类机制，只是叫法不同：GLM-5 的"多阶段 RL 顺序优化会<strong>累积性损害</strong>先前能力"、DeepSeek-V4 的"混合 RL 会让不同<strong>领域奖励冲突</strong>"、Nemotron 3 Super 的"统一混合训练<strong>防止单任务回退</strong>"。⚠️ 注意 Nemotron（NVIDIA）<strong>不属于</strong>本教程反复说的"五家"（DeepSeek-V4 / Kimi-K3 / GLM-5 / MiniMax-M3 / openPangu-2.0），它是第六个来源。横向对比见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。</p>
 </blockquote>
 <hr />
 <h2 id="102-pass1-passk">10.2 ★★ pass@1 还是 pass@k：一个必须想清楚的选择</h2>
 <p>先把两个词说清楚：</p>
-<div class="codehilite"><pre><span></span><code>pass@1   让模型答【一次】，对的比例          ← 衡量&quot;稳不稳&quot;
-pass@k   让模型答【 k 次】，只要有一次对就算对  ← 衡量&quot;会不会&quot;（能力边界）
+<div class="codehilite"><pre><span></span><code>pass@1   让模型答【一次】，对的比例            &lt;- 衡量&quot;稳不稳&quot;
+pass@k   让模型答【 k 次】，只要有一次对就算对  &lt;- 衡量&quot;会不会&quot;（能力边界）
          k 常取 8 / 32 / 256
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>RL 会让这两个指标【朝不同方向走】：
+<p><strong>RL 会让这两个指标朝不同方向走</strong>（纯 ASCII 示意，⚠️ 形状是示意，不是实测曲线）：</p>
+<div class="codehilite"><pre><span></span><code>  分数
+    ^
+    |                     .-------------  base 的 pass@k（k 很大时）
+    |          .---------&#39;
+    |      .--&#39;    .--------------------  RL 后的 pass@k
+    |    .&#39;   .---&#39;
+    |  .&#39; .--&#39;
+    | .;-&#39;        ★ RL 明显抬高 pass@1（最左端）
+    |/            ⚠️ 但在 k 很大时，可能被 base 反超
+    +------------------------------------&gt;  k
+     1     8    32   128   512
+</code></pre></div>
 
-   分数
-    ▲
-    │            ┌──── base 的 pass@k（k 很大时）
-    │   ┌────────┴───  RL 后的 pass@k
-    │  ╱
-    │ ╱  ★ RL 明显抬高 pass@1
-    │╱   ⚠️ 但在 k 很大时，可能被 base 反超
-    └──────────────────────────▶  k
-      1     8    32   128  512
-
-★★ 直觉解释：RL 把概率质量【集中】到了它认为对的那条路上。
-   ⟹ 抽一次更容易抽到对的（pass@1 ↑）
-   ⟹ 但抽 512 次覆盖的解法种类变少了（pass@k 可能 ↓）
+<div class="codehilite"><pre><span></span><code>★★ 直觉解释：RL 把概率质量【集中】到了它认为对的那条路上。
+   =&gt; 抽一次更容易抽到对的（pass@1 上升）
+   =&gt; 但抽 512 次覆盖的解法种类变少了（pass@k 可能下降）
 </code></pre></div>
 
 <p><strong>该看哪个，取决于你在做什么</strong>：</p>
-<div class="codehilite"><pre><span></span><code>· 上线产品 → 看 pass@1（用户只问一次）
-· 判断&quot;RL 到底有没有教会新东西&quot; → 必须看 pass@k
-· 做数据生产（拒绝采样） → 看 pass@k（因为你会采 N 次再筛）
-· ⚠️ 只报 pass@1 的 RL 论文，无法回答&quot;能力有没有扩张&quot;这个问题
-
-⚠️ 这场争论本身还没结束，见 05.6。我的建议：两个都测、都报。
+<table>
+<thead>
+<tr>
+<th>你在做什么</th>
+<th>该看</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>上线产品</td>
+<td><strong>pass@1</strong></td>
+<td>用户只问一次</td>
+</tr>
+<tr>
+<td>判断"RL 到底有没有教会新东西"</td>
+<td>★★ <strong>pass@k（k≥8）</strong></td>
+<td>pass@1 涨可能只是把已会的排到了前面</td>
+</tr>
+<tr>
+<td>做数据生产（拒绝采样）</td>
+<td><strong>pass@k</strong></td>
+<td>你本来就会采 N 次再筛</td>
+</tr>
+<tr>
+<td>选 RL 的起点 ckpt</td>
+<td>pass@k <strong>+ 输出熵</strong></td>
+<td>见 10.3</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⚠️ 只报 pass@1 的 RL 论文，无法回答&quot;能力边界有没有扩张&quot;这个问题。
+⚠️ 这场争论本身还没结束，见 05 章。我的建议：两个都测、都报，
+   并且【把 k 和采样数 n 一起写清楚】—— 原因见下。
 </code></pre></div>
 
+<h3 id="passk">⚠️ pass@k 有三种算法，别把"谁有偏"说反了</h3>
+<p><strong>报 pass@k（k&gt;1）时必须一起写清：用的是哪种算法、采样数 n 是多少。</strong> 只写"pass@10"三个字等于没写。</p>
+<p>设一道题采了 <strong>n</strong> 次，其中 <strong>c</strong> 次通过：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>算法 ①</strong>（无偏估计量）</th>
+<th><strong>算法 ②</strong>（朴素幂次）</th>
+<th><strong>算法 ③</strong>（直接采 k 次）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>公式</strong></td>
+<td><code>1 − C(n−c, k) / C(n, k)</code></td>
+<td><code>1 − (1 − c/n)^k</code></td>
+<td>只采 k 次，有一个通过就记 1</td>
+</tr>
+<tr>
+<td><strong>在算什么</strong></td>
+<td>从已采的 n 个样本里<strong>不放回</strong>抽 k 个，算"这 k 个全失败"的概率</td>
+<td>把 <code>c/n</code> 当单次通过率，按独立重复试验算</td>
+<td>字面意义上做一次实验</td>
+</tr>
+<tr>
+<td><strong>对 n 的要求</strong></td>
+<td>★ 必须 <code>n ≥ k</code></td>
+<td>只要 <code>c/n</code> 这一个比例</td>
+<td><code>n = k</code></td>
+</tr>
+<tr>
+<td><strong>偏</strong></td>
+<td>✅ <strong>无偏</strong></td>
+<td>⚠️ <strong>有偏，而且系统性偏低</strong></td>
+<td>✅ <strong>无偏</strong></td>
+</tr>
+<tr>
+<td><strong>方差</strong></td>
+<td>小</td>
+<td>小</td>
+<td>⚠️⚠️ <strong>极大</strong>（每题只有 0 或 1，一次伯努利试验）</td>
+</tr>
+<tr>
+<td><strong>实践里该用</strong></td>
+<td>★★★ <strong>默认用这个</strong></td>
+<td>❌ 别用</td>
+<td>⚠️ 只在 n 预算就是 k 时不得不用</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️🔑 <strong>三种算法里有偏的只有 ②。</strong> 最常见的误说是把 ② 的"有偏"安到 ③ 头上——<strong>③ 无偏，只是方差极大；② 才系统性偏低。</strong> 只有 <code>k = 1</code> 时三者一致。<br />
+<strong>出处</strong>：Codex / HumanEval 论文 <a href="https://arxiv.org/abs/2107.03374">arXiv:2107.03374</a> <strong>论文 Appendix A</strong>（PDF 已归档在 <a href="../harness评测框架/papers/">../harness评测框架/papers/</a>）。</p>
+</blockquote>
+<p><strong>差多少？一组能验算的小数字</strong>（<code>n = 10</code>、<code>c = 3</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>k</th>
+<th>算法 ①（无偏）</th>
+<th>算法 ②（有偏偏低）</th>
+<th>差</th>
+<th>验算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>30.00%</td>
+<td>30.00%</td>
+<td>0</td>
+<td><code>1 − 7/10 = 0.30</code>；<code>1 − 0.7¹ = 0.30</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>91.67%</strong></td>
+<td><strong>83.19%</strong></td>
+<td>⚠️ <strong>低了 8.5 pp</strong></td>
+<td><code>1 − C(7,5)/C(10,5) = 1 − 21/252</code>；<code>1 − 0.7⁵ = 1 − 0.16807</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td>100.00%</td>
+<td>97.18%</td>
+<td>低了 2.8 pp</td>
+<td><code>1 − C(7,10)/C(10,10) = 1 − 0</code>；<code>1 − 0.7¹⁰ = 1 − 0.02825</code></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ 🔑 k = 1 时两者完全相同，所以 pass@1 不受这件事影响；
+   ★★ k 一变大就分叉，算法 ② 会把成绩压低。
+
+⚠️⚠️ 这在后训练里有一个具体的危害：
+   如果你用算法 ② 测 base 的 pass@k、用算法 ① 测 RL 后的 pass@k，
+   你会凭空造出一个&quot;RL 扩张了能力边界&quot;的结论。
+   ⟹ 🔑 pass@k 争论里的两边，必须先确认用的是同一种算法、同一个 n。
+</code></pre></div>
+
+<blockquote>
+<p>📖 三种算法的完整推导、numpy 稳定实现、以及偏差的来源，见 <a href="../harness评测框架/评测入门/07-agentic编码评测与SWE-bench.html">../harness评测框架/评测入门/07-agentic编码评测与SWE-bench.md</a> 和 <a href="../harness评测框架/评测入门/附-速查表.html">../harness评测框架/评测入门/附-速查表.md</a>。<strong>本章和那两处是同一个版本，数字对得上。</strong></p>
+</blockquote>
 <hr />
 <h2 id="103-sft-rl">10.3 ★★★ 一个反直觉的坑：SFT 分数高 ≠ RL 起点好</h2>
-<p>✅ <a href="https://arxiv.org/abs/2510.01624">arXiv:2510.01624</a> 的核心结论：</p>
-<blockquote>
-<p><strong>SFT 阶段基准分数最高的那个 checkpoint，往往不是最好的 RL 初始化点。</strong></p>
-</blockquote>
+<p>✅ <a href="https://arxiv.org/abs/2510.01624">arXiv:2510.01624</a> 报告的核心结论：<strong>SFT 阶段基准分数最高的那个 checkpoint，往往不是最好的 RL 初始化点。</strong></p>
 <div class="codehilite"><pre><span></span><code>为什么？
 
    SFT 训得越久 / 越到位
-      ⟹ 输出分布越【尖】（模型对自己的答案越确信）
-      ⟹ 采样 8 次得到的 8 条 rollout 越【像】
-      ⟹ 组内奖励方差越小
-      ⟹ ★ GRPO 的优势 A ≈ 0，梯度接近 0
-      ⟹ RL 学不动
+      =&gt; 输出分布越【尖】（模型对自己的答案越确信）
+      =&gt; 采样 8 次得到的 8 条 rollout 越【像】
+      =&gt; 组内奖励方差越小
+      =&gt; ★ GRPO 的优势 Â ≈ 0，梯度接近 0
+      =&gt; RL 学不动
 
    所以一个&quot;分数低一点、但还保留了探索性（熵更高）&quot;的 ckpt，
    反而是更好的 RL 起点。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>★★ 实践含义：选 SFT ckpt 交给 RL 时，
-   除了看基准分，还要看【输出熵】和【采样多样性】。
-   ⚠️ 这一条在 2026 年之前几乎没有团队系统地做，
-      现在开始有报告把&quot;熵&quot;当作 ckpt 选择指标之一。
+<p><strong>这和 <a href="09-后训练的数据学.html">9.4</a> 那张表是同一件事</strong>：那边是"题目太简单 → 组内全对 → 优势 0"，这边是"分布太尖 → 组内全一样 → 优势 0"。<strong>一个是题的问题，一个是模型的问题，撞的是同一道墙。</strong></p>
+<p><strong>所以选 RL 起点 ckpt，要同时看四个量</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>要看的量</th>
+<th>怎么测</th>
+<th>太高/太低意味着</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 基准分</td>
+<td>常规能力矩阵</td>
+<td>★ 太低显然不行，但<strong>最高的那个不一定最好</strong></td>
+</tr>
+<tr>
+<td>② <strong>输出熵</strong></td>
+<td>对一批 prompt 采样，算 token 级平均熵</td>
+<td>⚠️ 太低 → 分布已经尖了，RL 推不动</td>
+</tr>
+<tr>
+<td>③ <strong>组内 rollout 多样性</strong></td>
+<td>同一题采 8 次，算两两相似度（或去重后剩几条）</td>
+<td>8 条去重只剩 1~2 条 → ★ 红灯</td>
+</tr>
+<tr>
+<td>④ <strong>非零优势题占比</strong></td>
+<td>在候选题池上试跑一批，统计 <code>1 − 全对率 − 全错率</code>（见 <a href="09-后训练的数据学.html">9.4</a>）</td>
+<td>★★★ <strong>这是最直接的指标</strong>：它直接量了"有多少题能产生梯度"</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ ④ 是我最推荐的一条，因为它不需要解释、不需要阈值：
+   在同一个题池上，把候选 ckpt 各试跑一轮，谁的【非零优势题占比】高，
+   谁的 RL 就跑得动。这是一个可以当场做出来的对照实验。
+
+⚠️ 这一条在 2026 年之前几乎没有团队系统地做，
+   现在开始有报告把&quot;熵&quot;当作 ckpt 选择指标之一。
+⚠️ 上面&quot;四个量&quot;里，② ③ ④ 的具体用法是我整理的做法，
+   论文只给了&quot;分数最高的 ckpt 不是最好起点&quot;这个结论本身。
 </code></pre></div>
 
 <hr />
-<h2 id="104">10.4 评测污染：后训练阶段更隐蔽</h2>
-<div class="codehilite"><pre><span></span><code>预训练污染：15 T token 里混进了评测题 —— 大家都在查
-后训练污染：⚠️ 三个更隐蔽的来源
-
-  ① 拒绝采样的【老师模型】见过评测集
-     → 它把记住的答案写进了你的 SFT 数据
-     → 你的数据里没有原题，但有原题的&quot;标准解&quot;
-
-  ② RL 题池直接从公开题库来
-     AIME / Codeforces / LeetCode 的题目和评测集高度重叠
-
-  ③ Agentic RL 的仓库环境和 SWE-bench 的仓库重叠
-     ★ 这个最难查，因为&quot;重叠&quot;的不是文本而是【代码库版本】
-
-★ 检测手段：
-  · n-gram 匹配（对 ①② 有效，对 ③ 无效）
-  · 造【私有 holdout 集】：自己出题，绝不发布，只用来做最终判断
-    ✅ 这是 2026 年头部团队的标配做法
-  · 看&quot;公开集涨 / 私有集不涨&quot;的差值 —— 差值就是污染量的下界
+<h2 id="104">10.4 评测污染与过拟合：后训练阶段更隐蔽</h2>
+<div class="codehilite"><pre><span></span><code>预训练污染：十几 T token 里混进了评测题 —— 大家都在查
+后训练污染：⚠️ 更隐蔽，因为数据量小、来源杂、迭代快
 </code></pre></div>
 
-<p>→ 方法细节见 <a href="../数据格式和数据处理/08-去污染与隐私许可.html">../数据格式和数据处理/08-去污染与隐私许可.md</a></p>
+<table>
+<thead>
+<tr>
+<th>污染 / 过拟合路径</th>
+<th>具体怎么发生</th>
+<th>n-gram 匹配查得到吗</th>
+<th>对策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① RL 题池直接取自公开题库</strong></td>
+<td>AIME / Codeforces / LeetCode 的题和评测集高度重叠</td>
+<td>✅ 查得到</td>
+<td>对题池 × 评测集做 n-gram 去重</td>
+</tr>
+<tr>
+<td><strong>② 老师模型"记忆"泄漏</strong></td>
+<td>拒绝采样用的老师<strong>本身见过评测集</strong>，把记住的解法写进了你的 SFT 数据</td>
+<td>⚠️ <strong>查不到原题</strong>，只可能查到标准解的措辞</td>
+<td>换一个没见过该评测集的老师；或只用私有题</td>
+</tr>
+<tr>
+<td><strong>③ 环境重叠</strong></td>
+<td>Agentic RL 的仓库环境和 SWE-bench 的仓库重叠</td>
+<td>❌ 完全无效（重叠的是<strong>代码库版本</strong>，不是文本）</td>
+<td>★★ 比对仓库 + 提交号，不是比对文本</td>
+</tr>
+<tr>
+<td><strong>④ ★★ 对评测集"过拟合"（无污染也会发生）</strong></td>
+<td>你每轮都拿同一个公开集做选择 —— 选了几十轮之后，那个集就被你<strong>当验证集用光了</strong></td>
+<td>❌ 查不到，因为训练数据里确实没有评测题</td>
+<td>★★★ <strong>私有 holdout 集</strong>，见下</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ ④ 最容易被忽略，因为它【不是污染】，是【选择过拟合】：
+
+   你训了 40 版模型，每版都在 MATH-500 上测，挑分最高的留下。
+   =&gt; 即使训练数据绝对干净，你也已经用 MATH-500 做了 40 次模型选择。
+   =&gt; 🔑 那个分数不再是&quot;泛化能力&quot;，是&quot;在这 500 道题上被挑出来的运气&quot;。
+
+   ⚠️ 量级感：500 题、SE ≈ 2.2 pp，挑 40 次里的最大值，
+      光靠噪声就能&quot;白捡&quot; 1~2 个 SE，也就是 2~4 个百分点。
+      ★ 这个量级足以让你把一个其实没变好的模型当成&quot;提升了 3 分&quot;。
+</code></pre></div>
+
+<p><strong>对策（三条，按性价比排）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>对策</th>
+<th>怎么做</th>
+<th>成本</th>
+<th>能挡住哪几条</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★★★ <strong>私有 holdout 集</strong></td>
+<td>自己出题，<strong>绝不发布</strong>，只在最终决策时用一次</td>
+<td>中（要出题）</td>
+<td>①②③④ 全部</td>
+</tr>
+<tr>
+<td>★★ <strong>公开/私有差值</strong></td>
+<td>同时看公开集和私有集的涨幅，<strong>看差值</strong></td>
+<td>低</td>
+<td>①②④</td>
+</tr>
+<tr>
+<td>★ <strong>n-gram 去污染</strong></td>
+<td>题池 × 评测集逐条匹配</td>
+<td>低</td>
+<td>①</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ &quot;公开集涨 / 私有集不涨&quot;的差值，就是【污染 + 过拟合量的下界】。
+   ⚠️ 注意是【下界】：差值为 0 不代表没污染（可能两边都被污染了）。
+
+⚠️ 私有 holdout 集有一条纪律很容易被破坏：
+   ★ 它每被用来做一次【选择】，就损失一点效力。
+   所以它应该用来【验收】（这一版能不能发），
+   不应该用来【调参】（在 20 个候选里挑一个）。
+   一旦拿它调参，它就变成了第 ④ 条的另一个受害者。
+</code></pre></div>
+
+<p>→ 去污染的方法细节见 <a href="../数据格式和数据处理/08-去污染与隐私许可.html">../数据格式和数据处理/08-去污染与隐私许可.md</a></p>
+<p>→ 污染检测的通用方法论见 <a href="../harness评测框架/评测入门/06-数据污染.html">../harness评测框架/评测入门/06-数据污染.md</a></p>
 <hr />
 <h2 id="105-reward-hacking">10.5 ★★ 怎么发现 reward hacking（分数涨了但模型变坏了）</h2>
-<p>奖励作弊的机制见 <a href="06-奖励从哪来.html">06.5</a>。这里是<strong>评测侧的抓法</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① 训练奖励 ↑ 但【留出集分数不动或 ↓】
-   ★ 最经典的信号。奖励和真实能力脱钩了。
+<p>奖励作弊的<strong>机制</strong>见 <a href="06-奖励从哪来.html">06 章</a>。这里是<strong>评测侧的抓法</strong>，按"能发现的作弊种类"从窄到宽排：</p>
+<table>
+<thead>
+<tr>
+<th>信号</th>
+<th>具体长什么样</th>
+<th>能发现什么</th>
+<th>漏什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 训练奖励 ↑ 但留出集不动或 ↓</strong></td>
+<td>两条曲线分叉</td>
+<td>★★★ 最经典、最可靠的信号</td>
+<td>不告诉你<strong>怎么</strong>作弊的</td>
+</tr>
+<tr>
+<td><strong>② 输出长度异常</strong></td>
+<td>长度暴涨 → 在刷"长回答被打高分"<br>长度暴跌 → 发现了"短答案更容易过判分正则"</td>
+<td>长度相关的作弊</td>
+<td>长度不变的作弊</td>
+</tr>
+<tr>
+<td><strong>③ 格式关键词频率突变</strong></td>
+<td>突然每条回答都以某个短语开头/结尾</td>
+<td>讨好判分器的套话</td>
+<td>语义层面的作弊</td>
+</tr>
+<tr>
+<td><strong>④ 换一个判分器复测</strong></td>
+<td>规则判分训的 → 用 LLM-as-judge 复测，反之亦然。<strong>两个判分器的分差突然拉大 = 在针对其中一个过拟合</strong></td>
+<td>★★ 判分器特异的作弊</td>
+<td>两个判分器<strong>共有</strong>的漏洞</td>
+</tr>
+<tr>
+<td><strong>⑤ ★ 人工抽样看 100 条</strong></td>
+<td>就是读</td>
+<td>★★★ <strong>唯一能发现【未知】作弊模式的方法</strong></td>
+<td>低频作弊（100 条抽不到 1% 的现象）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 为什么 ⑤ 必须保留，哪怕它听起来很土：
+   ①~④ 全都是【你已经想到的】作弊方式的探测器。
+   ⟹ 🔑 自动指标只能抓你已经想到的作弊方式。
+      而 reward hacking 的本质是&quot;模型找到了你没想到的捷径&quot;。
 
-② 输出长度异常
-   长度暴涨 → 可能在刷&quot;长回答被打高分&quot;的偏置
-   长度暴跌 → 可能发现了&quot;短答案更容易通过判分正则&quot;
-
-③ 格式关键词频率突变
-   突然每条回答都以某个短语开头/结尾 → 在讨好判分器
-
-④ ★ 人工抽样看 100 条
-   ⚠️ 听起来很土，但这是唯一能发现【未知作弊模式】的方法。
-      自动指标只能抓你已经想到的作弊方式。
-
-⑤ 换一个判分器复测
-   用规则判分训的，就用 LLM-as-judge 复测；反之亦然。
-   两个判分器的分差突然拉大 = 在针对其中一个过拟合。
+★ 抽样量的噪声门槛也能算：
+   抽 100 条要发现一个【出现率 5%】的现象，
+   期望命中 5 条，但 P(一条都没抽到) = 0.95^100 = 0.0059 ≈ 0.6%
+   ⟹ 100 条足以抓出 5% 级别的现象（99.4% 的概率至少看到一条）；
+   ⚠️ 但对 1% 级别的现象：0.99^100 = 0.366，★ 有 37% 的概率完全漏掉。
 </code></pre></div>
 
-<p>✅ 已发表的三个真实案例（数据见 <a href="06-奖励从哪来.html">06.5</a>）：ARE 的"刷判官"、<br />
-Gaming Verifiers 观察到的 ~500 步后作弊分差、代码 RL 环境审计出的 ~61.9% 缺陷率。</p>
+<p>✅ 已发表的三个真实案例（数据和出处见 <a href="06-奖励从哪来.html">06 章</a>）：ARE 的"刷判官"、Gaming Verifiers 观察到的约 500 步后作弊分差、代码 RL 环境审计出的约 61.9% 缺陷率（105 个环境里 65 个 FAIL；★ 验算：<code>65 ÷ 105 = 0.6190</code>）。</p>
 <hr />
 <h2 id="106">10.6 一套可操作的回归清单</h2>
-<div class="codehilite"><pre><span></span><code>每一轮后训练结束，至少跑这七类：
+<p><strong>后训练每一轮结束，至少跑这七类。</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>要跑什么</th>
+<th>为什么这一项不能省</th>
+<th>判读口径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>能力矩阵（8~15 个域）</strong></td>
+<td>对比<strong>上一轮</strong>和<strong>base</strong> 两个基线</td>
+<td>★ 看<strong>差值表</strong>，不是原始分表（见 10.1）</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>pass@1 + pass@k(k≥8)</strong> 各一份</td>
+<td>pass@1 管"稳"，pass@k 管"会"</td>
+<td>★ 注明算法 ① 和采样数 n</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>私有 holdout 集</strong></td>
+<td>唯一能挡住"选择过拟合"的东西</td>
+<td>只用来<strong>验收</strong>，不用来调参</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>长上下文专项</strong></td>
+<td>★ 很容易被后训练悄悄破坏（SFT 数据大多是短的）</td>
+<td>单独一列，不能混在"指令"里</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>多轮对话 / 指令遵循</strong></td>
+<td>单轮基准发现不了多轮的退化</td>
+<td>—</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>安全 + 越狱</strong></td>
+<td>★★ 最容易被 RLVR 洗掉（见 <a href="12-研究热点与开放问题.html">12 章</a>）</td>
+<td>⚠️ 必须在能力矩阵里<strong>占一列</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>输出长度分布 + 熵</strong></td>
+<td>★ 不是能力指标，是<strong>健康度</strong>指标</td>
+<td>突变即预警（见 10.5）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 另外加四条纪律：
 
-  □ 能力矩阵（8~15 个域）—— 对比【上一轮】和【base】两个基线
-  □ pass@1 + pass@k(k≥8) 各一份
-  □ 私有 holdout 集
-  □ 长上下文专项（★ 很容易被后训练悄悄破坏，因为 SFT 数据大多是短的）
-  □ 多轮对话 / 指令遵循（单轮基准发现不了多轮的退化）
-  □ 安全 + 越狱（★ 最容易被 RLVR 洗掉，见 12 章）
-  □ 输出长度分布 + 熵 —— 不是能力指标，是【健康度】指标
+ · 每一格都要能追溯到【是哪一个阶段导致的下降】
+   =&gt; 所以每个阶段的 ckpt 都要留，不能只测最终模型
 
-★ 加两条纪律：
-  · 每一格都要能追溯到【是哪一个阶段导致的下降】
-    ⟹ 所以每个阶段的 ckpt 都要留，不能只测最终模型
-  · 训练奖励曲线和留出集曲线要【画在同一张图上】
-    ⟹ 两条线分叉的那一刻，就是 reward hacking 开始的时刻
+ · 训练奖励曲线和留出集曲线要【画在同一张图上】
+   =&gt; 两条线分叉的那一刻，就是 reward hacking 开始的时刻
+
+ · ★★★ 保留逐题的判对判错记录，不要只存总分
+   =&gt; 否则 McNemar 配对检验事后做不了（见 10.1），
+      而不做配对，你会系统性地漏掉真实的回退
+
+ · ★★ 把&quot;没有好基准的能力&quot;也放进矩阵，用人工盲测占一列
+   =&gt; 写作 / 风格 / 语气如果不在表上，它塌了也没人会看见
 </code></pre></div>
 
 <hr />
@@ -412,27 +1138,36 @@ Gaming Verifiers 观察到的 ~500 步后作弊分差、代码 RL 环境审计�
 <div class="codehilite"><pre><span></span><code>🔮 三个正在恶化的趋势：
 
   ① 公开基准饱和 —— 前沿模型在 MMLU / GSM8K 上都 90+，区分不出来了
+     ★ 而且饱和会让噪声问题变严重：p 越接近 1，同样的分差越难区分，
+       而 90 分以上的&quot;剩余空间&quot;只有 10 分，本来就不够放下几个 SE。
+
   ② 污染速度快于出题速度 —— 新基准发布几个月就被吃进训练数据
+
   ③ ★★ Agentic 能力【没有好的基准】
-     &quot;能不能修好一个真实 bug&quot;这件事，
-     难以用一个静态数据集刻画，因为它依赖环境、依赖多步交互、
-     而且成功标准本身是模糊的
+     &quot;能不能修好一个真实 bug&quot;这件事，难以用一个静态数据集刻画，
+     因为它依赖环境、依赖多步交互，而且成功标准本身是模糊的
 
 ⚠️ 结果是：2026 年很多团队的真实决策依据，
    已经从公开基准转向【内部私有集 + 人工盲测 + 线上 A/B】。
    ⟹ 这也意味着【外部读者越来越难验证一份技术报告的强弱声称】。
+   ⚠️ 这一段是我的观察与推论，不是某份报告的统计结论。
 </code></pre></div>
 
 <hr />
 <h2 id="108">10.8 这一章的三句话总结</h2>
-<div class="codehilite"><pre><span></span><code>① 后训练评测看的是【能力矩阵里哪一格塌了】，
-   不是总分涨了多少 —— 因为跷跷板是常态。
+<div class="codehilite"><pre><span></span><code>① 后训练评测看的是【差值表里哪一格塌了】，不是总分涨了多少
+   —— 因为跷跷板是常态；而&quot;对齐税&quot;可以写成一个交换率
+      （掉的硬能力 ÷ 涨的对齐能力），这样才支撑得起&quot;这轮要不要留&quot;。
 
-② pass@1 和 pass@k 会朝不同方向走：
-   RL 提高&quot;稳&quot;，但不一定提高&quot;会&quot;。两个都得报。
+② ★★★ 先过噪声门槛再说&quot;提升&quot;：SE ≈ sqrt(p(1−p)/n)，
+   n=500、p=0.5 时约 2.2 个百分点。
+   ⚠️ 比较两个模型时【不要把两个 SE 相加】—— 那会漏报真实回退；
+      用 McNemar 配对检验，只看双方分歧的那些题。
 
-③ 训练奖励曲线和留出集曲线画在一张图上，
-   分叉的那一刻就是 reward hacking 开始的时刻。
+③ pass@1 和 pass@k 会朝不同方向走，两个都得报，
+   而且必须注明算法（无偏的是 `1 − C(n−c,k)/C(n,k)`，
+   `1 − (1−c/n)^k` 系统性偏低）。
+   训练奖励曲线和留出集曲线画在一张图上，分叉就是 reward hacking 开始。
 </code></pre></div>
 
 <hr />

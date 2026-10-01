@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -253,7 +258,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>SFT</strong> = <strong>Supervised Fine-Tuning</strong>（有监督微调）。<br />
 <strong>一句话</strong>：拿「问题 → 标准回答」的配对数据继续训模型，让它学会以"助手"的身份说话。</p>
-<p>读完这一章你应该能回答：SFT 和预训练在机制上到底差在哪？为什么 2023 年说"1000 条就够"、2026 年却有人用 700 万条？以及——<strong>为什么现在越来越多人说"SFT 分数高不是好事"</strong>。</p>
+<p>读完这一章你应该能回答：SFT 和预训练在机制上到底差在哪？为什么 2023 年说"1000 条就够"、2026 年却有人用 700 万条？以及——<strong>为什么现在越来越多人说"SFT 分数高不是好事"</strong>。<br />
+<strong>读法</strong>：本章有三张可以自己验算的表——<strong>loss mask 的逐 token 表</strong>（2.1）、<strong>超参的量级表</strong>（2.4）、<strong>全参 / LoRA / QLoRA 的显存表</strong>（2.4）。这三张表里的数字都给了算法，建议动笔算一遍。</p>
+<p>⚠️ <strong>本章新出现的缩写</strong>：<strong>LoRA</strong> = <strong>Low-Rank Adaptation</strong>（低秩适配）· <strong>QLoRA</strong> = <strong>Quantized LoRA</strong>（量化低秩适配）· <strong>ChatML</strong> = Chat Markup Language（一种把多轮对话拍平成一串 token 的模板格式）· <strong>OOD</strong> = Out-Of-Distribution（分布外）· <strong>DFT</strong> = Dynamic Fine-Tuning（动态微调，本章 2.5 会讲）。其余缩写见 <a href="01-鸟瞰全景.html">01 章开头</a>。</p>
 </blockquote>
 <hr />
 <h2 id="21">2.1 机制：底层什么都没变，只变了一件事</h2>
@@ -264,28 +271,222 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑  ↑
    全部都要预测，全部都算 loss
 
-
 SFT：一段对话，【只在 assistant 说的话上算 loss】
+     （user / system 的部分仍然作为&quot;上文&quot;被模型看到，只是不产生梯度）
+</code></pre></div>
 
-   &lt;|system|&gt; 你是一个助手 &lt;|user|&gt; 北京在哪？ &lt;|assistant|&gt; 北京位于华北平原北部。&lt;|end|&gt;
-   └────────────── 不算 loss ──────────────┘ └──────── 算 loss ────────┘
-                （但它们仍然作为&quot;上文&quot;被模型看到）
+<h3 id="loss-mask-token">★★★ 把 loss mask 逐 token 列出来：一条两轮样本</h3>
+<p><strong>"只在 assistant 段算 loss"这句话听起来很简单，但它具体长什么样，必须看到 token 级才算懂。</strong> 下面这条样本是<strong>两轮对话</strong>——⚠️ <strong>两轮的 assistant 都要算 loss，不是只算最后一轮</strong>，这是新手最常犯的第二个错。</p>
+<p><strong>原始样本</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;system&quot;</span><span class="p">,</span><span class="w">    </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;你是一个严谨的助手。&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;北京在哪？&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;北京位于华北平原北部。&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w">      </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;人口多少？&quot;</span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;约 2100 万。&quot;</span><span class="p">}</span>
+<span class="p">]}</span>
+</code></pre></div>
+
+<p><strong>按 ChatML 模板拍平，逐段标 mask</strong>（⚠️ 为了看得清，这里把"一个角色头 / 一段正文 / 一个结束符"当成一组；真实实现是逐 token 的）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>token 段</th>
+<th>属于谁</th>
+<th><code>loss_mask</code></th>
+<th>进 loss 吗</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>&lt;\|im_start\|&gt;system\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>角色头是框架写的，不是模型要生成的内容</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>你是一个严谨的助手。</code></td>
+<td>system</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>系统提示是<strong>我们写给它的</strong>，不是它说的</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>&lt;\|im_end\|&gt;\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>这一轮不属于 assistant，结束符也不学</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>&lt;\|im_start\|&gt;user\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>同 1</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>北京在哪？</code></td>
+<td>user</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>★★ <strong>最关键的一行</strong>：学了它，模型就会自己编问题</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>&lt;\|im_end\|&gt;\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>同 3</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>&lt;\|im_start\|&gt;assistant\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>⚠️ 易错：推理时这几个 token 是<strong>框架替它写进去</strong>的生成提示，不需要它学会打出来</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>北京位于华北平原北部。</code></td>
+<td><strong>assistant（第 1 轮）</strong></td>
+<td><strong>1</strong></td>
+<td>✅</td>
+<td>这才是要教的内容</td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>&lt;\|im_end\|&gt;</code></td>
+<td>模板</td>
+<td><strong>1</strong></td>
+<td>✅</td>
+<td>★★ <strong>必须学</strong>：它是停止信号，不学它模型永远学不会"什么时候该停"</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>\n</code></td>
+<td>模板</td>
+<td><strong>0 或 1</strong></td>
+<td>⚠️</td>
+<td>各家实现不一；★ 关键是<strong>训练和推理用同一套模板</strong></td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>&lt;\|im_start\|&gt;user\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>第二轮开始</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>人口多少？</code></td>
+<td>user</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>同 5</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>&lt;\|im_end\|&gt;\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>—</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>&lt;\|im_start\|&gt;assistant\n</code></td>
+<td>模板</td>
+<td><strong>0</strong></td>
+<td>❌</td>
+<td>同 7</td>
+</tr>
+<tr>
+<td>15</td>
+<td><code>约 2100 万。</code></td>
+<td><strong>assistant（第 2 轮）</strong></td>
+<td><strong>1</strong></td>
+<td>✅</td>
+<td>★★★ <strong>第二轮也要学！</strong> 不是只学最后一轮，也不是只学第一轮</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>&lt;\|im_end\|&gt;</code></td>
+<td>模板</td>
+<td><strong>1</strong></td>
+<td>✅</td>
+<td>同 9</td>
+</tr>
+</tbody>
+</table>
+<p><strong>这张表要读出来的四件事</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>要读出来的</th>
+<th>具体是哪几行</th>
+<th>写错会怎样（现象）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① <strong>mask=1 的区域是"多段"，不是"一段"</strong></td>
+<td>第 8-9 组 和 第 15-16 组</td>
+<td>只给最后一轮打 1 ⟹ 前面几轮的监督信号全丢了，<strong>多轮能力训不出来</strong>，而且不报错</td>
+</tr>
+<tr>
+<td>② <strong>结束符 <code>&lt;\|im_end\|&gt;</code> 要算 loss，但只在 assistant 那几轮</strong></td>
+<td>第 9、16 组是 1；第 3、6、13 组是 0</td>
+<td>全都不学 ⟹ <strong>模型说完不停</strong>，一路胡说到 max_len；全都学 ⟹ 模型会在 user 该说话的位置乱插结束符</td>
+</tr>
+<tr>
+<td>③ <strong>角色头不算 loss</strong></td>
+<td>第 1、4、7、11、14 组</td>
+<td>学了它 ⟹ 模型会自己打出 <code>&lt;\|im_start\|&gt;assistant</code>，输出里出现模板残渣</td>
+</tr>
+<tr>
+<td>④ <strong>有效 token 占比很低</strong></td>
+<td>整条约 60 个 token，mask=1 的约 17 个 ⟹ <strong>约 28%</strong>（⚠️ 这两个数是估的）</td>
+<td>这就是 <a href="01-鸟瞰全景.html">01.3</a> 说"真正产生梯度的 token 还要再打对折"的来历</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自检脚本（强烈建议每次改完数据格式都跑一遍）</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ★★★ 把 mask==1 的位置解码回文本打印出来，肉眼比对</span>
+<span class="n">learned</span> <span class="o">=</span> <span class="n">tok</span><span class="o">.</span><span class="n">decode</span><span class="p">([</span><span class="n">t</span> <span class="k">for</span> <span class="n">t</span><span class="p">,</span> <span class="n">m</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">ids</span><span class="p">,</span> <span class="n">mask</span><span class="p">)</span> <span class="k">if</span> <span class="n">m</span> <span class="o">==</span> <span class="mi">1</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">learned</span><span class="p">))</span>
+<span class="c1"># ✅ 期望输出（两段顺序拼接，不多一个字不少一个字）：</span>
+<span class="c1">#    &#39;北京位于华北平原北部。&lt;|im_end|&gt;约 2100 万。&lt;|im_end|&gt;&#39;</span>
+<span class="c1"># ⚠️ 出现了 &#39;北京在哪？&#39;        → 你把 user 也学了</span>
+<span class="c1"># ⚠️ 只出现了 &#39;约 2100 万。&#39;    → 你只学了最后一轮（多轮 mask 写错）</span>
+<span class="c1"># ⚠️ 末尾没有 &lt;|im_end|&gt;        → 你漏了结束符</span>
+<span class="c1"># ⚠️ 整体错开一格               → 移位（shift）差一错误</span>
 </code></pre></div>
 
 <h3 id="user-loss">为什么 user 那段不能算 loss</h3>
 <div class="codehilite"><pre><span></span><code>如果 user 段也算 loss，模型就在学习【怎么提问】。
 
 后果很具体：你问它&quot;北京在哪&quot;，它有一定概率回你
-   &quot;北京在哪？上海在哪？&quot;
-—— 因为它学过&quot;用户会连着问&quot;。
+   &quot;北京位于华北平原北部。人口多少？约 2100 万。你还想知道什么？...&quot;
+—— 它开始【自问自答】，因为它学过&quot;用户会连着问&quot;。
 
 ★★ 这个 bug 不会报错，只会让模型行为变得莫名其妙。
    loss mask 写错是 SFT 阶段最常见、也最难 debug 的错误。
 </code></pre></div>
 
 <blockquote>
-<p>📎 <strong>数据长什么样、chat template 怎么写、工具调用怎么编码</strong>——这些细节在<br />
-<a href="../数据格式和数据处理/15-后训练数据格式.html">../数据格式和数据处理/15-后训练数据格式.md</a>，本章不重复。</p>
+<p>📎 <strong>chat template 怎么写、工具调用怎么编码、移位（shift）差一错误怎么查</strong>——这些细节在 <a href="../数据格式和数据处理/15-后训练数据格式.html">../数据格式和数据处理/15-后训练数据格式.md</a>（<strong>那一章的 §15.3 有一份更长的逐 token 走查</strong>），本章不重复。</p>
 </blockquote>
 <hr />
 <h2 id="22-sft">2.2 SFT 到底在改变模型的什么</h2>
@@ -305,61 +506,517 @@ SFT     ——  给模型【换一个出场姿势】
 <hr />
 <h2 id="23-1000-700">2.3 数据量：从 1000 条到 700 万条，两个流派</h2>
 <p><strong>看起来矛盾，其实是在解两个不同的问题：</strong></p>
-<div class="codehilite"><pre><span></span><code>【流派一：少而精】  LIMA 路线
-   1000 ~ 几万条，人工精修
-   目标：教会【格式、语气、拒答边界】
-   ★ 这些东西确实不需要很多数据
-
-【流派二：多而广】  2026 年工业界主流
-   100 万 ~ 700 万条，绝大部分是【模型合成 + 拒绝采样筛出来的】
-   目标：覆盖【所有能力域】—— 数学、代码、SWE、CUDA、金融推理、
-        长上下文、安全、搜索、终端操作、SQL ...
-   ★ 域一多，条数自然就上去了
-</code></pre></div>
-
-<p><strong>一个 2026 年的实际数字</strong>（✅ Nemotron 3 Super 报告，<a href="https://arxiv.org/abs/2604.12374">arXiv:2604.12374</a>，NVIDIA，2026-04）：</p>
-<div class="codehilite"><pre><span></span><code>SFT 阶段：700 万样本，覆盖 15+ 个数据域
-   竞赛数学 / 代码 / 软件工程 / 智能体编程 / CUDA / 金融推理 /
-   长上下文 / 安全 / 搜索 / 终端使用 / SQL / ...
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>流派一：少而精</strong>（LIMA 路线）</th>
+<th><strong>流派二：多而广</strong>（2026 年工业界主流）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>条数</td>
+<td>1000 ~ 几万条</td>
+<td>100 万 ~ 700 万条</td>
+</tr>
+<tr>
+<td>数据怎么来</td>
+<td><strong>人工精修</strong></td>
+<td><strong>模型合成 + 拒绝采样筛出来的</strong>（见 <a href="03-分训与合训.html">03.2</a>）</td>
+</tr>
+<tr>
+<td>想教会什么</td>
+<td><strong>格式、语气、拒答边界</strong></td>
+<td><strong>覆盖所有能力域</strong>：数学、代码、SWE、CUDA、金融推理、长上下文、安全、搜索、终端操作、SQL…</td>
+</tr>
+<tr>
+<td>为什么这个量就够 / 不够</td>
+<td>这些东西确实不需要很多数据——"出场姿势"是一层很薄的东西</td>
+<td>域一多，条数自然就上去了；一个域几万条 × 十几个域 = 几十万到几百万</td>
+</tr>
+<tr>
+<td>换算成 token（⚠️ 平均长度按 10³ token/条估）</td>
+<td>10⁶ ~ 10⁷ token</td>
+<td>10⁹ ~ 10¹⁰ token</td>
+</tr>
+<tr>
+<td>它<strong>教不会</strong>什么</td>
+<td>能力</td>
+<td><strong>也教不会能力</strong>——只是把"格式"覆盖到了更多域</td>
+</tr>
+</tbody>
+</table>
+<p><strong>一个 2026 年的实际数字</strong>（✅ Nemotron 3 Super 报告，<a href="https://arxiv.org/abs/2604.12374">arXiv:2604.12374</a>，NVIDIA，2026-04）：<strong>SFT 阶段 700 万样本，覆盖 15+ 个数据域</strong>（竞赛数学 / 代码 / 软件工程 / 智能体编程 / CUDA / 金融推理 / 长上下文 / 安全 / 搜索 / 终端使用 / SQL / …）。</p>
+<p><strong>另一个可以逐步验算的实际数字</strong>（✅ DeepSeek-R1 报告，<a href="https://arxiv.org/abs/2501.12948">arXiv:2501.12948</a>，<strong>论文 §B.3.3</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>数值</th>
+<th>出处 / 算法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>推理类样本</td>
+<td>约 <strong>60 万</strong>条</td>
+<td>✅ 论文原文 "about 600k reasoning-related training samples"</td>
+</tr>
+<tr>
+<td>非推理类样本（写作、事实问答、自我认知、翻译）</td>
+<td>约 <strong>20 万</strong>条</td>
+<td>✅ 论文原文 "approximately 200k training samples that are unrelated to reasoning"</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>80 万</strong>条</td>
+<td>✅ 论文称之为 "800K Supervised Data"</td>
+</tr>
+<tr>
+<td>换算成 token</td>
+<td>约 <strong>1.6×10⁹</strong></td>
+<td>⚠️ 这一行是我算的：80 万 × 约 2000 token/条。平均长度是<strong>估的</strong>，论文没给</td>
+</tr>
+<tr>
+<td>相对预训练（14.8 T token）</td>
+<td>小约 <strong>四个</strong>数量级</td>
+<td>⚠️ 除法是我做的，口径见 <a href="01-鸟瞰全景.html">01.3</a></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>⚠️ <strong>别把这两个流派当成"谁对谁错"。</strong> 正确的读法是：<br />
-<strong>教格式用几千条就够（LIMA 是对的），教能力覆盖要几百万条（工业界是对的），而"教能力"这件事 2026 年主要不靠 SFT 了，靠 RL。</strong></p>
+<p>⚠️ <strong>别把这两个流派当成"谁对谁错"。</strong> 正确的读法是：<strong>教格式用几千条就够（LIMA 是对的），教能力覆盖要几百万条（工业界是对的），而"教能力"这件事 2026 年主要不靠 SFT 了，靠 RL。</strong></p>
 </blockquote>
 <hr />
 <h2 id="24">2.4 几个必须调对的旋钮</h2>
-<div class="codehilite"><pre><span></span><code>① epoch（把数据完整过几遍）
-   通用对话      2~3 遍就开始过拟合（回答变模板化、句式雷同）
-   数学 / 代码   3~4 遍还在涨
-   安全数据      1 遍足够，多了模型会【过度拒答】
-   ⚠️ 一个 2026 年的经验值：把所有 SFT 样本打包成长序列单阶段训练时，
-      约 1.5 个 epoch 达到最优（✅ Nemotron-Cascade 2，arXiv:2603.19220）
+<h3 id="_1">★★ 超参量级总表</h3>
+<blockquote>
+<p>⚠️ <strong>口径声明（很重要）</strong>：「典型值」一列是<strong>经验范围</strong>，不是规范，不是任何一家的官方推荐。只有「一手披露」一列标 ✅ 的才是论文里的原值。各家数据分布、模型尺寸、并行方式都不同，<strong>照抄别人的超参是 SFT 最常见的失败原因之一</strong>。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>旋钮</th>
+<th>典型值（⚠️ 经验范围）</th>
+<th>为什么是这个量级</th>
+<th>一手披露的参照</th>
+<th>调错的现象</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>学习率</strong></td>
+<td>1×10⁻⁵ ~ 5×10⁻⁵</td>
+<td>见下面那一小节——<strong>核心是"位移预算"，不是"数据少"</strong></td>
+<td>✅ R1 冷启动 / 第二阶段 SFT：<strong>5×10⁻⁵ 余弦衰减到 5×10⁻⁶</strong>（论文 §B.4.2）</td>
+<td>太高 → 灾难性遗忘，通用能力崩塌；太低 → 学不进格式，输出里还有 base 的续写味</td>
+</tr>
+<tr>
+<td><strong>学习率调度</strong></td>
+<td>余弦衰减到初值的 <strong>1/10</strong>（有时 1/100）</td>
+<td>末期学习率必须很低，否则模型在最优点附近震荡，存下来的 ckpt 是随机抽的一个震荡点</td>
+<td>✅ R1 SFT 衰到 1/10；✅ R1 蒸馏也是"衰到初值的 1/10"（论文 §B.4.3）</td>
+<td>不衰减 → 同一次训练里不同 step 的 ckpt 分数能差几个点</td>
+</tr>
+<tr>
+<td><strong>warmup（预热）</strong></td>
+<td>总步数的 <strong>0% ~ 5%</strong>，或固定几十到一两百步</td>
+<td><strong>机制</strong>：AdamW 的二阶动量 <code>v</code> 在最初几十步还没估准，此时 <code>m̂/√v̂</code> 会异常大，等效学习率远高于设定值 ⟹ 要先用小 lr 把 <code>v</code> 养起来。预训练总步数十万级、warmup 开 2000 步；SFT 总步数只有几千级，按同样比例就是<strong>几十到一两百步</strong></td>
+<td>⚠️ 各家不同，R1 报告未披露 SFT 的 warmup</td>
+<td>完全不 warmup → 前几十步 loss 尖峰，严重时直接训崩</td>
+</tr>
+<tr>
+<td><strong>epoch</strong></td>
+<td><strong>1 ~ 3</strong></td>
+<td>后训练数据量小，过几遍就开始记原文而不是学模式</td>
+<td>✅ R1 冷启动与第二阶段 SFT 都是 <strong>2~3 个 epoch</strong>（论文 §B.4.2）；⚠️ Nemotron-Cascade 2 把所有样本打包成长序列做单阶段训练时，约 <strong>1.5 个 epoch</strong> 最优（arXiv:2603.19220）</td>
+<td>多了 → 回答变模板化、句式雷同、输出多样性坍塌（★ 这会直接毁掉后面的 RL，见 2.5 病三）</td>
+</tr>
+<tr>
+<td><strong>全局 batch size</strong></td>
+<td><strong>64 ~ 512 条</strong>（token 口径 2²⁰ ~ 2²² token/步）</td>
+<td>太小 → 梯度噪声大，格式学得慢且不稳；太大 → 同样 epoch 下总步数变少，等效于学习率要同步上调</td>
+<td>✅ R1 SFT：<strong>128 条</strong>（论文 §B.4.2）；✅ R1 蒸馏：<strong>64 条</strong>（论文 §B.4.3）</td>
+<td>⚠️ <strong>口径坑</strong>：R1 的 128 是<strong>条</strong>不是 token。32768 最大长度下 128 条的上界是 128 × 32768 = <strong>4.19 M token/步</strong>，但实际远小于此（多数样本短得多）</td>
+</tr>
+<tr>
+<td><strong>最大序列长度</strong></td>
+<td>8K ~ 32K（有长 CoT 数据时必须往上走）</td>
+<td>长 CoT 样本动不动几千 token，截断就学不完整</td>
+<td>✅ R1 SFT 与蒸馏都是 <strong>32,768</strong>（论文 §B.4.2 / §B.4.3）</td>
+<td>★ <strong>一个很具体的坑</strong>：被截断的样本结尾没有 <code>&lt;\|im_end\|&gt;</code>，模型从这些样本里学到的恰好是"不用停"</td>
+</tr>
+<tr>
+<td><strong>是否冻结</strong></td>
+<td>默认<strong>全参不冻结</strong>；词表很大时有人冻结 embedding 和 lm_head</td>
+<td>这两层在小模型里能占参数量的 20%+，而 SFT 并不需要改词表的语义</td>
+<td>⚠️ 未见一手报告披露冻结策略</td>
+<td>冻结太多 → 学不进格式</td>
+</tr>
+<tr>
+<td><strong>packing（把多条短样本拼成一条长序列）</strong></td>
+<td>开，<strong>且必须配文档级注意力掩码</strong></td>
+<td>不开掩码时样本 A 会"看到"样本 B 的内容</td>
+<td>—</td>
+<td>★★ 串味，而且不报错。详见 <a href="../数据格式和数据处理/13-打包与文档掩码.html">../数据格式和数据处理/13-打包与文档掩码.md</a></td>
+</tr>
+<tr>
+<td><strong>长上下文分阶段</strong></td>
+<td>先在 32K 长度训一轮，再在 256K 长度训第二轮</td>
+<td>长序列每步更贵，先在短长度上把格式打牢更划算</td>
+<td>✅ Qwen3-VL 的公开做法；⚠️ 具体长度各家不同</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sft">★★★ 为什么 SFT 的学习率要比预训练低一个数量级</h3>
+<p><strong>⚠️ 先排除一个常见的错误解释：不是"因为数据少所以学习率要小"。</strong> 真正的原因是<strong>要避免破坏预训练已经学到的表示</strong>。下面把这件事算出来。</p>
+<p><strong>第一步：在 Adam / AdamW 下，"学习率"几乎就等于"每步每个参数走多远"。</strong></p>
+<div class="codehilite"><pre><span></span><code>AdamW 的更新量：  Δθ = − lr · m̂ / (√v̂ + ε)
 
-② 学习率
-   典型比预训练末期的学习率高一点，但比预训练峰值低 1~2 个数量级
-   ⚠️ 太高 → 灾难性遗忘，通用能力崩塌；太低 → 学不进格式
+   m̂ 是梯度的一阶动量（滑动平均），√v̂ 是二阶动量的平方根（梯度幅度的滑动均方根）
 
-③ packing（把多条短样本拼成一条长序列）
-   ★★ 必须开【文档级注意力掩码】，否则样本 A 会&quot;看到&quot;样本 B
-      → 详见 ../数据格式和数据处理/13-打包与文档掩码.md
+★★ 当梯度方向比较稳定时， m̂ / √v̂ ≈ ±1
+   ⟹ |Δθ| ≈ lr      —— 和梯度【大小】几乎无关！
 
-④ 长上下文分阶段
-   常见做法：先在 32K 长度训一轮，再在 256K 长度训第二轮
-   （✅ Qwen3-VL 的公开做法；⚠️ 具体长度各家不同）
+★ 这是 Adam 和 SGD 最大的区别：
+  SGD 的步长 = lr × 梯度大小（梯度小就走得少）
+  Adam 的步长 ≈ lr      （梯度小也照样走这么远）
+
+⟹ 所以在 Adam 下，「学习率」可以直接读成「每一步的位移预算」。
 </code></pre></div>
 
+<p><strong>第二步：把位移预算和"权重自身有多大"比一遍。</strong>（⚠️ 下表是数量级估算，不是实测；权重标准差取 0.02 这个常见量级，真实值各层不同。）</p>
+<table>
+<thead>
+<tr>
+<th>配方</th>
+<th>学习率</th>
+<th>跑 2000 步，位移上界 <code>N·lr</code>（最坏情况：梯度全程同向）</th>
+<th>随机游走估计 <code>√N·lr</code>（更接近实际）</th>
+<th>游走估计 ÷ 权重尺度 0.02</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>❌ 把预训练峰值学习率照搬过来</td>
+<td>3×10⁻⁴</td>
+<td>0.60</td>
+<td>1.34×10⁻²</td>
+<td><strong>0.67 倍</strong></td>
+<td>❌ 两千步就把权重挪了自身尺度的六成——<strong>这是在重写表示，不是在微调</strong></td>
+</tr>
+<tr>
+<td>✅ 典型 SFT</td>
+<td>2×10⁻⁵</td>
+<td>0.040</td>
+<td>8.9×10⁻⁴</td>
+<td><strong>0.045 倍</strong></td>
+<td>✅ 只挪 4.5%，够改"出场姿势"，不至于动到底层表示</td>
+</tr>
+<tr>
+<td>✅ R1-Zero 的 RL 阶段（对照）</td>
+<td>3×10⁻⁶（✅ 论文正文披露）</td>
+<td>0.006</td>
+<td>1.34×10⁻⁴</td>
+<td>0.007 倍</td>
+<td>✅ RL 要训上万步，所以单步预算还要再低一个数量级</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>这张表最该记住的是"倍数关系和步数无关"</strong>：3×10⁻⁴ ÷ 2×10⁻⁵ = <strong>15 倍</strong>，不管跑 2000 步还是 20000 步，位移都差 15 倍。差别只在于"15 倍之后是不是已经越界"——而上表说明：<strong>用预训练的学习率，两千步就越界了。</strong></p>
+<p><strong>第三步：还有两个让 SFT 必须更保守的机制。</strong></p>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>说的是什么</th>
+<th>为什么它让 SFT 的学习率必须<strong>更低</strong>（而不是更高）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>梯度方向高度一致</strong></td>
+<td>预训练语料极杂（网页、代码、书、论坛），不同样本的梯度方向互相抵消，实际位移远小于 <code>N·lr</code> 这个上界。SFT 数据分布极窄：同一个 chat template、相似句式、相似任务</td>
+<td>⟹ <strong>同样的学习率下，SFT 的有效位移比预训练大</strong>。所以"SFT 步数少"<strong>不是</strong>可以用大学习率的理由，恰恰相反</td>
+</tr>
+<tr>
+<td><strong>没有后续数据来修复</strong></td>
+<td>预训练阶段某一步把某个表示搞坏了，后面还有 10¹² token 可以慢慢修回来</td>
+<td>SFT 只有 10⁹ 量级 token（<a href="01-鸟瞰全景.html">01.3</a>），坏了就坏了。★ <strong>这才是"数据少"真正起作用的地方——它的作用方向是"更要小心"</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>第四步：一个一手披露的旁证——模型越大，学习率越小。</strong>（✅ R1 报告<strong>论文 §B.4.3 Table 6</strong>，六个蒸馏模型的初始学习率）</p>
+<table>
+<thead>
+<tr>
+<th>可训参数量</th>
+<th>base 模型</th>
+<th>初始学习率 ✅</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.5 B</td>
+<td>Qwen2.5-Math-1.5B</td>
+<td>1×10⁻⁴</td>
+</tr>
+<tr>
+<td>7 B</td>
+<td>Qwen2.5-Math-7B</td>
+<td>8×10⁻⁵</td>
+</tr>
+<tr>
+<td>8 B</td>
+<td>Llama-3.1-8B</td>
+<td>5×10⁻⁵</td>
+</tr>
+<tr>
+<td>14 B</td>
+<td>Qwen2.5-14B</td>
+<td>7×10⁻⁵</td>
+</tr>
+<tr>
+<td>32 B</td>
+<td>Qwen2.5-32B</td>
+<td>6×10⁻⁵</td>
+</tr>
+<tr>
+<td>70 B</td>
+<td>Llama-3.3-70B-Instruct</td>
+<td>2×10⁻⁵</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 趋势很清楚：参数量涨 47 倍（1.5B → 70B），学习率降 5 倍（1e-4 → 2e-5）
+   ⚠️ 拟一下大约是 lr ∝ N^(−0.42)，但【这个指数是我从六个点凑出来的，论文没有给】。
+
+⚠️ 而且它不是严格单调的：
+   Llama-3.1-8B 用 5e-5，Qwen2.5-14B 反而用 7e-5
+   ⟹ 跨模型家族不可比（base 的预训练配方不同）。
+   ★ 所以这张表只能读出&quot;大体趋势&quot;，不能当公式用。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>最后把"低几个数量级"这件事说准</strong>：预训练<strong>峰值</strong>学习率的经验范围是 1×10⁻⁴ ~ 4×10⁻⁴（⚠️ 经验范围，模型越大越小），SFT 的典型值是 1×10⁻⁵ ~ 5×10⁻⁵。<strong>所以常见情形是低 1 个数量级左右（5~20 倍），小模型上能到 1~2 个数量级。</strong> 和预训练<strong>末期</strong>的学习率（通常已衰到峰值的 1/10）相比，SFT 则是<strong>大致同量级</strong>。⚠️ "低一到两个数量级"这个说法在 7B 量级成立，在 R1 这种 671B 上并不成立（R1 的 SFT 用了 5×10⁻⁵，只比常见的预训练峰值低 4~8 倍）——<strong>引用这类说法时请带上模型尺寸。</strong></p>
+</blockquote>
+<hr />
+<h3 id="lora-qlora">★★ 还有一个更前面的旋钮：到底训多少个参数（全参 / LoRA / QLoRA）</h3>
+<p><strong>LoRA</strong> = <strong>Low-Rank Adaptation</strong>（低秩适配）：<strong>把基座权重整个冻住，只在每个被选中的线性层旁边挂一对小矩阵 <code>A</code>（d_in × r）和 <code>B</code>（r × d_out），前向时算 <code>Wx + BAx</code>，反向时只更新 <code>A</code> 和 <code>B</code>。</strong> <code>r</code> 叫 rank（秩），取 8~64 最常见。<strong>QLoRA</strong> = <strong>Quantized LoRA</strong>：在 LoRA 的基础上，把<strong>冻结的基座权重量化到 4 bit</strong> 存放，用的时候再反量化回 BF16 参与计算。</p>
+<p><strong>下面这笔显存账要能自己算出来，而不是记住"省很多"。先把配置钉死</strong>（换模型就把 <code>7×10⁹</code> 替换掉，其余算法不变）：</p>
+<div class="codehilite"><pre><span></span><code>模型      7B 稠密模型，取 Ψ = 7.0 × 10⁹ 参数；32 层，隐藏维度 d = 4096
+精度      BF16 混合精度 + AdamW
+LoRA 配置 rank r = 16，挂在全部 32 层的 q / k / v / o 四个投影上
+
+LoRA 可训参数量 = 32 层 × 4 个投影 × (d × r + r × d)
+                = 32 × 4 × (4096 × 16 + 16 × 4096)
+                = 32 × 4 × 131,072
+                = 16,777,216  ≈  1.68 × 10⁷   =  7B 的 0.24%
+</code></pre></div>
+
+<p><strong>逐项把"模型状态"的显存列出来</strong>（⚠️ <strong>只算模型状态，不含激活和 KV cache</strong>；按十进制 1 GB = 10⁹ 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>显存项</th>
+<th>字节/参数</th>
+<th>作用在谁身上</th>
+<th><strong>全参 SFT</strong></th>
+<th><strong>LoRA</strong></th>
+<th><strong>QLoRA</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>基座权重</td>
+<td>BF16 = <strong>2</strong>；NF4 4 bit = <strong>0.5</strong></td>
+<td>全部 7×10⁹</td>
+<td>2 × 7e9 = <strong>14.0 GB</strong></td>
+<td><strong>14.0 GB</strong>（冻结也照样要放）</td>
+<td>0.5 × 7e9 = <strong>3.5 GB</strong></td>
+</tr>
+<tr>
+<td>量化常数（双重量化）</td>
+<td>约 0.127 bit/参数 ⚠️</td>
+<td>全部 7×10⁹</td>
+<td>—</td>
+<td>—</td>
+<td><strong>0.11 GB</strong></td>
+</tr>
+<tr>
+<td>可训权重</td>
+<td>2</td>
+<td>LoRA 的 1.68×10⁷</td>
+<td>（已含在基座里）</td>
+<td>0.034 GB</td>
+<td>0.034 GB</td>
+</tr>
+<tr>
+<td><strong>梯度</strong></td>
+<td>2</td>
+<td>可训参数</td>
+<td>2 × 7e9 = <strong>14.0 GB</strong></td>
+<td>0.034 GB</td>
+<td>0.034 GB</td>
+</tr>
+<tr>
+<td><strong>FP32 主副本</strong></td>
+<td>4</td>
+<td>可训参数</td>
+<td><strong>28.0 GB</strong></td>
+<td>0.067 GB</td>
+<td>0.067 GB</td>
+</tr>
+<tr>
+<td><strong>Adam m（一阶动量）</strong></td>
+<td>4</td>
+<td>可训参数</td>
+<td><strong>28.0 GB</strong></td>
+<td>0.067 GB</td>
+<td>0.067 GB</td>
+</tr>
+<tr>
+<td><strong>Adam v（二阶动量）</strong></td>
+<td>4</td>
+<td>可训参数</td>
+<td><strong>28.0 GB</strong></td>
+<td>0.067 GB</td>
+<td>0.067 GB</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td></td>
+<td><strong>112.0 GB</strong></td>
+<td><strong>14.3 GB</strong></td>
+<td><strong>3.9 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⚠️ 全参那一列最容易算错的一处：Adam 的 m 和 v 是【两个】各 4 字节/参数的 FP32 张量。
+   漏掉一个，就会把 7B 的 112 GB 写成 84 GB。
+   ★ 记住这个口径：BF16 权重 2 + 梯度 2 + FP32 主副本 4 + m 4 + v 4 = 16 字节/参数
+     7B × 16 = 112 GB    ✓ 和上表合计对得上
+
+★★★ 现在做一次减法，看 LoRA 到底省掉了什么：
+
+   112.0 − 14.3 = 97.7 GB
+
+   而「梯度 + FP32 主副本 + Adam m + Adam v」这四项作用在 7B 上是：
+   (2 + 4 + 4 + 4) × 7 × 10⁹ = 14 字节/参数 × 7 × 10⁹ = 98.0 GB
+
+   98.0 − 97.7 = 0.3 GB   ← 正好是 LoRA 自己那 1.68×10⁷ 参数的优化器状态
+
+⟹ ★★★ 结论：【LoRA 省掉的是优化器状态和梯度（14 字节/参数），
+            不是权重本身（那 2 字节/参数还老老实实躺在显存里）。】
+   ⟹ 只有 QLoRA 才动了权重那 2 字节，把它压成 0.5。
+</code></pre></div>
+
+<p><strong>⚠️ 三件 LoRA 并没有省到的事</strong>（这三条是"LoRA 便宜"这个印象里最常被误解的部分）：</p>
+<table>
+<thead>
+<tr>
+<th>没省到的</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>激活显存</strong></td>
+<td>要让第 1 层的 LoRA 拿到梯度，反向传播必须<strong>穿过全部 32 层</strong>，所以前向激活照样要存。激活显存只和 <code>batch × 序列长 × 层数 × 隐藏维度</code> 有关，和"训多少参数"无关。⟹ <strong>长序列 + 大 batch 下，激活可能比模型状态还大，这时 LoRA 的省法就不显著了</strong></td>
+</tr>
+<tr>
+<td><strong>前向 / 反向的矩阵乘计算量</strong></td>
+<td>穿过冻结层的矩阵乘照样要算，只是算完不更新。LoRA 的加速主要来自<strong>优化器步变小</strong>和<strong>梯度通信量变小</strong>，不是来自矩阵乘</td>
+</tr>
+<tr>
+<td><strong>QLoRA 的算力</strong></td>
+<td>4 bit 权重在参与计算前要<strong>反量化回 BF16</strong>，所以 QLoRA 省显存但<strong>不省算力，还要额外付反量化的开销</strong> ⟹ ⚠️ 典型说法是训练变慢，具体幅度取决于实现，<strong>没有统一的数字可引</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>三条路线的横向对照</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th><strong>全参 SFT</strong></th>
+<th><strong>LoRA</strong></th>
+<th><strong>QLoRA</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>可训参数量</td>
+<td>7.0×10⁹（100%）</td>
+<td>1.68×10⁷（<strong>0.24%</strong>）</td>
+<td>同 LoRA</td>
+</tr>
+<tr>
+<td>模型状态显存（7B）</td>
+<td><strong>112 GB</strong></td>
+<td><strong>14.3 GB</strong></td>
+<td><strong>3.9 GB</strong></td>
+</tr>
+<tr>
+<td>单张 H100 80 GB 放得下吗（只看模型状态）</td>
+<td>❌ 至少 2 张且要切分</td>
+<td>✅ 宽裕</td>
+<td>✅ 很宽裕</td>
+</tr>
+<tr>
+<td>教"格式 / 语气 / 拒答边界"</td>
+<td>✅</td>
+<td>✅ 基本无差</td>
+<td>✅ 基本无差</td>
+</tr>
+<tr>
+<td>教"新领域知识 / 大幅能力迁移"</td>
+<td>✅</td>
+<td>⚠️ 明显落后</td>
+<td>⚠️ 明显落后</td>
+</tr>
+<tr>
+<td>对原有通用能力的破坏</td>
+<td>⚠️ 更容易灾难性遗忘</td>
+<td>✅ 遗忘更少（冻住基座相当于自带正则）</td>
+<td>✅ 同 LoRA</td>
+</tr>
+<tr>
+<td>一个基座挂多套适配器</td>
+<td>❌ 每套都是一份完整权重</td>
+<td>✅ 每套只有几十 MB</td>
+<td>✅ 同 LoRA</td>
+</tr>
+<tr>
+<td><strong>什么时候够用</strong></td>
+<td>要<strong>改能力</strong>、要把产出当 <strong>RL 的起点</strong>（见 2.5 病三）</td>
+<td>垂类对话、风格定制、多租户共用一个基座</td>
+<td>显存只有单张消费级卡</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>"LoRA 教能力落后、但遗忘更少"这个结论的出处</strong>：公开工作里最常被引用的是 <strong>《LoRA Learns Less and Forgets Less》</strong>（Dan Biderman 等，2024）。⚠️ <strong>这篇的 arXiv 编号我在本次写作时无法联网回溯</strong>（arxiv.org 抓取被网络策略拦截），所以这里<strong>只给标题和作者、不给编号</strong>，引用前请自行核实。本教程其余 arXiv 编号的核对口径见 <a href="README.html">README</a>。<br />
+🔑 <strong>一句话选型</strong>：<strong>要把 SFT 产物交给后面的 RL，就别用 LoRA。</strong> 原因在 2.5 病三——RL 需要的是一个"输出还有多样性"的起点，而 LoRA 的低秩约束本身就在限制模型能走到的分布范围。⚠️ 这是推论，不是某篇论文的结论。</p>
+</blockquote>
 <hr />
 <h2 id="25-sft">2.5 ★★ SFT 的三个"已知病"</h2>
 <p><strong>这一节是本章最有价值的部分。2025～2026 年的研究，系统性地指出了 SFT 这个范式本身的缺陷。</strong></p>
-<h3 id="_1">病一：它倾向于"背"，而不是"会"</h3>
+<blockquote>
+<p>⚠️ <strong>本节所有百分数的口径提示</strong>：下面引用的论文数字，原文有的给<strong>相对变化</strong>、有的给<strong>百分点</strong>，我没有逐条回到 PDF 核对是哪一种。<strong>所以请把这些数字当"方向和量级"，不要当精确值</strong>；真要引用请回一手论文确认口径。方向本身是确定的（哪个涨哪个跌），这是本节要传达的全部内容。</p>
+</blockquote>
+<h3 id="_2">病一：它倾向于"背"，而不是"会"</h3>
 <p>✅ <strong>SFT Memorizes, RL Generalizes</strong>（<a href="https://arxiv.org/abs/2501.17161">arXiv:2501.17161</a>，Tianzhe Chu 等，2025-01）</p>
 <div class="codehilite"><pre><span></span><code>实验设计：造一个规则可变的纸牌算术游戏 + 一个视觉导航环境，
-         训练时用规则 A，测试时换成规则 B（分布外，OOD）
+         训练时用规则 A，测试时换成规则 B（分布外，OOD = Out-Of-Distribution）
 
-结果：
-   SFT   → 分布外性能【下降 8% ~ 80%】
-   RL    → 分布外性能【提升 3% ~ 61%】
+结果（⚠️ 口径见本节开头的提示）：
+   SFT   → 分布外性能【下降】，幅度 8% ~ 80%
+   RL    → 分布外性能【提升】，幅度 3% ~ 61%
 
 ★★ 而且：即使 SFT 用的是【带错误的次优轨迹】，这个模式依然成立
    ⟹ 说明&quot;背&quot;这件事来自【训练目标的结构】，不是数据质量问题
@@ -369,9 +1026,8 @@ SFT     ——  给模型【换一个出场姿势】
 <p>⚠️ <strong>但论文自己也强调了另一半</strong>：SFT 仍然是必需的——它稳定了模型的输出格式，<strong>没有这一步，后面的 RL 根本训不起来</strong>。<br />
 ★ 这句话是理解 2026 年 SFT 定位的关键：<strong>SFT 从"主角"变成了"给 RL 铺跑道的人"。</strong></p>
 </blockquote>
-<h3 id="_2">病二：它的损失函数里藏着一个畸形的隐式奖励</h3>
-<p>✅ <strong>On the Generalization of SFT: A Reinforcement Learning Perspective with Reward Rectification</strong><br />
-（<a href="https://arxiv.org/abs/2508.05629">arXiv:2508.05629</a>，Yongliang Wu 等，2025-08）</p>
+<h3 id="_3">病二：它的损失函数里藏着一个畸形的隐式奖励</h3>
+<p>✅ <strong>On the Generalization of SFT: A Reinforcement Learning Perspective with Reward Rectification</strong>（<a href="https://arxiv.org/abs/2508.05629">arXiv:2508.05629</a>，Yongliang Wu 等，2025-08）</p>
 <p><strong>这篇论文做了一件很漂亮的事：证明 SFT 其实是 RL 的一个特例。</strong></p>
 <div class="codehilite"><pre><span></span><code>把 SFT 的梯度公式和策略梯度（policy gradient）公式并排放，会发现：
 
@@ -385,7 +1041,43 @@ SFT     ——  给模型【换一个出场姿势】
    ⟹ 训练不稳、容易过拟合到个别怪样本
 </code></pre></div>
 
-<p><strong>修法（DFT，Dynamic Fine-Tuning）：一行代码。</strong></p>
+<p><strong>为什么会这样，用一个 token 级的例子算一遍</strong>（⚠️ 这是为讲解构造的数字）：</p>
+<table>
+<thead>
+<tr>
+<th>标准答案里的这个 token</th>
+<th>模型当前给它的概率 <code>π_θ</code></th>
+<th>SFT 的 loss = <code>−log π_θ</code></th>
+<th>隐式奖励 ∝ <code>1/π_θ</code></th>
+<th>这个 token 对本步梯度的贡献</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个很自然的常见词</td>
+<td>0.50</td>
+<td>0.69</td>
+<td>2</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>一个略意外的词</td>
+<td>0.05</td>
+<td>3.00</td>
+<td>20</td>
+<td>已经是上一行的 10 倍</td>
+</tr>
+<tr>
+<td>一个标注员笔误 / 风格怪癖</td>
+<td>0.001</td>
+<td>6.91</td>
+<td><strong>1000</strong></td>
+<td>★★ <strong>500 倍</strong>——一个错标的 token 就能主导整批的梯度方向</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ ★★★ <strong>所以 SFT 对"个别脏样本"的敏感度不是线性的，是 <code>1/π</code> 级的。</strong> 这解释了一个很多人遇到过的现象：<strong>SFT 数据里混进几十条格式怪异的样本，就能让整个模型的风格跑偏。</strong></p>
+<p><strong>修法（DFT = Dynamic Fine-Tuning，动态微调）：一行代码。</strong></p>
 <div class="codehilite"><pre><span></span><code>把每个 token 的 loss 乘上它自己的概率 π_θ，
 把那个 1/π_θ 抵消掉，让所有 token 的权重变均匀。
 
@@ -401,30 +1093,60 @@ SFT     ——  给模型【换一个出场姿势】
 <p>✅ <strong>Quagmires in SFT-RL Post-Training</strong>（<a href="https://arxiv.org/abs/2510.01624">arXiv:2510.01624</a>，Feiyang Kang 等，2025-10）</p>
 <div class="codehilite"><pre><span></span><code>常规做法：SFT 训完，挑【评测分最高】的那个 ckpt 去做 RL
 
-论文发现这个做法是错的：
+论文发现这个做法是错的（⚠️ 百分数口径见本节开头）：
 
    配方 A：少量样本 + 多 epoch + 大学习率
-      → SFT 后 MATH-500 【+8.75%】     看起来赢麻了
-      → 但接着做 RL，最终反而 【-1.43%】
+      → SFT 后 MATH-500 【+8.75】      看起来赢麻了
+      → 但接着做 RL，最终反而 【−1.43】
 
    配方 B：更多样、不重复的数据
-      → SFT 后分数【低 5 个点】        看起来很差
-      → 接着做 RL，最终 【+5.94%】     赢了
+      → SFT 后分数【低 5 个点】         看起来很差
+      → 接着做 RL，最终 【+5.94】       赢了
 
 ★★★ 原因：多 epoch + 大学习率会把模型【压得很尖】——
     输出多样性坍塌，RL 阶段没东西可探索，等于把路先堵死了。
 </code></pre></div>
 
+<p><strong>把"压得很尖"这件事和 RL 连起来</strong>（这是全章最该想明白的一条因果链）：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>发生了什么</th>
+<th>为什么下一步成立</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 多 epoch + 大学习率</td>
+<td>模型在每个位置上把概率质量集中到一个 token 上</td>
+<td>这就是"过拟合"在 token 级的样子</td>
+</tr>
+<tr>
+<td>② 输出分布的熵下降</td>
+<td>同一道题采 8 次，8 条几乎一模一样</td>
+<td>概率集中 ⟹ 采样结果趋同</td>
+</tr>
+<tr>
+<td>③ RL 的组内优势退化</td>
+<td>GRPO 靠"同一组里谁对谁错"算优势；8 条全一样 ⟹ 全对或全错 ⟹ 优势全为 0</td>
+<td>见 <a href="05-RLVR-可验证奖励.html">05.2</a> 的 GRPO 公式：组内标准差为 0 时优势无定义 / 为 0</td>
+</tr>
+<tr>
+<td>④ RL 学不到东西</td>
+<td>梯度为 0，白跑</td>
+<td>⟹ ★★ <strong>SFT 阶段省下的那几个点，在 RL 阶段要赔回去好几倍</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>实操结论（很硬的一条）</strong>：<br />
-<strong>挑 SFT ckpt 的标准，不该是"SFT 后的评测分"，而该是"它做完 RL 能到多少"。</strong><br />
-<strong>实践中的代理指标是输出多样性 / 熵——宁可要一个分数低一点、但还"活着"的模型。</strong></p>
+<p>🔑 <strong>实操结论（很硬的一条）</strong>：<strong>挑 SFT ckpt 的标准，不该是"SFT 后的评测分"，而该是"它做完 RL 能到多少"。实践中的代理指标是输出多样性 / 熵——宁可要一个分数低一点、但还"活着"的模型。</strong> 怎么量这件事见 <a href="10-评测与回归.html">10.3</a>。</p>
 </blockquote>
 <hr />
 <h2 id="26-sft">2.6 SFT 还有存在的必要吗？</h2>
 <p><strong>2026 年有一派观点认为：SFT 不该是一个独立阶段。</strong></p>
-<p>⚠️ 代表工作 <strong>CHORD</strong>（Qwen 团队）：把 SFT 重新定义为<strong>在 on-policy RL 过程中的一个动态加权辅助损失项</strong>，理由是——长时间在有限的专家数据上训练会过拟合，压低输出多样性，<strong>严重限制后续 RL 的探索能力</strong>。</p>
-<p>⚠️ 另一条证据来自多模态：有研究报告在 7 个多模态基准上，8B 模型 <strong>SFT 之后反而掉了 5.2 个点</strong>（63.3% → 58.1%），做完 RL 才刚回到基线（63.3%）——<strong>意味着 RL 可能是在"还债"而不是"增益"</strong>。</p>
+<p>⚠️ 代表工作 <strong>CHORD</strong>（Qwen 团队）：把 SFT 重新定义为<strong>在 on-policy RL 过程中的一个动态加权辅助损失项</strong>，理由是——长时间在有限的专家数据上训练会过拟合，压低输出多样性，<strong>严重限制后续 RL 的探索能力</strong>（★ 就是 2.5 病三那条链）。</p>
+<p>⚠️ 另一条证据来自多模态：有研究报告在 7 个多模态基准上，8B 模型 <strong>SFT 之后反而掉了 5.2 个百分点</strong>（63.3% → 58.1%），做完 RL 才刚回到基线（63.3%）——<strong>意味着 RL 可能是在"还债"而不是"增益"</strong>。（★ 这里 63.3 − 58.1 = 5.2 是<strong>百分点</strong>，不是相对百分比。）</p>
 <div class="codehilite"><pre><span></span><code>⚠️ 我的判断：SFT 短期内不会消失，因为它解决的&quot;格式与可控性&quot;问题
    目前没有更便宜的替代品。但它的三个变化已经很清楚：
 
@@ -436,13 +1158,17 @@ SFT     ——  给模型【换一个出场姿势】
 <hr />
 <h2 id="27">2.7 这一章的三句话总结</h2>
 <div class="codehilite"><pre><span></span><code>① SFT 机制上只做了一件事：把 loss 限制在 assistant 段。
+   ★ 多轮对话里【每一轮】的 assistant 都要算，不是只算最后一轮。
    写错 loss mask 不会报错，只会让模型变怪。
 
 ② SFT 教得会【格式】，教不会【能力】。
    前者几千条就够，后者要靠 RL。
+   ★ 学习率要比预训练低一个数量级，原因是「位移预算」
+     —— 要避免重写预训练学到的表示，不是因为数据少。
 
 ③ 2026 年挑 SFT ckpt 的正确标准是&quot;它做完 RL 能到多少&quot;，
    而不是&quot;它现在考几分&quot;。多样性比分数重要。
+   ★ 所以要给 RL 当起点的 SFT，别用 LoRA，也别多跑 epoch。
 </code></pre></div>
 
 <hr />

@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,8 +256,70 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="09">09 · 后训练的数据与配比</h1>
 <blockquote>
-<p><strong>这一章讲一件很容易被忽略的事：进入 RL 阶段之后，"数据"这个词的意思变了。</strong><br />
-读完你应该能回答：RL 的训练集到底是什么？为什么给 SFT 挑数据的那套方法搬到 RL 上会失效？以及——<strong>为什么"最难的题"不是最有价值的题。</strong></p>
+<p><strong>这一章讲一件很容易被忽略的事：进入 RL 阶段之后，"数据"这个词的意思变了。</strong></p>
+<p>读完你应该能回答：RL 的训练集到底是什么？为什么给 SFT 挑数据的那套方法搬到 RL 上会失效？以及——<strong>为什么"最难的题"不是最有价值的题。</strong></p>
+<p>📖 <strong>和隔壁那一章的分工</strong>（别读重了）：<a href="../数据格式和数据处理/15-后训练数据格式.html">../数据格式和数据处理/15-后训练数据格式.md</a> 讲的是<strong>格式</strong>——字段叫什么、<code>loss_mask</code> 怎么标、SFT / 偏好对 / RLVR 三种格式并排对照。<strong>本章讲数据本身的性质</strong>：多少条、多难、多散、多干净、怎么配。<strong>先看格式那一章，再回来看这一章。</strong></p>
+</blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>SFT</strong>（Supervised Fine-Tuning，监督微调）—— 给"问题 + 标准答案"，只在答案那段 token 上算 loss。</p>
+<p><strong>RLVR</strong>（Reinforcement Learning with Verifiable Rewards，可验证奖励的强化学习）—— 奖励来自一段<strong>判分程序</strong>（跑单测、对答案、匹配正则），不是奖励模型。</p>
+<p><strong>Agentic RL</strong>（Agentic Reinforcement Learning，智能体强化学习）—— 一条样本是一次多步工具交互，奖励来自<strong>环境的真实反应</strong>。</p>
+<p><strong>rollout</strong>（采样 / 展开）—— 让模型针对一道题真的跑一遍，产出一条完整输出或一整条多步轨迹。<strong>RL 里最贵的一步。</strong></p>
+<p><strong>拒绝采样</strong>（rejection sampling）—— 对同一道题采样 N 次，用验证器筛出做对的，再挑一条当 SFT 数据。</p>
+<p><strong>GRPO</strong>（Group Relative Policy Optimization，组相对策略优化）—— 同一道题采 G 次，用<strong>组内相对好坏</strong>当优势，不需要价值网络。本章反复用到它的一个性质：<strong>组内全对或全错时，优势为 0。</strong></p>
+<p><strong>优势</strong>（advantage，记作 Â）—— "这条输出比同组平均好多少"。正的加强，负的削弱，<strong>0 就是白跑</strong>。</p>
+<p><strong>近重复</strong>（near-duplicate）—— 不是逐字相同，但措辞高度相似的两条数据。用 MinHash / SimHash 一类方法检出。</p>
+<hr />
+<h2 id="90">9.0 ★★★ 先给一张总表：后训练数据只有五个维度</h2>
+<p><strong>这一章后面所有内容，都是在讲下面这张表里的某一格。</strong> 先把表看一遍，再往下读。</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>怎么量（可操作）</th>
+<th>典型值（⚠️ 量级，不是某家实测）</th>
+<th>做差了会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 规模</strong></td>
+<td>SFT：样本<strong>条数</strong> + 总 token 数（两个都要报）<br>RL：<strong>题目数</strong> + rollout 预算</td>
+<td>SFT 1 千 ~ 700 万条<br>RL 几千 ~ 几十万道题</td>
+<td>太少 → 新格式 / 新工具协议学不会<br>太多且未筛 → 把错答案也教进去（见 9.5）</td>
+</tr>
+<tr>
+<td><strong>② 难度分布</strong></td>
+<td>用<strong>当前</strong>模型对每道题采 G 次，记成功率 <code>c/G</code>，画直方图</td>
+<td>希望峰值落在 <code>c/G ≈ 0.3~0.7</code></td>
+<td>全集中在两端 → ★★★ GRPO 优势全 0，算力白烧（9.4 有逐行账）</td>
+</tr>
+<tr>
+<td><strong>③ 多样性</strong></td>
+<td>ⓐ 近重复率（MinHash，阈值 0.8）<br>ⓑ 任务型分桶后的条数分布<br>ⓒ 输出长度分布</td>
+<td>近重复率 &lt; 10%<br>每个目标任务型都 ≠ 0 条</td>
+<td>低 → 多样性坍缩，全部数据带同一个老师模型的口音；RL 采不出新解法</td>
+</tr>
+<tr>
+<td><strong>④ 质量</strong></td>
+<td>抽 300 条人工复核错误率；或用<strong>另一个</strong>验证器重跑</td>
+<td>错误率 &lt; 2%（SFT 答案段）</td>
+<td>★ 错答案在 SFT 里不是 0 分而是<strong>负分</strong>——它是显式地教模型犯错</td>
+</tr>
+<tr>
+<td><strong>⑤ 去重 / 去污染</strong></td>
+<td>去重：MinHash + 精确哈希<br>去污染：与评测集做 n-gram 匹配</td>
+<td>名义条数 ÷ 去重后条数 应接近 1</td>
+<td>没去重 → 名义规模虚高（9.5 的账）<br>没去污染 → 分数是假的（9.6）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>三件要一起记的事</strong>：<br />
+<strong>①</strong> 这五个维度<strong>不能互换</strong>。10 万条脏数据换不来 1 万条干净数据，但 1 万条干净数据也换不来"覆盖 15 个任务型"——<strong>规模管覆盖面，质量管别学坏，两者是不同的病</strong>。<br />
+<strong>②</strong> 维度 ②（难度分布）是<strong>后训练独有的</strong>。预训练数据没有"难度"这个可操作的概念，因为预训练不按题目组织。<br />
+<strong>③</strong> ⚠️ "典型值"那一列是<strong>量级参考</strong>，用来判断"我的数据是不是离谱"，不是目标值。各家实际用什么，多数没有逐一披露。</p>
 </blockquote>
 <hr />
 <h2 id="91">9.1 ★★ "数据"这个词，在后训练的三个阶段指三种东西</h2>
@@ -261,9 +328,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ★ 答案是数据的一部分
 
 【RLVR 阶段】数据 = 问题 + 一个判分程序
-   { &quot;problem&quot;: &quot;...&quot;, &quot;answer&quot;: &quot;42&quot; }   ← answer 不给模型看，只给验证器
+   { &quot;problem&quot;: &quot;...&quot;, &quot;answer&quot;: &quot;42&quot; }   &lt;- answer 不给模型看，只给验证器
    ★★ 答案【不是训练材料】，是【裁判的参考】
-   ⟹ 模型永远看不到标准解法，它只能自己试
+   =&gt; 模型永远看不到标准解法，它只能自己试
 
 【Agentic RL 阶段】数据 = 任务 + 一整套可运行的环境
    { &quot;task&quot;: &quot;修好 CI&quot;, &quot;repo_snapshot&quot;: ..., &quot;dockerfile&quot;: ...,
@@ -271,21 +338,71 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
    ★★★ &quot;一条数据&quot;现在是【一个可以跑起来的系统】
 </code></pre></div>
 
+<p>把三个阶段并排放，差别一眼能看出来：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>SFT</strong></th>
+<th><strong>RLVR</strong></th>
+<th><strong>Agentic RL</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一条数据是什么</td>
+<td>一段带标准答案的对话</td>
+<td>一道题 + 一个判分程序</td>
+<td>一个可运行的环境</td>
+</tr>
+<tr>
+<td>标准答案给谁看</td>
+<td>★ 给模型看（它就是学习目标）</td>
+<td>★ 只给验证器看，<strong>模型看不到</strong></td>
+<td>常常<strong>没有</strong>标准答案，只有成功判据</td>
+</tr>
+<tr>
+<td>回答从哪来</td>
+<td>数据集里给定</td>
+<td>★ 模型训练时自己 rollout</td>
+<td>模型多步交互产生</td>
+</tr>
+<tr>
+<td>造一条的成本</td>
+<td>中（写或筛一条好答案）</td>
+<td>低（一道题 + 一个判题器）</td>
+<td>★★ 高（接近造一个小型 CI 系统）</td>
+</tr>
+<tr>
+<td>造一条需要的技能</td>
+<td>NLP / 领域专家</td>
+<td>领域专家 + 会写判分脚本</td>
+<td>★★★ <strong>DevOps</strong>（沙箱、镜像、依赖、并发）</td>
+</tr>
+<tr>
+<td>能不能无限扩</td>
+<td>❌ 受标注产能限制</td>
+<td>✅ 判题器不累，可无限采样</td>
+<td>⚠️ 受环境<strong>生产</strong>产能限制</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>🔑 <strong>这个变化的直接后果</strong>：<br />
-数据团队的工作从"洗文本"变成了<strong>"造环境"</strong>——需要的技能从 NLP 变成了 <strong>DevOps</strong>。<br />
-✅ 这也是 <a href="../数据格式和数据处理/19-研究热点与未来方向.html">../数据格式和数据处理/19-研究热点与未来方向.md</a> 说"一条数据的定义正在被改写"的意思。</p>
+<p>🔑 <strong>这个变化的直接后果</strong>：数据团队的工作从"洗文本"变成了<strong>"造环境"</strong>——需要的技能从 NLP 变成了 <strong>DevOps</strong>（Development &amp; Operations，开发运维）。<br />
+✅ 这也是 <a href="../数据格式和数据处理/19-研究热点与未来方向.html">../数据格式和数据处理/19-研究热点与未来方向.md</a> 说"一条数据是什么"的定义正在改变的意思——那一章是从数据侧看同一件事。</p>
 </blockquote>
 <hr />
-<h2 id="92-sft-2026">9.2 SFT 数据从哪来：2026 年的三个来源</h2>
+<h2 id="92-sft">9.2 SFT 数据从哪来：三个来源</h2>
 <div class="codehilite"><pre><span></span><code>① 人工编写           占比最小，但质量最高
    用于：退火阶段的精修数据、安全数据、风格标杆
    ⚠️ 贵。一条高质量的长思维链数学解答，标注成本可以到几十美元
+      （⚠️ 这是业内流传的量级，没有公开披露的价目表，别当硬数字引用）
 
-② ★ 拒绝采样（主力）  见 03.2
-   用现有模型（或领域专家）对题目采样 N 次 → 验证器筛出对的 → 挑一条最好的
+② ★ 拒绝采样（主力）  见 03 章
+   用现有模型（或领域专家）对题目采样 N 次 -&gt; 验证器筛出对的 -&gt; 挑一条最好的
    ✅ 这是 2024 年之后 SFT 数据的【绝对主力】
-   ✅ R1 用这个方法造了 60 万条推理数据 + 20 万条非推理数据
+   ✅ DeepSeek-R1 用这个方法造了约 60 万条推理数据 + 约 20 万条非推理数据
+      （arXiv:2501.12948）
 
 ③ 合成 / 改写
    用强模型改写已有数据、造新题、造多轮对话、造工具调用轨迹
@@ -294,24 +411,82 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p><strong>一个必须知道的坑</strong>：</p>
 <div class="codehilite"><pre><span></span><code>★★ 拒绝采样有一个内在偏置：它只保留【模型现在就能做对的题】。
-   ⟹ 数据分布会向&quot;模型已经会的&quot;倾斜
-   ⟹ 训完之后模型在会的题上更稳，但边界没有扩张
+   =&gt; 数据分布会向&quot;模型已经会的&quot;倾斜
+   =&gt; 训完之后模型在会的题上更稳，但能力边界没有扩张
 
-⚠️ 这和 05.6 那场 pass@k 争论说的是同一件事的两个侧面。
+⚠️ 这和 05 章那场 pass@k 争论说的是同一件事的两个侧面。
    缓解手段：故意保留一部分&quot;采样 16 次才对 1 次&quot;的难题。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>这里要分清两句话</strong>：「拒绝采样会让数据偏向模型已会的题」是<strong>机制上的必然</strong>（筛选条件就是"做对了"）；「所以 SFT 之后能力边界不会扩张」是<strong>我的推论</strong>，论文没有给出这个因果链的直接证据。</p>
+</blockquote>
 <hr />
-<h2 id="93">9.3 配比与跷跷板</h2>
-<p>配比方法论见 <a href="03-分训与合训.html">03.4</a>，这里只补三条 RL 阶段特有的：</p>
+<h2 id="93">9.3 配比：和预训练的"配比"不是一回事</h2>
+<p>配比方法论见 <a href="03-分训与合训.html">03 章</a>。这里先把一个最容易混的点钉死：<strong>"配比"这个词在预训练和后训练里配的东西不一样。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>预训练配比</strong></th>
+<th><strong>后训练配比</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>配的是什么</strong></td>
+<td>语料<strong>域</strong>：网页 / 代码 / 数学 / 书 / 多语</td>
+<td>★ <strong>任务类型</strong> × <strong>难度档</strong>：数学 / 代码 / 指令 / 工具 / 安全 × 易-中-难</td>
+</tr>
+<tr>
+<td><strong>单位</strong></td>
+<td>token 数（占总 token 的百分比）</td>
+<td>SFT：样本<strong>条数</strong><br>RL：<strong>题目数</strong>，或 <strong>rollout 预算</strong></td>
+</tr>
+<tr>
+<td><strong>一次调整的粒度</strong></td>
+<td>百分点（网页 70% → 65%）</td>
+<td>整类任务的增删（加一个新的工具协议、砍掉一类题）</td>
+</tr>
+<tr>
+<td><strong>主要约束</strong></td>
+<td>总 token 预算、每份语料重复几遍（epoch）</td>
+<td>SFT：标注产能<br>RL：rollout 算力</td>
+</tr>
+<tr>
+<td><strong>怎么调</strong></td>
+<td>有自动方法：DoReMi / RegMix 等<br>（见 <a href="../数据格式和数据处理/10-数据配比.html">../数据格式和数据处理/10-数据配比.md</a>）</td>
+<td>⚠️ 基本靠人定 + <strong>在线动态过滤</strong>（按组内成功率把题踢出题池）</td>
+</tr>
+<tr>
+<td><strong>配错的症状</strong></td>
+<td>某域 loss 偏高、该域下游基准偏低</td>
+<td>★ <strong>跷跷板</strong>：一个能力涨、另一个能力掉（见 <a href="10-评测与回归.html">10 章</a>的能力矩阵）</td>
+</tr>
+<tr>
+<td><strong>奖励尺度问题</strong></td>
+<td>不存在</td>
+<td>⚠️ <strong>存在</strong>：数学 0/1、代码 0~1、安全 −1~1，不归一化会被尺度大的域主导梯度</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>一句话抓住差别</strong>：预训练配比问的是<strong>"喂多少字"</strong>，后训练配比问的是<strong>"出哪些题、每类出多少道、多难"</strong>。所以预训练的配比工具（DoReMi、RegMix 这类按域优化 token 权重的方法）在后训练里<strong>没有直接对应物</strong>——这也是后训练配比到 2026 年还基本靠人拍的原因。</p>
+</blockquote>
+<p><strong>三条 RL 阶段特有的补充</strong>：</p>
 <div class="codehilite"><pre><span></span><code>① RL 阶段的&quot;配比&quot;是【题目池的配比】，不是 token 配比
-   ⟹ 单位是&quot;题目数&quot;或&quot;rollout 预算&quot;，不是 token 数
+   =&gt; 单位是&quot;题目数&quot;或&quot;rollout 预算&quot;，不是 token 数
+   ⚠️ 推论：报 RL 数据量时只说&quot;多少 token&quot;等于没说，
+      因为同一道题采 8 次和采 64 次，token 差 8 倍，题目数一样。
 
 ② 多域混合 RL 会有【奖励尺度冲突】
    数学奖励是 0/1，代码奖励是&quot;通过率 0~1&quot;，安全奖励可能是 −1~1
    ⚠️ 不做归一化，尺度大的域会主导梯度
-   ✅ DeepSeek-V4 报告直言：&quot;混合 RL 会让不同领域的奖励互相冲突&quot;
-      —— 这是它选择&quot;先分域训专家、再 OPD 合并&quot;的直接理由
+   ✅ DeepSeek-V4 报告给出的理由是：权重合并会因参数空间不对齐而失效，
+      而混合 RL 会让不同领域的奖励互相冲突 —— 这是它选择
+      &quot;先分域训专家、再 OPD 合并&quot;的直接依据。
+      ⚠️ 这是对报告论点的转述，不是逐字引文；
+         原文见 ../业界模型技术报告/DeepSeek-V4.md §八。
 
 ③ 但也有反方：统一混训能防止单任务回退
    ✅ Nemotron 3 Super（arXiv:2604.12374）Stage 1 就是
@@ -319,44 +494,165 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       理由是&quot;统一混合训练让每次更新都感知完整环境分布&quot;
 
 ★★ 两条路线并存，说明这件事【还没有共识】。
-   ⚠️ 我的判断：奖励尺度差异大、领域冲突强时分开训；
-      环境同构、奖励可归一时混合训。
+   ⚠️ 我的判断（不是任何报告的结论）：
+      奖励尺度差异大、领域冲突强时分开训；环境同构、奖励可归一时混合训。
 </code></pre></div>
 
 <hr />
 <h2 id="94-sft-rl">9.4 ★★★ SFT 的选数据方法，搬到 RL 上会失效</h2>
 <p><strong>这是本章最有实用价值的一节。</strong></p>
-<p>✅ <strong>LearnAlign</strong>（<a href="https://arxiv.org/abs/2506.11480">arXiv:2506.11480</a>，Shipeng Li 等，2025-06）报告：</p>
+<p>✅ <strong>LearnAlign</strong>（<a href="https://arxiv.org/abs/2506.11480">arXiv:2506.11480</a>，Shipeng Li 等，2025-06）报告的核心观察是：<strong>传统 SFT 数据选择方法在 RLVR 范式下效果有限且不一致，没有一个 SFT 风格的基线能稳定超过"随机采样"。</strong></p>
 <blockquote>
-<p><strong>传统 SFT 数据选择方法在 RLVR 范式下效果有限且不一致，没有一个 SFT 风格的基线能在 5 个基准上稳定超过"随机采样"。</strong></p>
+<p>⚠️ <strong>口径说明</strong>：上面这句是对该论文结论的<strong>转述</strong>，不是逐字引文（本目录 <a href="papers/">papers/</a> 未归档 PDF）。引用具体基准数量、提升幅度前请回溯原文。</p>
 </blockquote>
 <p><strong>为什么会失效（原因很干净）</strong>：</p>
 <div class="codehilite"><pre><span></span><code>SFT 的目标：最大化目标输出的似然
-   ⟹ 【越难的样本信息量越大】 —— 挑难的是对的
+   =&gt; 【越难的样本信息量越大】 —— 挑难的是对的
 
 RLVR 的目标：最大化奖励
-   ⟹ 需要的是【和模型当前能力匹配】的难度
+   =&gt; 需要的是【和模型当前能力匹配】的难度
 
-   题目太简单 → 8 次全对 → 优势全 0 → 白跑（见 05.3）
-   题目太难   → 8 次全错 → 优势全 0 → 白跑
+   题目太简单 -&gt; 8 次全对 -&gt; 优势全 0 -&gt; 白跑（见 05 章）
+   题目太难   -&gt; 8 次全错 -&gt; 优势全 0 -&gt; 白跑
 
 ★★★ 所以 RL 要的不是&quot;最难的题&quot;，是【中等难度的题】——
    具体说，是模型成功率在中间区段的那些题。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>一张很好用的直觉图：
+<h3 id="_1">★★★ 把"中等难度最值钱"算出来：一张逐行推演表</h3>
+<p>上面那段话听着像经验之谈。其实它可以<strong>直接算</strong>，而且只需要一行乘方。</p>
+<div class="codehilite"><pre><span></span><code>  设：模型在某道题上的单次成功率 = p（把每次 rollout 当独立的抛硬币）
+      GRPO 一道题采 G 次
 
-   样本价值
-      ▲
-      │        ╱▔▔▔╲
-      │      ╱       ╲
-      │    ╱           ╲
-      │  ╱               ╲
-      └─────────────────────────▶ 模型在这道题上的成功率
-       0%      50%        100%
-       ↑        ↑           ↑
-     太难     ★最值钱      太简单
-    (全错)               (全对)
+  这道题【白跑】的条件是 G 次全对或全错：
+      P(全对) = p^G
+      P(全错) = (1 − p)^G
+
+  ★★★ 所以这道题【能产生非零梯度】的概率：
+      P(有效) = 1 − p^G − (1 − p)^G
+</code></pre></div>
+
+<p>代入 <code>G = 8</code> 和 <code>G = 16</code>，逐行算一遍（<strong>建议拿计算器跟着按一遍，按过的数字才会变成直觉</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>单次成功率 p</th>
+<th><code>p^8</code></th>
+<th><code>(1−p)^8</code></th>
+<th><strong>P(有效), G=8</strong></th>
+<th><strong>P(有效), G=16</strong></th>
+<th>这是什么样的题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.01</td>
+<td>≈0</td>
+<td>0.9227</td>
+<td>⚠️ <strong>7.7%</strong></td>
+<td>14.9%</td>
+<td>几乎做不出</td>
+</tr>
+<tr>
+<td>0.05</td>
+<td>≈0</td>
+<td>0.6634</td>
+<td>33.7%</td>
+<td>56.0%</td>
+<td>很难</td>
+</tr>
+<tr>
+<td>0.10</td>
+<td>≈0</td>
+<td>0.4305</td>
+<td>56.9%</td>
+<td>81.5%</td>
+<td>难</td>
+</tr>
+<tr>
+<td>0.25</td>
+<td>0.0000153</td>
+<td>0.1001</td>
+<td>90.0%</td>
+<td>99.0%</td>
+<td>★ 偏难，好用</td>
+</tr>
+<tr>
+<td><strong>0.50</strong></td>
+<td>0.003906</td>
+<td>0.003906</td>
+<td>★★★ <strong>99.2%</strong></td>
+<td><strong>100.0%</strong></td>
+<td>★★★ <strong>最值钱</strong></td>
+</tr>
+<tr>
+<td>0.75</td>
+<td>0.1001</td>
+<td>0.0000153</td>
+<td>90.0%</td>
+<td>99.0%</td>
+<td>★ 偏易，好用</td>
+</tr>
+<tr>
+<td>0.90</td>
+<td>0.4305</td>
+<td>≈0</td>
+<td>56.9%</td>
+<td>81.5%</td>
+<td>简单</td>
+</tr>
+<tr>
+<td>0.99</td>
+<td>0.9227</td>
+<td>≈0</td>
+<td>⚠️ <strong>7.7%</strong></td>
+<td>14.9%</td>
+<td>几乎必对</td>
+</tr>
+<tr>
+<td>1.00 / 0.00</td>
+<td>1 / 0</td>
+<td>0 / 1</td>
+<td>❌ <strong>0%</strong></td>
+<td>❌ <strong>0%</strong></td>
+<td>★ 纯浪费</td>
+</tr>
+</tbody>
+</table>
+<p><strong>三条能直接拿去用的结论</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 曲线关于 p = 0.5 对称，峰值在 0.5。
+   =&gt; &quot;太难&quot;和&quot;太简单&quot;是【同一种病】，不是两种。
+
+② p = 0.99 和 p = 0.01 的有效率都只有 7.7%（G=8）。
+   ★ 翻译成钱：你花了 8 次 rollout 的算力，92.3% 的概率什么都没学到。
+   ⚠️ 一个常见误解是&quot;简单题至少能巩固一下&quot; —— 不会，优势是 0，梯度就是 0。
+
+③ G 从 8 翻到 16，可用难度窗口明显变宽
+   （p=0.1 处：56.9% -&gt; 81.5%）。
+   ★★ 所以&quot;组大小 G&quot;和&quot;题目难度分布&quot;是【同一个旋钮的两头】：
+      题池偏两端时，加大 G 能救一部分；但 G 的成本是线性的 rollout 算力。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这张表的三个限制，不说清会被用歪</strong>：<br />
+<strong>①</strong> 它把 G 次 rollout 当<strong>独立同分布</strong>。真实 rollout 之间相关（同一个模型、同一个 prompt、温度有限），所以真实的"全对/全错"概率比表里<strong>更高</strong>，有效率比表里<strong>更低</strong>——这张表是<strong>乐观</strong>估计。<br />
+<strong>②</strong> "有效"只是说<strong>梯度非零</strong>，不等于"价值相同"。优势的方差也影响学习效率，这一层表里没有。<br />
+<strong>③</strong> <code>P(有效)</code> 是我按二项分布推的（⚠️ 标准做法，但不是某篇论文的结论）。GRPO 里"组内全对/全错 → 优势为 0"这件事本身是算法的<strong>定义性质</strong>，见 <a href="05-RLVR-可验证奖励.html">05 章</a>。</p>
+</blockquote>
+<p><strong>同一件事的直觉图</strong>（纯 ASCII，不依赖字符宽度）：</p>
+<div class="codehilite"><pre><span></span><code>   样本价值
+     ^
+     |            .-&#39;&#39;&#39;&#39;&#39;-.
+     |          .&#39;         &#39;.
+     |        .&#39;             &#39;.
+     |      .&#39;                 &#39;.
+     |    .&#39;                     &#39;.
+     |  .&#39;                         &#39;.
+     +----------------------------------&gt;  模型在这道题上的单次成功率
+     0%             50%              100%
+      |              |                |
+    太难         ★ 最值钱           太简单
+  (组内全错)                      (组内全对)
 </code></pre></div>
 
 <p><strong>几个具体做法</strong>：</p>
@@ -365,16 +661,20 @@ RLVR 的目标：最大化奖励
   ✅ openPangu-2.0 的&quot;在线动态过滤&quot;就是这个
 · 离线选择：按难度分布采样（有工作让采样概率正比于难度的正态密度，
   即优先取中间难度）
-· 让&quot;选题器&quot;自己学一条【课程】（由易到难自动排序），
+· 让&quot;选题器&quot;自己学一条【课程】（由易到难自动排序）
   ✅ 见 Selector-Guided Autonomous Curriculum for One-Shot RLVR
      （arXiv:2605.01823，Rudray Dave 等，2026-05）
   ⚠️ 该工作规模较小，结论尚属初步
 </code></pre></div>
 
+<blockquote>
+<p>🔑 <strong>一个很容易被跳过的实践点</strong>：难度是<strong>相对于当前这一版模型</strong>的，不是题目的固有属性。模型一边训一边变强，昨天 p=0.4 的题今天可能 p=0.8。<strong>所以难度过滤必须在线做，离线标一次难度然后一直用，训到后面就全是简单题。</strong></p>
+</blockquote>
 <hr />
-<h2 id="95">9.5 数据高效的极限，和它的正确读法</h2>
-<div class="codehilite"><pre><span></span><code>✅ One-shot RLVR（arXiv:2504.20571）：1 条题 ≈ 7500 条题的效果（见 05.7）
-✅ LIMA（arXiv:2305.11206）：1000 条 SFT 数据就能把对话格式教会
+<h2 id="95">9.5 ★★★ "少而精"还是"多而杂"：把账算出来</h2>
+<div class="codehilite"><pre><span></span><code>✅ One-shot RLVR（arXiv:2504.20571）：1 条题 ≈ 7500 条题的效果（见 05 章）
+✅ LIMA（Less Is More for Alignment，&quot;对齐上少即是多&quot;，arXiv:2305.11206）：
+   约 1000 条 SFT 数据就能把对话格式教会
 
 ⚠️ 这两个结果非常容易被误读成&quot;数据不重要了&quot;。正确读法是：
 
@@ -385,33 +685,192 @@ RLVR 的目标：最大化奖励
       —— 既然一条题就能起作用，那&quot;挑哪一条&quot;就是全部问题
 </code></pre></div>
 
-<p>★ <strong>一句话</strong>：<strong>后训练的数据竞争，已经从"谁的数据多"变成了"谁挑得准"。</strong></p>
-<hr />
-<h2 id="96">9.6 一个容易忽略的坑：评测污染</h2>
-<div class="codehilite"><pre><span></span><code>SFT / RL 的数据大量来自：GitHub、题库、合成、以及【模型自己生成】。
+<blockquote>
+<p>📖 这个取舍在 <a href="../数据格式和数据处理/15-后训练数据格式.html">../数据格式和数据处理/15-后训练数据格式.md</a> §15.9 有一段定性讨论（含 LIMA 的核对说明）。<strong>本节补的是那里没有的东西：一笔能自己验算的账。</strong></p>
+</blockquote>
+<h3 id="1-vs-10">★★★ 1 万条高质量 vs 10 万条普通：逐行算一遍</h3>
+<p><strong>先说清这笔账的模型</strong>（⚠️ 下面的比例是为讲解构造的，不是任何一家的实测值；但<strong>每一步都标了怎么量</strong>，你可以拿自己的数据跑一遍）：</p>
+<div class="codehilite"><pre><span></span><code>   ★★ 关键的一步，也是最反直觉的一步：
+      【SFT 里一条错答案不是 0 分，是负分。】
+      因为 SFT 的 loss 就是&quot;照着这段文字说&quot;，
+      你喂一条错的，它就老老实实把错的学会。
 
-⚠️ 三个污染路径：
-   ① 题库直接和评测集重叠（AIME 题在网上到处都是）
-   ② 拒绝采样用的老师模型【本身见过评测集】，把答案&quot;记忆&quot;进了合成数据
-   ③ Agentic RL 的仓库环境和 SWE-bench 的仓库重叠
-
-★ 后训练阶段的污染比预训练更隐蔽，因为数据量小、来源杂、迭代快，
-  很多团队根本没有对后训练数据做去污染。
-
-→ 去污染方法见 ../数据格式和数据处理/08-去污染与隐私许可.md
-→ 评测侧的对策见本教程 10 章
+   =&gt; 所以不能只算&quot;有多少条对的&quot;，要算【净有效量】：
+         净有效量 = 去重后的正确条数 − k × 错误条数
+      其中 k = &quot;一条错数据能抵消几条对数据&quot;。
+      ★★★ k 是这整件事唯一的决策变量。
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th><strong>方案 A：1 万条精筛</strong></th>
+<th><strong>方案 B：10 万条未筛</strong></th>
+<th>这一步怎么量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 名义条数</td>
+<td>10,000</td>
+<td>100,000</td>
+<td><code>wc -l</code></td>
+</tr>
+<tr>
+<td>② 答案正确率</td>
+<td>98%</td>
+<td>75%</td>
+<td>★ 抽 300 条人工复核，或用<strong>另一个</strong>验证器重跑</td>
+</tr>
+<tr>
+<td>③ 正确条数 <code>=①×②</code></td>
+<td>9,800</td>
+<td>75,000</td>
+<td>—</td>
+</tr>
+<tr>
+<td>④ 错误条数 <code>=①−③</code></td>
+<td><strong>200</strong></td>
+<td>⚠️ <strong>25,000</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>⑤ 近重复率</td>
+<td>5%</td>
+<td>40%</td>
+<td>MinHash（阈值 0.8）两两比</td>
+</tr>
+<tr>
+<td>⑥ 去重后正确条数 <code>=③×(1−⑤)</code></td>
+<td><strong>9,310</strong></td>
+<td><strong>45,000</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>⑦ 净有效量（取 k=1）</td>
+<td>9,310 − 200 = <strong>9,110</strong></td>
+<td>45,000 − 25,000 = <strong>20,000</strong></td>
+<td>★ B 赢</td>
+</tr>
+<tr>
+<td>⑦′ 净有效量（取 k=3）</td>
+<td>9,310 − 600 = <strong>8,710</strong></td>
+<td>45,000 − 75,000 = ⚠️ <strong>−30,000</strong></td>
+<td>★★★ A 赢，而且 B 是<strong>负的</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   验算第 ⑥ 行 A：9,800 × 0.95 = 9,310  ✓
+   验算第 ⑥ 行 B：75,000 × 0.60 = 45,000  ✓
+   验算第 ⑦′ 行 B：45,000 − 3 × 25,000 = 45,000 − 75,000 = −30,000  ✓
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这张表真正的结论不是"A 好"或"B 好"，而是：</strong><br />
+<strong>"少而精 vs 多而杂"根本不是一个可以一般性回答的问题——它取决于 <code>k</code>，而 <code>k</code> 是你自己数据集上的一个可测量。</strong><br />
+<code>k</code> 小（错数据几乎无害）→ 加量有用；<code>k</code> 大（错数据毒性强）→ 加量是在倒扣分。<br />
+⚠️ 而 <code>k</code> 为什么会大：错答案常常<strong>集中在同一类题</strong>上（合成管线在哪里失败就在哪里一直失败），于是它不是均匀噪声，而是<strong>系统性地</strong>教了一个错模式。</p>
+</blockquote>
+<h3 id="_2">★★ 怎么判断自己在哪一侧：四条可操作判据</h3>
+<table>
+<thead>
+<tr>
+<th>判据</th>
+<th>怎么测</th>
+<th>落在哪一侧</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 错误率</strong></td>
+<td>随机抽 300 条人工复核<br>（★ n=300、p≈0.05 时标准误 ≈ <strong>1.3 个百分点</strong>，够用了）</td>
+<td>&gt; 5% → ⚠️ <strong>先清洗，加量毫无意义</strong>。你在"多而杂"一侧</td>
+</tr>
+<tr>
+<td><strong>② 近重复率</strong></td>
+<td>MinHash，阈值 0.8</td>
+<td>&gt; 30% → 名义条数<strong>虚高</strong>，先去重再谈规模</td>
+</tr>
+<tr>
+<td><strong>③ 任务型覆盖</strong></td>
+<td>按目标任务型分桶，数每桶条数</td>
+<td>有任何一个目标能力是 <strong>0 条</strong> → 缺的是<strong>覆盖面</strong>，这时"精"救不了你，必须加数据</td>
+</tr>
+<tr>
+<td><strong>④ ★★★ 子集学习曲线</strong></td>
+<td>用 10% / 30% / 100% 的数据各训一次，画三点</td>
+<td>30% → 100% 几乎不涨 → ★ 你已经在"多而杂"一侧，<strong>继续加同源数据没有回报</strong>；<br>还在明显上涨 → 加量仍然划算</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ★★★ 判据 ④ 是唯一能【直接回答&quot;要不要继续加数据&quot;】的那一条，
+      而且它不需要你先猜出 k —— 子集消融把 k 的影响一起测进去了。
+   ⚠️ 代价：要多训两次。但比&quot;攒了 50 万条才发现 30% 就够&quot;便宜得多。
+
+   ★ 验算判据 ① 那个标准误：
+      SE = sqrt( p(1−p) / n ) = sqrt( 0.05 × 0.95 / 300 )
+         = sqrt( 0.0475 / 300 ) = sqrt( 0.00015833 ) = 0.0126
+      =&gt; 约 1.3 个百分点。
+      ⟹ 所以&quot;抽 300 条量错误率&quot;能把 5% 和 10% 分开，
+         但分不开 5% 和 6%。（这条公式见 10 章和附录速查表）
+</code></pre></div>
+
+<p>★ <strong>一句话</strong>：<strong>后训练的数据竞争，已经从"谁的数据多"变成了"谁挑得准"——而"挑得准"是可以量化的，不是手感。</strong></p>
+<hr />
+<h2 id="96">9.6 一个容易忽略的坑：评测污染</h2>
+<p>后训练数据大量来自 GitHub、公开题库、合成、以及<strong>模型自己生成</strong>。这几个来源都可能把评测题带进训练集。</p>
+<table>
+<thead>
+<tr>
+<th>污染路径</th>
+<th>具体怎么发生</th>
+<th>n-gram 匹配查得到吗</th>
+<th>对策</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 题库直接重叠</strong></td>
+<td>RL 题池从公开题库来，AIME / Codeforces / LeetCode 的题和评测集高度重叠</td>
+<td>✅ 查得到</td>
+<td>对题池和评测集做 n-gram 去重</td>
+</tr>
+<tr>
+<td><strong>② 老师模型"记忆"泄漏</strong></td>
+<td>拒绝采样用的老师模型<strong>本身见过评测集</strong>，把记住的解法写进了你的合成数据</td>
+<td>⚠️ <strong>查不到原题</strong>，但可能查到标准解的措辞</td>
+<td>★ 换一个没见过该评测集的老师；或只用私有题</td>
+</tr>
+<tr>
+<td><strong>③ 环境重叠</strong></td>
+<td>Agentic RL 的仓库环境和 SWE-bench 的仓库重叠</td>
+<td>❌ 完全无效</td>
+<td>★★ 比对<strong>代码库 + 提交版本</strong>，不是比对文本</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 为什么后训练阶段的污染比预训练更隐蔽：
+   数据量小、来源杂、迭代快，而且很多团队根本没有对后训练数据建去污染流程
+   —— 预训练那边有，后训练这边常常是空的。
+
+⚠️ 这是我的观察，不是哪份报告的统计结论。
+</code></pre></div>
+
+<p>→ 去污染<strong>方法</strong>见 <a href="../数据格式和数据处理/08-去污染与隐私许可.html">../数据格式和数据处理/08-去污染与隐私许可.md</a></p>
+<p>→ <strong>评测侧</strong>怎么防、怎么发现，见 <a href="10-评测与回归.html">10 章</a></p>
 <hr />
 <h2 id="97">9.7 这一章的三句话总结</h2>
 <div class="codehilite"><pre><span></span><code>① &quot;数据&quot;在后训练三个阶段指三种东西：
-   带答案的样本 → 带裁判的题目 → 能跑起来的环境。
+   带答案的样本 -&gt; 带裁判的题目 -&gt; 能跑起来的环境。
+   ★ 而数据只有五个维度：规模 / 难度分布 / 多样性 / 质量 / 去重（见 9.0 那张总表）。
 
 ② 给 SFT 挑数据的方法搬到 RL 上会失效，
-   因为 SFT 要&quot;最难的&quot;，RL 要&quot;难度刚好匹配当前能力的&quot;。
+   因为 SFT 要&quot;最难的&quot;，RL 要&quot;难度刚好匹配当前能力的&quot;
+   —— 这件事可以算：G=8 时 p=0.99 的题有效率只有 7.7%（9.4）。
 
-③ 数据竞争已经从&quot;谁的多&quot;变成&quot;谁挑得准&quot;，
-   而拒绝采样有个内在偏置：它只会保留模型已经会做的题。
+③ &quot;少而精 vs 多而杂&quot;没有一般答案，取决于【一条错数据抵消几条对数据】；
+   而&quot;要不要继续加数据&quot;有一条不用猜的判据：★ 画 10%/30%/100% 的子集学习曲线。
 </code></pre></div>
 
 <hr />

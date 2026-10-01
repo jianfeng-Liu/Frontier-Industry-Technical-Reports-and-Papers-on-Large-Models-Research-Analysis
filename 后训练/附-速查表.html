@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -348,9 +353,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td><strong>MOPD</strong></td>
-<td><strong>Multi-domain</strong> On-Policy Distillation</td>
-<td>多领域同策略蒸馏</td>
-<td>用 OPD 把多个领域专家合成一个模型</td>
+<td><strong>Multi-teacher</strong> On-Policy Distillation</td>
+<td>多教师同策略蒸馏</td>
+<td>用 OPD 把多个专家（教师）合成一个模型</td>
 <td><a href="08-蒸馏与合并-OPD.html">08</a></td>
 </tr>
 </tbody>
@@ -397,9 +402,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td><strong>GSPO</strong></td>
-<td><strong>Sequence</strong>-level Policy Optimization</td>
-<td>序列级策略优化</td>
-<td>重要性比率算在整条序列上而不是逐 token</td>
+<td><strong>Group Sequence</strong> Policy Optimization</td>
+<td>组序列策略优化</td>
+<td>重要性比率算在<strong>整条序列</strong>上，而不是逐 token</td>
 <td><a href="05-RLVR-可验证奖励.html">05</a></td>
 </tr>
 <tr>
@@ -408,6 +413,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>—</td>
 <td>被裁剪掉的 token 也保留梯度</td>
 <td><a href="05-RLVR-可验证奖励.html">05</a></td>
+</tr>
+<tr>
+<td><strong>KTO</strong></td>
+<td><strong>Kahneman-Tversky</strong> Optimization</td>
+<td>卡尼曼-特沃斯基优化</td>
+<td>偏好对齐的一个变体：<strong>不需要成对数据</strong>，单条回答标"好/不好"即可</td>
+<td>⚠️ 本教程未展开</td>
+</tr>
+<tr>
+<td><strong>ORPO</strong></td>
+<td><strong>Odds Ratio</strong> Preference Optimization</td>
+<td>几率比偏好优化</td>
+<td>把偏好项直接并进 SFT 损失，<strong>连参考模型都不要</strong></td>
+<td>⚠️ 本教程未展开</td>
 </tr>
 <tr>
 <td><strong>DFT</strong></td>
@@ -580,6 +599,24 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><a href="10-评测与回归.html">10</a></td>
 </tr>
 <tr>
+<td><strong>SE</strong></td>
+<td>standard error（标准误）</td>
+<td>同一套评测重跑一遍，分数典型的抖动幅度。★ <strong>比 SE 小的差异不能叫"提升"</strong></td>
+<td><a href="10-评测与回归.html">10</a>、§C</td>
+</tr>
+<tr>
+<td><strong>pp</strong></td>
+<td>percentage point（百分点）</td>
+<td>两个百分数相减的单位。⚠️ 40% → 44% 是涨 <strong>4 个百分点</strong>，不是"涨 4%"</td>
+<td>§C</td>
+</tr>
+<tr>
+<td><strong>McNemar 检验</strong></td>
+<td>McNemar's test</td>
+<td>两个模型跑<strong>同一批题</strong>时的配对显著性检验，只看<strong>分歧的题</strong>。⚠️ <strong>不要把两个 SE 相加</strong></td>
+<td><a href="10-评测与回归.html">10</a>、§C</td>
+</tr>
+<tr>
 <td><strong>alignment tax</strong></td>
 <td>对齐税</td>
 <td>为了安全和风格，牺牲掉的一部分硬能力</td>
@@ -607,39 +644,105 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </table>
 <hr />
 <h2 id="b">§B ★★ 一页流水线图</h2>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│   预训练                                                              │
-│   base ckpt          只会续写，不会对话                    ~90% 算力   │
-│      │                                                               │
-│      ▼                                                               │
-│   mid-training       高质量 / 长上下文 / 推理数据继续训                 │
-│      │                                                               │
-│      ▼                                                               │
-│   ★ SFT             问题+答案，只在答案上算 loss          教【格式】    │
-│      │               ⟵ 数据主力：拒绝采样                              │
-│      ▼                                                               │
-│   ★★ RLVR          判分程序给 0/1，GRPO 类算法          教【会想】     │
-│      │               ⟵ 战场：数学 / 代码 / 逻辑                        │
-│      ▼                                                               │
-│   ★★★ Agentic RL   环境给反馈，一条样本 = 一条轨迹      教【会做】     │
-│      │               ⟵ 瓶颈：环境基建、长尾、训推一致性                 │
-│      ▼                                                               │
-│   通用 RL / RLHF     奖励模型管&quot;说得好不好听&quot; + 安全      ★ 必须放最后  │
-│      │                                                               │
-│      ▼                                                               │
-│   ★ OPD 收口        多个领域专家 → 一个统一模型（函数空间合并）         │
-│      │                                                               │
-│      ▼                                                               │
-│   上线模型                                                            │
-└──────────────────────────────────────────────────────────────────────┘
+<div class="codehilite"><pre><span></span><code>  预训练产物
+  base ckpt
+     |
+     v
+  mid-training
+     |
+     v
+  ★ SFT
+     |
+     v
+  ★★ RLVR
+     |
+     v
+  ★★★ Agentic RL
+     |
+     v
+  通用 RL / RLHF
+     |
+     v
+  ★ OPD 收口
+     |
+     v
+  上线模型
+</code></pre></div>
 
-  分训（并行分支）              合训（回到 base 重训 + OPD 收口）
-   base ──┬── 数学专家 ──┐
-          ├── 代码专家 ──┼──▶ 统一模型
-          ├── Agent 专家 ┤
-          └── 通用专家 ──┘
-   ★ 关键纪律：合训必须【回到原始 base】重训，不能在专家上接着训。
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>这一步在干什么</th>
+<th>奖励 / 数据从哪来</th>
+<th>教的是</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>base ckpt</strong></td>
+<td>预训练产物</td>
+<td>—</td>
+<td>—</td>
+<td>只会续写，不会对话；⚠️ 占全程算力的大头</td>
+</tr>
+<tr>
+<td><strong>mid-training</strong></td>
+<td>继续训</td>
+<td>高质量 / 长上下文 / 推理数据</td>
+<td>—</td>
+<td>预训练和后训练之间新长出来的一段</td>
+</tr>
+<tr>
+<td><strong>★ SFT</strong></td>
+<td>监督微调</td>
+<td>问题 + 答案，只在答案上算 loss</td>
+<td>教<strong>【格式】</strong></td>
+<td>★ 数据主力是<strong>拒绝采样</strong></td>
+</tr>
+<tr>
+<td><strong>★★ RLVR</strong></td>
+<td>可验证奖励 RL</td>
+<td>判分<strong>程序</strong>给 0/1；GRPO 类算法</td>
+<td>教<strong>【会想】</strong></td>
+<td>战场：数学 / 代码 / 逻辑</td>
+</tr>
+<tr>
+<td><strong>★★★ Agentic RL</strong></td>
+<td>智能体 RL</td>
+<td><strong>环境</strong>给反馈，一条样本 = 一条轨迹</td>
+<td>教<strong>【会做】</strong></td>
+<td>瓶颈：环境基建、长尾、训推一致性</td>
+</tr>
+<tr>
+<td><strong>通用 RL / RLHF</strong></td>
+<td>偏好对齐</td>
+<td>奖励模型管"说得好不好听" + 安全</td>
+<td>教<strong>【说人话】</strong></td>
+<td>★★ <strong>必须放最后</strong>，否则会被前面的阶段覆盖</td>
+</tr>
+<tr>
+<td><strong>★ OPD 收口</strong></td>
+<td>同策略蒸馏合并</td>
+<td>多个专家当教师，逐 token 给分</td>
+<td>—</td>
+<td>多个领域专家 → 一个统一模型（函数空间合并）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>分训与合训</strong>（★ 和上面那条主线是正交的一维）：</p>
+<div class="codehilite"><pre><span></span><code>  分训（并行分支，各练各的）
+     base ──┬── 数学专家
+            ├── 代码专家
+            ├── Agent 专家
+            └── 通用专家
+
+  合训（把它们变回一个模型）
+     四个专家  ──&gt;  OPD 收口  ──&gt;  统一模型
+
+  ★★ 关键纪律：合训必须【回到原始 base】重训，
+     不能在某个专家上接着训 —— 否则灾难性遗忘。
 </code></pre></div>
 
 <hr />
@@ -658,12 +761,442 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
   RL 训练步数       几百 ~ 几千步
 
 【算力占比】
-  R1 的 RL 阶段     147K H800 卡时  vs  预训练 2.8M 卡时 ≈ 5%   ✅
-  2026 年           RL 算力已与预训练【同量级】          ⚠️ 各家未逐一披露
+  ⚠️⚠️ 这一格是全表口径最弱的一格，转引前务必读下面的说明：
+  R1 的 RL 阶段     约 147K H800 卡时 vs 约 2.8M 卡时 ≈ 5%   ⚠️ 推算，非披露
+  2026 年           RL 算力已与预训练【同量级】              ⚠️ 各家未逐一披露
 
 【环境规模】
   Nemotron 3 Super  21 个环境 / 37 个数据集                 ✅ 2604.12374
-  代码 RL 环境审计  105 个里 65 个 FAIL ≈ 61.9% 缺陷率       ✅ 2606.16062
+  代码 RL 环境审计  105 个【检查项】里 65 个 FAIL = 61.9%    ✅ 2606.16062
+     ⚠️ 分母是【检查项】不是【环境】。说成&quot;61.9% 的环境是漏的&quot;
+        是换了分母的口径跳跃 —— 那是推断，不是论文结论（见 6.4 节）
+                    ★ 验算：65 ÷ 105 = 0.6190
+</code></pre></div>
+
+<blockquote>
+<p>⚠️⚠️ <strong>「RL 占约 5% 算力」这条的口径说明</strong>（★ 这是本表唯一一处需要这么长注释的数字）：<br />
+<strong>①</strong> DeepSeek-R1 的 arXiv 版（2501.12948）<strong>没有披露 RL 阶段的 GPU 卡时</strong>，所以 147K 这个数<strong>不是从该论文读出来的</strong>；它是从"RL 训练花费约 29.4 万美元"这类金额披露、按约 2 美元/卡时<strong>折算</strong>得到的。<br />
+<strong>②</strong> 分母 2.8M 卡时是 <strong>DeepSeek-V3</strong> 的<strong>总</strong>训练卡时（含上下文扩展与后训练），<strong>不是 R1 自己的预训练卡时</strong>，也不是纯预训练数（纯预训练约 2.66M）。<br />
+<strong>③</strong> 所以 "≈ 5%" 是<strong>两份不同披露拼出来的比值</strong>，⚠️ <strong>标 ⚠️ 而不是 ✅</strong>。它可以当"RL 在 2025 年初还只是个零头"的量级印象，<strong>不能当可引用的比例</strong>。<br />
+<strong>④</strong> "2026 年已到同量级"这半句<strong>没有任何一家逐一披露过</strong>，是从"RL 阶段数增多、rollout 成为主要开销"推出来的。<br />
+⟹ 🔑 要用这条数时，请回溯一手 PDF 自行确认；本表只负责提醒它不结实。<br />
+✅ <strong>更可靠的分母在 <a href="01-鸟瞰全景.html">01 章</a></strong>：那一章用 DeepSeek-V3 技术报告（arXiv:2412.19437）<strong>论文 §1</strong> 披露的 <strong>2.664 M 卡·时</strong>作为预训练项，口径比本表这一格干净。<strong>以 01 章为准。</strong></p>
+</blockquote>
+<hr />
+<h3 id="rlhf-7b">★★★ RLHF 四个模型的显存账（7B 为例，逐项能验算）</h3>
+<p><strong>先把"每个参数要多少字节"拆开</strong>——这是整笔账的地基，也是最常被算错的地方：</p>
+<table>
+<thead>
+<tr>
+<th>这一份是什么</th>
+<th>精度</th>
+<th>字节/参数</th>
+<th>只有"要训练的模型"才有吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 模型权重</td>
+<td>BF16</td>
+<td><strong>2</strong></td>
+<td>所有模型都要</td>
+</tr>
+<tr>
+<td>② 梯度</td>
+<td>BF16</td>
+<td><strong>2</strong></td>
+<td>★ 只有要训练的才有</td>
+</tr>
+<tr>
+<td>③ FP32 主副本（master weights）</td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>★ 只有要训练的才有</td>
+</tr>
+<tr>
+<td>④ Adam 一阶动量 <code>m</code></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>★ 只有要训练的才有</td>
+</tr>
+<tr>
+<td>⑤ Adam 二阶动量 <code>v</code></td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+<td>★ 只有要训练的才有</td>
+</tr>
+<tr>
+<td><strong>合计（要训练的模型）</strong></td>
+<td>—</td>
+<td>★★★ <strong>16</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>合计（只前向的模型）</strong></td>
+<td>—</td>
+<td><strong>2</strong></td>
+<td>只要 ①</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⚠️⚠️ 两个最常见的算错：
+  ① 把 Adam 的 m 和 v 当成&quot;一共 4 字节&quot;。
+     ★ 不对：m 和 v 【各】占 4 字节（FP32），合起来 8 字节。
+  ② 忘记 FP32 主副本。
+     ★ 混合精度训练里，优化器更新作用在 FP32 副本上，
+       BF16 权重只是它的一份舍入拷贝 —— 这 4 字节是真实存在的。
+
+  ★ 16 = 2（BF16 权重）+ 2（BF16 梯度）+ 4（FP32 主副本）
+            + 4（Adam m）+ 4（Adam v）
+</code></pre></div>
+
+<p><strong>代进 7B（按 7 × 10⁹ 个参数算）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>模型</th>
+<th>在 PPO/RLHF 里干什么</th>
+<th>要不要训练</th>
+<th>字节/参数</th>
+<th><strong>显存</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>策略</strong>（Actor）</td>
+<td>就是你要训出来的模型</td>
+<td>★ <strong>要</strong></td>
+<td>16</td>
+<td><code>7e9 × 16 =</code> <strong>112 GB</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>参考模型</strong>（Reference）</td>
+<td>算 KL 惩罚的锚点，权重冻结</td>
+<td>❌ 只前向</td>
+<td>2</td>
+<td><code>7e9 × 2 =</code> <strong>14 GB</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>奖励模型</strong>（Reward Model）</td>
+<td>给回答打分，权重冻结</td>
+<td>❌ 只前向</td>
+<td>2</td>
+<td><strong>14 GB</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>价值网络</strong>（Critic）</td>
+<td>估计状态价值，和策略同尺寸</td>
+<td>★ <strong>要</strong></td>
+<td>16</td>
+<td><strong>112 GB</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>合计</strong></td>
+<td></td>
+<td></td>
+<td></td>
+<td>★★★ <strong>252 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 验算：112 + 14 + 14 + 112 = 252 GB
+   （= 252 × 10⁹ 字节 ÷ 2³⁰ ≈ 234.7 GiB，⚠️ 口径差约 7%，写方案时说清 GB 还是 GiB）
+
+⟹ 🔑 一台 8×H100（8 × 80 GB = 640 GB）装得下这 252 GB 的权重与优化器状态，
+   ⚠️ 但【激活值、rollout 的 KV cache、以及推理引擎自己那一份权重】全都还没算进去。
+   ★★ 这就是&quot;PPO 只有大厂能跑&quot;这句话的具体含义 —— 不是算力不够，是显存先爆。
+</code></pre></div>
+
+<hr />
+<h3 id="sft-dpo-ppo-grpo">★★★ SFT / DPO / PPO / GRPO 要素对照（要几个模型、要不要采样、要不要奖励模型）</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>SFT</strong></th>
+<th><strong>DPO</strong></th>
+<th><strong>PPO</strong>（RLHF）</th>
+<th><strong>GRPO</strong>（RLVR）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练中要几个模型</strong></td>
+<td><strong>1</strong></td>
+<td><strong>2</strong></td>
+<td>⚠️ <strong>4</strong></td>
+<td><strong>2</strong></td>
+</tr>
+<tr>
+<td>哪几个</td>
+<td>策略</td>
+<td>策略 + 参考</td>
+<td>策略 + 参考 + 奖励模型 + 价值网络</td>
+<td>策略 + 参考</td>
+</tr>
+<tr>
+<td><strong>要价值网络(Critic)吗</strong></td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ 要，<strong>和策略同尺寸</strong></td>
+<td>★★ ❌ <strong>扔掉</strong>，改用组内相对</td>
+</tr>
+<tr>
+<td><strong>要奖励模型吗</strong></td>
+<td>❌</td>
+<td>❌（偏好对里隐含）</td>
+<td>✅ 要，<strong>得先单独训一个</strong></td>
+<td>❌ 用<strong>判分程序</strong></td>
+</tr>
+<tr>
+<td><strong>要在线采样(rollout)吗</strong></td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ 要</td>
+<td>✅ 要，<strong>同题采 G 次</strong></td>
+</tr>
+<tr>
+<td>on-policy / off-policy</td>
+<td>极端 off-policy</td>
+<td>off-policy</td>
+<td><strong>on-policy</strong></td>
+<td><strong>on-policy</strong></td>
+</tr>
+<tr>
+<td>一条数据长什么样</td>
+<td>问题 + 答案</td>
+<td><code>chosen</code> / <code>rejected</code> 偏好对</td>
+<td>prompt（答案自己采）</td>
+<td>prompt + 验证器</td>
+</tr>
+<tr>
+<td><strong>数据会过期吗</strong></td>
+<td>—</td>
+<td>⚠️ <strong>会</strong>（模型一变，偏好对就不对口了）</td>
+<td>不会</td>
+<td>不会</td>
+</tr>
+<tr>
+<td><strong>7B 显存</strong>（权重+优化器状态）</td>
+<td><strong>112 GB</strong></td>
+<td><strong>126 GB</strong></td>
+<td>⚠️ <strong>252 GB</strong></td>
+<td><strong>126 GB</strong></td>
+</tr>
+<tr>
+<td>主要成本在哪</td>
+<td>标注答案</td>
+<td>标注偏好对</td>
+<td>★ <strong>显存</strong> + rollout</td>
+<td>★ <strong>rollout</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 验算显存那一行：
+   SFT  = 112                      （只有策略，要训）
+   DPO  = 112 + 14 = 126            （策略要训 + 参考只前向）
+   GRPO = 112 + 14 = 126            （同上；奖励是程序，不占显存）
+   PPO  = 112 + 14 + 14 + 112 = 252 （多一个奖励模型 + 一个价值网络）
+
+⟹ 🔑🔑 GRPO ÷ PPO = 126 ÷ 252 = 【正好一半】。
+   ★★ 这就是&quot;GRPO 把 RL 从只有大厂能跑变成学术组也能跑&quot;的量化版本：
+      省掉的不是算力，是【价值网络那 112 GB + 奖励模型那 14 GB】。
+</code></pre></div>
+
+<hr />
+<h3 id="_2">★★★ 噪声门槛：差多少才算真的变好</h3>
+<div class="codehilite"><pre><span></span><code>   ★★★ 一个分数自己的抖动（标准误）：
+
+        SE ≈ sqrt( p × (1 − p) ÷ n )
+
+      n = 题数，p = 准确率。★ 拿不准 p 时取 0.5 —— 这是最保守（SE 最大）的取法。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>题量 n</th>
+<th>典型例子</th>
+<th><strong>SE</strong>（p=0.5）</th>
+<th>95% 区间 ≈ ±1.96·SE</th>
+<th>⟹ 差多少才值得当真</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>30</td>
+<td>AIME 一年的题</td>
+<td>⚠️ <strong>9.1 pp</strong></td>
+<td>±17.9 pp</td>
+<td>★ 单跑一遍几乎没有可比性</td>
+</tr>
+<tr>
+<td>100</td>
+<td>自建的小评测集</td>
+<td>5.0 pp</td>
+<td>±9.8 pp</td>
+<td>差 10 个点以下别下结论</td>
+</tr>
+<tr>
+<td>164</td>
+<td>HumanEval</td>
+<td>3.9 pp</td>
+<td>±7.7 pp</td>
+<td>差 8 个点以下要慎重</td>
+</tr>
+<tr>
+<td>300</td>
+<td>SWE-bench Lite</td>
+<td>2.9 pp</td>
+<td>±5.7 pp</td>
+<td>差 5 个点约等于噪声</td>
+</tr>
+<tr>
+<td><strong>500</strong></td>
+<td>SWE-bench Verified / MATH-500</td>
+<td>★★★ <strong>2.2 pp</strong></td>
+<td>±4.4 pp</td>
+<td>差 4 个点以下要慎重</td>
+</tr>
+<tr>
+<td>1,000</td>
+<td>中等规模基准</td>
+<td>1.6 pp</td>
+<td>±3.1 pp</td>
+<td>差 3 个点以下要慎重</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 验算最关键那一行：n=500、p=0.5
+     SE = sqrt( 0.25 ÷ 500 ) = sqrt( 0.0005 ) = 0.0224  =&gt;  约 2.2 个百分点
+
+⚠️⚠️ 比较【两个模型】时的一句话规矩：
+
+   ❌ 不要把两个 SE 相加（2.2 + 2.2 = 4.4 pp）—— 那个门槛过于保守，
+      会让你【系统性漏掉真实的能力回退】。
+
+   ✅ 两个模型跑的是【同一批题】时，用 McNemar 配对检验，
+      它只看【双方判断不同】的那些题：
+
+           SE(差) = sqrt( n01 + n10 ) ÷ n
+
+        n01 = 旧版对、新版错 的题数
+        n10 = 旧版错、新版对 的题数
+        ★ 双方都对、都错的题【完全不进这个公式】—— 它们不含信息。
+      ⟹ |差| &gt; 1.96 × SE(差) 才叫&quot;真的变了&quot;。
+
+   ★ 例：n=500，分数差 3 pp（= 15 道题），分歧 45 道（30 : 15）
+        SE = sqrt(45) ÷ 500 = 6.708 ÷ 500 = 1.34 pp
+        z  = 3.0 ÷ 1.34 = 2.24  &gt;  1.96   =&gt;  ✅ 这个回退是真的
+      ⚠️ 而用&quot;两个 SE 相加&quot;的门槛 3.71 pp 判，会判成&quot;噪声&quot; —— 漏报。
+</code></pre></div>
+
+<blockquote>
+<p>📖 完整的标准误表、各基准题量、以及"采样 k 次取平均消掉哪种噪声"的推导，见 <a href="../harness评测框架/评测入门/11-怎么读懂一张榜单.html">../harness评测框架/评测入门/11-怎么读懂一张榜单.md</a>。<strong>本页和那边是同一个口径。</strong> 后训练侧怎么用，见 <a href="10-评测与回归.html">10 章</a>。</p>
+</blockquote>
+<hr />
+<h3 id="_3">⚠️⚠️ 两个几乎每份报告都会被读错的换算</h3>
+<p><strong>换算一：「时间减少 X%」≠「加速 X%」</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★★★ 加速倍数 = 1 ÷ (1 − 时间减少比例)
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>报告说"耗时减少"</th>
+<th><strong>加速倍数</strong></th>
+<th>等价于"加速了"</th>
+<th>⚠️ 容易被误读成</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20%</td>
+<td><code>1 ÷ 0.8 =</code> <strong>1.25×</strong></td>
+<td>25%</td>
+<td>"加速 20%" ❌</td>
+</tr>
+<tr>
+<td>33%</td>
+<td><code>1 ÷ 0.67 =</code> <strong>1.5×</strong></td>
+<td>50%</td>
+<td>"加速 33%" ❌</td>
+</tr>
+<tr>
+<td><strong>50%</strong></td>
+<td><code>1 ÷ 0.5 =</code> <strong>2.0×</strong></td>
+<td><strong>100%</strong></td>
+<td>"加速 50%" ❌（差一倍！）</td>
+</tr>
+<tr>
+<td>80%</td>
+<td><code>1 ÷ 0.2 =</code> <strong>5.0×</strong></td>
+<td>400%</td>
+<td>"加速 80%" ❌（差 5 倍）</td>
+</tr>
+<tr>
+<td>90%</td>
+<td><code>1 ÷ 0.1 =</code> <strong>10×</strong></td>
+<td>900%</td>
+<td>"加速 90%" ❌</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 反方向也要会：报告说&quot;加速 2 倍&quot; =&gt; 时间减少 1 − 1/2 = 50%
+                报告说&quot;加速 1.5 倍&quot; =&gt; 时间减少 1 − 1/1.5 = 33.3%
+⟹ 🔑 两个方向混用是技术报告里最高频的数字事故之一。
+</code></pre></div>
+
+<p><strong>换算二：百分比（%）vs 百分点（pp）</strong></p>
+<div class="codehilite"><pre><span></span><code>   ★ 两个百分数【相减】，单位是【百分点 pp】。
+   ★ 一个数【相对于另一个数涨了多少】，单位才是【百分比 %】。
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>绝对变化</th>
+<th>相对变化</th>
+<th>⚠️ 说"涨了 4%"指哪个</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>准确率 40% → 44%</td>
+<td><strong>+4 个百分点</strong></td>
+<td><code>4 ÷ 40 =</code> <strong>+10%</strong></td>
+<td>歧义！两个都能叫"4"</td>
+</tr>
+<tr>
+<td>准确率 80% → 84%</td>
+<td><strong>+4 个百分点</strong></td>
+<td><code>4 ÷ 80 =</code> <strong>+5%</strong></td>
+<td>★ 同样 4 pp，相对提升只有一半</td>
+</tr>
+<tr>
+<td>错误率 20% → 10%</td>
+<td><strong>−10 个百分点</strong></td>
+<td><code>10 ÷ 20 =</code> <strong>−50%</strong></td>
+<td>★ "错误率降低一半"说的是后者</td>
+</tr>
+<tr>
+<td>错误率 2% → 1%</td>
+<td><strong>−1 个百分点</strong></td>
+<td><strong>−50%</strong></td>
+<td>⚠️ 相对降 50%，但绝对只省 1 pp</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>⟹ 🔑 一条纪律：★★ 写&quot;涨了 N 个百分点&quot;，不写&quot;涨了 N%&quot;。
+   ⚠️ 读别人的报告时，看到&quot;提升 50%&quot;先问一句：50 个百分点，还是相对 50%？
+      在 80 分的基准上，这两句话差了【40 分】和【不可能】。
 </code></pre></div>
 
 <hr />
@@ -684,7 +1217,10 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <hr />
-<h2 id="e-2026">§E 五家 2026 报告的后训练一句话对照</h2>
+<h2 id="e-2026">§E 2026 报告的后训练一句话对照</h2>
+<blockquote>
+<p>⚠️ <strong>先说清"五家"指谁</strong>：本教程反复出现的"五家"= <strong>DeepSeek-V4 / GLM-5 / Kimi-K3 / MiniMax-M3 / openPangu-2.0</strong>。下表有 <strong>6 行</strong>，因为 <strong>Nemotron（NVIDIA）是第六个来源</strong>——它在本教程里主要作为"统一混训"这条<strong>反方路线</strong>的证据出现，⚠️ <strong>不要把它算进"五家"</strong>。</p>
+</blockquote>
 <table>
 <thead>
 <tr>
@@ -717,7 +1253,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><strong>MiniMax-M3</strong></td>
 <td>—</td>
 <td>—</td>
-<td>CISPO：保留被裁剪 token 的梯度</td>
+<td>⚠️ <strong>没有技术报告</strong>，后训练细节全部未披露；CISPO（保留被裁剪 token 的梯度）出自<strong>上一代</strong> M1 的报告（arXiv:2506.13585）</td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0</strong></td>
@@ -734,7 +1270,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ 这张表是压缩到极限的版本，细节和原文出处见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。</p>
+<p>⚠️ 这张表是压缩到极限的版本，细节和原文出处见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。<br />
+⚠️ <strong>"五家全部在用 OPD 收口"这句话不准确</strong>：实际是 <strong>DeepSeek-V4 / Kimi-K3 / GLM-5 / openPangu-2.0 四家</strong>（外加 Nemotron 这个独立样本）。<strong>MiniMax-M3 这一项是未披露，不是"也在用"。</strong></p>
 </blockquote>
 <hr />
 <h2 id="f">§F 常见误解速查</h2>
@@ -755,12 +1292,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>分训完把专家串起来接着训就行</td>
 <td>❌ 会灾难性遗忘，必须回到原始 base</td>
-<td><a href="03-分训与合训.html">03.3</a></td>
+<td><a href="03-分训与合训.html">3.4 节</a></td>
 </tr>
 <tr>
 <td>两阶段联合训练不是也串行吗</td>
 <td>那是按<strong>质量档位</strong>串行，不是按<strong>域</strong>串行，且第二阶段仍是全域低学习率</td>
-<td><a href="03-分训与合训.html">03.5</a></td>
+<td><a href="03-分训与合训.html">3.4 节</a></td>
 </tr>
 <tr>
 <td>SFT 分数越高，RL 起点越好</td>
@@ -780,7 +1317,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>过程奖励（PRM）比结果奖励好</td>
 <td>它会惩罚探索和自我纠错，工业界反而选"笨但难作弊"的结果奖励</td>
-<td><a href="06-奖励从哪来.html">06.3</a></td>
+<td><a href="06-奖励从哪来.html">6.2 节</a></td>
 </tr>
 <tr>
 <td>参数平均（模型融合）能合并专家</td>
@@ -792,13 +1329,45 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>可能是奖励作弊。要和留出集曲线画在同一张图上</td>
 <td><a href="10-评测与回归.html">10.5</a></td>
 </tr>
+<tr>
+<td>某一格掉了 2 分就是能力回退了</td>
+<td>❌ n=500 时 SE ≈ <strong>2.2 个百分点</strong>，2 分在噪声里。先过噪声门槛再说</td>
+<td><a href="10-评测与回归.html">10.1</a>、§C</td>
+</tr>
+<tr>
+<td>比两个模型要把两个 SE 相加</td>
+<td>❌ 过于保守，会<strong>漏掉真实回退</strong>。跑同一批题就用 <strong>McNemar 配对检验</strong></td>
+<td><a href="10-评测与回归.html">10.1</a>、§C</td>
+</tr>
+<tr>
+<td><code>1 − (1−c/n)^k</code> 是 pass@k 的无偏估计</td>
+<td>❌ 反了，它<strong>系统性偏低</strong>。无偏的是 <code>1 − C(n−c,k)/C(n,k)</code>；"直接采 k 次"也无偏，只是方差极大</td>
+<td><a href="10-评测与回归.html">10.2</a></td>
+</tr>
+<tr>
+<td>"耗时减少 50%" = "加速 50%"</td>
+<td>❌ 是<strong>加速 2 倍（100%）</strong>。<code>加速倍数 = 1/(1−减少比例)</code></td>
+<td>§C</td>
+</tr>
+<tr>
+<td>准确率从 40% 到 44% 是"涨了 4%"</td>
+<td>⚠️ 是涨了 <strong>4 个百分点</strong>；相对涨幅才是 <code>4/40 = 10%</code></td>
+<td>§C</td>
+</tr>
+<tr>
+<td>后训练的配比和预训练的配比是一回事</td>
+<td>❌ 预训练按<strong>语料域</strong>配 token，后训练按<strong>任务类型 × 难度</strong>配题目</td>
+<td><a href="09-后训练的数据学.html">9.3</a></td>
+</tr>
 </tbody>
 </table>
 <hr />
 <h2 id="g">§G 引用的论文清单（按时间）</h2>
 <blockquote>
-<p>⚠️ <strong>本教程 <a href="papers/">papers/</a> 目录下没有归档 PDF</strong>，只提供 arXiv 编号。<br />
-下面 <strong>38 个编号已逐个通过 arxiv.org 摘要页核对过「编号 ↔ 标题 ↔ 第一作者 ↔ 首次提交日期」</strong>，不是从二手解读里抄的。</p>
+<p>⚠️ <strong>本教程 <a href="papers/">papers/</a> 目录下没有归档 PDF</strong>，只提供 arXiv 编号。⚠️ <strong>两个例外</strong>：<code>2107.03374</code>（Codex/HumanEval）和 <code>2501.12948</code>（DeepSeek-R1）的一手 PDF 已归档在 <a href="../harness评测框架/papers/">../harness评测框架/papers/</a>。<br />
+下面 <strong>40 个编号已逐个通过 arxiv.org 摘要页核对过「编号 ↔ 标题 ↔ 第一作者 ↔ 首次提交日期」</strong>，不是从二手解读里抄的。<br />
+⚠️ <strong>本表是本教程的权威论文清单</strong>：正文里出现而本表没有的编号，说明清单漏了，请以本表为准去补——不要反过来假设正文写错。</p>
+<p>⚠️ <strong>正文提到但本表【没有】编号的几项</strong>，是因为本教程未核对到可靠编号，<strong>引用前请自行查证</strong>：<strong>CHORD</strong>（把 SFT 变成 on-policy RL 的加权辅助损失项）、<strong>MOPD / Multi-teacher OPD</strong> 这个缩写的首次出处、<strong>o1</strong>（只有 OpenAI 官方博客，无论文）。★ 这几项在正文里出现时都没有标 ✅。</p>
 </blockquote>
 <table>
 <thead>
@@ -809,6 +1378,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>2107.03374</td>
+<td>★ Codex / HumanEval：<strong><code>pass@k</code> 无偏估计量的出处</strong>（论文 Appendix A）。✅ PDF 已归档在 <a href="../harness评测框架/papers/">../harness评测框架/papers/</a></td>
+<td>10</td>
+</tr>
 <tr>
 <td>2203.02155</td>
 <td>InstructGPT：SFT→RM→PPO 三步走</td>
@@ -843,6 +1417,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>2411.00062</td>
 <td>过程奖励的可扩展性讨论</td>
 <td>06</td>
+</tr>
+<tr>
+<td>2412.19437</td>
+<td>DeepSeek-V3 技术报告（★ 算力口径的分母出处，见 01 章）</td>
+<td>01</td>
 </tr>
 <tr>
 <td>2501.12948</td>

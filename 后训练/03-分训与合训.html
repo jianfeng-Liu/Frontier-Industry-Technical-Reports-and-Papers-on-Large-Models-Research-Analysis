@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -253,6 +258,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一章回答一个很具体的问题：从一个 base ckpt 出发，业界怎么先训出几个"领域专家"，再把它们变回一个模型？</strong></p>
 <p>★★ 这是 2026 年五家技术报告后训练章节的<strong>共同骨架</strong>。看懂这一章，那五份报告的第八章就都能读了。</p>
+<p>⚠️ <strong>本章新出现的缩写</strong>：<strong>RFT</strong> = <strong>Rejection sampling Fine-Tuning</strong>（拒绝采样微调）· <strong>STaR</strong> = <strong>Self-Taught Reasoner</strong>（自学推理器，拒绝采样这条路线的早期命名）· <strong>OPD</strong> = <strong>On-Policy Distillation</strong>（在策略蒸馏）· <strong>MOPD</strong> = <strong>Multi-expert On-Policy Distillation</strong>（多专家在策略蒸馏）· <strong>TIES / DARE</strong> = 两种参数空间合并方法的缩写（TIES = TrIm, Elect Sign &amp; Merge；DARE = Drop And REscale）· <strong>GRPO</strong> = <strong>Group Relative Policy Optimization</strong>（组相对策略优化）· <strong>SOP</strong> = Standard Operating Procedure（标准作业流程）。其余缩写见 <a href="01-鸟瞰全景.html">01 章开头</a>和 <a href="附-速查表.html">附-速查表</a>。</p>
 </blockquote>
 <hr />
 <h2 id="31">3.1 先把"分训"这个词拆成两种</h2>
@@ -275,28 +281,84 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <h3 id="_1">为什么串行不行：一个被工业报告实锤的问题</h3>
-<div class="codehilite"><pre><span></span><code>✅ GLM-5 报告（arXiv:2602.15763）的原话大意：
-   「多阶段 RL 顺序优化不同目标时，会【累积性地损害】先前获得的能力。」
+<p>✅ GLM-5 报告（<a href="https://arxiv.org/abs/2602.15763">arXiv:2602.15763</a>，<strong>论文 §3.5</strong>）的原文是：<em>"In our multi-stage RL pipeline, sequentially optimizing for distinct objectives can lead to the cumulative degradation of previously acquired capabilities."</em>（在我们的多阶段 RL 流水线里，顺序地优化不同目标会导致<strong>先前获得的能力累积性退化</strong>。）✅ 这句话是我从归档的 <a href="../业界模型技术报告/papers/">../业界模型技术报告/papers/</a> 正文提取里逐字核对过的。</p>
+<div class="codehilite"><pre><span></span><code>   GLM-5 的实际阶段顺序（✅ 报告披露）：
 
    SFT → Reasoning RL → Agentic RL → General RL
                                        ↑ 训到这里，前面 Reasoning 的能力已经掉了一截
 
    ★ GLM 的解法不是&quot;别串行&quot;，而是在最后【加一个阶段把丢掉的捡回来】—— 见 08 章
+     ✅ 报告原文把这一步叫 &quot;on-policy cross-stage distillation as the final stage&quot;，
+        目的是 &quot;swiftly recover the skills acquired in earlier SFT and RL stages&quot;。
 </code></pre></div>
 
-<p><strong>为什么会遗忘（机制）</strong>：后训练的数据量比预训练小六个数量级，学习率却相对高。参数会被最后一个阶段的数据"拽走"，前面学的东西被覆盖。而且<strong>结果对顺序极度敏感</strong>——换个顺序结果完全不同，没法做受控实验。</p>
+<p><strong>为什么会遗忘（机制）</strong>，分三层说：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>机制</th>
+<th>可以验算的部分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>后训练的数据量远小于预训练，所以没有"后续数据"来把被覆盖的东西修回去</strong></td>
+<td>⚠️ <strong>按 token 算是小三到四个数量级，不是"六个"</strong>——"六个"那个说法是拿 10¹² <strong>token</strong> 除以 10⁶ <strong>条</strong>，量纲不同。逐步算法见 <a href="01-鸟瞰全景.html">01.3</a></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>学习率相对高，而且 Adam 下每步位移 ≈ 学习率</strong>，与梯度大小无关</td>
+<td>位移预算的算法见 <a href="02-SFT-监督微调.html">02.4</a>：典型 SFT 学习率下两千步能把权重挪动自身尺度的几个百分点，若照搬预训练峰值学习率则能挪到六成</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>串行阶段的数据分布互不重叠</strong>，梯度方向在阶段之间完全不同，参数会被<strong>最后一个阶段</strong>的数据整体"拽走"</td>
+<td>★ 这一条是"串行"独有的。合训（所有域混在一起）时，各域梯度在<strong>同一次优化</strong>里互相制约，不存在"最后一个说话的人赢"</td>
+</tr>
+</tbody>
+</table>
+<p><strong>而且结果对顺序极度敏感</strong>——换个顺序结果完全不同，这意味着你<strong>没法做受控实验</strong>：你永远不知道某个域掉分是"这个域难"还是"它恰好排在了前面"。</p>
 <hr />
 <h2 id="32">3.2 ★★★ 分训到底在干嘛：四个用途</h2>
 <p><strong>最反直觉的一点先说：分训的产物不是"要拼起来的零件"，分训主要是一次【实验】和一次【造数据】。</strong></p>
 <h3 id="_2">用途一：得到"单域天花板"，作为合训的参照系</h3>
-<div class="codehilite"><pre><span></span><code>数学单域训完：GSM8K 82 分
-代码单域训完：HumanEval 71 分
+<p>⚠️ <strong>下面这组分数是为讲解构造的，不是任何一次真实实验的结果。</strong> 要看的是算法，不是数值。</p>
+<table>
+<thead>
+<tr>
+<th>评测</th>
+<th>单域分训的天花板</th>
+<th>合训之后</th>
+<th>绝对差（<strong>百分点</strong>）</th>
+<th>相对差</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GSM8K（小学数学应用题）</td>
+<td>82</td>
+<td>78</td>
+<td><strong>−4 个百分点</strong></td>
+<td>−4 / 82 = −4.9%</td>
+</tr>
+<tr>
+<td>HumanEval（代码补全）</td>
+<td>71</td>
+<td>68</td>
+<td><strong>−3 个百分点</strong></td>
+<td>−3 / 71 = −4.2%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 有了左边那一列，你立刻知道&quot;混合的代价&quot;是 4 个和 3 个百分点。
+★ 没有这个参照，你只看到 78 分，
+  根本不知道这是【配比没调好】还是【数据本身只值 78 分】。
 
-合训完：GSM8K 78、HumanEval 68
-        ↓
-   ★ 你立刻知道&quot;混合的代价&quot;是 -4 / -3 分。
-   ★ 没有这个参照，你只看到 78 分，
-     根本不知道这是【配比没调好】还是【数据本身只值 78 分】。
+⚠️ 注意上表两列差的写法：
+   &quot;掉 4 个百分点&quot; 和 &quot;相对掉 4.9%&quot; 是两个不同的数，不能混着说。
+   ★ 本教程约定：绝对差一律写【百分点】。见 01.3。
 </code></pre></div>
 
 <p>这个代价业界俗称 <strong>能力税</strong>。目标不是消灭它（消灭不了），是把它压到可接受范围。</p>
@@ -307,7 +369,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       │
       │ 对一道题采样 8 个答案
       ▼
-   答案1 ✗   答案2 ✓   答案3 ✗   答案4 ✓  ...
+   答案1 错   答案2 对   答案3 错   答案4 对  ...
       │
       │ 用验证器判对错（数学：比对标准答案；代码：跑单元测试）
       ▼
@@ -343,10 +405,52 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ▼                              │
 DeepSeek-V3-Base ←───────────────────┘
       │  ★★ 注意：回到【原始 base】，不是在专家模型上接着训
-      └─→ 用这 80 万条重新 SFT（2 个 epoch）→ 再 RL → DeepSeek-R1
+      └─→ 用这 80 万条重新 SFT（2~3 个 epoch）→ 再 RL → DeepSeek-R1
 </code></pre></div>
 
-<p>★ <strong>这里的分支模型从头到尾没上线过。它唯一的作用是生产训练数据。</strong></p>
+<p><strong>这条链路上，报告披露了几个可以直接抄下来当参照的数字</strong>（✅ 全部来自 R1 报告<strong>论文 §B.3.3 / §B.4.2 / §B.4.4</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>一手数值 ✅</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>拒绝采样产出的推理样本</td>
+<td>约 <strong>60 万</strong>条</td>
+<td>从"冷启动 SFT + 推理 RL"那个分支采出来，用验证器筛过</td>
+</tr>
+<tr>
+<td>非推理样本</td>
+<td>约 <strong>20 万</strong>条</td>
+<td>走 DeepSeek-V3 的既有管线</td>
+</tr>
+<tr>
+<td>重新 SFT 的 epoch</td>
+<td><strong>2 ~ 3</strong></td>
+<td>⚠️ 本章旧版写的"2 个 epoch"不准确，报告写的是 "2-3 epochs"</td>
+</tr>
+<tr>
+<td>重新 SFT 的学习率</td>
+<td><strong>5×10⁻⁵ 余弦衰减到 5×10⁻⁶</strong></td>
+<td>量级讨论见 <a href="02-SFT-监督微调.html">02.4</a></td>
+</tr>
+<tr>
+<td>全局 batch / 最大长度</td>
+<td><strong>128 条</strong> / <strong>32,768 token</strong></td>
+<td>★ 128 是<strong>条</strong>不是 token</td>
+</tr>
+<tr>
+<td>整条研究线的算力拆分</td>
+<td>探路分支 <strong>R1-Zero：101 K</strong> 卡·时<br>造 SFT 数据：<strong>5 K</strong><br>最终 R1 全流程（冷启动 SFT + 推理 RL + 重新 SFT + 再 RL）：<strong>41 K</strong></td>
+<td>逐步验算见 <a href="01-鸟瞰全景.html">01.3</a>。⚠️ 注意图里"冷启动 SFT → 推理 RL → 推理专家"这个分支的开销<strong>包含在 41 K 里面</strong>，报告没有单独拆出来</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>这里的分支模型从头到尾没上线过。它唯一的作用是生产训练数据。</strong> ★★ 而上表说明：<strong>光是那个纯探路、连 SFT 都不做的 R1-Zero 分支（101 K），就花掉了最终出货那条流水线（41 K）的 2.5 倍算力</strong>（101 / 41 = 2.46）。</p>
 <hr />
 <h2 id="34-base">3.4 合训：为什么要回到原始 base</h2>
 <div class="codehilite"><pre><span></span><code>❌ 错误做法：base → 数学 → 代码 → 对话（串行接力）
@@ -422,36 +526,203 @@ DeepSeek-V3-Base ←───────────────────┘
    ⟹ 训练不稳，且事实上退化成了&quot;串行训练&quot;
 
 ④ 长样本会让域权重跑偏 ★★
-   Megatron 的 blend 权重作用在【样本】层面。
-   长思维链数学样本平均 4000 token、闲聊样本 200 token
-   ⟹ 你设的 10% 数学，实际 token 占比可能是 40%
-   ✅ 正确做法：先统计每个域的真实 token 总数，再反推权重
+   Megatron 的 blend 权重作用在【样本】层面，但梯度是按 token 产生的。
+   ⟹ 你按&quot;条数&quot;设的配比，和模型实际看到的&quot;token 配比&quot;不是一回事。
+   ✅ 正确做法：先统计每个域的真实 token 总数，再反推权重（下面算一遍）
 
 ⑤ 分训在工程上就是 N 个独立 job
    同一个 --load &lt;base_ckpt&gt;，不同的 --data-path，并行提交。
    合训是一个 job，多个 data path 加权 blend。没有特殊机制。
 </code></pre></div>
 
+<h3 id="4">★★ 把第 ④ 条算一遍：按「条」设的配比，实际是多少</h3>
+<p><strong>⚠️ 下面的条数和平均长度是构造的例子，但每一步除法都能自己验算。</strong> 假设你设了"数学 10% / 代码 20% / 通用对话 70%"（按<strong>条数</strong>），总共 100 万条：</p>
+<table>
+<thead>
+<tr>
+<th>域</th>
+<th>条数</th>
+<th>平均长度（token/条）</th>
+<th>token 总量</th>
+<th>你设的配比（按条）</th>
+<th><strong>模型实际看到的配比（按 token）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>长思维链数学</td>
+<td>10 万</td>
+<td>4000</td>
+<td>10万 × 4000 = <strong>4.0×10⁸</strong></td>
+<td>10%</td>
+<td>4.0 / 9.9 = <strong>40.4%</strong></td>
+</tr>
+<tr>
+<td>代码</td>
+<td>20 万</td>
+<td>1200</td>
+<td><strong>2.4×10⁸</strong></td>
+<td>20%</td>
+<td>2.4 / 9.9 = <strong>24.2%</strong></td>
+</tr>
+<tr>
+<td>通用对话</td>
+<td>70 万</td>
+<td>500</td>
+<td><strong>3.5×10⁸</strong></td>
+<td>70%</td>
+<td>3.5 / 9.9 = <strong>35.4%</strong></td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>100 万</strong></td>
+<td>—</td>
+<td><strong>9.9×10⁸</strong></td>
+<td>100%</td>
+<td>100%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 读出来的东西：
+   你设的 10% 数学，模型实际看到的是 40.4% ——【高了四倍】
+   你设的 70% 通用，模型实际看到的是 35.4% ——【只有一半】
+
+⟹ 你以为在训一个&quot;以对话为主、带点数学&quot;的模型，
+   实际在训一个&quot;以长思维链数学为主&quot;的模型。
+   ★ 而这件事不会报任何错，只会让通用对话的回归分数莫名其妙掉下来。
+</code></pre></div>
+
+<p><strong>反推：要让 token 配比真的是 10% / 20% / 70%，条数权重该设多少？</strong></p>
+<div class="codehilite"><pre><span></span><code>目标 token 占比 p_d，域内平均长度 L_d
+   ⟹ 条数权重 w_d ∝ p_d / L_d        （先按长度折算，再归一化）
+
+   数学：   0.10 / 4000 = 2.500 × 10⁻⁵
+   代码：   0.20 / 1200 = 1.667 × 10⁻⁴
+   通用：   0.70 /  500 = 1.400 × 10⁻³
+   ───────────────────────────────────
+   合计                 = 1.5917 × 10⁻³
+
+   归一化后的【条数】权重：
+   数学 2.500e-5 / 1.5917e-3 = 1.57%
+   代码 1.667e-4 / 1.5917e-3 = 10.47%
+   通用 1.400e-3 / 1.5917e-3 = 87.96%
+</code></pre></div>
+
+<p><strong>验算一遍</strong>（每 100 万条）：</p>
+<table>
+<thead>
+<tr>
+<th>域</th>
+<th>反推出的条数权重</th>
+<th>条数</th>
+<th>× 平均长度 = token</th>
+<th>token 占比</th>
+<th>对上目标了吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数学</td>
+<td>1.57%</td>
+<td>1.57 万</td>
+<td>1.57万 × 4000 = 6.28×10⁷</td>
+<td>6.28 / 62.82 = <strong>10.0%</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>代码</td>
+<td>10.47%</td>
+<td>10.47 万</td>
+<td>1.256×10⁸</td>
+<td><strong>20.0%</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>通用</td>
+<td>87.96%</td>
+<td>87.96 万</td>
+<td>4.398×10⁸</td>
+<td><strong>70.0%</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>合计</td>
+<td>100%</td>
+<td>100 万</td>
+<td><strong>6.282×10⁸</strong></td>
+<td>100%</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这件事的实操版本只有一句话</strong>：<strong>配比表里永远多写一列"该域的 token 总数"，并且以 token 列为准。</strong> ⚠️ 顺带注意：<code>token 总量</code> 这一列在开了 packing（把多条短样本拼成定长序列）之后才是真正的"模型看到的量"，因为 packing 之后 padding 浪费几乎为零——没开 packing 时短样本会被 padding 撑成定长，实际浪费的那部分既不产生梯度也占着算力。packing 的细节见 <a href="../数据格式和数据处理/13-打包与文档掩码.html">../数据格式和数据处理/13-打包与文档掩码.md</a>。</p>
+</blockquote>
 <hr />
 <h2 id="36">3.6 ★★ 合并的三条路线</h2>
-<p><strong>"把多个专家变成一个模型"有三种做法，分别在三个不同的空间里合并：</strong></p>
-<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────────┐
-│ 路线一：在【数据空间】合并  —— 混合数据，从 base 重训         │
-│    做法：本章 3.4                                            │
-│    ✅ 最稳、效果可预期     ⚠️ 最贵，每次改配比都要重训        │
-├─────────────────────────────────────────────────────────────┤
-│ 路线二：在【参数空间】合并  —— 直接把权重加权平均             │
-│    W_合 = 0.3·W_数学 + 0.3·W_代码 + 0.4·W_对话               │
-│    方法：Model Soup / Task Arithmetic / TIES / DARE          │
-│    ✅ 几分钟出结果，可以试几十种组合                          │
-│    ⚠️ 效果通常明显差一截；分支跑太远会直接崩                  │
-├─────────────────────────────────────────────────────────────┤
-│ 路线三：在【函数空间】合并  —— On-Policy 蒸馏（OPD）★ 2026 主流│
-│    学生自己生成轨迹，在它写的每个 token 上向对应专家的         │
-│    输出分布对齐                                              │
-│    ✅ 效果最好，且能同时合并&quot;能力&quot;和&quot;风格&quot;                    │
-│    ⚠️ 贵（要同时跑学生 rollout + 多个教师前向）               │
-└─────────────────────────────────────────────────────────────┘
+<p><strong>"把多个专家变成一个模型"有三种做法，分别在三个不同的空间里合并。</strong> "空间"这个词是字面意思——<strong>合并这个动作具体作用在什么东西上</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>路线一：数据空间</strong></th>
+<th><strong>路线二：参数空间</strong></th>
+<th><strong>路线三：函数空间</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>合的是什么</strong></td>
+<td>各个专家用的<strong>训练数据</strong></td>
+<td>各个专家的<strong>权重张量</strong></td>
+<td>各个专家的<strong>输出概率分布</strong></td>
+</tr>
+<tr>
+<td><strong>具体做法</strong></td>
+<td>把所有域的数据混在一起，从<strong>原始 base 重训</strong>一遍（本章 3.4）</td>
+<td>直接加权平均：<br><code>W_合 = 0.3·W_数学 + 0.3·W_代码 + 0.4·W_对话</code></td>
+<td>学生<strong>自己生成轨迹</strong>，在它写的<strong>每个 token</strong> 上向对应专家的输出分布对齐</td>
+</tr>
+<tr>
+<td><strong>代表方法</strong></td>
+<td>混合 SFT / 混合 RL</td>
+<td>Model Soup / Task Arithmetic / TIES / DARE</td>
+<td>On-Policy 蒸馏（OPD）★ <strong>2026 年主流</strong></td>
+</tr>
+<tr>
+<td><strong>一次要多久</strong></td>
+<td>⚠️ 一次完整训练</td>
+<td>✅ <strong>几分钟</strong>，可以试几十种组合</td>
+<td>⚠️ 比路线一还贵：要<strong>同时</strong>跑学生 rollout + 多个教师前向</td>
+</tr>
+<tr>
+<td><strong>效果</strong></td>
+<td>✅ 最稳、可预期</td>
+<td>⚠️ 通常明显差一截；分支跑太远会直接崩</td>
+<td>✅ 最好，且能同时合并"能力"和"风格"</td>
+</tr>
+<tr>
+<td><strong>改配比要重做吗</strong></td>
+<td>⚠️ 要<strong>重训</strong></td>
+<td>✅ 换几个系数重算一次平均即可</td>
+<td>⚠️ 要重跑蒸馏</td>
+</tr>
+<tr>
+<td><strong>本教程</strong></td>
+<td>本章 3.4</td>
+<td>下面这一小节</td>
+<td><a href="08-蒸馏与合并-OPD.html">08 章</a>的全部内容</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★ 一个帮助记住的类比：
+
+   数据空间  = 把三个厨师的【食材】倒进一口锅，从头再炒一遍
+   参数空间  = 把三个厨师的【肌肉记忆】直接做个平均
+   函数空间  = 让一个学徒自己炒，每下一刀都问对应的师傅&quot;你会怎么下&quot;
+
+⟹ 第二种听起来最省事，但&quot;把三个人的肌肉记忆平均一下&quot;
+   本来就不该指望它还会炒菜。下面那一小节讲的就是这件事。
 </code></pre></div>
 
 <h3 id="_6">为什么参数空间合并（路线二）在工业界不是主线</h3>
@@ -474,7 +745,7 @@ DeepSeek-V3-Base ←───────────────────┘
 </blockquote>
 <hr />
 <h2 id="37-2026">3.7 五家 2026 年报告怎么做的</h2>
-<p>⚠️ 下表数字来自各家一手报告，详见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。</p>
+<p>⚠️ 下表数字来自各家一手报告。<strong>其中 DeepSeek / Kimi / GLM / openPangu 这四家的逐项对照</strong>（教师怎么选、目标函数写成什么形式、教师概率从哪个引擎来）在 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> <strong>的「后训练」那一节</strong>里展开得更细。⚠️ 注意那一节的"五家"里第五家是 MiniMax，和本表的 Nemotron 不是同一组，<strong>两张表的第五列不可对照</strong>。</p>
 <table>
 <thead>
 <tr>

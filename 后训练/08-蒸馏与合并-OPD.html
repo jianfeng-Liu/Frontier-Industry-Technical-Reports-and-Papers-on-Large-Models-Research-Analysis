@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>08 · ⭐ On-Policy 蒸馏（OPD）：五家共同的收口</title>
+<title>08 · ⭐ On-Policy 蒸馏（OPD）：四家共同的收口</title>
 <style>
     :root {
       --bg:        oklch(97% 0.005 250);
@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -249,140 +254,455 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><a href="07-AgenticRL-环境成为瓶颈.html">← 07 Agentic RL</a> ｜ <a href="README.html">目录</a> ｜ 下一章 → <a href="09-后训练的数据学.html">09 后训练的数据学</a></p>
 </blockquote>
-<h1 id="08-on-policy-opd">08 · ⭐ On-Policy 蒸馏（OPD）：五家共同的收口</h1>
+<h1 id="08-on-policy-opd">08 · ⭐ On-Policy 蒸馏（OPD）：四家共同的收口</h1>
 <blockquote>
 <p><strong>OPD</strong> = <strong>On-Policy Distillation</strong>（在策略蒸馏）</p>
-<p><strong>2026 年后训练最清晰的一次收敛</strong>：五家一手技术报告，在流水线的最后一步用了<strong>几乎同一个数学式子</strong>。<br />
-读完你应该能回答：on-policy 蒸馏和普通蒸馏差在哪、为什么它同时解决了"合并专家"和"找回被遗忘的能力"两个看起来无关的问题。</p>
+<p><strong>2026 年后训练最清晰的一次收敛</strong>：<strong>四家</strong>一手技术报告，在流水线的最后一步收敛到了<strong>两类几乎等价的数学形式</strong>。⚠️ 为什么是四家而不是五家，8.3 节会说清——<strong>这件事本身有信息量</strong>。<br />
+读完你应该能回答：on-policy 蒸馏和普通蒸馏差在哪、<strong>为什么这个差别是机制性的而不是程度上的</strong>、以及为什么它同时解决了"合并专家"和"找回被遗忘的能力"两个看起来无关的问题。</p>
+<p><strong>读法</strong>：8.1 和 8.4 各有一张<strong>能自己按计算器验算</strong>的推演表。8.4 那一节的理论部分⚠️<strong>可靠性最低</strong>，我会标出来。</p>
 </blockquote>
 <hr />
-<h2 id="81-on-policy">8.1 先讲清楚"蒸馏"和"on-policy 蒸馏"的区别</h2>
-<h3 id="off-policy">传统蒸馏（off-policy）</h3>
-<div class="codehilite"><pre><span></span><code>① 让老师做 10 万道题，把老师的答案存下来
-② 学生对着这些答案做 SFT
+<p><strong>本章关键词</strong>（每个缩写第一次出现都给中英文全称）</p>
+<p><strong>OPD</strong>（On-Policy Distillation，在策略蒸馏）—— 让<strong>学生自己</strong>采样，老师在学生写的每个 token 上给方向。本章主角。</p>
+<p><strong>MOPD</strong>（<strong>Multi-teacher</strong> On-Policy Distillation，多教师在策略蒸馏）—— 多个老师版本的 OPD。⚠️ 注意不是 "Multi-domain"。✅ openPangu-2.0 报告里自己那一节的标题用的是 <strong>Multi-Expert On-Policy Distillation</strong>（多专家在策略蒸馏），⚠️ 两个名字指的是同一类做法。</p>
+<p><strong>off-policy 蒸馏</strong>（离策略蒸馏）—— 传统蒸馏：老师先做题存下答案，学生对着答案做 SFT。</p>
+<p><strong>logits</strong>（对数几率）—— 模型在输出层给<strong>每个词</strong>的原始分数，过 softmax 之后就是概率分布。白盒蒸馏要的就是这个。</p>
+<p><strong>KL 散度</strong>（Kullback-Leibler divergence）—— 衡量两个概率分布差多远的量。</p>
+<p><strong>逆 KL</strong>（reverse KL）—— 指 <code>KL(学生 ‖ 老师)</code>。和 <code>KL(老师 ‖ 学生)</code>（正向 KL）的行为不一样，⚠️ 两者谁更好要看任务。</p>
+<p><strong>sg[·]</strong>（stop-gradient，停止梯度）—— 这一项只当数值用，不往回传梯度。</p>
+<p><strong>exposure bias</strong>（曝光偏差）—— 训练时只见过完美前缀，一旦自己写歪就进入没训练过的状态。8.1 节的主题。</p>
+<p><strong>Task vector</strong>（任务向量）—— <code>微调后的权重 − base 权重</code>，也就是"这次训练到底改了什么"的差分。</p>
+<p><strong>TIES</strong>（TrIm, Elect Sign &amp; Merge，裁剪-选符号-合并）—— 一种参数空间合并方法。</p>
+<p><strong>DARE</strong>（Drop And REscale，随机丢弃并重新放缩）—— 另一种参数空间合并方法。</p>
+<hr />
+<h2 id="81">8.1 三种蒸馏，一张表说清</h2>
+<p><strong>"蒸馏"这个词下面至少有三种完全不同的东西。</strong> 先把它们摊开：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>黑盒蒸馏</strong>（只用输出文本）</th>
+<th><strong>白盒蒸馏</strong>（用 logits）</th>
+<th><strong>on-policy 蒸馏（OPD）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数据从谁的分布来</strong></td>
+<td><strong>老师的</strong></td>
+<td><strong>老师的</strong></td>
+<td>★ <strong>学生自己的</strong></td>
+</tr>
+<tr>
+<td><strong>要老师给什么</strong></td>
+<td>只要输出的<strong>文本</strong></td>
+<td>要<strong>每个位置的完整概率分布</strong></td>
+<td>要每个位置的完整概率分布</td>
+</tr>
+<tr>
+<td><strong>学生在学什么</strong></td>
+<td>"这道题的答案长这样"</td>
+<td>"这个位置老师认为每个词有多可能"</td>
+<td>"<strong>我刚才走的这一步</strong>，老师会怎么走"</td>
+</tr>
+<tr>
+<td><strong>本质上是什么</strong></td>
+<td><strong>就是 SFT</strong>，只是标准答案由老师写</td>
+<td>带软标签的 SFT</td>
+<td>★ <strong>是 RL</strong>（8.2 节讲为什么）</td>
+</tr>
+<tr>
+<td><strong>用闭源 API 当老师</strong></td>
+<td>✅ 可以</td>
+<td>✗ 不行（拿不到完整分布）</td>
+<td>✗ 不行</td>
+</tr>
+<tr>
+<td><strong>tokenizer 必须一致吗</strong></td>
+<td>✗ 不必</td>
+<td>✅ 必须</td>
+<td>✅ 必须</td>
+</tr>
+<tr>
+<td><strong>成本</strong></td>
+<td>✅ <strong>最便宜</strong>。老师跑一次，数据可以反复用 N 个 epoch</td>
+<td>⚠️ 老师跑一次，但要存全词表分布（存储量暴涨）</td>
+<td>✗ <strong>最贵</strong>。学生每轮都要重新 rollout，老师每轮都要重新前向</td>
+</tr>
+<tr>
+<td><strong>典型失效模式</strong></td>
+<td><strong>曝光偏差</strong>（见下）</td>
+<td>曝光偏差（同上，只是软标签缓解了一点）</td>
+<td>多样性坍缩（8.6 节）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="on-policy">★★★ 为什么 on-policy 的那个差别是机制性的：把曝光偏差算出来</h3>
+<p><strong>这是本章最值得讲透的一件事。</strong> 很多介绍把 OPD 说成"效果更好一点"，其实不是程度问题，是<strong>训练分布和使用分布重不重叠</strong>的问题。</p>
+<div class="codehilite"><pre><span></span><code>off-policy 蒸馏在干什么：
+   ① 老师做 10 万道题，把老师的完整解法存下来
+   ② 学生对着这些解法做 SFT
 
-★ 本质：这就是 SFT，只是标准答案是老师写的而不是人写的。
+   老师的解法是：  A → B → C → D
+   学生被训练的是：&quot;看到前缀 A，输出 B&quot;
+                  &quot;看到前缀 A→B，输出 C&quot;
+                  &quot;看到前缀 A→B→C，输出 D&quot;
 
-⚠️ 它的病和 SFT 一模一样（见 02.5）：
-   学生只见过【老师的完美前缀】，
-   一旦自己写歪了，就进入了训练时从没见过的状态 —— exposure bias。
+★ 注意：学生只在【以老师的正确前缀开头】的状态上被训练过。
 </code></pre></div>
 
-<h3 id="on-policy">On-policy 蒸馏</h3>
-<div class="codehilite"><pre><span></span><code>① 让【学生自己】做题（学生 rollout）
-② 在学生写出的【每一个 token 上】，问老师：
-   &quot;这个位置，你会给每个词多少概率？&quot;
-③ 让学生的分布向老师的分布靠拢
+<div class="codehilite"><pre><span></span><code>问题出在学生自己上考场的时候：
 
-★★★ 关键差别：
+   第 1 步学生写成了 A&#39;（一个老师从来不会写的东西）
+   ⟹ 现在学生处在状态 &quot;A&#39;&quot;
+   ⟹ 训练集里【没有任何一条数据以 A&#39; 开头】
+   ⟹ 学生在这里的行为【完全没有被训练过】，只能靠泛化瞎猜
+   ⟹ 猜歪一点，下一步就更偏，误差一步一步累积
+   ★ 这就是 exposure bias（曝光偏差），也叫复合误差（compounding error）。
+</code></pre></div>
+
+<p><strong>把它算成一个概率。</strong> 设学生每一步"走出老师分布之外"的概率是 ε，那么一条 L 步的轨迹<strong>至少走歪一次</strong>的概率是 <code>1 − (1 − ε)^L</code>：</p>
+<table>
+<thead>
+<tr>
+<th>每步走歪的概率 ε</th>
+<th>L = 10 步</th>
+<th>L = 100 步</th>
+<th>L = 1,000 步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0.01</strong>（百步一歪）</td>
+<td>9.6%</td>
+<td><strong>63.4%</strong></td>
+<td><strong>99.996%</strong></td>
+</tr>
+<tr>
+<td><strong>0.001</strong>（千步一歪）</td>
+<td>1.0%</td>
+<td>9.5%</td>
+<td><strong>63.2%</strong></td>
+</tr>
+<tr>
+<td><strong>0.0001</strong>（万步一歪）</td>
+<td>0.1%</td>
+<td>1.0%</td>
+<td>9.5%</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>自己验一格：ε = 0.01、L = 100
+   (1 − 0.01)^100 = 0.99^100 = 0.3660
+   1 − 0.3660 = 0.6340 = 63.4%   ← 和表里一致
+
+★★★ 现在把 L 换成真实数字：
+   长思维链的一条推理轨迹是【几千个 token】。
+   就算学生每一步只有千分之一的概率走偏，
+   1,000 步下来&quot;至少走偏一次&quot;的概率也有 63%。
+   ⟹ 在长输出场景下，&quot;学生走到一个老师没示范过的状态&quot;
+      几乎是一个【必然事件】。
+
+⟹ ★★ 所以 off-policy 蒸馏的训练分布和学生的实际使用分布，
+   在长输出上【几乎没有重叠】。
+   这不是&quot;效果差一点&quot;，是【训练的东西和用的东西不是一回事】。
+
+⚠️ 这里的 ε 是一个概念上的量，不是可直接测量的指标；
+   上表是为了把&quot;长度放大错配&quot;这个机制量化出来，不是实验数据。
+</code></pre></div>
+
+<h3 id="on-policy_1">on-policy 蒸馏怎么从机制上消掉这个缺口</h3>
+<div class="codehilite"><pre><span></span><code>OPD 的三步：
+   ① 让【学生自己】做题（学生 rollout）—— 所以数据来自学生当前的分布
+   ② 在学生写出的【每一个 token 上】，问老师：
+      &quot;这个位置，你会给每个词多少概率？&quot;
+   ③ 让学生的分布向老师的分布靠拢
+
+★★★ 关键差别一句话：
    老师不是在【给出答案】，老师是在【对学生自己走的路做点评】。
+
+★★ 为什么这从机制上解决了问题：
+   训练数据【定义上】就是学生当前会去的那些状态。
+   学生走到 A&#39; 了？那下一条训练数据就是在 A&#39; 上的点评。
+   ⟹ 训练分布 ≡ 使用分布。缺口不是&quot;被缩小了&quot;，是【不存在】。
 
    类比：
    off-policy = 看名师的标准解题录像
    on-policy  = 自己做题，老师在旁边逐步说&quot;这步偏了，我会这么走&quot;
 
-   ⟹ 第二种明显更有效，因为点评发生在【学生真的会犯错的那些位置上】。
+   ⟹ 第二种更有效，因为点评发生在【学生真的会犯错的那些位置上】。
 </code></pre></div>
 
-<p><strong>成本对比</strong>：</p>
-<div class="codehilite"><pre><span></span><code>off-policy：老师跑一次（离线），学生训。便宜。
-on-policy ：★ 学生要 rollout（贵）+ 老师要对学生的每条轨迹做前向（贵）
-            如果有 N 个老师，就是 N 次前向
+<h3 id="opd">成本：OPD 贵在哪，以及工业界怎么省</h3>
+<div class="codehilite"><pre><span></span><code>off-policy：老师跑一次（离线），结果可以反复用 N 个 epoch。便宜。
+
+on-policy ：★ 学生要 rollout（贵）
+            + 老师要对学生的【每一条新轨迹】做前向（贵）
+            + 如果有 N 个老师，就是 N 次前向
+            ⟹ 而且这些都【不能复用】：学生一更新，轨迹就全变了。
 
 ⟹ 这就是 DeepSeek-V4 报告那句&quot;OPD 成本高，但效果最好&quot;的来源。
+</code></pre></div>
+
+<p><strong>✅ 一个很实际的省法（openPangu-2.0 报告原文的 Compute Optimization 一节）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>问题：4 个领域专家，如果每个专家都占一个专属 NPU 池，显存要 4 份。
+      ⚠️ 本文按 BF16 粗算：505B 参数 × 2 字节 ≈ 1.01 TB / 个专家
+         ⟹ 4 个同时驻留 ≈ 4.04 TB，光放权重就吃掉整个超节点。
+
+✅ openPangu 的做法：【顺序载入到一个共享 NPU 池】
+   rollout 之后，把样本按&quot;该用哪个专家打分&quot;分组；
+   然后一组一组来：载入专家 1 的权重 → 算完它那组样本的 log 概率
+                 → 换成专家 2 的权重 → 算它那组 → ...
+
+⟹ 把&quot;同时驻留 4 个专家&quot;压成&quot;同时驻留 1 个&quot;，
+   代价是多了 4 次权重载入的时间。
+★ 这是一笔很典型的【显存换时间】，而且能换，
+  正是因为 OPD 的打分可以按专家分批、不需要同时进行。
 </code></pre></div>
 
 <hr />
 <h2 id="82-rl-rl">8.2 ★★ 它和 RL 的关系：其实是"有密集奖励的 RL"</h2>
 <p><strong>这是理解 2026 年这批报告的关键一跃。</strong></p>
 <div class="codehilite"><pre><span></span><code>普通 RL：一整条轨迹跑完，才拿到【一个】0/1 的分数
-         ⟹ 信号极其稀疏
+         ⟹ 信号极其稀疏（7.6 节算过：40 轮的轨迹只有 1 个数）
 
-OPD ：学生写的【每一个 token】都能立刻拿到一个分数
+OPD ：学生写的【每一个 token】都能立刻拿到一个数
       （= 老师和学生在这个位置的概率差）
       ⟹ 信号密集到不能再密集
 
-★★ 所以 OPD 可以看成：&quot;把老师当成一个免费的、逐 token 的稠密奖励模型&quot;。
+★★ 所以 OPD 可以看成：&quot;把老师当成一个逐 token 的稠密奖励模型&quot;。
 </code></pre></div>
 
-<p><strong>这个视角一旦建立，2026 年那几份报告的公式就不神秘了：</strong></p>
+<p><strong>这个视角一旦建立，那几份报告的公式就不神秘了</strong>：</p>
 <div class="codehilite"><pre><span></span><code>它们都在做同一件事 —— 把&quot;老师和学生的 log 概率之差&quot;
-                       塞进已有的 RL 框架里当作 advantage 或 reward：
+                       塞进已有的 RL 框架里当 advantage 或 reward：
 
         Â  =  sg[ log( π_teacher / π_student ) ]
                 ↑
           stop-gradient（这一项只当数值用，不回传梯度）
+</code></pre></div>
+
+<h3 id="_1">把这个式子按计算器算一遍</h3>
+<p><strong>挑 5 个 token，看老师的"点评"长什么样</strong>（ε 这里不涉及，纯算 log 比）：</p>
+<table>
+<thead>
+<tr>
+<th>学生写的 token</th>
+<th>老师给它的概率 π_t</th>
+<th>学生给它的概率 π_s</th>
+<th>比值 π_t / π_s</th>
+<th><strong>Â = ln(比值)</strong></th>
+<th>优化器会做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Wait</code></td>
+<td>0.30</td>
+<td>0.05</td>
+<td><strong>6.00</strong></td>
+<td><strong>+1.792</strong></td>
+<td>★ <strong>大幅提高</strong>（老师觉得这里该停下来重想，学生几乎没想到）</td>
+</tr>
+<tr>
+<td><code>let</code></td>
+<td>0.12</td>
+<td>0.10</td>
+<td>1.20</td>
+<td><strong>+0.182</strong></td>
+<td>略微提高</td>
+</tr>
+<tr>
+<td><code>42</code></td>
+<td>0.60</td>
+<td>0.60</td>
+<td>1.00</td>
+<td><strong>0.000</strong></td>
+<td><strong>不动</strong>（两人一致）</td>
+</tr>
+<tr>
+<td><code>the</code></td>
+<td>0.20</td>
+<td>0.25</td>
+<td>0.80</td>
+<td><strong>−0.223</strong></td>
+<td>略微压低</td>
+</tr>
+<tr>
+<td><code>obviously</code></td>
+<td>0.01</td>
+<td>0.20</td>
+<td><strong>0.05</strong></td>
+<td><strong>−2.996</strong></td>
+<td>★ <strong>大幅压低</strong>（学生的口头禅，老师基本不说）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>验算：ln(6) = 1.7918，ln(1.2) = 0.1823，ln(1) = 0，
+      ln(0.8) = −0.2231，ln(0.05) = −2.9957     ← 和表里一致
 
 翻译成人话：
    老师觉得这个词比学生觉得的【更可能】 → 正的优势 → 提高它
    老师觉得这个词比学生觉得的【更不可能】 → 负的优势 → 压低它
 </code></pre></div>
 
+<p><strong>这个式子有两个很漂亮的性质，和两个代价</strong>：</p>
+<div class="codehilite"><pre><span></span><code>✅ 性质一：自带停止准则。
+   学生完全追上老师时，每个 token 的 Â 都是 0 ⟹ 梯度自然归零。
+   ★ 不需要额外设一个&quot;什么时候停&quot;的判据。
+
+✅ 性质二：幅值自动分配注意力。
+   差得越远（比值离 1 越远），|Â| 越大，学得越狠。
+   ⟹ 学生已经会的地方几乎不花算力，不会的地方信号很强。
+
+⚠️ 代价一：老师也不确定的地方，信号接近 0。
+   如果老师在某个位置也是 0.1/0.1/0.1 地纠结，
+   它给不出方向 —— 而那往往正是最难的位置。
+
+⚠️ 代价二：比值可以爆炸。
+   学生给某个词 1e-6、老师给 0.3，那 ln(比值) ≈ 12.6。
+   ⟹ ✅ 所以 Kimi-K3 的公式里明确带了裁剪：
+      r = clip( sg[log(π_t/π_θ)], ±R_max )
+      ✅ openPangu 也做了同一件事（报告原话：clipping outlying
+         log-ratio values），并额外【掩掉接近零优势的 token】
+         —— 把算力集中在信息量大的位置上。
+</code></pre></div>
+
 <blockquote>
 <p>🔑 <strong>为什么各家宁可写成 RL 的 advantage，而不写成一个 KL loss（数学上近似等价）？</strong><br />
 ✅ Kimi-K3 报告给了很实际的理由：<strong>这样一来，为长周期任务做的 RL 基建（partial rollout 等）原封不动就能复用。</strong><br />
-★ 这是一个典型的"<strong>为了复用系统而选择数学形式</strong>"的决策，很值得记住。</p>
+★ 这是一个典型的"<strong>为了复用系统而选择数学形式</strong>"的决策，很值得记住——<strong>同一个数学内容，写成不同形式，接的工程管线完全不同。</strong></p>
 </blockquote>
-<p>⚠️ <strong>另一个副产品</strong>（✅ GLM-5 报告发现，K3 报告没提）：既然优势直接来自与老师的差距，就<strong>不需要靠组内比较来算基线了</strong>，GRPO 的 group size 可以设成 1 —— 吞吐直接拉满。</p>
+<p>⚠️ <strong>另一个副产品</strong>（✅ GLM-5 报告发现，K3 和 openPangu 的报告都没提）：既然 advantage 直接来自与老师的差距，就<strong>不再需要靠组内比较来估基线了</strong>——于是 GRPO 的 <strong>group size 可以设成 1</strong>，batch size 拉到 1024，吞吐直接拉满。</p>
+<div class="codehilite"><pre><span></span><code>★★ 为什么这一条很值钱，对照 5.2 节就看明白了：
+   GRPO 要 G = 8 ~ 16 条采样，唯一目的就是【算那个组内均值当基线】。
+   而 OPD 的基线是老师给的，不需要靠同组样本估。
+   ⟹ G 从 16 降到 1，同样的卡能跑 16 倍的唯一 prompt 数。
+   ⟹ ★ 而且 5.2 节那张&quot;退化组概率&quot;表里的问题全部消失 ——
+      group size = 1 根本不存在&quot;全对/全错导致优势归零&quot;这回事。
+</code></pre></div>
+
 <hr />
-<h2 id="83">8.3 五家的对照：同一个式子，五种用法</h2>
-<p>⚠️ 下表来自各家一手报告，详见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。</p>
+<h2 id="83">8.3 四家的对照：两类形式，四种用途</h2>
+<p>⚠️ 下表来自各家一手报告，完整横向对比见 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6。</p>
 <table>
 <thead>
 <tr>
 <th></th>
 <th>老师是谁</th>
 <th>目标形式</th>
+<th>老师的概率从哪读</th>
 <th>★ 要解决什么问题</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>DeepSeek-V4</strong></td>
-<td>各领域专家（SFT+GRPO）</td>
-<td><strong>全词表逆 KL loss</strong></td>
-<td>多个领域专家<strong>无法合并</strong></td>
+<td><strong>DeepSeek-V4 / V4.1</strong></td>
+<td>各领域专家（SFT + GRPO）</td>
+<td><strong>全词表逆 KL loss</strong><br><code>min Σ w_i·D_KL(π_学生 ‖ π_老师i)</code></td>
+<td>—（写成 loss，不涉及这一格）</td>
+<td>多个领域专家<strong>无法合并</strong>。⭐ V4.1 报告罕见地明说后训练<strong>沿用 V4、零算法创新</strong></td>
 </tr>
 <tr>
 <td><strong>Kimi-K3</strong></td>
 <td><strong>9 个</strong>（3 领域 × 3 档 effort）</td>
-<td><strong>per-token log 比当 RL reward</strong></td>
+<td><strong>per-token log 比当 RL reward</strong><br><code>r = clip(sg[log(π_老师/π_学生)], ±R_max)</code></td>
+<td>⚠️ 报告未明确</td>
 <td>多领域 × 多档位专家<strong>无法合并</strong></td>
 </tr>
 <tr>
-<td><strong>GLM-5</strong></td>
-<td><strong>前面各阶段的最终 ckpt</strong></td>
-<td>log 比当 GRPO <strong>advantage</strong></td>
+<td><strong>GLM-5</strong><br>（报告 arXiv:2602.15763，2026-02）</td>
+<td>★ <strong>前面各阶段的最终 ckpt</strong></td>
+<td>log 比当 GRPO <strong>advantage</strong><br><code>Â = sg[log(π_老师^infer / π_学生^train)]</code></td>
+<td><strong>推理后端</strong><br>（报告明说未来要迁到训练引擎）</td>
 <td>★ <strong>多阶段 RL 会累积性损害先前能力</strong></td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0</strong></td>
-<td><strong>4 个领域专家</strong></td>
-<td>log 比当 GRPO <strong>advantage</strong></td>
+<td><strong>4 个领域专家</strong><br>（Reasoning / General / Agentic / Code）</td>
+<td>log 比当 GRPO <strong>advantage</strong><br><code>A = sg[log(π_专家^train / π_学生^train)]</code></td>
+<td>⭐ <strong>训练引擎前向计算</strong></td>
 <td>多个领域专家<strong>无法合并</strong></td>
-</tr>
-<tr>
-<td><strong>Nemotron 3 Ultra</strong></td>
-<td>一个<strong>不断演进的教师面板</strong></td>
-<td>MOPD（多教师）</td>
-<td>广泛能力获取 <strong>+</strong> 定向专精</td>
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>★★★ 这张表最值得注意的一格是 GLM-5：
-   它的老师不是&quot;领域专家&quot;，而是【自己前面几个阶段的 checkpoint】。
+<h3 id="minimax-m3">⚠️ 为什么是四家：MiniMax M3 为什么不在这张表里</h3>
+<div class="codehilite"><pre><span></span><code>⚠️ MiniMax M3 在这张对照里【缺席】，原因很具体：它没有技术报告。
 
-   SFT ckpt   →┐
-   Reasoning ckpt →├─→ 都当老师 ─→ 蒸给最终的学生
-   Agentic ckpt  →┘
+   M2 系列的报告确实有完整的后训练章节（agent 数据管线、
+   Forge RL 系统、M2.7 自演化），但那是【上一代】，
+   不能拿来代表 M3。
 
-   ⟹ 它不是在&quot;合并专家&quot;，是在【把被后续训练冲掉的自己找回来】。
-
-★ 同一个工具，两种完全不同的用途。
-  能看出这个区别，说明你真的读懂了这批报告。
+★★ 所以这一格要读成【未披露】，而不是【没做】。
+   ⚠️ &quot;未披露 ≠ 没做&quot; 是读技术报告时最容易犯的一类错误：
+      把&quot;报告里没写&quot;推成&quot;这家没干这件事&quot;。
+   ⟹ 这张表能说的只有一句：
+      有后训练报告的四家，在这一步上高度趋同。
 </code></pre></div>
 
-<p><strong>Nemotron 3 Ultra 的完整链路</strong>（✅ <a href="https://arxiv.org/abs/2606.15007">arXiv:2606.15007</a>，NVIDIA，2026-06）把这套东西做成了迭代：</p>
+<h3 id="_2">★★ 形式上其实只有两类，不是四类</h3>
+<div class="codehilite"><pre><span></span><code>① 写成 loss：       DeepSeek-V4 —— 全词表逆 KL loss
+                    min Σ w_i · D_KL(π_student ‖ π_teacher_i)
+
+② 写成 RL 的优势/奖励： Kimi-K3 / GLM-5 / openPangu-2.0
+                    Â = sg[ log( π_teacher / π_student ) ]
+
+★★★ 第 ② 类这三家是【各自独立收敛】到同一个式子的：
+   GLM-5 报告    2026-02   ← 最早，早了五个月
+   Kimi-K3 报告  2026-07
+   openPangu     2026-07-31
+
+⟹ 三家互不相同的团队、不同的硬件（NVIDIA / NVIDIA / 昇腾 NPU）、
+   不同的目的（纵向修复 / 横向合并 / 横向合并），
+   写出了同一个形式。
+   ★ 这种独立收敛，比任何单家的&quot;我们效果最好&quot;都更有说服力 ——
+     它说明这个形式基本可以当成这一代的事实标准。
+
+⟹ 所以&quot;四种用法&quot;更准确的说法是：【两类形式，四种用途】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★★★ 这张表最值得注意的一格是 GLM-5：
+   它的老师不是&quot;领域专家&quot;，而是【自己前面几个阶段的 checkpoint】。
+</code></pre></div>
+
+<p><strong>GLM-5 的做法画出来是这样</strong>（它不是在合并专家，是在做时间上的修复）：</p>
+<div class="codehilite"><pre><span></span><code>训练阶段本来是顺序走的，一步接一步：
+
+   base  ──→  SFT  ──→  Reasoning RL  ──→  Agentic RL  ──→  最终学生
+
+⚠️ 问题：后面每一段 RL 都会【部分冲掉】前面学到的东西（灾难性遗忘）。
+
+GLM-5 的解法：把前面每个阶段【存下来的那份 ckpt】都请回来当老师。
+
+   SFT ckpt        ─┐
+   Reasoning ckpt  ─┼──→  三个一起当老师  ──→  蒸给最终的学生
+   Agentic ckpt    ─┘
+
+⟹ 它不是在&quot;合并专家&quot;，是在【把被后续训练冲掉的自己找回来】。
+</code></pre></div>
+
+<div class="codehilite"><pre><span></span><code>★ 两种完全不同的用途，用的是同一个式子：
+   【横向合并】把不同领域的能力捏到一起
+                （DeepSeek-V4 / Kimi-K3 / openPangu-2.0）
+   【纵向修复】把被后续阶段冲掉的自己捞回来（GLM-5）
+
+★★ 能看出这个区别，说明你真的读懂了这批报告。
+   而且注意：纵向修复这件事只有在&quot;多阶段顺序 RL&quot;成为标配之后才会出现 ——
+   它是一个【新流水线长出来的新问题】，不是一个老问题的新解法。
+</code></pre></div>
+
+<p>⭐ <strong>一个值得注意的细节差异</strong>（✅ 两家报告直接对话）：GLM-5 承认自己是从<strong>推理后端</strong>取老师的概率，并把"迁到训练引擎"列为未来工作；openPangu-2.0 直接<strong>用训练引擎的前向</strong>算老师概率，并在报告里<strong>主动点名 GLM-5 做对比</strong>。</p>
+<div class="codehilite"><pre><span></span><code>★ 这个差异为什么要紧：接 7.4 节。
+  推理后端和训练引擎算出来的概率【本来就不完全一样】。
+  如果老师概率来自推理后端、学生概率来自训练引擎，
+  那 log(π_t / π_s) 这个差里就混进了【引擎实现差异】的噪声 ——
+  而它本该只反映&quot;老师和学生的能力差&quot;。
+  ⟹ 所以 openPangu 那一步不是洁癖，是在修一个真实的偏置。
+</code></pre></div>
+
+<h3 id="nemotron-3-ultra">📎 表外的第五个数据点：Nemotron 3 Ultra</h3>
+<p>⚠️ <strong>下面这一家不在上面那张四家对照表里</strong>，因为它不在 <a href="../业界模型技术报告/模型技术对比.html">../业界模型技术报告/模型技术对比.md</a> §3.6 的横向对比范围内（那份对比覆盖的是 DeepSeek / Kimi / GLM / MiniMax / openPangu 这五家）。但它是同一条路线上一个很有信息量的独立例子，所以单独列出。</p>
+<p>✅ <strong>Nemotron 3 Ultra</strong>（<a href="https://arxiv.org/abs/2606.15007">arXiv:2606.15007</a>，NVIDIA，2026-06）把这套东西做成了<strong>迭代</strong>，老师是一个<strong>不断演进的教师面板</strong>，要解决的是"广泛能力获取 + 定向专精"：</p>
 <div class="codehilite"><pre><span></span><code>Base → SFT → RLVR → MOPD warmup → MOPD（× N 轮）→ MTP boosting
                                      ↑
               教师面板会【随轮次演进】：STEM / 对话 / 指令遵循 /
@@ -390,25 +710,217 @@ OPD ：学生写的【每一个 token】都能立刻拿到一个分数
 </code></pre></div>
 
 <hr />
-<h2 id="84-vs">8.4 为什么它比参数平均好：函数空间 vs 参数空间</h2>
-<div class="codehilite"><pre><span></span><code>参数空间合并（Model Soup / Task Arithmetic / TIES / DARE）：
-   W_合 = Σ w_i · W_i
+<h2 id="84">8.4 ★★ 对照：模型合并是怎么算的，为什么它在跨域时不行</h2>
+<p><strong>这一节把"参数空间合并"的几种方法逐个算出来。</strong> ⚠️ 本节后半段的<strong>理论解释是整章可靠性最低的部分</strong>，我会明确标出。</p>
+<blockquote>
+<p>📎 <strong>"把多个专家变成一个模型"有三条路线</strong>（数据空间 / 参数空间 / 函数空间），框架性的分类在 <a href="03-分训与合训.html">03 章</a> 3.6。本节只深挖<strong>参数空间那条路具体怎么算</strong>，以及它为什么在跨域时失效。</p>
+</blockquote>
+<h3 id="_3">四种参数空间合并方法的算式</h3>
+<div class="codehilite"><pre><span></span><code>记号：W_base 是 base 权重；W_i 是第 i 个专家微调后的权重。
 
-   ⚠️ 它隐含一个很强的假设：
-      &quot;几个专家的参数是可以线性插值的&quot;
-      —— 但专家们各自走远之后，参数空间早就不对齐了，
-         同一个神经元在两个专家里可能编码完全不同的东西。
+① 权重平均 / Model Soup
+      W_合 = Σ w_i · W_i          （权重 w_i 加起来等于 1）
 
-✅ KAT-Coder-V2.5 报告（arXiv:2607.05471）的原话大意：
-   参数平均 / Task Arithmetic / 顺序多域 SFT 都会出现跷跷板效应，
+② 任务向量 / Task Arithmetic（&quot;任务算术&quot;）
+      先定义任务向量：  τ_i = W_i − W_base
+         ★ 它就是&quot;这次微调到底改了什么&quot;的差分。
+      再合并：          W_合 = W_base + λ · Σ τ_i
+
+   ★★ 这两个式子在 λ = 1/n 时【完全等价】，可以自己展开验：
+      W_base + (1/n)·Σ(W_i − W_base)
+    = W_base + (1/n)·ΣW_i − W_base
+    = (1/n)·ΣW_i                     ← 就是简单平均
+
+   ⟹ 所以 task vector 不是一个新算法，是一个【改写方式】。
+      它把&quot;合并权重&quot;改写成&quot;合并改动量&quot;，于是可以对每个改动量
+      单独【加权、裁剪、投票】—— 这才是下面两个方法的立足点。
+
+③ TIES（TrIm, Elect Sign &amp; Merge：裁剪 → 选符号 → 合并）三步：
+      第一步 Trim        每个 τ_i 只保留幅值最大的 top-k%，其余置 0
+      第二步 Elect Sign  对每个参数位，比较&quot;所有正分量的幅值之和&quot;
+                         和&quot;所有负分量的幅值之和&quot;，大的那一方定符号
+      第三步 Merge       只平均【和选中符号一致】的那些分量
+
+④ DARE（Drop And REscale：随机丢弃并重新放缩）：
+      以概率 p 把 τ 的分量随机置 0，剩下的除以 (1 − p)
+      ★ 为什么要除以 (1−p)：让期望不变。
+        E[τ&#39;] = (1−p) · τ/(1−p) = τ    —— 自己验一下就懂这一步的用意
+</code></pre></div>
+
+<p>⚠️ <strong>出处说明</strong>：这四种方法分别出自 Model Soups（arXiv:2203.05482）、Task Arithmetic（arXiv:2212.04089）、TIES-Merging（arXiv:2306.01708）、DARE（arXiv:2311.03099）。⚠️ <strong>这四个 arXiv 编号是我凭记忆给的，本次改写无网络、未按本仓库的规矩逐个核对「编号 ↔ 标题 ↔ 第一作者 ↔ 日期」</strong>，引用前请自行核对。本目录 <a href="papers/">papers/</a> 未归档这些 PDF。</p>
+<h3 id="4">一个 4 维的手算例子：看符号冲突怎么被处理</h3>
+<p><strong>假设模型只有 4 个参数</strong>（真实模型有几千亿个，但机制完全一样）。两个专家的任务向量：</p>
+<div class="codehilite"><pre><span></span><code>τ_数学 = [ +0.80,  −0.10,  +0.30,  +0.02 ]
+τ_代码 = [ −0.60,  +0.05,  +0.40,  −0.01 ]
+</code></pre></div>
+
+<p><strong>方法 ①/②（简单平均，各占一半）</strong>：逐位算 <code>(τ_数学 + τ_代码) / 2</code></p>
+<p><strong>方法 ③（TIES，取 top-50% 也就是每个向量留 2 个分量）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>第一步 Trim：
+   τ_数学 的幅值排序：0.80 &gt; 0.30 &gt; 0.10 &gt; 0.02 → 留第 1、3 位
+      ⟹ [ +0.80,  0,  +0.30,  0 ]
+   τ_代码 的幅值排序：0.60 &gt; 0.40 &gt; 0.05 &gt; 0.01 → 留第 1、3 位
+      ⟹ [ −0.60,  0,  +0.40,  0 ]
+
+第二步 Elect Sign：
+   第 1 位：正方总幅值 = 0.80，负方总幅值 = 0.60  →  0.80 &gt; 0.60  →  选 &quot;+&quot;
+   第 3 位：两边都是正的                          →  选 &quot;+&quot;
+   第 2、4 位：都被裁掉了                          →  0
+
+第三步 Merge（只平均和选中符号一致的分量）：
+   第 1 位：只有 +0.80 和 &quot;+&quot; 一致   →  结果 = 0.80
+   第 3 位：+0.30 和 +0.40 都一致     →  结果 = (0.30 + 0.40) / 2 = 0.35
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>参数位</th>
+<th>τ_数学 想要</th>
+<th>τ_代码 想要</th>
+<th>简单平均的结果</th>
+<th><strong>TIES 的结果</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>第 1 位</strong>（★ 符号冲突）</td>
+<td><strong>+0.80</strong></td>
+<td><strong>−0.60</strong></td>
+<td><strong>+0.10</strong></td>
+<td><strong>+0.80</strong></td>
+</tr>
+<tr>
+<td>第 2 位（都很小）</td>
+<td>−0.10</td>
+<td>+0.05</td>
+<td>−0.025</td>
+<td><strong>0</strong>（被裁掉）</td>
+</tr>
+<tr>
+<td>第 3 位（两边同号）</td>
+<td>+0.30</td>
+<td>+0.40</td>
+<td><strong>+0.35</strong></td>
+<td><strong>+0.35</strong></td>
+</tr>
+<tr>
+<td>第 4 位（都很小）</td>
+<td>+0.02</td>
+<td>−0.01</td>
+<td>+0.005</td>
+<td><strong>0</strong>（被裁掉）</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★★ 这张表要横着读第 1 行和第 3 行的对比：
+
+第 3 位（两边同号，没冲突）：
+   简单平均 = 0.35，TIES = 0.35 —— 【完全一样】。
+   ★ 这说明：参数平均在&quot;没有冲突&quot;的地方本来就工作得好好的。
+
+第 1 位（符号冲突）：
+   数学专家想 +0.80，代码专家想 −0.60。
+   · 简单平均给 +0.10 —— 数学专家要的 0.80 只剩下 12.5%，
+     代码专家要的 −0.60 直接变成了正数。【两边都不满意】。
+     ★★ 这就是【跷跷板效应（seesaw effect）】在单个参数上的样子。
+   · TIES 给 +0.80 —— 保住了数学专家，
+     代价是代码专家在这一维的要求被【完全无视】。
+
+⟹ ★★ 所以 TIES 并没有&quot;解决&quot;冲突，它只是换了一种处理方式：
+   从&quot;两边都砍一半&quot;变成&quot;赢家通吃&quot;。
+   ⟹ 哪种更好，取决于这些冲突是&quot;真冲突&quot;还是&quot;噪声&quot;。
+      如果大部分冲突来自噪声，赢家通吃就赢；
+      如果是真冲突（两个任务真的要求相反的方向），两种都救不了。
+</code></pre></div>
+
+<h3 id="_4">什么时候参数合并有效（这张表比任何理论都实用）</h3>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>参数平均有效吗</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>同一次训练、相邻几个 step 的 ckpt 平均</strong></td>
+<td>✅ <strong>有效</strong></td>
+<td>它们在同一个"盆地"里，差异主要是优化噪声</td>
+</tr>
+<tr>
+<td><strong>同一个 base、不同随机种子跑同一个训练</strong></td>
+<td>✅ <strong>常常有效</strong>（降方差，涨零点几分）</td>
+<td>同上。★ 这是参数平均最常见的成功用法</td>
+</tr>
+<tr>
+<td><strong>同一个 base、短距离微调</strong>（LoRA / 少量 SFT 步）</td>
+<td>⚠️ <strong>经常有效</strong></td>
+<td>τ 的幅值小，"线性近似"还成立</td>
+</tr>
+<tr>
+<td><strong>同一个 base、各自做完整 RL 的领域专家</strong></td>
+<td>✗ <strong>基本不行</strong></td>
+<td>τ 幅值大、方向冲突多，线性近似破了</td>
+</tr>
+<tr>
+<td><strong>不同 base / 不同架构</strong></td>
+<td>✗ <strong>完全不行</strong></td>
+<td>参数位根本不对应，第 i 个神经元在两边编码的东西不一样</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_5">⚠️⚠️ 为什么它跨域失效：有现象，但理论不牢</h3>
+<div class="codehilite"><pre><span></span><code>✅ 现象层面有一手出处。KAT-Coder-V2.5 报告
+   （[arXiv:2607.05471](https://arxiv.org/abs/2607.05471)）的原话大意：
+   参数平均 / Task Arithmetic / 顺序多域 SFT 都会出现【跷跷板效应】，
    因为【参数空间的合并破坏了专家特有的结构】，
    而离线监督又引入了训推不匹配。
    ⟹ 所以 MOPD 改在【函数空间】做融合。
 
-★★ &quot;函数空间&quot;是什么意思：
-   我不管你参数长什么样，我只要求
-   【给同样的输入，学生的输出分布 ≈ 老师的输出分布】。
-   —— 这个要求是良定义的，而&quot;参数平均&quot;不是。
+✅ DeepSeek-V4 报告也给了同样的判断：权重合并会因为参数空间不对齐
+   而失效；混合 RL 会让不同领域的奖励互相冲突。所以选 OPD ——
+   成本高，但效果最好。
+   （见 [03 章](03-分训与合训.md) 3.6 的引用）
+
+⚠️⚠️ 但&quot;为什么符号投票应该赢&quot;&quot;为什么跨域就不行&quot;这一层，
+   目前只有几个启发式说法，没有一个能【在合并之前预测结果】的理论：
+   · &quot;线性模式连通性&quot;（linear mode connectivity）：
+     同一个 base 的两次微调，如果中间的插值路径上损失不升高，
+     那它们就&quot;在同一个盆地里&quot;，可以平均。
+     ⚠️ 这是一个【事后能测、事前不能算】的性质。
+   · &quot;参数不干涉&quot;（parameter interference）：
+     假设不同任务用到的参数子集大致不重叠，所以裁剪掉小分量不损失能力。
+     ⚠️ 这个假设在真实大模型上没有被严格验证过。
+   · TIES 的 top-k% 比例、DARE 的丢弃率 p，都是【调出来的超参】，
+     没有原则性的取法。
+
+⟹ ★★ 所以这一节的正确态度是：
+   【把它当一套经验手段用，别当一套理论用。】
+   上面那张&quot;什么时候有效&quot;的表，可靠性远高于任何机制解释。
+</code></pre></div>
+
+<h3 id="_6">★★ 为什么函数空间是良定义的，而参数空间不是</h3>
+<div class="codehilite"><pre><span></span><code>参数空间合并在要求什么：
+   &quot;几个专家的参数可以线性插值。&quot;
+   ⚠️ 这个要求的问题是：它【依赖参数的排列方式】。
+      神经网络有置换对称性 —— 把一层里的神经元重新编号、
+      同时把下一层的权重相应重排，得到的是【同一个函数】，
+      但参数向量完全不同。
+   ⟹ 两个专家各自训远了之后，它们可能是&quot;同一个功能、不同编号&quot;，
+      这时按位平均在数学上就是在做一件【没有意义】的事。
+
+函数空间合并（OPD）在要求什么：
+   &quot;给同样的输入，学生的输出分布 ≈ 老师的输出分布。&quot;
+   ✅ 这个要求【完全不涉及参数长什么样】。
+      它对置换对称性是不变的，对架构差异也宽容得多。
+
+★★★ 一句话：
+   &quot;输出分布要接近&quot;是一个良定义的要求；
+   &quot;参数要接近&quot;不是 —— 因为参数本来就不唯一。
+   ⟹ 这是 OPD 比参数平均好的【最根本的那条理由】，
+      而且它不需要任何实验来支持，是一个结构性的事实。
 </code></pre></div>
 
 <hr />
@@ -416,51 +928,121 @@ OPD ：学生写的【每一个 token】都能立刻拿到一个分数
 <p>✅ <strong>Learning beyond Teacher: Generalized On-Policy Distillation with Reward Extrapolation（ExOPD）</strong><br />
 （<a href="https://arxiv.org/abs/2602.12125">arXiv:2602.12125</a>，Wenkai Yang 等，2026-02）</p>
 <div class="codehilite"><pre><span></span><code>常识：蒸馏的天花板是老师。学生最多追平老师。
+   ★ 这个常识的来源是 8.2 节那个性质：
+     学生追上老师时 Â = 0，梯度归零 —— 所以它【天然停在老师那里】。
 
 ExOPD 报告：在把多个领域专家合并回原始 base 时，
    它是【唯一】能让统一学生【一致地超过所有领域老师】的方法。
 
 ⚠️ 学术工作，单一课题组结果，尚未见工业报告采用。
+⚠️ 本目录 papers/ 未归档该 PDF，结论与口径请回原文。
+
 ⚠️ 但方向值得注意：论文把&quot;多教师合并&quot;称为一种
-   【有效的新多任务后训练范式】—— 这和五家报告的实际动作是一致的。
+   【有效的新多任务后训练范式】—— 这和那几家报告的实际动作是一致的。
+★ 而且它要突破的恰恰是 8.2 节那个&quot;自带停止准则&quot;的性质 ——
+  要让学生超过老师，就必须给优势项加上某种【外推】，
+  让 Â 在学生追平老师之后仍然不为 0。
 </code></pre></div>
 
 <hr />
 <h2 id="86-opd">8.6 失败模式：OPD 不是万能的</h2>
-<p>⚠️ 下面这些来自 OPD 综述（<a href="https://arxiv.org/abs/2604.00626">arXiv:2604.00626</a>，Mingyang Song 等，2026-04）和社区整理：</p>
-<div class="codehilite"><pre><span></span><code>① 多样性坍缩
-   学生一味模仿老师的分布，输出多样性下降
-   ⟹ 后续如果还要做 RL，探索空间已经被压扁了（和 02.5 病三同源）
+<p>⚠️ 下面这些来自 OPD 综述（<a href="https://arxiv.org/abs/2604.00626">arXiv:2604.00626</a>，Mingyang Song 等，2026-04）和社区整理，⚠️ 本目录未归档 PDF。</p>
+<table>
+<thead>
+<tr>
+<th>失败模式</th>
+<th>机制</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 多样性坍缩</strong></td>
+<td>学生一味模仿老师的分布，输出多样性下降</td>
+<td>⟹ 后续如果还要做 RL，探索空间已经被压扁了（和 <a href="02-SFT-监督微调.html">02 章</a> 2.5 的病三、5.3 的熵坍缩同源）</td>
+</tr>
+<tr>
+<td><strong>② tokenizer 不匹配</strong></td>
+<td>★ 老师和学生分词器不同时，"逐 token 对齐"<strong>根本无从谈起</strong>（见下）</td>
+<td>⟹ 这是<strong>跨家族蒸馏</strong>（用别家模型当老师）最硬的一道墙</td>
+</tr>
+<tr>
+<td><strong>③ 思维模式不兼容</strong></td>
+<td>老师习惯长思维链、学生是 non-thinking 模式</td>
+<td>⟹ 蒸不动。两边在同一个位置想做的事根本不一样</td>
+</tr>
+<tr>
+<td><strong>④ 老师没有"新东西"可给</strong></td>
+<td>老师的能力学生已经有了</td>
+<td>⟹ 每个位置的 Â 都接近 0，OPD 只是在浪费算力。✅ 成功条件之一就是【老师具备学生没有的能力】</td>
+</tr>
+</tbody>
+</table>
+<h3 id="2-tokenizer">② 为什么 tokenizer 不一致就彻底做不了：一个具体例子</h3>
+<div class="codehilite"><pre><span></span><code>假设老师的词表 15 万，学生的词表 12.8 万。同一个单词 &quot;unbelievable&quot;：
 
-② tokenizer 不匹配
-   ★ 老师和学生分词器不同时，&quot;逐 token 对齐&quot;根本无从谈起
-   ⟹ 这是跨家族蒸馏（用别家模型当老师）最硬的一道墙
+   老师切成： [ &quot;unbeliev&quot;, &quot;able&quot; ]            →  2 个 token
+   学生切成： [ &quot;un&quot;, &quot;believ&quot;, &quot;able&quot; ]        →  3 个 token
 
-③ 思维模式不兼容
-   老师习惯长思维链、学生是 non-thinking 模式 → 蒸不动
+⟹ &quot;在第 2 个 token 上，老师会给每个词多少概率&quot; 这句话【没有定义】：
+   两边的&quot;第 2 个 token&quot;指的不是同一段文本。
+   老师的第 2 个 token 覆盖 &quot;able&quot;，学生的第 2 个覆盖 &quot;believ&quot;。
 
-④ 老师没有&quot;新东西&quot;可给
-   如果老师的能力学生已经有了，OPD 只是在浪费算力
-   ✅ 成功条件之一是【老师具备学生没有的能力】
+★★ 注意这不是&quot;误差大一点&quot;，是【对齐关系不存在】。
+   OPD 的整个式子建立在&quot;学生写的第 t 个 token&quot;这个位置上，
+   位置对不上，式子就无从计算。
+
+⚠️ 有一些工作尝试用&quot;最小公共子串对齐 / 字节级重映射&quot;来桥接，
+   ⚠️ 但都会引入额外的近似误差，且未见一手工业报告采用。
 </code></pre></div>
 
-<div class="codehilite"><pre><span></span><code>★ 补一条工程注意：OPD 需要老师的【完整输出分布】（logits）。
-  用开源模型当老师可以（拿得到 logits），
-  用闭源 API 当老师【做不了标准 OPD】—— 只能退回 off-policy 蒸馏。
+<h3 id="api-opd">★ 一条工程硬门槛：闭源 API 当老师做不了标准 OPD</h3>
+<div class="codehilite"><pre><span></span><code>OPD 需要老师的【完整输出分布】（logits）。
+
+   用开源模型当老师：可以 —— logits 拿得到。
+   用闭源 API 当老师：做不了 —— API 通常只返回 top-k 个 logprob。
+
+把这件事量化一下：
+   一个 15 万词表的模型，API 给 top-20 的 logprob，
+   覆盖的词表位置比例 = 20 / 150,000 = 0.013%
+
+⚠️ 要说公平：头部几个词往往占了大部分概率质量，
+   所以&quot;概率质量的覆盖率&quot;远高于 0.013%。
+   ★ 但逆 KL 这类目标要对【整个词表】求和，
+     尾部那些小概率项全部丢失 —— 而学生犯的错恰恰常常在尾部
+     （学生给某个词 0.2、老师给 0.001，这一项的 Â 是 −5.3，
+      信息量极大，而它根本不在 top-20 里）。
+
+⟹ 所以结论是：闭源 API 只能退回【黑盒蒸馏】（拿它的输出文本做 SFT），
+   也就回到了 8.1 那张表最左边一列，连带回到曝光偏差。
 </code></pre></div>
 
 <hr />
-<h2 id="87">8.7 这一章的三句话总结</h2>
+<h2 id="87">8.7 这一章的四句话总结</h2>
 <div class="codehilite"><pre><span></span><code>① on-policy 蒸馏 = 学生自己走路，老师在每一步旁边点评。
    它把老师变成了一个逐 token 的稠密奖励模型 ——
    所以它其实是 RL，不是 SFT。
 
-② 2026 年五家用同一个式子做了两件不同的事：
-   【合并多个专家】（DeepSeek / K3 / Pangu / Nemotron）
-   【找回被后续阶段遗忘的能力】（GLM-5）
+② ★ 它比普通蒸馏好的理由是【机制性的，不是程度上的】：
+   off-policy 蒸馏只在&quot;老师的正确前缀&quot;上训练过学生，
+   而学生每步只要有千分之一的概率走偏，1,000 步下来
+   &quot;至少走偏一次&quot;的概率就是 63% —— 训练分布和使用分布
+   在长输出上几乎没有重叠。
+   OPD 的数据【定义上】来自学生自己的分布，这个缺口不存在。
 
-③ 它比参数平均好，是因为它在【函数空间】而不是【参数空间】合并；
-   它的硬门槛是老师要能给出 logits，且 tokenizer 要一致。
+③ 2026 年四家一手报告用【两类形式】做了【四种用途】：
+   形式上分两类：DeepSeek 写成全词表逆 KL loss；
+                K3 / GLM / openPangu 写成 sg[log(教师/学生)] 当 advantage。
+   用途上分两类：【合并多个专家】（DeepSeek / K3 / openPangu）
+                【找回被后续阶段遗忘的能力】（GLM-5）
+   ⚠️ MiniMax M3 在这张对照里缺席 —— 因为它没有技术报告，
+      不是因为它不做 OPD。【未披露 ≠ 没做】。
+
+④ 它比参数平均好，根子在【函数空间的要求是良定义的，参数空间的不是】：
+   神经网络有置换对称性，&quot;同一个功能、不同神经元编号&quot;的两份权重
+   按位平均是没有意义的；而&quot;给同样输入、输出分布接近&quot;
+   完全不依赖参数长什么样。
+   ★ 它的硬门槛是：老师要能给出 logits，且 tokenizer 必须一致。
 </code></pre></div>
 
 <hr />

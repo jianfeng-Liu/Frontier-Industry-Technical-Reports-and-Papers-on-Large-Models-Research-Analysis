@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -251,16 +256,29 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <h1 id="07-agentic-rl">07 · ⭐ Agentic RL：环境成为新瓶颈</h1>
 <blockquote>
-<p><strong>这是 2026 年后训练的主战场。</strong> 五家技术报告里，有几家把<strong>一半以上的篇幅</strong>砸在这一章讲的东西上。</p>
-<p>读完你应该能回答：agent 的强化学习和做数学题的强化学习差在哪？为什么"环境"会变成比模型更难的问题？以及这一章所有工程复杂度的<strong>唯一源头</strong>是什么。</p>
+<p><strong>这是 2026 年后训练的主战场。</strong> 这一代的几份一手技术报告里，有几家把<strong>一半以上的篇幅</strong>砸在这一章讲的东西上。</p>
+<p>读完你应该能回答：agent 的强化学习和做数学题的强化学习差在哪？为什么"环境"会变成比模型更难的问题？以及——<strong>"环境成为瓶颈"用数字说出来，到底是什么形状。</strong></p>
+<p><strong>⚠️ 本章的分工</strong>：这里讲<strong>为什么环境是瓶颈</strong>（算法和数据层面）。<strong>工程上怎么解</strong>（异步 rollout、partial rollout、权重同步、引擎解耦）在隔壁目录 <a href="../强化学习训练框架/">../强化学习训练框架/</a>，本章只链过去，不重写。</p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong>（每个缩写第一次出现都给中英文全称）</p>
+<p><strong>Agentic RL</strong>（智能体强化学习）—— 奖励来自"模型真的去操作一个系统，看它成没成"的强化学习。</p>
+<p><strong>环境</strong>（Environment）—— 一个能让模型<strong>真的动手</strong>、并且能<strong>自动判分</strong>的沙盒。本章的主角。</p>
+<p><strong>rollout</strong>（采样 / 轨迹生成）—— 让模型跑一遍完整任务，产出一条轨迹。</p>
+<p><strong>轨迹</strong>（Trajectory）—— 一次 rollout 的产物。在 Agentic RL 里它是"调工具 → 看结果 → 再调"的一长串。</p>
+<p><strong>同步 RL</strong>（Synchronous RL）—— 一批 rollout 全部跑完，才更新一次权重。</p>
+<p><strong>长尾</strong>（Long tail）—— 耗时分布里那一小撮极慢的样本。本章所有工程问题的源头。</p>
+<p><strong>horizon</strong>（时间跨度 / 步数）—— 一条轨迹有多少步。长 horizon 是本章的难点来源。</p>
+<p><strong>信用分配</strong>（Credit assignment）—— 一条 40 步的轨迹失败了，到底该罚哪一步。</p>
+<p><strong>QAT</strong>（Quantization-Aware Training，量化感知训练）—— 训练时就模拟量化误差，让模型提前适应低精度。</p>
+<p><strong>microVM</strong>（微虚拟机）—— 比容器隔离性更强、比传统虚拟机启动更快的沙盒形态。</p>
 <hr />
 <h2 id="71">7.1 先看清楚"一条数据"变成了什么</h2>
 <div class="codehilite"><pre><span></span><code>【RLVR 的一条训练样本】
    输入：一道数学题
-   模型输出：一段 2000 token 的推理
+   模型输出：一段 2,000 token 的推理
    奖励：答案对不对（一次字符串比对，微秒级）
-   耗时：几秒
+   耗时：几十秒，且【可预测】
 
 
 【Agentic RL 的一条训练样本】
@@ -280,6 +298,81 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>★★★ <strong>这一节只要记住一件事</strong>：<strong>"一条数据"从"一段文本"变成了"一次与真实系统的交互过程"。</strong><br />
 后面所有的工程灾难，都是这一句话的直接后果。</p>
 </blockquote>
+<h3 id="_1">★★ 环境的成本结构表：把每一项成本都摊开</h3>
+<p><strong>这张表是本章的地基。</strong> 它解释了为什么同一套 RL 算法，换个任务就从"几秒一条"变成"半小时一条"：</p>
+<table>
+<thead>
+<tr>
+<th>成本维度</th>
+<th>数学题（RLVR）</th>
+<th>代码仓修 bug（Agentic）</th>
+<th>浏览器找信息（Agentic）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一条 rollout 几步</strong></td>
+<td><strong>1 步</strong>（生成一段就结束）</td>
+<td><strong>20 ~ 50 步</strong>工具调用</td>
+<td><strong>10 ~ 100 步</strong></td>
+</tr>
+<tr>
+<td><strong>每步要不要调外部工具</strong></td>
+<td>✗ 不要</td>
+<td>✅ 要（读文件、改文件、跑测试）</td>
+<td>✅ 要（发 HTTP 请求）</td>
+</tr>
+<tr>
+<td><strong>有没有网络延迟</strong></td>
+<td>✗ 没有</td>
+<td>⚠️ 装依赖时有</td>
+<td>★ <strong>有，而且不受你控制</strong></td>
+</tr>
+<tr>
+<td><strong>单步的环境耗时</strong></td>
+<td>—</td>
+<td>0.1 s（读文件）~ 120 s（跑全量测试）</td>
+<td>0.3 ~ 10 s（看目标站点）</td>
+</tr>
+<tr>
+<td><strong>一条轨迹的环境总耗时</strong></td>
+<td>≈ 0</td>
+<td><strong>几十秒 ~ 几十分钟</strong></td>
+<td>几十秒 ~ 几分钟</td>
+</tr>
+<tr>
+<td><strong>判分本身要多久</strong></td>
+<td>微秒</td>
+<td>★ <strong>要再跑一遍全量测试</strong>：几十秒 ~ 几分钟</td>
+<td>答案比对（快）+ 来源核查（慢）</td>
+</tr>
+<tr>
+<td><strong>能不能并行</strong></td>
+<td>✅ 完全能</td>
+<td>✅ 能，但每条要一个<strong>独立容器</strong>，内存和磁盘是上限</td>
+<td>⚠️ 受<strong>目标站点限流</strong>，并行度不由你定</td>
+</tr>
+<tr>
+<td><strong>失败怎么重置</strong></td>
+<td>不需要重置</td>
+<td>丢掉容器重建（几秒 ~ 几分钟，看镜像大小）</td>
+<td>⚠️ <strong>外部状态可能已被改掉</strong>，重置不彻底</td>
+</tr>
+<tr>
+<td><strong>耗时可不可预测</strong></td>
+<td>✅ 可预测</td>
+<td>✗ <strong>完全不可预测</strong></td>
+<td>✗ <strong>完全不可预测</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>★★ 这张表里最该盯住的是【最后两行】，不是耗时那几行。
+
+   &quot;能不能并行&quot; + &quot;耗时可不可预测&quot; 这两格，
+   决定了你的 GPU 利用率 —— 而不是&quot;单步多慢&quot;。
+   ⟹ 7.3 节会把这件事算成一个具体的百分比。
+</code></pre></div>
+
 <hr />
 <h2 id="72">7.2 ★★ 官方原话：难点从模型转移到了环境</h2>
 <p>✅ <strong>GLM-5.3 官方博客</strong>（2026-08-14，见 <a href="../业界模型技术报告/GLM-5.3.html">../业界模型技术报告/GLM-5.3.md</a>）的原话：</p>
@@ -287,52 +380,193 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p><em>"As agent capability improves, much of the difficulty in scaling post-training moves from the model to the environment."</em><br />
 （随着智能体能力提升，后训练规模化的难点<strong>从模型转移到了环境上</strong>。）</p>
 </blockquote>
-<p><strong>"环境"到底是什么</strong>（这个词要讲清楚）：</p>
-<div class="codehilite"><pre><span></span><code>监督学习需要：题目 + 标准答案
+<p><strong>"环境"到底是什么</strong>（这个词必须讲清楚）：</p>
+<div class="codehilite"><pre><span></span><code>监督学习需要：  题目 + 标准答案
 强化学习需要：★ 一个能让模型【真的动手】、并且能【自动判分】的沙盒
 
-写代码的环境要有：
-   · 一个能跑的容器（装好依赖、能联网装包）
-   · 一份真实的代码仓库和它的历史
+一个&quot;写代码&quot;的环境，必须同时有：
+   · 一个能跑的容器（依赖装好、能联网装包）
+   · 一份真实的代码仓库和它的 git 历史
    · 一套能执行的测试
    · 一个判定&quot;任务完成没有&quot;的规则
+   · ★ 而且要保证这套东西【没有洞】（6.4 节那个问题）
+</code></pre></div>
 
-⟹ 造这么一个环境的工程量，比造一条 SFT 数据大【三到四个数量级】
+<h3 id="sft">⚠️ "工程量比造一条 SFT 数据大多少"：把这笔账算出来</h3>
+<div class="codehilite"><pre><span></span><code>⚠️ 这一段原来写的是&quot;大三到四个数量级&quot;，我算不出那个数，已经下调。
+   下面是能算出来的版本：
+
+造一条 SFT 数据：
+   人写：     约 5 分钟  = 300 秒
+   模型合成： 几秒
+
+造一个 RL 环境（容器 + 仓库 + 测试 + 判分规则）：
+   顺的情况： 约 4 小时  = 14,400 秒
+   不顺的情况：约 3 天   = 259,200 秒
+
+⟹ 比值：14,400 / 300 = 48 倍     （1.7 个数量级）
+         259,200 / 300 = 864 倍   （2.9 个数量级）
+
+⟹ ⚠️ 所以可以说的是【2 ~ 3 个数量级】。这是本文的估算，无一手出处。
+
+★ 而且这笔账只算了&quot;造&quot;，没算&quot;验&quot;。
+  6.4 节那个数字（代码 RL 环境的门禁检查里 65/105 项 FAIL）说明：
+  【验证一个环境没有洞，可能比造出来更贵】。
 </code></pre></div>
 
 <h3 id="glm-53">GLM-5.3 是这件事最干净的一个证据</h3>
 <div class="codehilite"><pre><span></span><code>✅ 官方原话：&quot;Scaling post-training is all we did for GLM-5.3.&quot;
-✅ 官方原话：&quot;It uses the same base model as GLM-5.2 — every gain comes from post-training.&quot;
+✅ 官方原话：&quot;It uses the same base model as GLM-5.2 —— every gain comes from post-training.&quot;
 
-⟹ 基座完全冻结，只加后训练规模 → 编程能力 +50%，
-   并且长出了预期外的网络安全能力。
+⟹ 基座完全冻结，只加后训练规模。
 
-⚠️ 但要注意前提：这个结论成立的条件是【基座本身足够强且未被榨干】，
+⚠️ &quot;+50%&quot; 这个数字的口径必须写清：
+   它是【Z.ai Code Bench 这个内部评测】上的提升，是官方主打数字，
+   不是任何公开榜单上的 +50%。
+   ✅ 同时官方也报告了&quot;长出了预期外的网络安全能力&quot;。
+   （细节见 ../业界模型技术报告/GLM-5.3.md）
+
+⚠️ 而且这个结论成立的前提是【基座本身足够强且未被榨干】，
    不能推广成&quot;任何模型加后训练都能 +50%&quot;。
 </code></pre></div>
 
 <hr />
-<h2 id="73">7.3 长尾：这一章所有工程问题的唯一源头</h2>
-<div class="codehilite"><pre><span></span><code>一批 128 条 rollout 的耗时分布（⚠️ 示意，非实测）：
-
-   条数
-    ▲
- 60 │██
- 40 │████
- 20 │  ████
- 10 │     ███
-  5 │        ██              ★ 这条尾巴才是问题
-  1 │           █ ─────────────────────────────────█
-    └──────────────────────────────────────────────────▶ 耗时
-      10s  30s  1min  3min              20min      40min
-
-同步 RL 的规则：★ 必须【全部 128 条都跑完】才能更新一次权重
-   ⟹ 最慢那条决定整批时间
-   ⟹ 其余 127 张卡在【干等】
-   ⟹ GPU 利用率可以低到个位数百分比
+<h2 id="73">7.3 ★★★ 长尾：把"环境成为瓶颈"算成一个百分比</h2>
+<p><strong>这一节是本章的核心。</strong> 光说"环境慢"没用，要算出它慢成什么形状。</p>
+<h3 id="_2">第一层：单条轨迹的时间账</h3>
+<div class="codehilite"><pre><span></span><code>设定（⚠️ 示意数值，不是实测，但每个数都落在真实量级内）：
+   一条轨迹 50 步工具调用
+   每一步：模型生成 200 个 token 来决定&quot;调什么工具、传什么参数&quot;
+          然后环境执行 2 秒
+   单路解码速度按 50 token/s 估（⚠️ 一个常见量级，取决于模型和硬件）
 </code></pre></div>
 
-<p><strong>解法家族（都是在"打破同步"）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>每一步的时间构成</th>
+<th>耗时</th>
+<th>这段时间 GPU 在干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型生成 200 token</td>
+<td>200 ÷ 50 = <strong>4 s</strong></td>
+<td>✅ <strong>在算</strong></td>
+</tr>
+<tr>
+<td>环境执行这一次工具调用</td>
+<td><strong>2 s</strong></td>
+<td>✗ <strong>在等</strong></td>
+</tr>
+<tr>
+<td><strong>单步合计</strong></td>
+<td><strong>6 s</strong></td>
+<td><strong>33% 的时间在干等</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>一条轨迹 = 50 步 × 6 s = 300 秒 = 5 分钟
+   其中 GPU 真正在算 = 50 × 4 = 200 秒
+        GPU 纯等待   = 50 × 2 = 100 秒
+   ⟹ 单条轨迹的 GPU 空转比例 = 100 / 300 = 33.3%
+
+★★ 但 33% 还【不是】&quot;环境成为瓶颈&quot;的真正形态。
+   因为单条轨迹的空转是可以用批处理填掉的：
+   一张卡上同时跑 64 条轨迹，这条在等工具的 2 秒里，
+   另外 63 条正在生成。⟹ 这一层的损失，工程上是有解的。
+
+⟹ 真正要命的是下面第二层，它【填不掉】。
+</code></pre></div>
+
+<h3 id="rl">第二层：同步 RL 必须等最慢那一条</h3>
+<div class="codehilite"><pre><span></span><code>同步 RL 的规则（这是算法要求，不是实现偷懒）：
+   一批 128 条 rollout 【全部跑完】，才能算优势、才能更新一次权重。
+
+   ★ 为什么必须等全部？因为 GRPO 的优势要用【组内均值】当基线
+     （5.2 节第二步）。少一条，均值就不对，优势就算错。
+
+⟹ 整批的墙钟时间 = 最慢那一条的时间。
+</code></pre></div>
+
+<p><strong>把一批 128 条的耗时分布写出来，然后算利用率</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>这一批里的 128 条</th>
+<th>条数</th>
+<th>单条耗时</th>
+<th>这些条真正消耗的算力</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>简单任务，几轮就做完</td>
+<td>64</td>
+<td>60 s</td>
+<td>64 × 60 = <strong>3,840 卡·秒</strong></td>
+</tr>
+<tr>
+<td>正常长度</td>
+<td>51</td>
+<td>180 s</td>
+<td>51 × 180 = <strong>9,180 卡·秒</strong></td>
+</tr>
+<tr>
+<td>反复试错的</td>
+<td>12</td>
+<td>600 s</td>
+<td>12 × 600 = <strong>7,200 卡·秒</strong></td>
+</tr>
+<tr>
+<td>★ <strong>最慢的那 1 条</strong>（装依赖卡住 / 死循环）</td>
+<td>1</td>
+<td><strong>1,800 s</strong></td>
+<td>1 × 1,800 = <strong>1,800 卡·秒</strong></td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>128</strong></td>
+<td>最慢 = <strong>1,800 s</strong></td>
+<td><strong>22,020 卡·秒</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>① 这一批【真正有用】的算力  = 22,020 卡·秒
+② 这一批【占住】的算力      = 128 张卡 × 1,800 秒 = 230,400 卡·秒
+   （同步 RL 下，先做完的卡不能释放，必须在那儿等那一条）
+③ ⟹ GPU 利用率 = 22,020 ÷ 230,400 = 9.6%
+
+★★★ 这就是&quot;GPU 利用率可以低到个位数百分比&quot;的具体算法。
+   注意它的成因：【不是代码慢】，是【耗时分布有长尾 + 算法要求同步】。
+   —— 这两个条件缺一个，这个数字就不成立。
+</code></pre></div>
+
+<p><strong>再算一个最能说明问题的对照：丢掉最慢的那一条会怎样</strong></p>
+<div class="codehilite"><pre><span></span><code>把超时上限设成 600 秒，超时就丢弃：
+   墙钟      = 600 秒
+   占住算力  = 128 × 600 = 76,800 卡·秒
+   有用算力  = 22,020 − 1,800 = 20,220 卡·秒
+   利用率    = 20,220 ÷ 76,800 = 26.3%
+
+⟹ ★ 丢掉 128 条里的 1 条（0.8% 的数据），
+   利用率从 9.6% 提到 26.3% —— 提升了【2.7 倍】。
+
+⚠️ 措辞纪律：这里是&quot;利用率提升 2.7 倍&quot;，
+   不要写成&quot;耗时减少 2.7 倍&quot;（那句话没有意义）。
+   对应的墙钟是从 1,800 秒降到 600 秒，即【减少 66.7%】，
+   等价于【快了 3 倍】（1 / (1 − 0.667) = 3）。
+
+⚠️ 这个耗时分布是我构造的示意，不是实测。但&quot;丢弃长尾能换来数倍
+   利用率&quot;这个结论对任何重尾分布都成立，不依赖具体数值。
+
+⚠️⚠️ 而且丢弃【不是免费的】：被丢掉的恰恰是【最难的那些题】。
+   长期这么丢下去，训练分布会系统性地偏向简单任务 ——
+   ★ 这是一个很隐蔽的数据问题，而不只是工程取舍。
+</code></pre></div>
+
+<h3 id="_3">解法家族：全都在"打破同步"</h3>
 <table>
 <thead>
 <tr>
@@ -344,57 +578,92 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tbody>
 <tr>
 <td><strong>异步 RL</strong></td>
-<td>训练引擎和推理引擎完全解耦，各跑各的</td>
+<td>训练引擎和推理引擎完全解耦，各跑各的，不再等齐</td>
 <td>GLM-5（每次权重同步后<strong>重置优化器</strong>）</td>
 </tr>
 <tr>
 <td><strong>Partial rollout</strong></td>
-<td>一批里完成了 λ 比例就暂停，剩下的下轮接着跑</td>
+<td>一批里完成了 λ 比例就暂停，剩下的下一轮接着跑</td>
 <td>Kimi-K3</td>
 </tr>
 <tr>
 <td><strong>可抢占 rollout</strong></td>
-<td>长任务可以被打断，token 粒度 WAL 日志恢复</td>
+<td>长任务可以被打断，用 token 粒度的 WAL 日志恢复</td>
 <td>DeepSeek-V4（Rust 写的 DSec 沙箱平台）</td>
 </tr>
 <tr>
 <td><strong>动态过滤</strong></td>
-<td>永远能解出的题踢出训练池</td>
-<td>openPangu-2.0（在线动态过滤）</td>
+<td>把"永远能解出来"的题踢出训练池</td>
+<td>openPangu-2.0（✅ 报告原文叫 <strong>Online Dynamic Filtering</strong>：持续跟踪每条样本的通过率，一直能解出来的样本动态踢出训练循环，让模型"永远停在它的学习前沿"）</td>
 </tr>
 </tbody>
 </table>
+<div class="codehilite"><pre><span></span><code>★★ 注意这四条和 5.2 节那张采样成本表是同一件事的两面：
+   「动态过滤」踢掉的正是 p 太高的题 —— 也就是 5.2 节算出的
+   &quot;G = 8 时有 66% 概率整组白跑&quot;的那种题。
+   ⟹ 算法侧省采样，系统侧省等待，两边指向同一个动作。
+</code></pre></div>
+
 <blockquote>
-<p>📎 <strong>这些是系统问题，本教程只讲"算法为什么需要它"。</strong><br />
-系统怎么实现（权重同步、气泡、引擎解耦）在 <a href="../强化学习训练框架/02-架构主轴-同步到全异步.html">../强化学习训练框架/02-架构主轴-同步到全异步.md</a>。</p>
+<p>📎 <strong>这些是系统问题，本章只讲"算法为什么需要它"。</strong><br />
+系统怎么实现（权重同步、流水线气泡、引擎解耦、partial rollout 的恢复协议）在隔壁目录：<br />
+<a href="../强化学习训练框架/02-架构主轴-同步到全异步.html">../强化学习训练框架/02-架构主轴-同步到全异步.md</a>（同步到全异步的架构演进）<br />
+<a href="../强化学习训练框架/06-AgenticRL-环境与沙箱.html">../强化学习训练框架/06-AgenticRL-环境与沙箱.md</a>（沙箱与环境的工程实现）</p>
 </blockquote>
 <hr />
-<h2 id="74">7.4 ★★ 异步带来的新病：训推不一致</h2>
-<p><strong>这是 2026 年 RL 基建的头号工程问题，值得单独讲清楚。</strong></p>
+<h2 id="74">7.4 异步带来的新病：训推不一致（算法侧只需要懂这一点）</h2>
+<p><strong>打破同步解决了利用率，但引入了一个新问题。</strong> ⚠️ 这是一个<strong>系统问题</strong>，完整内容在 <a href="../强化学习训练框架/04-训推一致性.html">../强化学习训练框架/04-训推一致性.md</a>；本节只讲<strong>算法为什么会被它搞崩</strong>。</p>
 <div class="codehilite"><pre><span></span><code>RL 系统里永远有两套东西在跑：
    训练引擎（更新权重，Megatron 系）
    推理引擎（生成轨迹，vLLM / SGLang 系）
 
 ⚠️ 同一份权重，在两个引擎里【算出来的概率不完全一样】
-   —— 算子实现不同、并行策略不同、量化不同、甚至 atomicAdd 的
-      非确定性都会造成差异
-
-为什么这是致命的：
-   RL 的更新公式里有一项  比值 = 训练时概率 / 采样时概率
-   这个比值【本该反映&quot;策略更新了多少&quot;】
-   ⟹ 但现在它混进了&quot;两个引擎实现不一样&quot;的噪声
-   ⟹ 噪声大到一定程度，梯度方向就是错的，训练直接崩
+   —— 算子实现不同、并行策略不同、量化方案不同，
+      甚至 atomicAdd 的求和顺序不确定都会造成差异。
 </code></pre></div>
 
-<p><strong>五家的解法（✅ 各家一手报告）</strong>：</p>
-<div class="codehilite"><pre><span></span><code>DeepSeek-V4    ：逐位确定性（双 kernel / DeepGEMM / 消除 atomicAdd）
-Kimi-K3        ：★ SFT→RL 全程 QAT，rollout 和训练用同一套量化方案
-                 —— 从根上让两边&quot;错得一样&quot;
-GLM-5          ：INT4 量化 kernel 训推 bitwise 一致
-openPangu-2.0  ：五家里唯一做了完整根因解剖的（显式定义 / 计算图重排 /
-                 硬件调度非确定性）+ 两阶段白盒逐层对齐方法论
+<p><strong>为什么这对算法是致命的</strong>（接 5.2 节第四步那张 clip 表）：</p>
+<div class="codehilite"><pre><span></span><code>RL 的更新里有一项：  比值 = 【训练引擎算的当前概率】 ÷ 【推理引擎采样时的概率】
+
+★ 这个比值本该【只反映&quot;策略更新了多少&quot;】。
+  但现在它混进了&quot;两个引擎实现不一样&quot;的噪声。
+
+⟹ 后果一：clip 误判。5.2 那张表里&quot;比值 1.40 → 被截断&quot;，
+          如果这个 1.40 里有 0.3 是引擎差异带来的，
+          那就是在【截一个本来不该截的 token】。
+⟹ 后果二：噪声大到一定程度，梯度方向就是错的，训练直接崩。
+
+★★ 一句话：异步 RL 把&quot;比值&quot;这个量的信噪比搞坏了，
+   而整个 PPO / GRPO 家族的安全机制全都建立在这个量上。
 </code></pre></div>
 
+<p><strong>各家的解法</strong>（✅ 各家一手报告，⚠️ 实现细节与取舍见隔壁目录）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>做法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>追求<strong>逐位确定性</strong>（双 kernel / DeepGEMM / 消除 atomicAdd 的非确定性）</td>
+</tr>
+<tr>
+<td><strong>Kimi-K3</strong></td>
+<td>★ <strong>SFT → RL 全程 QAT</strong>，rollout 和训练用同一套量化方案——<strong>从根上让两边"错得一样"</strong></td>
+</tr>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td>INT4 量化 kernel，训推 <strong>bitwise 一致</strong></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0</strong></td>
+<td>⚠️ 这一批报告里唯一做了完整根因解剖的（显式定义 / 计算图重排 / 硬件调度非确定性），外加两阶段白盒逐层对齐方法论。✅ 报告还披露了一条很实用的运维规则：<strong>当训练-rollout 的皮尔逊相关系数低于 0.99 时用更严的掩码，高于 0.99 时放松，以保留探索能力</strong></td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p><strong>QAT</strong> = <strong>Quantization-Aware Training</strong>（量化感知训练），训练时就模拟量化误差，让模型提前适应低精度。</p>
 </blockquote>
@@ -404,47 +673,140 @@ openPangu-2.0  ：五家里唯一做了完整根因解剖的（显式定义 / �
 2026 年的问题：&quot;哪儿找一万个能跑、能判分、且【没有洞】的环境&quot;
 </code></pre></div>
 
-<p><strong>三条路线</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① 真实仓库改造
-   从 GitHub 上挑有测试的项目，把一个真实 commit 反向变成任务
-   ✅ 最真实   ⚠️ 数量有限、清洗麻烦、容易和评测集污染
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>做法</th>
+<th>✅ 好处</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 真实仓库改造</strong></td>
+<td>从 GitHub 上挑有测试的项目，把一个真实 commit 反向变成任务</td>
+<td><strong>最真实</strong>，分布和线上一致</td>
+<td>数量有限、清洗麻烦、<strong>容易和评测集污染</strong>（见 9.6）</td>
+</tr>
+<tr>
+<td><strong>② 程序化合成</strong></td>
+<td>自动生成任务 + 自动生成验证器</td>
+<td>可以<strong>无限造</strong></td>
+<td>★ 门禁检查的失败率很高（见下）</td>
+</tr>
+<tr>
+<td><strong>③ 自演化 / 自对弈</strong></td>
+<td>让模型自己出题、自己加难度</td>
+<td><strong>不会被榨干</strong></td>
+<td>⚠️ 难度曲线不好控；可能自己绕进一个小圈子</td>
+</tr>
+</tbody>
+</table>
+<p><strong>路线 ③ 的核心动机值得单独讲</strong>：</p>
+<div class="codehilite"><pre><span></span><code>✅ DeepMind 的 Evolving Alignment via Asymmetric Self-Play
+   （[arXiv:2411.00062](https://arxiv.org/abs/2411.00062)，Ziyu Ye 等，2024-10）指出：
+   静态 prompt 集会被【榨干】—— 模型一旦刷满，学习就停止了。
 
-② 程序化合成
-   自动生成任务 + 自动生成验证器
-   ✅ 可以无限造   ⚠️★ 6.4 那个数字：缺陷率可以到 60%+
-
-③ 自演化 / 自对弈
-   让模型自己出题、自己加难度
-   ✅ DeepMind 的 Evolving Alignment via Asymmetric Self-Play
-      （arXiv:2411.00062，Ziyu Ye 等，2024-10）指出了核心动机：
-      静态 prompt 集会被【榨干】—— 模型一旦刷满，学习就停止了
-   ⟹ 所以模型应该【自己生成自己的训练题目分布】
+★ 把这件事和 5.2 节那张表接起来就很清楚了：
+  &quot;被榨干&quot;的精确含义就是【这些题的 p 全都接近 1】，
+  于是每一组都退化（全对），优势全是 0，梯度为 0。
+⟹ 所以模型应该【自己生成自己的训练题目分布】，
+   让题目难度跟着模型能力一起往上走。
 </code></pre></div>
 
-<p>⚠️ 一个二手但很有信息量的产业数据点：Scale AI 公开表示，<strong>其新增数据项目中近一半涉及 RL 环境</strong>。⚠️ 厂商自述，当趋势看，别当精确统计。</p>
+<h3 id="2">⚠️ 路线 ② 那个著名的数字，口径必须先掰清</h3>
+<div class="codehilite"><pre><span></span><code>✅ Auditing Reward Hackability in Code RL Training Environments
+   （[arXiv:2606.16062](https://arxiv.org/abs/2606.16062)，Shreshth Rajan，2026-06）：
+   对自动生成的代码 RL 环境做完整性门禁检查，
+   【105 项检查中 65 项 FAIL / 40 项 PASS】→ 65 / 105 = 61.9%
+
+⚠️⚠️ 61.9% 是【检查项】的失败率，分母是&quot;检查项&quot;，不是&quot;环境&quot;。
+   它【不等于】&quot;61.9% 的环境是漏的&quot;——
+   一个环境可能同时 FAIL 五项，也可能只 FAIL 一项。
+
+⟹ 所以&quot;自动合成一万个环境，一大半是漏的&quot;这句话是
+   【本文做的一次口径跳跃】，不是论文的结论。
+   方向性判断我仍然认为成立（门禁失败率这么高，环境级缺陷率很难低），
+   但它是推断，不是数据。完整讨论在 6.4 节。
+</code></pre></div>
+
+<p>⚠️ 一个二手但很有信息量的产业数据点：Scale AI 公开表示，<strong>其新增数据项目中近一半涉及 RL 环境</strong>。⚠️ <strong>厂商自述，当趋势看，别当精确统计。</strong></p>
 <hr />
-<h2 id="76">7.6 长程信用分配：还没解决的那个问题</h2>
-<div class="codehilite"><pre><span></span><code>一条 40 轮的轨迹，最后失败了。
+<h2 id="76">7.6 ★★ 长程信用分配：还没解决的那个问题</h2>
+<div class="codehilite"><pre><span></span><code>一条 40 轮的轨迹，最后失败了，结果奖励 = 0。
 
    问题：★ 是哪一轮错的？
 
-   结果奖励只告诉你&quot;整体失败&quot;，
-   于是 40 轮里【正确的那 35 轮也一起被惩罚了】。
+   结果奖励只告诉你&quot;整体失败&quot;。
+   而 5.2 节第三步那张表说过：优势 A 是【按轨迹】算的，
+   一条轨迹里的每个 token 用同一个 A。
+   ⟹ 40 轮里正确的那 35 轮，也拿到了同一个负优势。
+</code></pre></div>
 
-⚠️ 这就是 05.2 提到的&quot;一条轨迹里每个 token 用同一个优势&quot;
-   在长程场景下被放大到极致的样子。
+<h3 id="_4">把"被错误惩罚的比例"算出来</h3>
+<div class="codehilite"><pre><span></span><code>设定：一条 40 轮的轨迹，其中 35 轮动作是对的、5 轮是错的。
+     对的 35 轮共写了 7,000 token，错的 5 轮共 1,000 token，合计 8,000。
+     轨迹失败 ⟹ 这 8,000 个 token 全部拿到同一个负优势。
+
+⟹ 7,000 / 8,000 = 【87.5% 的 token，拿到了和它自身质量相反的信号】。
+
+★ 对照一下 5.2 节那条数学题：一条 2,000 token 的推理错在第 3 步，
+  被错误惩罚的大概只是开头那一小段。
+  ⟹ 轨迹越长，这个比例越接近 100%。
+</code></pre></div>
+
+<p><strong>⚠️ 但这里有一个很容易讲错的地方，必须说准</strong>：</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 常见的错误说法是&quot;所以梯度方向是错的&quot;。不对。
+
+   5.2 节验算过：组内所有优势之和恒等于 0。
+   所以在【期望】上，这些错误惩罚会被成功轨迹里的正优势抵消掉 ——
+   一个在成功和失败轨迹里出现频率相当的动作，净梯度接近 0。
+
+★★ 真正的代价不是&quot;方向错&quot;，是【信噪比】：
+   要分辨出一个动作到底好不好，必须让它在足够多的成功轨迹
+   和失败轨迹里都出现过，两边抵消之后剩下的那一点差值才是真实信号。
+   而这个差值相对于噪声极小。
+
+⟹ 所以结论是：【需要的样本数随轨迹长度快速增长】。
+   不是梯度错了，是【样本效率塌了】。
+   ★ 而 Agentic RL 里一条样本要几分钟 —— 这两件事撞在一起才是墙。
+
+⚠️ 以上这段机制解释是本文的推演，不是哪篇论文的原话。
 </code></pre></div>
 
 <p><strong>目前的缓解手段（都不完美）</strong>：</p>
-<div class="codehilite"><pre><span></span><code>① 分段奖励：给中间里程碑打分（&quot;测试从 37 个失败降到 3 个&quot;给部分分）
-   ⚠️ 但里程碑本身要人设计，且极易被 hack（模型学会&quot;制造进度假象&quot;）
-② 优势整形：用轨迹间的对比来近似逐步信用
-③ 缩短 horizon：把长任务拆成若干短任务分别训
-   ⚠️ 代价是模型学不到&quot;全局规划&quot;
-④ 上下文压缩（compaction）：轨迹太长塞不下时，中途压缩历史
-   ✅ GLM-5.2/5.3 用的 SAO with compaction 属于这一类
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th>手段</th>
+<th>做法</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 分段奖励</strong></td>
+<td>给中间里程碑打分（"测试从 37 个失败降到 3 个"给部分分）</td>
+<td>⚠️ 里程碑要人设计，且<strong>极易被 hack</strong>——模型学会"制造进度假象"（6.4 节的钻法）</td>
+</tr>
+<tr>
+<td><strong>② 优势整形</strong></td>
+<td>用轨迹之间的对比来近似逐步信用</td>
+<td>⚠️ 只是把问题从"逐步"降到"逐段"，没消除</td>
+</tr>
+<tr>
+<td><strong>③ 缩短 horizon</strong></td>
+<td>把长任务拆成若干短任务分别训</td>
+<td>⚠️ 模型学不到<strong>全局规划</strong>——而那恰恰是长任务的价值</td>
+</tr>
+<tr>
+<td><strong>④ 上下文压缩</strong>（compaction）</td>
+<td>轨迹太长塞不下时，中途压缩历史</td>
+<td>✅ GLM-5.2/5.3 用的 SAO with compaction 属于这一类。⚠️ 压掉的信息可能正是后面要用的</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
 <p>🔮 <strong>这是本教程里我认为最重要的未解问题之一</strong>，<a href="12-研究热点与开放问题.html">12 章</a>会再讲。</p>
 </blockquote>
@@ -457,11 +819,14 @@ openPangu-2.0  ：五家里唯一做了完整根因解剖的（显式定义 / �
    ✅ DeepSeek-V4：Rust 写的 DSec 平台，数十万并发沙箱
         ↓
 ③ rollout 循环         推理引擎生成动作 → 沙箱执行 → 结果回填上下文
-   ⚠️ 这里要处理：超时、崩溃、死循环、模型调不存在的工具
+   ⚠️ 这里要处理：超时、崩溃、死循环、模型调一个不存在的工具
    ✅ GLM-5 的 TITO Gateway：拦截所有生成请求，记录 token ID 和元数据，
       把繁琐的 token ID 处理从 agent 逻辑里隔离出来
+   ✅ openPangu-2.0 也用了 TITO（Token-in-Token-out），
+      目的是消除&quot;生成&quot;和&quot;更新&quot;之间的分词不一致（接 7.4 节）
         ↓
 ④ 判分                 跑最终测试 / 调 GRM / 规则检查
+   ⚠️ 别忘了这一步【自己也要几十秒到几分钟】（7.1 那张表）
         ↓
 ⑤ 轨迹回传训练引擎     ⚠️ 一条轨迹可能几万 token，回传本身也是带宽问题
         ↓
@@ -470,22 +835,32 @@ openPangu-2.0  ：五家里唯一做了完整根因解剖的（显式定义 / �
    → ../强化学习训练框架/03-权重同步.md
 </code></pre></div>
 
-<p>★ <strong>看这个循环最大的收获</strong>：<strong>后训练团队的一半人力，花在了 ①②⑤⑥ 这些"和算法无关"的地方。</strong></p>
+<p>★ <strong>看这个循环最大的收获</strong>：<strong>后训练团队的一半人力，花在了 ①②⑤⑥ 这些"和算法无关"的地方。</strong> 这也是本章和隔壁目录分工的由来——那边讲的就是 ①②⑤⑥。</p>
 <hr />
-<h2 id="78">7.8 这一章的三句话总结</h2>
+<h2 id="78">7.8 这一章的四句话总结</h2>
 <div class="codehilite"><pre><span></span><code>① Agentic RL 把&quot;一条数据&quot;从一段文本变成了一次真实交互，
    这一句话解释了这一章所有的工程复杂度。
 
-② 瓶颈已经从模型转移到环境：
-   2026 年缺的不是数据，是【能跑、能判分、且没有洞的环境】。
+② ★ &quot;环境成为瓶颈&quot;的具体形状是一个百分比：
+   一批 128 条，耗时有长尾（最慢 1,800 秒 vs 多数 60 秒），
+   而同步 RL 必须等齐 ⟹ GPU 利用率 22,020 / 230,400 = 9.6%。
+   ⟹ 丢掉最慢的 1 条（0.8% 的数据），利用率升到 26.3%。
+   ⚠️ 代价是训练分布会系统性地偏向简单任务。
 
-③ 长程信用分配（40 轮里到底哪轮错了）目前没有好答案。
-   这是把 RL 推向更长任务时最先撞到的墙。
+③ 瓶颈已经从模型转移到环境：
+   2026 年缺的不是数据，是【能跑、能判分、且没有洞的环境】。
+   ⚠️ 而&quot;没有洞&quot;这一条可能比&quot;能跑&quot;更贵（6.4 节那个 61.9%）。
+
+④ 长程信用分配（40 轮里到底哪轮错了）目前没有好答案。
+   ★ 而它的要害不是&quot;梯度方向错了&quot;（期望上会抵消），
+     是【信噪比太低、需要的样本数随轨迹长度暴涨】——
+     而一条样本要几分钟。这两件事撞在一起，才是把 RL
+     推向更长任务时最先撞到的那面墙。
 </code></pre></div>
 
 <hr />
 <blockquote>
-<p><strong>下一步</strong> → <a href="08-蒸馏与合并-OPD.html">08 On-Policy 蒸馏：五家共同的收口</a></p>
+<p><strong>下一步</strong> → <a href="08-蒸馏与合并-OPD.html">08 On-Policy 蒸馏：四家共同的收口</a></p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

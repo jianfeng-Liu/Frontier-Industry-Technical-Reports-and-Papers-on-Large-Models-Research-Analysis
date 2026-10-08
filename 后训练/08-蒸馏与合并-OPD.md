@@ -403,7 +403,16 @@ Base → SFT → RLVR → MOPD warmup → MOPD（× N 轮）→ MTP boosting
         E[τ'] = (1−p) · τ/(1−p) = τ    —— 自己验一下就懂这一步的用意
 ```
 
-⚠️ **出处说明**：这四种方法分别出自 Model Soups（arXiv:2203.05482）、Task Arithmetic（arXiv:2212.04089）、TIES-Merging（arXiv:2306.01708）、DARE（arXiv:2311.03099）。⚠️ **这四个 arXiv 编号是我凭记忆给的，本次改写无网络、未按本仓库的规矩逐个核对「编号 ↔ 标题 ↔ 第一作者 ↔ 日期」**，引用前请自行核对。本目录 [papers/](papers/) 未归档这些 PDF。
+✅ **出处说明**（四个编号已逐个核对「编号 ↔ 标题 ↔ 第一作者 ↔ 会议」，2026-10-08）：
+
+| 方法 | arXiv | 论文标题 | 第一作者 / 会议 |
+|---|---|---|---|
+| **Model Soups** | [2203.05482](https://arxiv.org/abs/2203.05482) | *Model soups: averaging weights of multiple fine-tuned models improves accuracy without increasing inference time* | Wortsman 等 / ICML 2022 |
+| **Task Arithmetic** | [2212.04089](https://arxiv.org/abs/2212.04089) | *Editing Models with Task Arithmetic* | Ilharco 等 / ICLR 2023 |
+| **TIES-Merging** | [2306.01708](https://arxiv.org/abs/2306.01708) | *TIES-Merging: Resolving Interference When Merging Models* | Yadav 等 / NeurIPS 2023 |
+| **DARE** | [2311.03099](https://arxiv.org/abs/2311.03099) | ⚠️ 标题其实是 *Language Models are Super Mario: Absorbing Abilities from Homologous Models as a Free Lunch* —— **DARE（Drop And REscale）是文中的方法名，不是标题**，按标题搜是搜不到的 | Yu 等（阿里）/ ICML 2024 |
+
+⚠️ 本目录 [papers/](papers/) 未归档这四篇 PDF，上表只核了书目信息，**正文细节未回溯**。
 
 ### 一个 4 维的手算例子：看符号冲突怎么被处理
 

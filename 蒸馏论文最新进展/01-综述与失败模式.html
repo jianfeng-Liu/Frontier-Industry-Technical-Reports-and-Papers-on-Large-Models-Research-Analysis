@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 · ⭐ 综述与失败模式：OPD 什么时候不work</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="README.html">目录</a> ｜ 下一章 → <a href="02-自蒸馏.html">02 自蒸馏</a> ｜ 基础先读 → <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08 On-Policy 蒸馏</a></p>
+</blockquote>
+<h1 id="01-opd-work">01 · ⭐ 综述与失败模式：OPD 什么时候不work</h1>
+<blockquote>
+<p><strong>这一章讲什么</strong>：三篇论文放在一起回答一个问题 —— <strong>在策略蒸馏（OPD）这件事，领域内部是怎么分类的、它在什么情况下会坏掉、以及"自己教自己"为什么有时会把推理能力弄坏</strong>。这是本目录的地基章。</p>
+<p><strong>为什么值得单独写一章</strong>：<a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a> 已经讲了 OPD 是什么、为什么四家一手报告在流水线最后一步收敛到同一个式子。那一章讲的是<strong>它work的时候长什么样</strong>。本章讲的是<strong>它不work的时候长什么样</strong> —— 这类论文在整个仓库里特别稀缺，所以写足。</p>
+<p><strong>读法</strong>：1.3 节是全章最有价值的部分（三个失败模式的四栏表）。1.4 节的结论会和 <a href="02-自蒸馏.html">02 章</a><strong>直接冲突</strong>，1.6 节把这个冲突摆出来，不和解。</p>
+</blockquote>
+<hr />
+<h2 id="_1">本章关键词</h2>
+<p>每个缩写第一次出现都给中英文全称。读者自述「架构小白」，这一块不要跳。</p>
+<p><strong>KD</strong>（Knowledge Distillation，知识蒸馏）—— 用一个模型（<strong>老师</strong>）的输出去训练另一个模型（<strong>学生</strong>）。</p>
+<p><strong>OPD</strong>（<strong>On-Policy Distillation</strong>，在策略蒸馏）—— <strong>学生自己采样</strong>出句子，老师在学生写的每个 token（词元）上给方向。本章主角。</p>
+<p><strong>off-policy 蒸馏</strong>（离策略蒸馏）—— 传统做法：老师先把题做完存成数据，学生对着这些数据做 SFT。</p>
+<p><strong>SFT</strong>（Supervised Fine-Tuning，监督微调）—— 给定「输入 → 标准输出」对，用交叉熵训练。</p>
+<p><strong>RL</strong>（Reinforcement Learning，强化学习）；<strong>RLVR</strong>（Reinforcement Learning with Verifiable Rewards，带可验证奖励的强化学习）—— 答案能用程序判对错（数学答案、单元测试），就用这个对错当奖励。</p>
+<p><strong>GRPO</strong>（Group Relative Policy Optimization，组相对策略优化）—— 一种 RLVR 算法：同一道题采一组答案，用组内平均分当基线算优势值。</p>
+<p><strong>KL 散度</strong>（Kullback-Leibler divergence，库尔贝克–莱布勒散度）—— 衡量两个概率分布差多远的量，写作 <code>KL(P ‖ Q)</code>，<strong>不对称</strong>。</p>
+<p><strong>正 KL / forward KL</strong>（前向 KL）—— 指 <code>KL(老师 ‖ 学生)</code>。行为是 <strong>mode-covering（覆盖模式）/ zero-avoiding（避零）</strong>：老师在哪儿有概率，学生就被逼着在那儿也放概率。✅ 论文（综述）§2.3</p>
+<p><strong>逆 KL / reverse KL</strong>（反向 KL）—— 指 <code>KL(学生 ‖ 老师)</code>。行为是 <strong>mode-seeking（寻峰）/ zero-forcing（强制归零）</strong>：学生只挑老师的若干个峰死守，老师概率接近 0 的地方学生也压到 0。✅ 论文（综述）§2.3</p>
+<p><strong>JSD</strong>（Jensen-Shannon Divergence，詹森–香农散度）—— 正 KL 和逆 KL 的对称化折中，有界。</p>
+<p><strong>f-散度</strong>（f-divergence）—— 一个统括家族，换一个凸函数 <code>f</code> 就换出一种散度。正 KL / 逆 KL / JSD 都是它的特例。</p>
+<p><strong>logits</strong>（对数几率）—— 模型输出层给<strong>词表里每个词</strong>的原始分数，过 softmax 之后就是概率。白盒蒸馏要的就是这个。</p>
+<p><strong>token-level / sequence-level 估计量</strong> —— 同一个目标函数的两种梯度写法。1.3 节会讲清这两者的差别不是"精度"而是"偏差 vs 方差"。</p>
+<p><strong>exposure bias</strong>（曝光偏差）/ <strong>compounding error</strong>（复合误差）—— 训练时只见过完美前缀，自己写歪一次就进入没训练过的状态，误差逐步累积。</p>
+<p><strong>epistemic verbalization</strong>（认知性表述 / 把不确定性说出来）—— 模型在推理中显式写出"等等"、"嗯"、"或者说"这类标记不确定的词。1.4 节的主角。✅ 论文（退化篇）§1</p>
+<p><strong>PI</strong>（Privileged Information，特权信息）—— 老师能看到、学生看不到的东西（标准答案、运行报错、系统提示）。</p>
+<p><strong>OPSD</strong>（On-Policy Self-Distillation，在策略自蒸馏）—— 同一个模型，给它更丰富的上下文就当老师，不给就当学生。<a href="02-自蒸馏.html">02 章</a>的主角。</p>
+<p><strong>pass@1 / avg@k / pass@k</strong> —— <code>pass@1</code> 采一次的正确率；<code>avg@k</code> 采 k 次取平均正确率；<code>pass@k</code> 采 k 次<strong>至少一次对</strong>的比例。⚠️ 三者数值差很远，<strong>不能跨指标比</strong>。</p>
+<p><strong>pp</strong>（percentage point，百分点）—— 「从 40% 涨到 55%」是涨了 <strong>15 个百分点</strong>，不是「涨了 15%」（那是 +37.5% 相对）。本章凡混淆处都会点出来。</p>
+<hr />
+<h2 id="11">1.1 三篇是什么关系</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>综述篇</strong></th>
+<th><strong>失败模式篇</strong></th>
+<th><strong>退化篇</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>论文全名</strong></td>
+<td>A Survey of On-Policy Distillation for Large Language Models</td>
+<td>Revisiting On-Policy Distillation: Empirical Failure Modes and Simple Fixes</td>
+<td>Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of LLMs?</td>
+</tr>
+<tr>
+<td><strong>作者单位</strong></td>
+<td>✅ Tencent（Mingyang Song、Mao Zheng）</td>
+<td>✅ CASIA / UCAS / 复旦（Yuqian Fu 等）</td>
+<td>✅ Microsoft Research / KAIST / 首尔大（Jeonghye Kim 等）</td>
+</tr>
+<tr>
+<td><strong>arXiv 编号</strong></td>
+<td>✅ 2604.00626v4</td>
+<td>✅ 2603.25562v2</td>
+<td>✅ 2603.24472v3</td>
+</tr>
+<tr>
+<td><strong>篇幅</strong></td>
+<td>✅ 89 页</td>
+<td>✅ 26 页</td>
+<td>✅ 26 页</td>
+</tr>
+<tr>
+<td><strong>它在回答什么</strong></td>
+<td>这个领域<strong>有哪些方法、怎么归类</strong></td>
+<td>标准 OPD 实现<strong>哪里脆、怎么修</strong></td>
+<td><strong>自</strong>蒸馏为什么有时把推理能力<strong>弄坏</strong></td>
+</tr>
+<tr>
+<td><strong>证据类型</strong></td>
+<td>二手综述（汇总 200+ 篇）</td>
+<td>一手实验（7B 学生，数学 + agentic）</td>
+<td>一手实验（4 个模型，控制变量）</td>
+</tr>
+<tr>
+<td><strong>对本目录的作用</strong></td>
+<td>提供坐标系</td>
+<td>★ 提供「不work清单」</td>
+<td>★ 提供 <a href="02-自蒸馏.html">02 章</a>的反证</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>我读到哪里</strong>（这条很重要，别当成我通读了）：</p>
+<ul>
+<li><strong>综述篇 89 页，我读了</strong> §1 引言、§2.1–2.4（经典 KD / 曝光偏差 / f-散度框架 / scaling law）、§3 全部（分类体系 + Table 1/2/3）、§7.1–7.4（成功条件 / 失败模式 / 统一理论视角 / 决策框架）。<strong>§4、§5、§6、§8、§9 只读了分类树（Figure 1）和零散表格</strong>，正文未核。所以本章引用综述时，§4–§6 的方法细节<strong>我一律不展开</strong>。</li>
+<li><strong>失败模式篇 26 页，正文 §1–§5 全读</strong>（含 Table 1–4）。附录 A–H 未读 —— 其中 <strong>Appendix D 是方差界的完整推导</strong>，所以 1.3 节那个 <code>O(T²)</code> vs <code>O(T⁴)</code> 我只能引结论、不能验证推导过程。</li>
+<li><strong>退化篇 26 页，正文 §1–§7 全读</strong>（含 Table 1–3）。附录 B–H 未读。</li>
+</ul>
+<hr />
+<h2 id="12">1.2 综述篇：这个领域是怎么被切开的</h2>
+<h3 id="121">1.2.1 三条轴</h3>
+<p>综述篇的核心贡献是<strong>不按「方法长得像不像」分类，而按「这篇论文到底在优化哪个设计决策」分类</strong>，一篇论文只进一个格子。✅ 论文（综述）§3.1</p>
+<p>它给的三条轴，正好对应 OPD 训练流水线上的三个依次要做的决定：</p>
+<div class="codehilite"><pre><span></span><code>On-Policy 蒸馏（综述篇的三条轴）
+│
+├── 轴 1：目标函数 —— 「用哪个散度去比老师和学生」（论文 §4）
+│   ├── 固定散度：GKD、MiniLLM、DistiLLM
+│   ├── 自适应散度：EOPD（按熵在正/逆 KL 之间混）、AOPD
+│   └── RL 增强：G-OPD（证明 OPD ≡ 带 KL 约束的 RL）、RLKD、KDRL
+│
+├── 轴 2：信号来源 —— 「谁来当老师」（论文 §5）
+│   ├── 外部老师
+│   │   ├── 白盒：要老师的完整 logits —— DSKD、MAD-OPD
+│   │   └── 黑盒：只有老师的文本或打分 —— Lion、GAD、OVD
+│   └── 自蒸馏（★ 综述说这是最大且增长最快的一类）
+│       ├── 特权信息（PI）：OPSD、HDPO、TT-OPD
+│       ├── 纯自蒸馏：SDFT、UniSD
+│       └── 外部反馈：SDPO、SD-ZERO、SRPO
+│
+└── 轴 3：训练动态 —— 「怎么把它训稳、训便宜」（论文 §6）
+    ├── token / 样本加权：TIP、SCOPE
+    ├── 课程与难度自适应：PACED、Stable-OPD、Uni-OPD
+    └── 算力优化：FOPD、Lightning-OPD、Prune-OPD
+</code></pre></div>
+
+<p><strong>为什么「信号来源」这条轴是两级而不是平级的四类</strong>（这是综述篇一个想清楚了的地方）：<strong>「外部老师 vs 自己」是方法论选择，「白盒 vs 黑盒」是部署约束</strong>。把它们摊成四个平级类别，就会出现"自蒸馏到底算白盒还是黑盒"这种无意义的归类争议 —— 自蒸馏天然是白盒，因为老师就是自己。✅ 论文（综述）§3.1</p>
+<p>★ <strong>三条轴不是完全独立的</strong>，综述自己点出了两处耦合：①黑盒访问拿不到 token 级分布，所以<strong>自动排除</strong>了需要精确 token 级散度的目标函数（正 KL 的精确形式就要完整分布）；②RL 增强的目标天然配外部反馈（验证器、奖励模型）。所以"三轴"是用来<strong>组织设计空间</strong>的，不是说 3×3×3 种组合都能实现。✅ 论文（综述）§3.1</p>
+<h3 id="122">1.2.2 散度选哪个：一张表</h3>
+<p>这是 OPD 里最早被吵的问题，也是最容易被讲反的地方。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>正 KL <code>KL(老师‖学生)</code></strong></th>
+<th><strong>逆 KL <code>KL(学生‖老师)</code></strong></th>
+<th><strong>JSD</strong></th>
+<th><strong>α-散度</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>f 的形式</strong></td>
+<td><code>f(u)=u·log u</code></td>
+<td><code>f(u)=−log u</code></td>
+<td><code>f(u)=u·log u−(u+1)·log((u+1)/2)</code></td>
+<td>参数族</td>
+</tr>
+<tr>
+<td><strong>行为名字</strong></td>
+<td>mode-covering（覆盖模式）<br>zero-avoiding（避零）</td>
+<td>mode-seeking（寻峰）<br>zero-forcing（强制归零）</td>
+<td>对称、有界、在两者间平滑插值</td>
+<td>连续插值：<code>α→1</code> 趋正 KL，<code>α→0</code> 趋逆 KL</td>
+</tr>
+<tr>
+<td><strong>直观说法</strong></td>
+<td>老师在哪有概率，学生<strong>都得跟着放一点</strong></td>
+<td>学生<strong>只挑老师的几个峰</strong>死守</td>
+<td>折中</td>
+<td>旋钮</td>
+</tr>
+<tr>
+<td><strong>代价</strong></td>
+<td>会在两个老师模式<strong>之间的空隙里幻觉</strong></td>
+<td>会<strong>忽略次优但也可接受</strong>的输出</td>
+<td>⚠️ 综述说它<strong>没有理论最优性保证</strong></td>
+<td>——</td>
+</tr>
+<tr>
+<td><strong>适合什么任务</strong></td>
+<td>答案<strong>多样可接受</strong>（开放写作、开放 QA）—— 保多样性</td>
+<td>答案<strong>唯一正确</strong>（数学证明、代码正确性）—— 把质量集中到一条解法路径上</td>
+<td>指令遵循这类中间地带</td>
+<td>需要细调时</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 以上四行全部出自论文（综述）§2.3。</p>
+<p>⚠️ <strong>这张表有一个坑，必须提前说</strong>：上面写着「数学/代码 → 用逆 KL」，这是综述对<strong>外部老师</strong>场景的总结。但 <a href="02-自蒸馏.html">02 章</a>里 <strong>Self-Distilled Reasoner 那篇在自蒸馏场景下实测出正 KL 最好、逆 KL 和 JSD 基本无效甚至变差</strong>（✅ 该论文 Table 3）。两边<strong>不是一个设定</strong>（外部强老师 vs 同一模型带特权上下文），但<strong>结论方向是相反的</strong>。1.6 节会把这个矛盾单独立一行，<strong>不要只记住综述那一行</strong>。</p>
+<h3 id="123-on-policy">1.2.3 曝光偏差：为什么 on-policy 从理论上就该更好</h3>
+<p>这件事 <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a> 已经讲过机制，这里只补综述给的<strong>量级</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练数据来自</th>
+<th>期望误差随长度 T 的增长</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>off-policy 蒸馏</strong></td>
+<td>静态语料 / 老师生成的轨迹</td>
+<td><strong><code>O(ε·T²)</code></strong> —— 平方</td>
+<td>✅ 论文（综述）§1 引言 + §2.2，引 Ross et al. 2011（交互式模仿学习）</td>
+</tr>
+<tr>
+<td><strong>on-policy（OPD / DAgger 式）</strong></td>
+<td>学生自己当前的策略</td>
+<td><strong><code>O(ε·T)</code></strong> —— 线性</td>
+<td>✅ 同上</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>怎么读这两个式子</strong>（这是我的解释，不是论文原话）：<code>ε</code> 是"每一步犯错的概率"，<code>T</code> 是输出长度。<code>O(ε·T²)</code> 的平方项来自<strong>一步走歪之后，后面所有步都处在没训练过的状态</strong>；而 DAgger 式做法是"在学生自己会走到的状态上去问老师"，于是每一步的错只算一次，总量是线性的。<strong>推理链越长，这个平方 vs 线性的差距越大</strong> —— 这就是为什么长 CoT（Chain-of-Thought，思维链）时代 OPD 突然重要起来。</p>
+<p>⚠️ 另一个必须说清的方向问题：<strong><code>O(ε·T²)</code> 是上界，不是"实测 off-policy 一定差"</strong>。综述自己专门立了一节讲 <strong>DeepSeek-R1 异常</strong>：R1 用<strong>纯 off-policy SFT</strong>、约 80 万条 CoT 轨迹，蒸出来的 R1-Distill-Qwen-7B 在 AIME 2024 上 pass@1 <strong>55.5%</strong>、32B 达 <strong>72.6%</strong>，而在同规模直接做 RL（Qwen2.5-32B-Base 上跑 GRPO）只有 <strong>47.0%</strong>。✅ 论文（综述）§7.4</p>
+<p>综述给的三条解释（✅ 论文 §7.4，⚠️ 它自己用的词是 "plausibly explain"，即<strong>推测性解释</strong>）：①671B MoE 老师强到能把问题空间覆盖得很密；②轨迹里本来就包含回溯和验证策略，多样性够；③学生模型<strong>相对较小</strong>，在 off-policy 学习下"有效条件复杂度"仍可控。⟹ <strong>老师足够强 + 学生足够小的时候，off-policy 就够用了</strong>。</p>
+<hr />
+<h2 id="13-opd">1.3 ★★★ 失败模式篇：标准 OPD 实现到底脆在哪</h2>
+<p><strong>这一节是全章最有价值的部分。</strong> 这篇论文做的事很具体：它拿当前工业界最常见的那种 OPD 实现（<strong>sampled-token OPD</strong>，只在"学生实际采到的那一个 token"上算老师-学生 log 概率差），问「这个实现为什么在长 rollout 上会崩」。</p>
+<h3 id="131-vs">1.3.1 先把两个估计量摆清楚：这不是精度问题，是偏差 vs 方差</h3>
+<p>OPD 的目标是最小化<strong>序列级逆 KL</strong>：<code>J(θ) = E_x[ KL(π_θ(·|x) ‖ q(·|x)) ]</code>，其中 <code>π_θ</code> 是学生、<code>q</code> 是老师。✅ 论文（失败模式）§2.1</p>
+<p>对每个解码位置 <code>t</code>，记 <code>s_t = ∇_θ log π_θ(y_t | c_t)</code>（当前 token 的得分函数梯度）、<code>r_t = log[π_θ(y_t|c_t) / q(y_t|c_t)]</code>（当前 token 的 log 比值，可以当"即时奖励"看）。于是有两种梯度写法：✅ 论文（失败模式）§2.1 式 (1)(2)</p>
+<div class="codehilite"><pre><span></span><code>序列级估计量
+   ĝ_seq = Σ_t ( Σ_{t&#39;=t..T} r_t&#39; ) · s_t
+   └── 括号里的 Σ_{t&#39;=t..T} r_t&#39; 是【从 t 开始、后面所有步的奖励之和】
+       ⟹ 每个 token 的更新都被后面所有步牵连
+
+token 级估计量
+   ĝ_tok = Σ_t r_t · s_t
+   └── 这里只剩 r_t，也就是【当前这一步自己的奖励】
+       ⟹ 每个 token 的更新只看自己这一步，未来被整个丢掉
+
+折中：折扣回报估计量
+   ĝ_γ = Σ_t ( Σ_{t&#39;=t..T} γ^(t&#39;−t) · r_t&#39; ) · s_t ，  γ ∈ [0,1]
+   ├── γ = 0  退回 token 级
+   └── γ = 1  退回序列级
+</code></pre></div>
+
+<p>★ <strong>关键结论，别讲反</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>序列级</strong></th>
+<th><strong>token 级</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>相对序列级逆 KL 是否有偏</strong></td>
+<td>✅ 无偏（它就是定义）</td>
+<td>⚠️ <strong>有偏</strong></td>
+</tr>
+<tr>
+<td><strong>最坏情况方差上界随长度 T</strong></td>
+<td><strong><code>O(T⁴)</code></strong></td>
+<td><strong><code>O(T²)</code></strong></td>
+</tr>
+<tr>
+<td><strong>工业界实际在用的</strong></td>
+<td>少</td>
+<td>★ 几乎全部</td>
+</tr>
+<tr>
+<td><strong>为什么</strong></td>
+<td>——</td>
+<td>★ <strong>长序列上方差小得多，值得牺牲无偏性</strong></td>
+</tr>
+</tbody>
+</table>
+<p>✅ <code>O(T²)</code> vs <code>O(T⁴)</code>、「有界奖励与有界梯度假设下」这几句出自论文（失败模式）§2.1。⚠️ 完整推导在该论文 Appendix D，<strong>我没读</strong>，所以不能替它背书推导细节，只能说"这是它声称的结论"。</p>
+<p><strong>它还做了一个玩具实验验证这个权衡</strong>：在一个两任务合成环境里扫 <code>γ ∈ {0, 0.25, 0.5, 0.75, 1.0}</code>，<code>γ</code> 越大梯度方差越高、优化越不稳；<code>γ=1.0</code>（纯序列级）时策略在状态空间里<strong>漂移</strong>，不能稳定走向目标。✅ 论文（失败模式）Figure 1</p>
+<p>⚠️ <strong>这给长程训练一条设计原则</strong>（✅ 论文原话 "keep supervision token-level to control variance"）：<strong>监督要保持在 token 级来控方差</strong>，然后<strong>在 token 级内部去改善信号质量</strong> —— 这正是它下面做的事。</p>
+<h3 id="132-fix-fix">1.3.2 ★★★ 三个失败模式：现象 / 机制 / fix / fix 的代价</h3>
+<p>这三个失败模式来自同一组实验：<strong>学生 Qwen2.5-7B-Instruct，老师 OpenThinker3-7B</strong>（一个在 Qwen2.5-7B-Instruct 上做了 SFT 的模型），任务是数学推理。✅ 论文（失败模式）§2.2</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>失败模式 ①<br>单 token 信号严重失衡</strong></th>
+<th><strong>失败模式 ②<br>老师在学生前缀上不可靠</strong></th>
+<th><strong>失败模式 ③<br>tokenizer / 特殊 token 错配</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>分类</strong></td>
+<td>目标函数层面</td>
+<td>目标函数层面</td>
+<td>★ <strong>实现层面</strong>（不是理论问题）</td>
+</tr>
+<tr>
+<td><strong>现象</strong></td>
+<td>✅ 第一轮迭代时，<strong>大多数被采样的 token 拿到的是负奖励</strong>（论文 Figure 2 的散点图：点大量落在 <code>y=x</code> 下方，即学生给的概率比老师高）。优化于是被<strong>少数局部为正的 token</strong>主导</td>
+<td>✅ 学生掉进<strong>重复循环</strong>（反复输出 <code>### Final Answer:\boxed{-14}</code>），<strong>老师在这些重复 token 上仍然给很高的概率</strong>（论文 Figure 3 里老师概率 0.6–1.0），于是 OPD <strong>不会惩罚这个行为</strong></td>
+<td>✅ 同一段文本在两个 tokenizer 下切法不同。论文举的例子：学生把 <code>&lt;think&gt;</code> 切成 <code>&lt;</code>、<code>think</code>、<code>&gt;</code>，老师期望的是 <code>&lt;th</code>、<code>ink</code>、<code>&gt;</code>，于是 <code>&lt;</code> 这个 token 从老师那里拿到极低概率 —— 尽管两边<strong>语义完全一样</strong>。论文 Figure 5 给了一个具体对照：同一段输出学生 log 概率 −0.07 / −19.16，老师 −0.00 / −58.71</td>
+</tr>
+<tr>
+<td><strong>机制</strong></td>
+<td>负奖励的定义就是"学生给这个 token 的概率比老师高"。学生自己采出来的 token，<strong>天然就是学生概率高的那些</strong> ⟹ 结构上就偏向负</td>
+<td>sampled-token OPD 的<strong>隐含假设</strong>是「老师给学生某个 token 的概率 ≈ 这条轨迹的质量」。这个代理在<strong>学生常去、老师不常去</strong>的前缀上失效。论文给了两个放大因素：<strong>老师分布很尖</strong>（师生稍有不一致就产生巨大 log 比值）、<strong>师生分歧随 rollout 变长而增大</strong>（✅ Figure 4：越靠后的位置，log 概率差的下尾更宽、极值更多）</td>
+<td>单 token 比较<strong>把"语义不一致"和"切词不一致"混成了一个数</strong>。监督只落在一个 token 上，这种错配就直接扭曲奖励信号</td>
+</tr>
+<tr>
+<td><strong>它给的 fix</strong></td>
+<td>★ <strong>老师 top-K 局部支撑集匹配</strong>（teacher top-K local support matching）：不再只比那一个采样 token，而是在<strong>老师概率最高的 K 个 token</strong> 构成的集合 <code>S(c_t)</code> 上，把师生分布各自<strong>重新归一化</strong>，然后算<strong>截断逆 KL</strong></td>
+<td>同上（同一个 fix 治两个病） + <strong>top-p rollout 采样</strong>：生成时用 top-p，避免采到极低概率 token 造成老师信号不可靠的前缀</td>
+<td><strong>特殊 token 掩码</strong>（special-token masking）：把有问题的特殊 token 直接从损失里屏蔽掉</td>
+</tr>
+<tr>
+<td><strong>fix 的代价</strong></td>
+<td>⚠️ 每个位置要取老师的 top-K 并重算 softmax，比单 token 贵；但<strong>比全词表 KL 便宜得多</strong>。⚠️ <strong>支撑集内必须重新归一化</strong>，否则会<strong>快速崩溃</strong>（✅ 论文 Figure 6a：不归一化时策略熵直接飞到 10 以上，训练分数塌掉）。⚠️ K 太小会伤学习（K=16 不如 32/48）</td>
+<td>⚠️ top-p 会<strong>限制探索</strong>。✅ 论文消融里 <code>top_p=0.8/0.9</code> 优于 <code>1.0</code>（无约束），但这是在这一个设定下的结论</td>
+<td>⚠️ 这是<strong>模型相关的补丁</strong>，不是通用方案。论文自己说还可以合并多 token 变体或在等价切词上取平均，但<strong>它没做</strong>，理由是掩码是"最简单的、与模型无关的修正"。⚠️ 换一对师生就得重新确认掩码哪些 token</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>一个我必须点出来的内部张力</strong>（论文自己没明说，这是我的观察）：它实验里的学生是 <strong>Qwen2.5-7B-Instruct</strong>，老师 <strong>OpenThinker3-7B 是在 Qwen2.5-7B-Instruct 上 SFT 出来的</strong> ⟹ <strong>两边 tokenizer 本来就一致</strong>。所以失败模式 ③ 在它自己的实验里<strong>不可能来自真正的"跨 tokenizer 切词不一致"</strong>，只可能来自<strong>特殊 token 的约定差异</strong>（<code>&lt;think&gt;</code> / EOS 标记这类）。而论文正文举的 <code>&lt;</code> / <code>think</code> / <code>&gt;</code> 例子是<strong>泛化说明</strong>。⟹ ★ <strong>「掩码特殊 token 带来 +4.3 个百分点」这个巨大收益，是"约定错配"的收益，不是"跨 tokenizer"的收益</strong>。把它当成"换 tokenizer 也能这么治"就讲反了。</p>
+<h3 id="133">1.3.3 实验数字：它修好了多少</h3>
+<p><strong>设定</strong>：✅ 论文（失败模式）§4.1 —— 实现在 <strong>verl-agent</strong> 框架上；学生 Qwen2.5-Instruct 系列；单任务数学用 <strong>DAPO-Math-17K 英文部分</strong>，最大上下文 <strong>16K</strong>；多任务在数学和 <strong>ALFWorld</strong>（多轮 agentic 任务）之间<strong>按 batch 交替</strong>，agentic 侧老师用已发布的 GiGPO-Qwen2.5-7B-Instruct-ALFWorld 检查点。</p>
+<p><strong>表 A：单任务数学推理，pass@1</strong>（✅ 论文 Table 1 原样抄录）</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>MATH500</th>
+<th>AIME24</th>
+<th>AIME25</th>
+<th>Minerva</th>
+<th>OlympiadBench</th>
+<th><strong>平均</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen2.5-7B-Instruct（学生起点）</td>
+<td>68.2</td>
+<td>13.3</td>
+<td>0.0</td>
+<td>26.5</td>
+<td>32.9</td>
+<td><strong>28.2</strong></td>
+</tr>
+<tr>
+<td>OpenThinker3-7B（老师，天花板）</td>
+<td>92.2</td>
+<td>53.3</td>
+<td>40.0</td>
+<td>39.0</td>
+<td>55.6</td>
+<td><strong>56.0</strong></td>
+</tr>
+<tr>
+<td>Sampled-token OPD（标准实现）</td>
+<td>80.0</td>
+<td>10.0</td>
+<td>16.7</td>
+<td>32.4</td>
+<td>43.1</td>
+<td><strong>36.4</strong></td>
+</tr>
+<tr>
+<td>Sampled-token OPD + 特殊 token 掩码</td>
+<td>81.4</td>
+<td>26.7</td>
+<td>16.7</td>
+<td>34.2</td>
+<td>44.7</td>
+<td><strong>40.7</strong></td>
+</tr>
+<tr>
+<td><strong>本文方法（无掩码）</strong></td>
+<td>80.4</td>
+<td>23.3</td>
+<td>26.7</td>
+<td>34.2</td>
+<td>43.9</td>
+<td><strong>41.7</strong></td>
+</tr>
+<tr>
+<td><strong>本文方法（加掩码）</strong></td>
+<td>82.0</td>
+<td>23.3</td>
+<td>23.3</td>
+<td>34.9</td>
+<td>43.9</td>
+<td><strong>41.5</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>我验算过的三件事</strong>：</p>
+<ol>
+<li><strong>五列算术平均对得上</strong>。例：<code>(68.2+13.3+0.0+26.5+32.9)/5 = 141.0/5 = 28.2</code> ✅；<code>(80.4+23.3+26.7+34.2+43.9)/5 = 208.5/5 = 41.7</code> ✅。六行全部自洽。（⚠️ 验算是我做的，论文没写"这是算术平均"，但数字完全吻合 ⟹ 口径确定。）</li>
+<li>★ <strong>真正的对照应该是「本文方法 41.7」对「加掩码的 baseline 40.7」，只差 1.0 分</strong> —— 不是对那个没掩码的 36.4（差 5.3 分）。论文自己很诚实地说了这一点：掩码本身就把 baseline 从 36.4 抬到 40.7，"说明 tokenizer 相关错配是失败的一个实质组成部分"。⟹ <strong>这篇论文最大的单项收益其实来自那个最土的工程补丁，不是来自它的新目标函数。</strong> 这件事很容易被读成反过来。</li>
+<li><strong>掩码对本文方法几乎没影响</strong>（41.7 vs 41.5）⟹ 这是它自己给的旁证：局部支撑集匹配<strong>对切词错配不敏感</strong>。</li>
+</ol>
+<p><strong>⚠️ 噪声门槛：这张表里有几行根本不能当结论。</strong> 用二项标准误 <code>SE ≈ √(p(1−p)/n)</code>：</p>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>题数 n</th>
+<th>取 p≈</th>
+<th><strong>SE（百分点）</strong></th>
+<th>这张表里的差异能不能当结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MATH500</td>
+<td>500</td>
+<td>0.80</td>
+<td><code>√(0.8·0.2/500) = √0.00032 ≈ 0.018</code> → <strong>1.8</strong></td>
+<td>80.0 vs 82.0（差 2.0）≈ 1 个 SE，<strong>勉强，别当结论</strong></td>
+</tr>
+<tr>
+<td>Minerva</td>
+<td>⚠️ 未核</td>
+<td>0.34</td>
+<td>⚠️ 算不出</td>
+<td>32.4–34.9 的差异<strong>无法判断</strong></td>
+</tr>
+<tr>
+<td>OlympiadBench</td>
+<td>⚠️ 未核</td>
+<td>0.44</td>
+<td>⚠️ 算不出</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><strong>AIME24</strong></td>
+<td><strong>30</strong></td>
+<td>0.20</td>
+<td><code>√(0.2·0.8/30) = √0.00533 ≈ 0.073</code> → <strong>7.3</strong></td>
+<td>★ <strong>10.0 / 23.3 / 26.7 之间的差异在 1–2 个 SE 内，基本不能当结论</strong></td>
+</tr>
+<tr>
+<td><strong>AIME25</strong></td>
+<td><strong>30</strong></td>
+<td>0.20</td>
+<td>同上 → <strong>7.3</strong></td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 上面这张噪声表<strong>整张都是我推断的</strong>：论文没给任何标准误或置信区间；AIME24/AIME25 是 30 题这件事是竞赛常识（⚠️ 我没从论文里读到题数）；Minerva 和 OlympiadBench 的题数我<strong>没核</strong>，所以留空而不是瞎填。<strong>结论：这篇论文的"平均分"可以看，单项（尤其 AIME）不行。</strong> 它自己在消融里改用 <code>avg@32</code>（采 32 次取平均）就是在降这个方差 —— 这是对的做法。</p>
+<p><strong>表 B：多任务（agentic + 数学交替训练）</strong>（✅ 论文 Table 2 原样抄录）</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>ALFWorld<br>成功率</th>
+<th>MATH500</th>
+<th>AIME24</th>
+<th>AIME25</th>
+<th>Minerva</th>
+<th>Olympiad<br>Bench</th>
+<th><strong>数学平均</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen2.5-7B-Instruct</td>
+<td>21.9</td>
+<td>68.2</td>
+<td>13.3</td>
+<td>0.0</td>
+<td>26.5</td>
+<td>32.9</td>
+<td><strong>28.2</strong></td>
+</tr>
+<tr>
+<td>GiGPO-…-ALFWorld（agentic 老师）</td>
+<td>95.3</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>OpenThinker3-7B（数学老师）</td>
+<td>—</td>
+<td>92.2</td>
+<td>53.3</td>
+<td>40.0</td>
+<td>39.0</td>
+<td>55.6</td>
+<td><strong>56.0</strong></td>
+</tr>
+<tr>
+<td>Sampled-token OPD</td>
+<td>90.6</td>
+<td>74.8</td>
+<td>13.3</td>
+<td>13.3</td>
+<td>32.1</td>
+<td>40.5</td>
+<td><strong>34.8</strong></td>
+</tr>
+<tr>
+<td>Sampled-token OPD + 掩码</td>
+<td>93.8</td>
+<td>76.0</td>
+<td>20.0</td>
+<td>13.3</td>
+<td>33.5</td>
+<td>40.4</td>
+<td><strong>36.6</strong></td>
+</tr>
+<tr>
+<td><strong>本文方法（无掩码）</strong></td>
+<td>95.3</td>
+<td>82.0</td>
+<td>33.3</td>
+<td>16.7</td>
+<td>32.7</td>
+<td>44.0</td>
+<td><strong>41.7</strong></td>
+</tr>
+<tr>
+<td><strong>本文方法（加掩码）</strong></td>
+<td><strong>97.7</strong></td>
+<td>79.0</td>
+<td>20.0</td>
+<td>16.7</td>
+<td>34.6</td>
+<td>42.5</td>
+<td><strong>38.6</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="134-198">1.3.4 ⚠️⚠️ 摘要里那个「+19.8%」是什么口径</h3>
+<p>论文摘要写的是：<em>"yields a </em><em>+19.8%</em><em> performance gain over standard sampled-token OPD baselines"</em>。这句话<strong>极容易被读成"涨了 19.8 个百分点"</strong>。它不是。</p>
+<p><strong>验算</strong>（⚠️ 验算过程是我做的，结论和论文正文一致）：</p>
+<div class="codehilite"><pre><span></span><code>表 B 数学平均：  Sampled-token OPD = 34.8   →   本文方法（无掩码）= 41.7
+
+绝对变化 = 41.7 − 34.8 = +6.9 个百分点（pp）
+相对变化 = 6.9 / 34.8 = 0.19828… = +19.8%        ← ★ 摘要里那个数
+</code></pre></div>
+
+<p>✅ 论文 §4.3 正文自己写的是 "raises the average math score from 34.8 to 41.7 (+19.8%)" —— <strong>它没写错，是摘要的简写容易误读</strong>。⟹ <strong>真实幅度是 +6.9 个百分点，不是 +19.8 个百分点。</strong> 这两个数相差近 3 倍。</p>
+<p>⚠️ 还有两件事必须一起说，否则又会把"论文的局限"读成"论文的结论"：</p>
+<ul>
+<li><strong>这个 +19.8% 是对「没加掩码的 baseline」算的。</strong> 对加了掩码的 baseline（36.6），本文方法是 41.7，即 <strong>+5.1 pp / +13.9% 相对</strong>。</li>
+<li><strong>加了掩码的本文方法反而掉到 38.6</strong>。论文自己的解释是"掩码在这一次运行里主要把权衡推向 agentic 任务"（ALFWorld 拿到最高的 97.7）。⟹ ★ <strong>这不是一个"全面更好"的结果，是一个"数学和 agentic 之间换"的结果。</strong> 论文用的词是 "gives up part of the math improvement"，很诚实。</li>
+</ul>
+<h3 id="135">1.3.5 消融：收益到底来自哪个部件</h3>
+<p>✅ 论文 Table 3，单任务数学训练，指标是 <strong>AIME24 的 <code>avg@32</code></strong>（采 32 次取平均，比 pass@1 稳）：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>AIME24 <code>avg@32</code></th>
+<th>⚠️ 相对上一行</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen2.5-7B-Instruct（起点）</td>
+<td>10.0</td>
+<td>——</td>
+</tr>
+<tr>
+<td>OpenThinker3-7B（老师天花板）</td>
+<td>63.3</td>
+<td>——</td>
+</tr>
+<tr>
+<td>Sampled-token OPD</td>
+<td>20.4</td>
+<td>基准</td>
+</tr>
+<tr>
+<td>Sampled-token OPD + top-p</td>
+<td>21.6</td>
+<td>+1.2</td>
+</tr>
+<tr>
+<td><strong>只有</strong> 老师 top-K（无 top-p）</td>
+<td><strong>17.7</strong></td>
+<td>★ <strong>比 baseline 还低 2.7</strong></td>
+</tr>
+<tr>
+<td>老师 top-K + top-p</td>
+<td><strong>23.6</strong></td>
+<td>+3.2（相对 baseline+top-p 是 +2.0）</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>这张表的真正结论，和一般人以为的不一样</strong>：<strong>老师 top-K 单独上是负收益</strong>（20.4 → 17.7）。只有配上 top-p rollout 采样，它才翻成正收益（→ 23.6）。论文原话：<em>"Teacher top-K comparison alone is not sufficient: the rollout policy must also remain in a stable region"</em>。⟹ ★ <strong>这不是"一个新目标函数带来提升"，是"新目标函数 + 采样约束必须成对出现"。</strong> 单拿一半去用会更差。</p>
+<p>⚠️ 还有两条消融结论（✅ 论文 Figure 6）：<strong>支撑集内归一化是必需的</strong>（去掉就快速崩溃）；<strong>K 大到一定程度后不敏感</strong>（K=32 / 48 差不多，K=16 偏弱）。</p>
+<p>⚠️ <strong>支撑集构造方式的排序，论文自己说不要过度解读</strong>（✅ 论文 Table 4 + 正文 "we do not over-interpret the ranking among variants"）：它比了"老师 top-K"、"学生 top-K + 采样 token"、"老师 top-K + 采样 token"三种，<strong>单任务下三者接近</strong>（平均 pass@1 41.7 / 41.9 / 42.9），<strong>多任务下差异巨大</strong>（41.7 / 28.4 / 26.9 —— 后两个直接崩回接近起点）。⟹ 多任务场景对支撑集怎么构造<strong>极其敏感</strong>，但原因论文放在它的 Appendix A 里讨论，<strong>我没读</strong>。</p>
+<hr />
+<h2 id="14">1.4 ★★★ 退化篇：为什么自蒸馏有时会<strong>损害</strong>推理能力</h2>
+<h3 id="141">1.4.1 现象先摆出来</h3>
+<p>这篇论文的起点是一个<strong>具体的反常</strong>：同一个自蒸馏算法（<strong>SDPO</strong>，<a href="02-自蒸馏.html">02 章</a>的主角之一），在<strong>化学</strong>任务上大幅缩短输出同时快速提分；换到<strong>数学</strong>任务上，输出照样变短，<strong>但分数显著下降</strong>。✅ 论文（退化篇）§1 + Figure 1</p>
+<p>它追到的机制是一句话：<strong>自蒸馏抑制了 epistemic verbalization（把不确定性说出来）</strong>，而数学推理恰恰<strong>需要</strong>这个东西。</p>
+<p><strong>什么是 epistemic verbalization</strong>：模型在推理中写出的"等等"、"嗯"、"或者说"这类标记不确定的词。论文定了一个<strong>可数的 10 个词</strong>的清单当代理指标：✅ 论文（退化篇）§3</p>
+<div class="codehilite"><pre><span></span><code>epistemic token 清单（10 个）
+├── wait          ├── actually        ├── seems      ├── likely
+├── hmm           ├── alternatively   ├── might      └── check
+├── perhaps       └── maybe
+</code></pre></div>
+
+<p>记一条回答 <code>y</code> 的 epistemic token 数为 <code>E(y) = Σ_{t∈T} count(t, y)</code>。✅ 论文（退化篇）§3</p>
+<p>⚠️ <strong>这个指标是代理，不是定义</strong>。论文自己说这 10 个词是"不确定性外化可能发生的区域的<strong>实用指示器</strong>"，并在附录里验证它们和更长的不确定性表达共现。⟹ <strong>别把"epistemic token 少了"直接等同于"模型不会表达不确定性了"</strong>，中间隔了一层代理。</p>
+<h3 id="142">1.4.2 核心机制：信息量越大，不确定性表达越少</h3>
+<p>论文给的量化工具是<strong>条件互信息</strong>：</p>
+<div class="codehilite"><pre><span></span><code>I(y*; c | x) = H(y* | x) − H(y* | x, c)
+   ├── H(y* | x)     = 只给题目时，对正确答案的不确定性
+   └── H(y* | x, c)  = 给了题目【加上额外上下文 c】之后，剩余的不确定性
+
+⟹ I(y*; c | x) 就是「上下文 c 替你消掉了多少关于正确答案的不确定性」
+</code></pre></div>
+
+<p>✅ 论文（退化篇）§3 式 (2)。<code>y*</code> 是"理想正确回答"这个随机变量，<code>c</code> 是给老师的额外上下文。</p>
+<p><strong>它设计了一个信息量阶梯</strong>（4 个设定，信息量严格递增），在 <strong>DeepSeek-R1-Distill-Qwen-7B</strong> 上、<strong>DAPO-Math-17k</strong> 里挑出 <strong>100 道</strong>基座模型 8 次采样准确率在 <strong>0.125–0.5</strong> 之间的题（即"不太简单也不太难"）：✅ 论文（退化篇）§3</p>
+<table>
+<thead>
+<tr>
+<th>设定</th>
+<th>给老师的上下文 <code>c</code></th>
+<th><code>I(y*;c｜x)</code> 排序</th>
+<th><strong>准确率</strong></th>
+<th><strong>平均长度（token）</strong></th>
+<th><strong>epistemic token 数</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>(1) 无引导</strong></td>
+<td><code>c = ∅</code></td>
+<td><strong>= 0</strong>（定义上）</td>
+<td>0.30</td>
+<td><strong>13,054</strong></td>
+<td><strong>182.5</strong></td>
+</tr>
+<tr>
+<td><strong>(3) 给解法但去掉 <code>&lt;think&gt;</code></strong></td>
+<td><code>c = s\think</code></td>
+<td>第 2 小</td>
+<td>0.78</td>
+<td>12,036</td>
+<td>159.8</td>
+</tr>
+<tr>
+<td><strong>(4) 条件在"之前自己写对过的回答"上</strong></td>
+<td><code>c = y_r</code></td>
+<td>第 2 大</td>
+<td>0.95</td>
+<td>2,808</td>
+<td>24.1</td>
+</tr>
+<tr>
+<td><strong>(2) 给完整解法</strong></td>
+<td><code>c = s</code></td>
+<td><strong>最大</strong></td>
+<td><strong>0.98</strong></td>
+<td><strong>1,873</strong></td>
+<td><strong>8.8</strong></td>
+</tr>
+</tbody>
+</table>
+<p>✅ 整张表是论文 Table 1 的原数据（我把行序按信息量重排了，论文原表顺序是 1/2/3/4）。</p>
+<p>★ <strong>这张表是全篇的地基，结论是一个单调关系</strong>：<code>I(y*;c|x)</code> 越大 ⟹ 回答越短、epistemic token 越少、（当然）准确率越高。✅ 论文（退化篇）§3 式 (4)</p>
+<p>⚠️ <strong>几个可验算 / 要留意的点</strong>：</p>
+<ul>
+<li>✅ 论文明确说：设定 (3) 里 <code>s\think</code> 本身只有 <strong>640 个 token</strong>（对照设定 (1) 的回答平均 13,054 token）。⟹ 去掉 <code>&lt;think&gt;</code> 内容后信息量损失极大，所以长度和 epistemic token 数<strong>几乎弹回无引导的水平</strong>（12,036 ≈ 13,054；159.8 ≈ 182.5）。</li>
+<li>⚠️ <strong>我自己算的比例</strong>：从无引导到全解法引导，长度压缩到 <code>1,873 / 13,054 = 14.3%</code>（约 <strong>7.0 倍</strong>压缩），epistemic token 压缩到 <code>8.8 / 182.5 = 4.8%</code>（约 <strong>20.7 倍</strong>压缩）。⟹ ★ <strong>不确定性表达被压掉的幅度，比总长度被压掉的幅度大得多</strong>（20.7× vs 7.0×）。<strong>不是等比缩短，是选择性地把不确定性先删掉。</strong> 这个倍数对比论文没算，是我算的。</li>
+<li>⚠️ 设定 (4)（条件在自己之前写对的回答上）信息量按<strong>数据处理不等式</strong>必然 ≤ 设定 (2)（✅ 论文原话），实测确实落在 (3) 和 (2) 之间。</li>
+</ul>
+<h3 id="143">1.4.3 ★★ 最震撼的一张表：全是正确答案，照样把模型训坏</h3>
+<p>接着它做了一个<strong>off-policy（SFT）</strong>的对照，目的是回答「不确定性被抑制，到底只是风格变化、还是真的损害能力」。</p>
+<p><strong>两个数据集，各 800 条，全部是正确轨迹</strong>：✅ 论文（退化篇）§4</p>
+<ul>
+<li><code>D_ug</code>（unguided，无引导）：设定 (1) 产出的回答，epistemic token 多，平均长度 <strong>≈12k token</strong></li>
+<li><code>D_sg</code>（solution-guided，全解法引导）：设定 (2) 产出的回答，epistemic token 少，平均长度 <strong>≈2k token</strong></li>
+</ul>
+<p><strong>两边都是 100% 正确答案。唯一差别是"说话风格"。</strong>（✅ 论文原话 "Both datasets consist entirely of correct trajectories. The key difference lies in the epistemic density of the training signal."）</p>
+<table>
+<thead>
+<tr>
+<th>DeepSeek-R1-Distill-Qwen-7B</th>
+<th>AIME24</th>
+<th>AIME25</th>
+<th>AMC23</th>
+<th>MATH500</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Base（不训）</strong></td>
+<td>54.79</td>
+<td>37.92</td>
+<td>89.06</td>
+<td>92.19</td>
+</tr>
+<tr>
+<td><strong>SFT on <code>D_ug</code></strong>（长、多不确定性）</td>
+<td>51.04</td>
+<td>40.00</td>
+<td>87.66</td>
+<td>90.93</td>
+</tr>
+<tr>
+<td><strong>SFT on <code>D_sg</code></strong>（短、少不确定性）</td>
+<td><strong>20.21</strong></td>
+<td><strong>12.71</strong></td>
+<td><strong>57.03</strong></td>
+<td><strong>65.52</strong></td>
+</tr>
+</tbody>
+</table>
+<p>✅ 论文 Table 2 原样抄录。</p>
+<p>⚠️ <strong>我算的跌幅</strong>（论文没给这几个数）：</p>
+<table>
+<thead>
+<tr>
+<th>基准</th>
+<th>Base → <code>D_sg</code></th>
+<th><strong>绝对跌幅（pp）</strong></th>
+<th><strong>相对跌幅</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AIME24</td>
+<td>54.79 → 20.21</td>
+<td><strong>−34.6</strong></td>
+<td><strong>−63%</strong></td>
+</tr>
+<tr>
+<td>AIME25</td>
+<td>37.92 → 12.71</td>
+<td><strong>−25.2</strong></td>
+<td><strong>−66%</strong></td>
+</tr>
+<tr>
+<td>AMC23</td>
+<td>89.06 → 57.03</td>
+<td><strong>−32.0</strong></td>
+<td><strong>−36%</strong></td>
+</tr>
+<tr>
+<td>MATH500</td>
+<td>92.19 → 65.52</td>
+<td><strong>−26.7</strong></td>
+<td><strong>−29%</strong></td>
+</tr>
+<tr>
+<td>⚠️ 四项算术平均</td>
+<td>68.49 → 38.87</td>
+<td><strong>−29.6</strong></td>
+<td><strong>−43%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★★★ <strong>这是整个目录里最该记住的一个数字对照</strong>：<strong>在 800 条全部答对的轨迹上做 SFT，可以把一个 7B 推理模型在 AIME24 上从 54.79 打到 20.21。</strong> 而换成另外 800 条<strong>同样全部答对</strong>、只是"啰嗦且会表达犹疑"的轨迹，基本不掉（51.04，⚠️ 这 −3.75 pp 落在 30 题的噪声门槛内 —— <code>p≈0.55</code> 时 <code>SE ≈ √(0.55·0.45/30) ≈ 0.091</code> 即 <strong>9.1 个百分点</strong>，<strong>所以不能当成"有退化"</strong>）。</p>
+<p>★ <strong>机制（论文给的解释）</strong>：solution-guided 的回答之所以简洁，<strong>是因为生成时外部有 <code>s</code> 可看</strong>。拿它们当 SFT 目标，等于<strong>强迫模型模仿一种"预设了推理时拿不到的信息"的说话方式</strong>，于是把支撑自主探索和自我纠错的 epistemic token 抹掉了。✅ 论文（退化篇）§4</p>
+<p>⟹ ★ <strong>「数据正确」不等于「数据可学」。</strong> 这是本仓库里少见的、能把"数据质量"这件事讲到机制层的证据。</p>
+<h3 id="144-on-policy">1.4.4 on-policy 场景：同样的机制，而且会自我放大</h3>
+<p>把场景换成 on-policy 自蒸馏（即 <strong>SDPO</strong>），对照 <strong>GRPO</strong>，数据集 DAPO-Math-17k：✅ 论文（退化篇）§5</p>
+<table>
+<thead>
+<tr>
+<th>模型 / 设定</th>
+<th>方法</th>
+<th>训练中长度趋势</th>
+<th>OOD 评测结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>DeepSeek-R1-Distill-Qwen-7B</strong><br>（基座本来就有约 180 个 epistemic token/回答）</td>
+<td>GRPO</td>
+<td>略增</td>
+<td>✅ AIME24 <strong>54.7 → 56.0</strong>；AMC23 <strong>89.3 → 91.1</strong></td>
+</tr>
+<tr>
+<td>同上</td>
+<td>SDPO（<code>c = s</code> 全解法）</td>
+<td><strong>急剧下降</strong></td>
+<td>⚠️ AIME24 掉约 <strong>40%</strong>（相对）；AMC23 掉约 <strong>15%</strong>（相对）</td>
+</tr>
+<tr>
+<td>同上</td>
+<td>SDPO（<code>c = s\think</code> 弱化条件）</td>
+<td>下降被缓和</td>
+<td>跌幅减小，但<strong>仍低于基座</strong></td>
+</tr>
+<tr>
+<td><strong>Qwen3-8B（thinking 开）</strong></td>
+<td>GRPO</td>
+<td>缓降</td>
+<td>基本持平</td>
+</tr>
+<tr>
+<td>同上</td>
+<td>SDPO</td>
+<td>降得更多</td>
+<td><strong>低于基座</strong>，<code>c=s</code> 时尤甚；⚠️ 即使 <code>c=s\think</code> 的<strong>训练分数</strong>和 GRPO 接近，<strong>OOD 仍随训练推进持续退化</strong></td>
+</tr>
+<tr>
+<td><strong>Qwen3-8B（thinking 关）</strong></td>
+<td>GRPO</td>
+<td><strong>快速上升</strong>（靠增加 epistemic 表达）</td>
+<td>训练分数快速上去</td>
+</tr>
+<tr>
+<td>同上</td>
+<td>SDPO</td>
+<td>下降</td>
+<td>✅ AIME24 <strong>0.25 → 0.23</strong>（⚠️ 这个差值很小，见下）</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 以上全部出自论文（退化篇）§5.1–5.3。⚠️ 注意「掉约 40%」是<strong>相对跌幅</strong>，不是百分点：<code>54.7 × (1−0.40) ≈ 32.8</code>。摘要里那句 "performance drops of up to 40%" 指的就是这个，<strong>是相对值</strong>。</p>
+<p>⚠️ <strong>最后一行那个 0.25 → 0.23 不能当结论</strong>：AIME24 共 30 题，论文用的是 <code>Acc@16</code>（16 次采样平均）。即使按最乐观的"16×30=480 次独立试验"算，<code>SE ≈ √(0.24·0.76/480) ≈ 0.019</code> → <strong>1.9 个百分点</strong>，而同一道题的 16 次采样<strong>高度相关</strong>，有效样本量远小于 480 ⟹ 实际 SE 更大。<strong>0.02 的差值落在噪声里。</strong> ⚠️ 这个验算是我做的；论文在这一处没给误差棒（它在别处的图里给了 shaded area，但这一句是正文文字）。⟹ 要用这篇论文，<strong>用它的 SFT 表（1.4.3，跌 29.6 pp，远超任何噪声门槛）和机制论证，不要用这一行</strong>。</p>
+<p>★★ <strong>一条额外的、很重要的机制：自蒸馏会自我放大。</strong> 论文做了"固定老师 vs 移动老师"的消融（✅ 论文 §5.4 + Figure 6）：SDPO 原本用 EMA（Exponential Moving Average，指数移动平均）平滑的老师，EMA 率 0.05；而把 EMA 率设成 <strong>0.0（即把老师钉死在初始策略）反而更好</strong>。</p>
+<div class="codehilite"><pre><span></span><code>为什么移动的老师更糟 —— 一个正反馈回路（论文自己的解释）
+
+   学生被训得更自信、更简短
+        ↓
+   这个更自信的学生被拿去当老师
+        ↓
+   它生成的目标分布更自信
+        ↓
+   学生被训得【更】自信、【更】简短
+        ↓
+   …… 每一轮放大一次
+</code></pre></div>
+
+<p>✅ 论文原话：<em>"This can be interpreted as a feedback loop in self-distillation."</em> ⟹ ★ 这也是综述篇 §7.2 里叫 <strong>self-play saturation / Ouroboros（衔尾蛇）问题</strong> 的那个东西的一个具体实例。</p>
+<h3 id="145">1.4.5 ★ 决定"有增益还是退化"的第二个变量：任务覆盖面</h3>
+<p>论文接着问一个关键问题：<strong>同一个机制（抑制不确定性表达），为什么在化学上提分、在数学上掉分？</strong> 它的答案是<strong>训练集和评测集的任务覆盖面不同</strong>。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>ScienceQA（化学）</strong></th>
+<th><strong>LiveCodeBench v6</strong></th>
+<th><strong>DAPO-Math-17k（本文设定）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>总题量</strong></td>
+<td>✅ 2,400 题</td>
+<td>✅ <strong>131 题</strong></td>
+<td>✅ 14,000 题用于训练</td>
+</tr>
+<tr>
+<td><strong>题型结构</strong></td>
+<td>✅ 只有 <strong>6 类</strong>主题型（配平反应 300、分子描述符计数 300、分子量计算 600、性质预测 500、前体/反应物选择 300、有机反应产物预测 400），<strong>差异主要在表面细节</strong></td>
+<td>✅ 题型多样但<strong>总量只有 131</strong></td>
+<td>✅ 题型<strong>广、不重叠</strong></td>
+</tr>
+<tr>
+<td><strong>训练/评测划分</strong></td>
+<td>✅ 90% 训练 / 10% 评测</td>
+<td>⚠️ ★ <strong>131 题全部既做训练又做评测</strong>（训练时只用 50% 的 public 测试用例，评测用含隐藏用例的全集）</td>
+<td>✅ 评测在<strong>训练数据之外</strong>的标准基准（AIME24/25、AMC23、MATH500）</td>
+</tr>
+<tr>
+<td><strong>⟹ 泛化要求</strong></td>
+<td>低（反复见到同构题）</td>
+<td><strong>极低</strong>（同一批题）</td>
+<td><strong>高</strong>（未见过的题型）</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 整张表是论文 Table 3 + §6.1 的内容。</p>
+<p>★ <strong>这是一个很硬的方法论发现</strong>：SDPO 原论文报的"在化学/工具调用/LiveCodeBench 上比 GRPO 更准且更短"，<strong>其评测设定的泛化要求都很低</strong>；而在高泛化要求的数学上，同一个方法掉分。</p>
+<p>⚠️ <strong>一处我没读懂的口径，诚实留白</strong>：论文正文写 DAPO-Math-17k <em>"exposes the model to 14,000 distinct problems (78% of the 25,600 samples drawn over 100 steps, due to repeated sampling)"</em>。我试了几种读法：<br />
+- 若「78%」= <code>14,000 / 17,917</code>（DAPO-Math-17K 的实际题数）= <strong>78.1%</strong> ⟹ 口径自洽 ✅，但<strong>分母 17,917 是我补的，论文没写</strong>。<br />
+- 若「78%」= <code>14,000 / 25,600</code> = 54.7% ⟹ <strong>对不上</strong>。<br />
+- <code>25,600 = 100 步 × 256</code> ⟹ <code>256 = batch 32 × 8 rollouts</code>（⚠️ 这是我从 SDPO/SRPO 的超参推的，退化篇没给 batch 配置）。但若 25,600 是 <strong>rollout 数</strong>，则 100 步最多覆盖 <code>100 × 32 = 3,200</code> 个不同 prompt，<strong>到不了 14,000</strong>。</p>
+<p>⟹ ⚠️ <strong>这三个数（14,000 / 25,600 / 78%）我凑不出一个完全自洽的口径，不要在它们之上做进一步推算。</strong> 可以放心用的只有定性结论：<strong>DAPO-Math 的题型覆盖面比化学和 LCB v6 大一个量级，且评测题不在训练集里。</strong></p>
+<p><strong>它还直接扫了覆盖面这个变量</strong>：固定模型 Qwen3-8B（thinking 关），把训练题数（论文记作 <code>|D|</code>，本章为了不破坏表格改写成 <code>#D</code>）取 <code>{1, 8, 64, 128, 512}</code> 和全量 DAPO，分别跑 GRPO 和 SDPO。✅ 论文 §6.2 + Figure 7/8</p>
+<table>
+<thead>
+<tr>
+<th><code>#D</code></th>
+<th><strong>训练分数（SDPO vs GRPO）</strong></th>
+<th><strong>OOD 表现（AIME24 / MATH500）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≤ 128</td>
+<td>✅ SDPO <strong>快速</strong>拿到高分，长度最多压到 <strong>1/8</strong></td>
+<td>⚠️ ★ <strong><code>#D</code> 越小，OOD 退化越严重</strong></td>
+</tr>
+<tr>
+<td>= 512</td>
+<td>✅ 长度继续压反而开始<strong>拖累训练分数</strong>，落后 GRPO</td>
+<td>同上趋势</td>
+</tr>
+<tr>
+<td>全量 DAPO</td>
+<td>——</td>
+<td>⚠️ ★ <strong>即使在最大 <code>#D</code>，SDPO 仍低于基座模型</strong></td>
+</tr>
+<tr>
+<td>（对照）GRPO</td>
+<td>✅ 长度随 <code>#D</code> 增大而<strong>逐渐变长</strong></td>
+<td>✅ <strong>随 <code>#D</code> 单调变好</strong>：<code>#D=1</code> 快速收敛后就停，越大的 <code>#D</code> 最终分数越高</td>
+</tr>
+</tbody>
+</table>
+<p>★★ <strong>这个反向趋势是全篇最漂亮的证据</strong>：<strong>GRPO 的 OOD 表现随训练题量变好，SDPO 的 OOD 表现随训练题量变差得更轻（但始终低于基座）</strong> —— 两条曲线方向相反，说明这不是"训练量不够"，是<strong>机制性的</strong>。</p>
+<p>✅ 论文自己的收口（Takeaway 4 原话转述）：<strong>不确定性表达的价值随泛化要求上升</strong> —— 对熟悉、重复的任务（小 <code>#D</code>）它基本是冗余的、删掉能换效率；任务多样性一涨，它就越来越重要。</p>
+<hr />
+<h2 id="15">1.5 综述篇自己整理的「失败模式总账」</h2>
+<p>1.3 和 1.4 是两篇一手论文的深挖。综述篇 §7.2 另外汇总了<strong>十几种</strong>失败模式，按<strong>根因</strong>而不是按<strong>症状</strong>归类（因为多种不同机制会产生同一种表面退化，比如"准确率崩塌"）。✅ 论文（综述）§7.2</p>
+<p>⚠️ <strong>这一节的证据等级最低</strong>：下面每一行都是综述<strong>转述别人论文</strong>的结论，我<strong>没有读那些原始论文</strong>。所以这张表只能当<strong>索引</strong>用 —— 告诉你"有这么一类坑、叫什么名字、去哪篇找"，<strong>不能当成已核实的结论</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>失败模式</th>
+<th>根因</th>
+<th>综述转述的关键证据 / 数字</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>flawed prefix trap</strong>（坏前缀陷阱）</td>
+<td>学生生成错误前缀后，老师在这种 OOD 输入上的条件分布<strong>校准很差</strong></td>
+<td>就是 1.3 节那篇（Fu et al. 2026b）的三个失败模式</td>
+</tr>
+<tr>
+<td><strong>extrapolation cliff</strong>（外推悬崖）</td>
+<td>奖励外推 OPD（<code>λ&gt;1</code>）在结构化输出任务上有<strong>硬边界</strong></td>
+<td>存在一个闭式阈值 <code>λ*</code>，越过它训练就从"保格式"翻成"毁格式"。ListOPD 在阈值下方用 1.7B 学生打到 8B-SFT 的域内平手（参数量 1/5），⚠️ 但收益<strong>主要来自格式遵循而非排序质量</strong></td>
+</tr>
+<tr>
+<td><strong>Rock Tokens</strong>（顽石 token）</td>
+<td>结构性/话语性残留（连接词、格式、模糊限定语）<strong>学不进去也不必学</strong></td>
+<td>训练到表观饱和后，<strong>高达 18%</strong> 的 token 仍持续高损失，且因出现频率高而<strong>占据超大比例的梯度范数</strong>；因果干预显示它们对实际推理性能<strong>贡献可忽略</strong></td>
+</tr>
+<tr>
+<td><strong>gradient SNR collapse</strong>（梯度信噪比崩塌）</td>
+<td>学生在某题上的通过率趋近 0 ⟹ 所有 rollout 都早早出错 ⟹ 老师信号被噪声主导</td>
+<td>解释了<strong>为什么难题在标准 OPD 下给不出学习信号</strong></td>
+</tr>
+<tr>
+<td><strong>epistemic suppression</strong>（认知抑制）</td>
+<td>就是 1.4 节那篇</td>
+<td>缩短推理轨迹时<strong>不成比例地</strong>删掉模糊限定语和不确定性标记</td>
+</tr>
+<tr>
+<td><strong>local teachability collapse</strong>（局部可教性崩塌）</td>
+<td>⚠️ 这个和 flawed prefix trap <strong>不是一回事</strong>：老师<strong>仍然校准良好</strong>，只是它在学生 top-K 候选集上的<strong>区分边际变窄</strong>到 KL 梯度没有判别信息</td>
+<td>提出按老师的局部判别能力<strong>在 BIC 式的变点处截断</strong> OPD 监督，⟹ 最优截断点是<strong>轨迹相关</strong>的，不是固定位置</td>
+</tr>
+<tr>
+<td><strong>self-play saturation / Ouroboros</strong>（衔尾蛇）</td>
+<td>自蒸馏里学生对着<strong>和自己共享归纳偏置</strong>的目标优化 ⟹ 假设空间逐步坍缩</td>
+<td>一旦模型发现某个句法"hack"或高置信但有缺陷的启发式，<strong>没有外部信号去惩罚它</strong> ⟹ <code>p_θ(y_flawed｜x) → 1</code> ⟹ 梯度消失、探索停止。⚠️ 综述强调这<strong>不同于</strong>曝光偏差（后者是 off-policy 的训练-测试分布错配）</td>
+</tr>
+<tr>
+<td><strong>precision-recall 权衡 / 多样性坍缩</strong></td>
+<td>学生把概率质量集中到高质量输出（precision ↑）就必然减少对老师完整分布的覆盖（recall ↓）</td>
+<td>激进的逆 KL 蒸馏 ⟹ <strong>pass@1 高但 pass@k 灾难性差</strong>，因为每题坍缩到单一推理策略。可用采样温度当旋钮</td>
+</tr>
+<tr>
+<td><strong>calibration-capability gap</strong>（能力-校准落差）</td>
+<td>老师的监督是在<strong>训练时才有的特权上下文</strong>下形成的，部署时的模型只有部署上下文</td>
+<td>OPD 可靠地提准确率，却把模型留在<strong>严重过度自信</strong>的状态 ⟹ "<strong>miscalibration 的 scaling law</strong>"。⚠️ 综述的评语：一个分数更高但不可靠地指示自己何时出错的模型，<strong>可以说比一个更弱但校准更好的基线更不安全</strong></td>
+</tr>
+<tr>
+<td><strong>agentic collapse</strong>（多轮 agentic 场景特有）</td>
+<td>三个子病：①<strong>老师动态崩塌</strong>：周期性硬拷贝老师导致 KL 从累积值<strong>突降到接近 0</strong>（综述给的例子：周期 T=30 时某次拷贝事件上 <strong>2.637 → 0.343</strong>），蒸馏梯度被抹掉；②<strong>轨迹结构侵蚀</strong>：稀疏终局奖励下，学生学会"冗长的单轮独白"比"协调的多轮工具调用"更容易拿分（每回合轮数 <strong>7.65 → 5.52</strong>，换 EMA 老师也仍从 <strong>7.82 → 6.23</strong>）；③<strong>提示失控</strong>：加入结果条件的老师提示而不控长度 ⟹ 回答爆长直到撑满上下文，准确率从 <strong>54.5% → 49.0%</strong></td>
+<td>⟹ 综述的收口：<strong>稳定的老师动态 + 对轨迹结构的显式正则 + 粒度匹配的信用分配，三者看起来是共同必要的</strong></td>
+</tr>
+<tr>
+<td><strong>off-metric capability erosion</strong>（指标外能力侵蚀）</td>
+<td><strong>蒸馏评测本身结构性不完整</strong>：只报学生保留了什么（任务分数），不报它丢了什么</td>
+<td>把蒸馏重新表述为<strong>有损投影</strong>，并给了一个报告模板（Distillation Loss Statement：主指标 / 关键指标外能力 / 保留目标 / 压力分布 / 观测到的侵蚀）</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>这张表里对本目录最有用的两条</strong>：<strong>local teachability collapse</strong>（老师没坏，只是"没什么可教了"——这是 1.3 节那篇没覆盖的第四种机制）和 <strong>calibration-capability gap</strong>（和 1.4 节的 epistemic suppression 指向同一件事：OPD 会让学生在任务分数上升的同时<strong>丢掉元认知能力</strong>）。</p>
+<p>⚠️ <strong>综述对成功条件也给了两条（Li et al. 2026j 的结论，综述 §7.1 转述，⚠️ 我没读原文）</strong>：①<strong>师生推理模式必须兼容</strong>（操作化为 top-k token 分布的高重叠）—— 即使老师更强，如果<strong>思考风格结构性不匹配</strong>（例如用 non-thinking 老师去蒸 thinking 学生），知识也传不过去，因为<strong>初始分布重叠太低是训练本身补不回来的</strong>；②<strong>老师必须能提供学生还没有的新能力</strong> —— 同数据同配方训出来的师生在各自规模上会收敛到相似分布，反向蒸馏实验显示同族 1.5B 和 7B 老师<strong>从学生视角看在分布上已不可区分</strong>。</p>
+<p>⟹ ★ <strong>综述把这两条收成一句很好用的判据</strong>：<strong>OPD 的收益取决于"师生之间可被利用的落差"</strong> —— 落差太小（同配方模型）老师没新信息；落差太大（思考模式错配）学生吸收不了。<strong>有效区间在中间，而怎么识别这个区间仍是开放的诊断难题。</strong> ✅ 论文（综述）§7.1</p>
+<hr />
+<h2 id="16">1.6 ★★★ 三篇放一起：它们认为难点在哪，哪里互相矛盾</h2>
+<h3 id="161">1.6.1 交叉对照表</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>综述篇</strong></th>
+<th><strong>失败模式篇</strong></th>
+<th><strong>退化篇</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>它认为 OPD 的核心难点是什么</strong></td>
+<td><strong>师生之间"可被利用的落差"难以识别</strong> —— 太小没信息、太大吸收不了，有效区间在中间</td>
+<td>★ <strong>把分布匹配退化成单 token log 比值，使长 rollout 上的学习信号变脆</strong></td>
+<td>★ <strong>老师的"说话风格"被它的特权上下文污染了，学生学到的是一种"预设了推理时没有的信息"的风格</strong></td>
+</tr>
+<tr>
+<td><strong>它开的药方</strong></td>
+<td>四条<strong>训练前诊断</strong>：token 重叠率、目标题通过率、老师校准度、长度稳定性</td>
+<td>老师 top-K 局部支撑集匹配（截断逆 KL）+ top-p rollout + 特殊 token 掩码</td>
+<td>⚠️ <strong>没有给算法 fix</strong> —— 它的结论是"目标函数选对了还不够，要盯住训练怎么重塑了推理行为"</td>
+</tr>
+<tr>
+<td><strong>它的证据强度</strong></td>
+<td>二手汇总，覆盖最广，<strong>单条都不可直接引用</strong></td>
+<td>一手实验，<strong>但单任务下对强 baseline 只赢 1.0 分</strong>（41.7 vs 40.7）</td>
+<td>★ 一手实验，<strong>控制变量设计最干净</strong>（两个数据集都是 100% 正确答案，只差风格），<strong>跌幅 29.6 pp 远超噪声</strong></td>
+</tr>
+<tr>
+<td><strong>对"散度方向"的立场</strong></td>
+<td>数学/代码 → <strong>逆 KL</strong>（mode-seeking）</td>
+<td><strong>截断逆 KL</strong>（在老师 top-K 上）</td>
+<td>⚠️ 它用的是正 KL 形式 <code>KL(学生 ‖ sg[老师])</code>… 见下，这里有个记号陷阱</td>
+</tr>
+<tr>
+<td><strong>它承认的局限</strong></td>
+<td>✅ 没有框架能预测蒸馏质量随 <code>N_T</code>（老师规模）、<code>N_S</code>（学生规模）、<code>D</code>（数据量）、<code>R</code>（rollout 预算）的联合 scaling；<code>R</code> 这条轴是 OPD 独有的</td>
+<td>✅ 支撑集构造方式的排序"不过度解读"；多任务下三种变体差异巨大但原因在它的附录里</td>
+<td>✅ epistemic token 是<strong>代理指标</strong>；结论建立在"math 推理 ≈ 自贝叶斯推理"这个视角上</td>
+</tr>
+</tbody>
+</table>
+<h3 id="162">1.6.2 ★ 四处真正的矛盾（不和解，摆出来）</h3>
+<p><strong>矛盾 ①：散度方向该怎么选？三篇给了三个不同答案。</strong></p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>主张</th>
+<th>设定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>综述篇 §2.3 / §3.3</td>
+<td><strong>唯一正确答案的任务（数学、代码）用逆 KL</strong> —— mode-seeking 把质量集中到一条解法路径上</td>
+<td>外部强老师</td>
+</tr>
+<tr>
+<td>失败模式篇 §3.1</td>
+<td><strong>截断逆 KL</strong>（只在老师 top-K 支撑集上，且要重新归一化）—— 全词表逆 KL 太贵、单 token 逆 KL 太脆</td>
+<td>外部老师（同底座 SFT 模型）</td>
+</tr>
+<tr>
+<td><a href="02-自蒸馏.html">02 章</a> Self-Distilled Reasoner Table 3</td>
+<td>★ <strong>正 KL 最好</strong>（AIME25 从 36.7 → 43.9）；<strong>逆 KL（37.5）和 JSD（36.9）基本无效甚至变差</strong></td>
+<td><strong>自</strong>蒸馏：同一模型 + 特权上下文当老师</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>我能给出的调和，和不能给出的</strong>：三者<strong>不是一个设定</strong>（外部强老师 vs 同模型带特权上下文），而"老师是不是真的比学生强"这件事会改变 mode-seeking 的意义 —— 如果"老师"只是"同一个模型多看了一眼答案"，那么去死守它的峰（逆 KL）可能恰好学到的是 1.4 节那种"被特权信息污染的自信风格"。⚠️ <strong>这是我的推断，三篇都没有明说这个联系。</strong> 不能据此说"自蒸馏一定该用正 KL" —— 02 章那篇的证据是<strong>单模型（Qwen3-1.7B）单基准（AIME25）</strong>，而 AIME25 只有 30 题。</p>
+<p><strong>矛盾 ②：「输出变短」到底是好事还是坏事？</strong></p>
+<div class="codehilite"><pre><span></span><code>SDPO 原论文（见 02 章）：  输出短 3 倍甚至 11 倍，同时准确率更高
+                          ⟹ 把它当成【卖点】，叫「学会简洁推理」
+
+退化篇（本章 1.4）：       同样的变短，在数学 OOD 上掉 40%（相对）
+                          ⟹ 把它当成【病灶】，叫「epistemic suppression」
+
+★ 这不是两篇在吵，是【同一个现象在不同任务覆盖面下的两种后果】。
+   决定方向的变量是 1.4.5 节那个：训练集与评测集的任务覆盖面差多少。
+</code></pre></div>
+
+<p>★ <strong>这个矛盾在文献里已经被接上了</strong>：<a href="02-自蒸馏.html">02 章</a>的 <strong>SRPO</strong> 那篇在讨论响应长度时<strong>直接引用退化篇</strong>，理由是「SDPO 过短的回答已被关联到因抑制 epistemic verbalization 而导致的推理退化」，并把"SRPO 的长度居中"当成一个好处。✅ SRPO 论文 §4.4 明确引 Kim et al. 2026 ⟹ <strong>这两章不是我硬拉在一起的，是作者们自己接上的。</strong></p>
+<p><strong>矛盾 ③：失败模式篇说"token 级比序列级好"，但综述说"多轮 agentic 任务需要序列级目标 + 轨迹感知的信用分配"。</strong></p>
+<p>⚠️ 这两句<strong>表面冲突、实际在说不同层面的事</strong>（这是我的判断）：失败模式篇说的是<strong>同一个 token 级损失的两种梯度估计量</strong>（要不要把后续奖励耦合进来），结论是不要耦合、控方差；综述说的是<strong>监督的语义粒度</strong>（一个工具调用序列的成败不能摊到每个 token 上）。⚠️ 但我<strong>没有读综述 §8</strong>（agentic 那节的正文），所以<strong>不能保证</strong>这个调和是作者的原意。<strong>不要把这条当定论。</strong></p>
+<p><strong>矛盾 ④：OPSD 到底在干什么 —— 压缩，还是纠错？</strong></p>
+<p>✅ 综述 §7.1 转述了 Kim &amp; Lee (2026) 的一个很锋利的结果（⚠️ 原文我没读）：把 OPSD <strong>分别</strong>用在"只有做对的 rollout"和"只有做错的 rollout"上 ——</p>
+<div class="codehilite"><pre><span></span><code>只对【做对的】rollout 做 OPSD  ⟹  准确率保住，推理轨迹显著变短
+                                  = 这是【压缩】
+
+只对【做错的】rollout 做 OPSD  ⟹  准确率【下降】
+                                  = 这是【纠错失败】
+</code></pre></div>
+
+<p>并且三种替代解释（老师上下文更丰富、轨迹中途重新注入反馈、训练更久）<strong>都被排除了</strong>。⟹ ★ 综述的收口：<strong>带后见之明的自老师能识别长思考轨迹里的冗余，但不能可靠地提供更好的替代推理步骤。</strong> OPSD 的有效区间是"<strong>让模型把已知的解法说得更省</strong>"，不是"<strong>让模型解出更难的题</strong>"。</p>
+<p>⚠️ 这条和 <a href="02-自蒸馏.html">02 章</a>里 <strong>SDPO 的测试时实验</strong>看起来直接冲突：那篇报告 SDPO 在 LCBv6 的"very hard"题上 <code>discovery@2750</code> 达 53.2%，而 best-of-k 只有 41.5%，并且<strong>有一道题只有 SDPO 解出来</strong>；它还明确说<strong>初始自老师在几乎所有这些题上准确率 <code>&lt;1%</code>、78% 的题上正好 0%</strong>。⟹ 即"老师自己解不出来，但它的信用分配仍然能把学生推到解出来"。<strong>这看起来就是"纠错"而不是"压缩"。</strong> ⚠️ 两者的设定差别（Kim &amp; Lee 做的是数学 + 单次训练；SDPO 做的是代码 + 迭代式测试时自蒸馏 + 有真实环境反馈）足以解释吗？<strong>我不知道，也没有足够证据判。02 章会把这条冲突再摆一次，不给结论。</strong></p>
+<h3 id="163">1.6.3 ⚠️ 本章的噪声门槛速查（通用纪律）</h3>
+<p>本仓库的规矩：<code>SE ≈ √(p(1−p)/n)</code>，<strong>比这个小的差异不能当成结论</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>n（题数）</th>
+<th>p=0.2</th>
+<th>p=0.5</th>
+<th>p=0.8</th>
+<th>本章里哪些数落在这个量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>30</strong>（AIME24 / AIME25）</td>
+<td><strong>7.3 pp</strong></td>
+<td><strong>9.1 pp</strong></td>
+<td>7.3 pp</td>
+<td>★ 1.3.3 表 A 里 AIME 两列的<strong>全部</strong>差异</td>
+</tr>
+<tr>
+<td><strong>131</strong>（LiveCodeBench v6）</td>
+<td>3.5 pp</td>
+<td><strong>4.4 pp</strong></td>
+<td>3.5 pp</td>
+<td><a href="02-自蒸馏.html">02 章</a>大量数字落在这里</td>
+</tr>
+<tr>
+<td><strong>500</strong>（MATH500）</td>
+<td>1.8 pp</td>
+<td><strong>2.2 pp</strong></td>
+<td>1.8 pp</td>
+<td>1.3.3 表 A 里 80.0 vs 82.0</td>
+</tr>
+<tr>
+<td><strong>≈2,400×10%=240</strong>（ScienceQA 化学测试集）</td>
+<td>2.6 pp</td>
+<td><strong>3.2 pp</strong></td>
+<td>2.6 pp</td>
+<td>⚠️ 测试集大小是我按 90/10 划分推的</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 两条修正说明：①<code>avg@k</code> / <code>acc@k</code> <strong>会降低方差，但不等于把 n 乘了 k</strong> —— 同一道题的 k 次采样高度相关，有效样本量在 <code>n</code> 和 <code>n·k</code> 之间，<strong>偏向 n</strong>；②上表<strong>全部是我的推算</strong>，三篇论文都没给标准误。</p>
+<hr />
+<h2 id="17">1.7 小结：这一章能带走什么</h2>
+<div class="codehilite"><pre><span></span><code>① OPD 的分类坐标系是三条轴（综述篇）：
+   目标函数（用哪个散度）/ 信号来源（谁当老师）/ 训练动态（怎么稳住）
+   ★ 「外部 vs 自己」是方法论选择，「白盒 vs 黑盒」是部署约束 —— 两级，不平级
+
+② 曝光偏差的量级差是【平方 vs 线性】：off-policy O(ε·T²) → on-policy O(ε·T)
+   ⚠️ 但这是上界。DeepSeek-R1 纯 off-policy 蒸出 AIME24 55.5%（7B）
+      ⟹ 老师足够强 + 学生足够小的时候，off-policy 就够用
+
+③ 标准 sampled-token OPD 有三个具体的脆点（失败模式篇）：
+   ① 单 token 信号结构性偏负  ② 老师在学生漂移后的前缀上失去可靠性
+   ③ 特殊 token 约定错配
+   ★ 最大的单项收益来自最土的补丁（掩码：36.4 → 40.7），不是来自新目标函数
+   ★ 老师 top-K 单独上是【负收益】（20.4 → 17.7），必须配 top-p 才翻正
+   ⚠️ 摘要那个「+19.8%」是【相对】，绝对只有 +6.9 个百分点
+
+④ token 级 vs 序列级不是精度之争，是【偏差 vs 方差】之争：
+   token 级有偏，但最坏方差 O(T²)；序列级无偏，但 O(T⁴)
+   ⟹ 长程训练选 token 级控方差，然后【在 token 级内部】改善信号质量
+
+⑤ ★★ 自蒸馏退化的机制是【老师的风格被它的特权上下文污染】：
+   给老师的信息 I(y*;c|x) 越大 ⟹ 回答越短、不确定性表达越少
+   （13,054 token / 182.5 个 epistemic token  →  1,873 / 8.8）
+   ⟹ 用这种回答当 SFT 目标，等于让模型模仿一种
+      【预设了推理时拿不到的信息】的说话方式
+   ★★★ 800 条【全部答对】的轨迹，能把 7B 推理模型在 AIME24 上
+        从 54.79 打到 20.21。换成另外 800 条同样全对但啰嗦的，基本不掉。
+        ⟹ 「数据正确」≠「数据可学」
+
+⑥ ★ 决定「有增益还是退化」的第二个变量是【任务覆盖面】：
+   化学 2,400 题只有 6 类题型、LCB v6 的 131 题训练评测同一批
+   ⟹ 泛化要求低 ⟹ 删掉不确定性表达换效率是赚的
+   DAPO-Math 14,000 题、评测在训练集外 ⟹ 泛化要求高 ⟹ 同样的操作亏
+   ★ GRPO 的 OOD 随训练题量【变好】，SDPO 始终【低于基座】—— 方向相反
+
+⑦ 自蒸馏还会【自我放大】：移动的老师（EMA 0.05）比钉死的老师（EMA 0.0）更糟
+   更自信的学生 → 当老师 → 目标更自信 → 学生更自信 …… 每轮放大一次
+   ⟹ 这就是综述叫 self-play saturation / Ouroboros 的那个东西
+
+⑧ ⚠️ 四处矛盾没有和解，也不该和解：
+   散度方向（逆 KL / 截断逆 KL / 正 KL，三篇三答案）
+   「输出变短」是卖点还是病灶（取决于任务覆盖面）
+   token 级 vs 序列级（⚠️ 我的调和未经作者确认）
+   OPSD 是压缩还是纠错（⚠️ 证据直接冲突，不给结论）
+</code></pre></div>
+
+<blockquote>
+<p><strong>下一章</strong> → <a href="02-自蒸馏.html">02 自蒸馏：没有更强的老师时，信息从哪来</a></p>
+<p>上一级：<a href="README.html">本目录</a> ｜ 基础章：<a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08 On-Policy 蒸馏（OPD）</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

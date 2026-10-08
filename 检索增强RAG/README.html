@@ -257,31 +257,62 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="_1">⚠️ 先说清楚三件事</h2>
-<p><strong>① 这是一份单章笔记，不是完整专题。</strong><br />
-RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a href="../推理框架/">推理框架/</a>、<a href="../harness评测框架/">harness评测框架/</a>、<a href="../多模态大模型/">多模态大模型/</a> 三个目录都拿它当例子或参照物。这份笔记把散落的引用收拢到一处，并补上原理。<strong>第 4 节是交叉引用汇总，想看细节请点回原章节。</strong></p>
+<p><strong>① 这是一份单章笔记，不是完整专题。</strong> RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a href="../推理框架/">推理框架/</a>、<a href="../harness评测框架/">harness评测框架/</a>、<a href="../多模态大模型/">多模态大模型/</a> 三个目录都拿它当例子或参照物。这份笔记把散落的引用收拢到一处，并补上原理。<strong>第 4 节是交叉引用汇总，想看细节请点回原章节。</strong></p>
 <p><strong>② 记号约定：</strong></p>
-<div class="codehilite"><pre><span></span><code>   ✅  = 能追到一手出处（论文表号 / 本仓库已核对过的章节）
-   ⚠️  = 我的判断、推断或估算，引用前请自行核实
-   无记号 = 教科书级通用机制，不涉及具体数字
-</code></pre></div>
-
-<p><strong>③ 时效：写于 2026 年 9 月。</strong> 第 1–3 节讲原理，过期慢；第 5 节讲 agentic RAG 的走向，过期最快。</p>
+<table>
+<thead>
+<tr>
+<th>记号</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅</td>
+<td>能追到一手出处（论文表号 / 本仓库已核对过的章节）</td>
+</tr>
+<tr>
+<td>⚠️</td>
+<td>我的判断、推断或估算，引用前请自行核实</td>
+</tr>
+<tr>
+<td>无记号</td>
+<td>教科书级通用机制，不涉及具体数字</td>
+</tr>
+</tbody>
+</table>
+<p><strong>③ 时效：写于 2026 年 10 月。</strong> 第 1–3 节讲原理，过期慢；第 5 节讲 agentic RAG 的走向，过期最快。</p>
+<p><strong>④ 读法：本章每张表的数字都能自己验算。</strong> 第 3 节是本章的重心 —— 切块、索引、重排这三件事全都是<strong>算术题</strong>，不是玄学。建议拿纸笔跟着算一遍。</p>
 <hr />
 <h2 id="_2">一句话地图</h2>
-<div class="codehilite"><pre><span></span><code>         你的问题
-            │
-   ┌────────▼─────────┐    ① 检索 Retrieval
-   │  资料库（你的文档） │ ──▶ 捞出最相关的几段
-   └──────────────────┘
-            │
-            ▼            ② 增强 Augmented
-   [ 捞到的段落 + 原问题 ] ──▶ 拼成一个很长的 prompt
-            │
-            ▼            ③ 生成 Generation
-        大模型作答
+<div class="codehilite"><pre><span></span><code>   你的问题：「我们公司的报销上限是多少？」
+        │
+        ├── ① 检索 Retrieval
+        │      去资料库（已经切成 109 个块）里搜，捞出最相关的几块
+        │
+        ├── ② 增强 Augmented
+        │      把捞到的块 + 原问题，拼成一个很长的 prompt
+        │
+        └── ③ 生成 Generation
+               大模型读完这一大坨，吐出答案
 </code></pre></div>
 
 <p><strong>RAG = Retrieval-Augmented Generation（检索增强生成）</strong>，名字就是这三步。</p>
+<hr />
+<h2 id="0">0. 先立一条换算约定</h2>
+<p>本章下面所有的块数、显存、token 预算都从<strong>同一个假设</strong>滚出来，不先说清楚，后面每个数都会对不上。</p>
+<div class="codehilite"><pre><span></span><code>⚠️ 本章统一取：1 个 token ≈ 2 个汉字
+
+这个数不是我编的，但也不是精确值：
+  本仓库 [数据格式和数据处理/09-Tokenizer与词表] 给出的经验区间是
+  ⚠️【1.5 ~ 2 汉字 / token】，取决于 tokenizer 对中文友不友好。
+
+  我取区间【上端 2】，纯粹因为好算（10 万字 = 5 万 token，整）。
+  ⟹ 如果你的 tokenizer 只有 1.5 汉字/token，
+     本章所有「块数」要乘 1.33，所有「字数」要乘 0.75。
+</code></pre></div>
+
+<p><strong>⚠️ 别把「字」和「token」混着说。</strong> 原版这篇笔记里"4096 个 token"和"200 个字"混在同一张图里，看着像一回事，其实差 2 倍 —— 本章凡是进模型的量一律用 <strong>token</strong>，凡是给人看的篇幅一律用<strong>汉字</strong>，并且每次都写明换算。换算的机制见 <a href="../数据格式和数据处理/09-Tokenizer与词表.html">数据格式和数据处理/09-Tokenizer与词表</a>。</p>
 <hr />
 <h2 id="1">1. 为什么需要它</h2>
 <p>大模型有两个天生的毛病：</p>
@@ -297,6 +328,7 @@ RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a hre
 <th>路线</th>
 <th>做法</th>
 <th>代价</th>
+<th>加一份新文档要做什么</th>
 <th>什么时候用</th>
 </tr>
 </thead>
@@ -304,165 +336,1175 @@ RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a hre
 <tr>
 <td><strong>重新训练 / 微调</strong></td>
 <td>拿你的数据继续训模型</td>
-<td>几十上百张卡、几天；每加一份文档就要再来一次</td>
+<td>几十上百张卡、几天</td>
+<td><strong>再训一次</strong></td>
 <td>要改变模型的<strong>能力或风格</strong></td>
 </tr>
 <tr>
 <td><strong>长上下文全塞</strong></td>
 <td>把整个文档库塞进 prompt</td>
-<td>贵且慢，且有上限；见 <a href="../推理框架/推理优化入门/02-KV-Cache与显存账.html">推理框架/02-KV-Cache与显存账</a></td>
+<td>贵且慢，且有硬上限</td>
+<td>不用做什么，但很快塞不下</td>
 <td>资料本来就不多</td>
 </tr>
 <tr>
 <td><strong>★ RAG</strong></td>
-<td>只塞检索到的那几段</td>
-<td>不动模型，加一份文档只要重新索引</td>
+<td>只塞检索到的那几块</td>
+<td>不动模型，多一套检索系统</td>
+<td><strong>跑一遍 embedding，增量入库</strong></td>
 <td><strong>要让模型知道新的/私有的事实</strong></td>
 </tr>
 </tbody>
 </table>
-<p>⚠️ 我的判断：这三条路不是竞争关系，实践中经常叠着用 —— 先微调出领域风格，再靠 RAG 供事实。</p>
+<p><strong>"长上下文全塞"的上限有多硬，可以直接算</strong>：128K 的窗口（131,072 token）按 2 汉字/token 算，大约能装 <strong>26 万汉字</strong>（✅ 这个换算和 <a href="../数据格式和数据处理/09-Tokenizer与词表.html">数据格式和数据处理/09-Tokenizer与词表</a> 给的"128K ≈ 20 万~26 万字"一致）。一本中等厚度的书。你公司的 wiki 有多少字？</p>
+<div class="codehilite"><pre><span></span><code>   一份 10 万字的员工手册  =  5 万 token
+     ⟹ 128K 窗口（131,072 token）塞得下 ✓
+
+   50 份这样的文档（一个部门）  = 250 万 token
+     ⟹ 2.5e6 / 131072 = 19.1 倍窗口，装不下 ✗
+
+   整个公司 wiki（1000 份）  = 5000 万 token
+     ⟹ 5.0e7 / 131072 = 381.5 倍窗口，装不下 ✗
+</code></pre></div>
+
+<p><strong>⟹ 所以"全塞"不是贵不贵的问题，是根本装不下。</strong> RAG 不是"省钱版的长上下文"，它是<strong>在装不下的时候唯一能走的路</strong>。</p>
+<p>⚠️ 我的判断：这三条路不是竞争关系，实践中经常叠着用 —— 先微调出领域风格，再靠 RAG 供事实，最后用长上下文把检索回来的几千 token 舒舒服服地装下。</p>
 <hr />
 <h2 id="2">2. 三步怎么转</h2>
 <div class="codehilite"><pre><span></span><code>   你的问题：「我们公司的报销上限是多少？」
         │
         ├─① 检索（Retrieval）
-        │    拿问题去资料库里搜  →  捞出最相关的 3 段文字
-        │    （比如《员工手册》第 7 章的三个段落）
+        │    拿问题去资料库里搜  →  捞出最相关的 5 块
+        │    （比如《员工手册》第 7 章对应的那几块）
         │
         ├─② 增强（Augmented）
-        │    把捞到的段落 + 原问题，拼成一个【很长的 prompt】
-        │    ┌────────────────────────────────────┐
-        │    │ 参考资料：                          │
-        │    │  「差旅住宿每晚上限 800 元…」        │
-        │    │  「餐饮每日上限 150 元…」            │
-        │    │ 请根据以上资料回答：报销上限是多少？  │
-        │    └────────────────────────────────────┘
+        │    把捞到的块 + 原问题，拼成一个【很长的 prompt】
         │
         └─③ 生成（Generation）
              模型读完这一大坨，吐出答案
 </code></pre></div>
 
-<p><strong>★ 注意②的形状</strong>：输入变得很长（几千个 token），输出还是很短（几百个字）。<strong>这个不对称是第 4.1 节的全部由来。</strong></p>
-<hr />
-<h2 id="3-1">3. 第①步展开：到底怎么"搜"</h2>
-<h3 id="31-chunking">3.1 先切块（chunking）</h3>
-<p>资料库不能整本书当一个单位 —— 太长了塞不进去，也不精确。要先切成<strong>块</strong>（chunk），一般几百个 token 一块。</p>
-<div class="codehilite"><pre><span></span><code>   《员工手册》80 页
-        │  切块
-        ▼
-   [块1: 入职流程…] [块2: 考勤…] … [块N: 报销标准…]
-        ⟹ 检索的单位是【块】，不是【文件】
+<p>第②步拼出来的 prompt 长这样（下面这个框<strong>只画左边、右边不封口</strong> —— 原因见本章末尾的"为什么图都不封右边"）：</p>
+<div class="codehilite"><pre><span></span><code>   ┌─ 参考资料（检索回来的 5 块原文）
+   │    块 #37：「差旅住宿每晚上限 800 元，一线城市上浮 20%…」
+   │    块 #38：「餐饮补助每日上限 150 元…」
+   │    …（另外 3 块）
+   │
+   ├─ 问题
+   │    我们公司的报销上限是多少？
+   │
+   └─ 指令
+        请只根据以上资料回答；资料里没有的，直接说&quot;没找到&quot;。
 </code></pre></div>
 
-<p>⚠️ 切块的边界怎么定（按段落 / 按标题 / 定长 + 重叠）是工程上最容易翻车的地方之一：切碎了丢上下文，切大了不精确。</p>
-<h3 id="32">3.2 两种搜法</h3>
+<p><strong>★ 注意②的形状</strong>：输入变得很长（几千个 token），输出可能很短（几十个 token），也可能不短（让它写总结就是几百个 token）。<strong>这个比值叫 P:D ratio，它决定了第 4.1 节的一切 —— 而且它不是固定的，这正是原版笔记写错的地方。</strong></p>
+<hr />
+<h2 id="3-1">3. 第①步展开：到底怎么"搜"</h2>
+<h3 id="31">3.1 切块：先把块数算出来</h3>
+<p>资料库不能整本书当一个单位 —— 太长了塞不进去，也不精确。要先切成<strong>块</strong>（chunk）。</p>
+<div class="codehilite"><pre><span></span><code>   《员工手册》10 万汉字 = 5 万 token
+        │  按【块长 512 token、重叠 50 token】定长切
+        ▼
+   块1 = token[    0 ..  512)
+   块2 = token[  462 ..  974)      ← 起点往后挪 462，不是 512
+   块3 = token[  924 .. 1436)
+   …
+   块109 = token[49896 .. 50000)   ← 最后一块只有 104 token，不满
+
+   ⟹ 检索的单位是【块】，不是【文件】
+</code></pre></div>
+
+<p><strong>把 109 这个数算出来</strong>：</p>
 <table>
 <thead>
 <tr>
-<th>搜法</th>
-<th>原理</th>
-<th>强在哪</th>
-<th>弱在哪</th>
+<th>步骤</th>
+<th>算式</th>
+<th>值</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>关键词检索</strong>（如 BM25）</td>
-<td>对字面。问题里有"报销"，就找含"报销"的块</td>
-<td>精确、快、可解释</td>
-<td>换个说法就搜不到（"费用报账"）</td>
+<td>文档长度</td>
+<td>100,000 汉字 ÷ 2 汉字/token</td>
+<td><strong>50,000 token</strong></td>
 </tr>
 <tr>
-<td><strong>向量检索</strong>（embedding）</td>
-<td>把每块文字变成一串数字，<strong>意思相近的数字也相近</strong>，找离问题最近的块</td>
-<td>能跨说法，抓语义</td>
-<td>可能召回"看着像但没关系"的块</td>
+<td>步长（stride）</td>
+<td>块长 512 − 重叠 50</td>
+<td><strong>462 token</strong></td>
 </tr>
 <tr>
-<td><strong>混合检索</strong></td>
-<td>两个都跑，合并结果</td>
-<td>实践中的默认选择</td>
-<td>要调融合权重</td>
+<td>块数</td>
+<td>ceil((50000 − 512) ÷ 462) + 1 = ceil(107.12) + 1</td>
+<td><strong>109 块</strong></td>
+</tr>
+<tr>
+<td>最后一块的长度</td>
+<td>50000 − 108 × 462</td>
+<td>104 token（不满，正常）</td>
+</tr>
+<tr>
+<td>存储的 token 总量</td>
+<td>108 × 512 + 104</td>
+<td><strong>55,400 token</strong></td>
+</tr>
+<tr>
+<td><strong>⟹ 重叠带来的膨胀</strong></td>
+<td>55400 ÷ 50000 − 1</td>
+<td><strong>+10.8%</strong></td>
 </tr>
 </tbody>
 </table>
-<p><strong>embedding（嵌入向量）</strong> = 把一段文字压成一串固定长度的数字（比如 1024 个），这串数字代表它的"意思坐标"。把文字变数字这套机制，和 <a href="../数据格式和数据处理/09-Tokenizer与词表.html">数据格式和数据处理/09-Tokenizer与词表</a> 是同源的。</p>
-<h3 id="33-rerank">3.3 再重排（rerank）</h3>
-<p>检索快但粗。常见做法是<strong>两段式</strong>：</p>
-<div class="codehilite"><pre><span></span><code>   第一段：检索  →  快速捞出 50 个候选块（要的是【别漏】）
+<p><strong>膨胀率有个一行就能验的简式</strong>：<code>膨胀 = 重叠 ÷ 步长 = 50 ÷ 462 = 10.8%</code>，和上表逐项算出来的 10.8% 对得上（末块取整会有零点几个百分点的出入）。</p>
+<blockquote>
+<p>🔑 <strong>记住这个简式，它是第 3.2 节整张表的发动机。</strong> 重叠不是"多存一点点"，它是<strong>按步长的比例</strong>在放大存储和索引成本 —— 重叠开到块长的一半，存储就翻倍。</p>
+</blockquote>
+<h3 id="32">3.2 ★★ 块开多大：一张能自己验算的扫描表</h3>
+<p>先把两个<strong>最容易混</strong>的指标定义清楚，下面整节都要用：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>定义</th>
+<th>大白话</th>
+<th>这一步求的是</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>召回率</strong>（Recall）</td>
+<td>捞回来的相关块 ÷ 资料库里<strong>全部</strong>相关块</td>
+<td><strong>别漏</strong></td>
+<td>该找的有没有找全</td>
+</tr>
+<tr>
+<td><strong>精确率</strong>（Precision）</td>
+<td>捞回来的相关块 ÷ 捞回来的<strong>全部</strong>块</td>
+<td><strong>别错</strong></td>
+<td>找回来的里面有多少是真货</td>
+</tr>
+</tbody>
+</table>
+<p><strong>⚠️ 这两个词在中文技术文里被混用得极其严重。</strong> 本章凡是说"检索质量"，一律写明是哪一个；凡是说"提升了多少"，一律写明是<strong>百分点</strong>还是<strong>相对比例</strong>（两者差很远，见 §4.2）。</p>
+<p>现在扫描块长。固定：文档 50,000 token，重叠统一取块长的 10%，检索后取 top-5 塞进 prompt。</p>
+<table>
+<thead>
+<tr>
+<th>块长</th>
+<th>重叠</th>
+<th>步长</th>
+<th><strong>块数</strong></th>
+<th>每块装多少汉字</th>
+<th>top-5 占多少 token</th>
+<th>存储膨胀</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>128</td>
+<td>13</td>
+<td>115</td>
+<td><strong>435</strong></td>
+<td>约 256 字（1 个短段）</td>
+<td>640</td>
+<td>+11.3%</td>
+</tr>
+<tr>
+<td>256</td>
+<td>26</td>
+<td>230</td>
+<td><strong>218</strong></td>
+<td>约 512 字（1 个完整段落）</td>
+<td>1,280</td>
+<td>+11.3%</td>
+</tr>
+<tr>
+<td><strong>512</strong></td>
+<td>51</td>
+<td>461</td>
+<td><strong>109</strong></td>
+<td>约 1,024 字（一个小节）</td>
+<td>2,560</td>
+<td>+11.1%</td>
+</tr>
+<tr>
+<td>1024</td>
+<td>102</td>
+<td>922</td>
+<td><strong>55</strong></td>
+<td>约 2,048 字（一页多）</td>
+<td>5,120</td>
+<td>+11.1%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>块数的验算</strong>（任选一行自己核）：<code>块数 = ceil((50000 − 块长) ÷ 步长) + 1</code>。128 这行：<code>ceil(49872 ÷ 115) + 1 = 434 + 1 = 435</code> ✓。</p>
+<p><strong>⟹ 但上面这张表看不出该选哪个 —— 因为它只有成本，没有质量。</strong> 质量要分两头算，而这两头的方向是<strong>反的</strong>。</p>
+<p><strong>第一头：块太小，一条规定会被切断（伤召回率）。</strong></p>
+<p>假设手册里一条完整的报销规定要 <strong>300 token</strong> 才讲完（前提 + 例外 + 结论），它必须完整落进<strong>某一块</strong>里，模型才看得到全貌。定长切块下，这件事发生的概率是可以算出来的：</p>
+<div class="codehilite"><pre><span></span><code>   一个长度 L 的连续片段，完整落入某一块的概率：
+
+       P = (块长 C − 片段长 L) / 步长 S      （结果截断在 0 和 1 之间）
+
+   为什么：块的起点是 0, S, 2S, 3S, … 一条等间距的梯子。
+          片段从 start 开始，要被某块 [kS, kS+C) 完整装下，
+          必须 kS ≤ start 且 start + L ≤ kS + C，
+          也就是 kS 落在长度为 (C − L) 的窗口里。
+          梯子的间距是 S ⟹ 命中概率就是 (C − L) / S。
+
+   ⟹ 推论：当 重叠 ≥ L 时，C − L = (S + 重叠) − L ≥ S，P = 100%。
+      【重叠的真正作用，就是给&quot;最长的那条完整语义&quot;兜底。】
+</code></pre></div>
+
+<p>代进 L = 300 token：</p>
+<table>
+<thead>
+<tr>
+<th>块长</th>
+<th>块长 − 300</th>
+<th>步长</th>
+<th><strong>一条 300 token 的规定不被切断的概率</strong></th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>128</td>
+<td>−172</td>
+<td>115</td>
+<td><strong>0%</strong></td>
+<td>必然切断 —— 块比规定还短</td>
+</tr>
+<tr>
+<td>256</td>
+<td>−44</td>
+<td>230</td>
+<td><strong>0%</strong></td>
+<td>必然切断</td>
+</tr>
+<tr>
+<td>512</td>
+<td>212</td>
+<td>461</td>
+<td><strong>46%</strong></td>
+<td>超过一半的概率看不到全貌</td>
+</tr>
+<tr>
+<td>1024</td>
+<td>724</td>
+<td>922</td>
+<td><strong>79%</strong></td>
+<td>大多数时候完整</td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★ 这就是"块太小则语义被切断"的数字版本。</strong> 块开 256，一条 300 token 的规定<strong>百分之百</strong>被劈成两块：取回前半块看到"差旅住宿每晚上限 800 元"，却看不到后半块的"一线城市上浮 20%，出差超 7 天另按长住标准" —— 模型会<strong>自信地答错</strong>，而且检索日志里一切正常。这是 RAG 最阴险的一类故障。</p>
+<p><strong>想把概率拉到 100%，代价能算</strong>：块长 512 要兜住 300 token，重叠就得开到 300，步长掉到 212。</p>
+<div class="codehilite"><pre><span></span><code>   块长 512 / 重叠 300 / 步长 212
+     块数    = ceil((50000 − 512) / 212) + 1 = 234 + 1 = 235 块   （是原来的 2.2 倍）
+     存储    = 234 × 512 + 392 = 120,200 token                    （是原文的 2.40 倍）
+     ⟹ 膨胀 +140%，索引、embedding 费用、向量库体积全部跟着翻 2.4 倍
+
+   块长 1024 / 重叠 300 / 步长 724
+     块数    = ceil((50000 − 1024) / 724) + 1 = 68 + 1 = 69 块
+     ⟹ 膨胀 300/724 = +41%，同样 100% 兜住
+
+   ★ 同样要 100% 不切断，大块便宜得多（+41% vs +140%）。
+     这就是&quot;长文档倾向于用大块&quot;的数字理由，不是口味问题。
+</code></pre></div>
+
+<p><strong>第二头：块太大，有效信息被噪声稀释（伤精确率）。</strong></p>
+<p>假设问题的答案本身只有 <strong>40 token</strong>（"差旅住宿每晚 800 元、餐饮每日 150 元"这么一句）。取 top-5 塞进 prompt，模型真正要用的那 40 token 占多大比例：</p>
+<table>
+<thead>
+<tr>
+<th>块长</th>
+<th>top-5 共多少 token</th>
+<th>有效 token</th>
+<th><strong>有效信息占比</strong></th>
+<th>模型要在多少字里找那一句</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>128</td>
+<td>640</td>
+<td>40</td>
+<td><strong>6.3%</strong></td>
+<td>1,280 字</td>
+</tr>
+<tr>
+<td>256</td>
+<td>1,280</td>
+<td>40</td>
+<td><strong>3.1%</strong></td>
+<td>2,560 字</td>
+</tr>
+<tr>
+<td>512</td>
+<td>2,560</td>
+<td>40</td>
+<td><strong>1.6%</strong></td>
+<td>5,120 字</td>
+</tr>
+<tr>
+<td>1024</td>
+<td>5,120</td>
+<td>40</td>
+<td><strong>0.8%</strong></td>
+<td>10,240 字</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 我的判断（不是实测）：这张表的"占比"本身不直接等于准确率的下降 —— 现代模型在几千 token 里定位一句话并不吃力。真正的代价有两条，都更隐蔽：<strong>① 无关的块越大，混进"看起来也像答案"的干扰内容的概率越高</strong>（比如另一条已废止的旧标准）；<strong>② token 预算被吃光</strong>（§3.6 把这笔账算出来）。</p>
+<p><strong>⟹ 两头一夹，结论就出来了：</strong></p>
+<table>
+<thead>
+<tr>
+<th>你的资料长什么样</th>
+<th>建议块长</th>
+<th>理由（回到上面哪张表）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>问答对、FAQ、商品描述 —— 每条本身就很短</td>
+<td><strong>128 – 256</strong></td>
+<td>片段长 L 本来就小，切不断；小块精确率高</td>
+</tr>
+<tr>
+<td><strong>技术文档、手册、政策文件 —— 默认选这个</strong></td>
+<td><strong>512</strong></td>
+<td>L ≈ 200–400 token 的段落居多，512 兜得住大半；top-5 = 2,560 token，预算舒服</td>
+</tr>
+<tr>
+<td>法律条文、论文、长篇叙述 —— 一条逻辑拉得很长</td>
+<td><strong>1024，并把重叠开到 200–300</strong></td>
+<td>上面算过：大块兜住长片段的性价比高 4 倍</td>
+</tr>
+<tr>
+<td>代码</td>
+<td><strong>按函数/类切，不要定长</strong></td>
+<td>代码的"完整语义单位"有明确边界，定长切块等于随机劈函数</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>一句话</strong>：块长不是调出来的，是<strong>量出来的</strong> —— 先去数你的资料里"一条完整的意思"典型有多长（那个 L），再按 <code>重叠 ≥ L</code> 反推块长。拍脑袋填 512 之所以经常能用，只是因为大多数技术文档的段落恰好在 200–400 token。</p>
+</blockquote>
+<hr />
+<h3 id="33-vs">3.3 两种搜法：稀疏 vs 稠密</h3>
+<p>先把两个名字立住：</p>
+<p><strong>稀疏检索</strong>（Sparse Retrieval）—— 对<strong>字面</strong>。代表是 <strong>BM25</strong>（Best Matching 25，一种基于词频的打分公式）。底层数据结构是<strong>倒排索引</strong>（Inverted Index）：一张"词 → 哪些块里有这个词"的大表。</p>
+<p><strong>稠密检索</strong>（Dense Retrieval）—— 对<strong>语义</strong>。把每块文字用一个 embedding 模型压成一串定长的数字（比如 1024 个浮点数），查询时找离问题向量最近的块。底层数据结构是 <strong>ANN 索引</strong>（Approximate Nearest Neighbor，近似最近邻），最常用的实现是 <strong>HNSW</strong>（Hierarchical Navigable Small World，分层可导航小世界图）。</p>
+<blockquote>
+<p>📖 <strong>embedding（嵌入向量）别和 tokenizer 混了。</strong> ⚠️ 原版这篇笔记写它们"同源"，这个说法会误导：<strong>tokenizer 把文字切成一串离散的 id，是查表、可逆、不涉及含义</strong>；<strong>embedding 把一整段文字压成一个连续的实数向量，是跑一个神经网络再池化、不可逆、专门编码含义</strong>。两者只是都叫"把文字变数字"而已。tokenizer 的机制见 <a href="../数据格式和数据处理/09-Tokenizer与词表.html">数据格式和数据处理/09-Tokenizer与词表</a>。</p>
+</blockquote>
+<p>逐项对照：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th><strong>稀疏（BM25）</strong></th>
+<th><strong>稠密（向量）</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>匹配的是</td>
+<td>词形重叠 + 词频权重</td>
+<td>向量空间里的距离</td>
+</tr>
+<tr>
+<td>同义词改写（"报账" vs "报销"）</td>
+<td>✗ <strong>分数为 0</strong>，倒排表里根本没这个词</td>
+<td>✓ 强项</td>
+</tr>
+<tr>
+<td>专有名词 / 型号 / 错误码（"CUDA error 700"）</td>
+<td>✓ 精确命中</td>
+<td>✗ 容易被 701、719 带偏</td>
+</tr>
+<tr>
+<td>数字 / 版本号 / 日期</td>
+<td>✓ 当成普通词精确匹配</td>
+<td>✗ 向量对数字极不敏感</td>
+</tr>
+<tr>
+<td>拼写错误</td>
+<td>✗ 除非额外做模糊匹配</td>
+<td>△ 部分能容忍</td>
+</tr>
+<tr>
+<td>新词、内部黑话、训练时没见过的词</td>
+<td>✓ 字面在就能搜到</td>
+<td>✗ embedding 模型没见过，向量是乱的</td>
+</tr>
+<tr>
+<td>长查询 / 一整句话</td>
+<td>△ 停用词会拖累打分</td>
+<td>✓ 强项</td>
+</tr>
+<tr>
+<td>索引结构</td>
+<td>倒排索引</td>
+<td>HNSW / IVF 等 ANN 索引</td>
+</tr>
+<tr>
+<td><strong>100 万块的索引大小</strong></td>
+<td>⚠️ 约 0.1 – 0.5 GiB（取决于词表和压缩）</td>
+<td><strong>3.81 GiB</strong>（1024 维 FP32，§3.5 算）</td>
+</tr>
+<tr>
+<td>加一份新文档</td>
+<td>增量更新倒排表，<strong>便宜</strong></td>
+<td>要跑一遍 embedding 模型，<strong>贵</strong>（见 §3.5）</td>
+</tr>
+<tr>
+<td>结果可解释</td>
+<td>✓ 能指出是哪几个词命中、各贡献多少分</td>
+<td>✗ 只有一个相似度分数，问为什么没法答</td>
+</tr>
+<tr>
+<td>失败时的表现</td>
+<td><strong>返回空 / 分数全 0</strong>，一眼看得出</td>
+<td><strong>返回一堆看着像的块</strong>，看不出失败了 ⚠️</td>
+</tr>
+</tbody>
+</table>
+<p><strong>最后一行是最要命的。</strong> 稀疏检索失败时会明说"没找到"；稠密检索永远能给你 top-5，哪怕这 5 块和问题毫无关系 —— 因为"最近"是相对的，再远也有个最近的。</p>
+<h3 id="34">3.4 ★ 混合检索：不是"都用上更好"，是失败模式互补</h3>
+<p><strong>先看两个谁都救不了对方的例子</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   例 ①  BM25 死，向量活
+   ─────────────────────────────────────────────
+     问题：  「出差的住宿费怎么【报账】？」
+     文档：  「差旅【费用报销】标准：住宿每晚上限 800 元…」
+
+     BM25：  &quot;报账&quot; 这个词在倒排表里 → 命中 0 个块 → 分数 0
+             ⟹ 该块的 BM25 排名：不存在
+     向量：  &quot;报账&quot; 和 &quot;费用报销&quot; 的向量几乎重合
+             ⟹ 该块的向量排名：第 1
+
+   例 ②  向量死，BM25 活
+   ─────────────────────────────────────────────
+     问题：  「CUDA error 700 是什么意思？」
+     文档库里有：  块 A 讲 error 700，块 B 讲 error 701，块 C 讲 error 719
+
+     向量：  三块的文字几乎一模一样，只差一个数字，
+             向量距离差不到 1% ⟹ 排名基本随机，A 可能排第 3
+     BM25：  &quot;700&quot; 是个独立的 token，只有块 A 含有它，
+             而且它在全库里很罕见（IDF 高）⟹ 块 A 稳稳第 1
+</code></pre></div>
+
+<p><strong>⟹ 这不是"两个都用准确率更高"这种和稀泥的说法，而是：一方归零的场合，恰好是另一方满分的场合。</strong> 混合检索的价值全在这里。</p>
+<p><strong>怎么合并两路结果：RRF</strong>（Reciprocal Rank Fusion，倒数排名融合）。公式只有一行：</p>
+<div class="codehilite"><pre><span></span><code>   RRF(块 d) = Σ  1 / (k + 该块在第 i 路里的排名)
+               i
+
+   k 是个平滑常数，原论文的经验值 k = 60。
+   ★ 注意它只用【排名】，不用【分数】——
+     这正是它流行的原因：BM25 的分数（可能 0~30）和余弦相似度（0~1）
+     根本没法直接相加，而排名天然可比。
+</code></pre></div>
+
+<p><strong>把一个具体例子逐行算出来</strong>（k = 60，某块在某一路没进榜就记 0 分）：</p>
+<table>
+<thead>
+<tr>
+<th>块</th>
+<th>BM25 排名</th>
+<th>向量排名</th>
+<th>BM25 贡献</th>
+<th>向量贡献</th>
+<th><strong>RRF 总分</strong></th>
+<th><strong>融合后排名</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>1</td>
+<td>50</td>
+<td>1/61 = 0.01639</td>
+<td>1/110 = 0.00909</td>
+<td>0.02548</td>
+<td>2</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td>3</td>
+<td>2</td>
+<td>1/63 = 0.01587</td>
+<td>1/62 = 0.01613</td>
+<td><strong>0.03200</strong></td>
+<td><strong>1</strong></td>
+</tr>
+<tr>
+<td>C</td>
+<td>未命中</td>
+<td>1</td>
+<td>0</td>
+<td>1/61 = 0.01639</td>
+<td>0.01639</td>
+<td>3</td>
+</tr>
+<tr>
+<td>D</td>
+<td>2</td>
+<td>未命中</td>
+<td>1/62 = 0.01613</td>
+<td>0</td>
+<td>0.01613</td>
+<td>4</td>
+</tr>
+</tbody>
+</table>
+<p><strong>★★ 看块 B：它在哪一路都不是第一名，融合后却排第一。</strong> 这就是 RRF 的全部机制 —— <strong>"两路都认可"胜过"单路的冠军"</strong>。反过来看块 A：BM25 的冠军，但向量那边排到 50，被拖到第 2；块 C 是向量的冠军，但 BM25 完全没捞到它，只能排第 3。</p>
+<p><strong>k = 60 在控什么</strong>：k 越大，名次之间的分差越平。上表里 1/61 和 1/62 只差 1.6%，第 1 名和第 2 名几乎平权；如果把 k 设成 0，1/1 和 1/2 差 50%，第 1 名就有压倒性权重。⚠️ k = 60 是经验值，不同数据集的最优值不同，但它<strong>不需要调两路的相对权重</strong> —— 这是 RRF 相对"线性加权融合"的主要优势。</p>
+<blockquote>
+<p>⚠️ <strong>修正原版笔记的一处说法。</strong> 原版把混合检索的代价写成"要调融合权重"，这对 RRF 不成立（它压根没有权重）。混合检索真实的代价是另外两条：<strong>① 两套索引都要建、都要维护、都要跟着文档更新，存储和写入成本翻倍</strong>；<strong>② 查询延迟取两路的较大者，不是较小者</strong>。</p>
+</blockquote>
+<h3 id="35">3.5 向量索引的规模账：为什么向量库非量化不可</h3>
+<p><strong>基准场景</strong>：100 万个块，每块一个 1024 维向量。</p>
+<div class="codehilite"><pre><span></span><code>   100 万 × 1024 维 × 4 字节（FP32）
+     = 1e6 × 1024 × 4
+     = 4.096e9 字节
+     = 4.096 GB（十进制，10^9）
+     = 3.81 GiB（二进制，2^30）    ← 4.096e9 ÷ 1,073,741,824 = 3.8147
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>GB 和 GiB 差 7.4%，别混。</strong> <code>1 GB = 10^9 字节</code>，<code>1 GiB = 2^30 字节 = 1.074e9 字节</code>。向量库、显存、页大小这类按 2 的幂走的量，<strong>写 GiB 才对得上你在 <code>free -g</code> 或 <code>nvidia-smi</code> 里看到的数</strong>。本章统一用 GiB，括号里附 GB。</p>
+</blockquote>
+<p><strong>四种精度横着比</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>每维存法</th>
+<th>每向量字节</th>
+<th><strong>100 万块合计</strong></th>
+<th>相对 FP32</th>
+<th>⚠️ 质量代价（我的判断，非实测）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FP32（32 位浮点）</td>
+<td>4,096</td>
+<td><strong>3.81 GiB</strong>（4.10 GB）</td>
+<td>1×</td>
+<td>基线</td>
+</tr>
+<tr>
+<td>FP16 / BF16（16 位）</td>
+<td>2,048</td>
+<td><strong>1.91 GiB</strong>（2.05 GB）</td>
+<td>0.5×</td>
+<td>几乎无损，<strong>默认就该用这个</strong></td>
+</tr>
+<tr>
+<td>int8（8 位整数量化）</td>
+<td>1,024</td>
+<td><strong>0.95 GiB</strong>（1.02 GB）</td>
+<td>0.25×</td>
+<td>轻微，需配精排补回</td>
+</tr>
+<tr>
+<td>二值（1 位/维）</td>
+<td>128</td>
+<td><strong>122 MiB</strong>（0.13 GB）</td>
+<td>1/32</td>
+<td>明显，只能当粗筛</td>
+</tr>
+</tbody>
+</table>
+<p><strong>别忘了图结构本身也占地方</strong>。HNSW 要为每个向量存一份邻居列表：</p>
+<div class="codehilite"><pre><span></span><code>   ⚠️ 估算（M = 16 的常见配置）：
+     底层每个节点存 M0 = 2M = 32 个邻居 ID × 4 字节 = 128 字节
+     上层节点数按约 1/M 逐层衰减，总和 ≈ 128 × 16/15 ≈ 137 字节/向量
+     ⟹ 100 万向量的图开销 ≈ 1.37e8 字节 ≈ 0.13 GiB
+
+   ⟹ FP32 方案总占用 = 3.81 + 0.13 = 3.94 GiB
+      int8 方案总占用 = 0.95 + 0.13 = 1.08 GiB
+      ★ 注意：量化只压向量，不压图。压到 int8 之后，
+        图开销从占比 3% 升到 12%，再往下压收益就开始递减了。
+</code></pre></div>
+
+<p><strong>把规模放大到一个真实的企业知识库，分片的理由就自己冒出来了</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>规模</th>
+<th>块数</th>
+<th>FP32</th>
+<th>FP16</th>
+<th>int8</th>
+<th>能装进哪里</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一个部门的 wiki</td>
+<td>100 万</td>
+<td>3.81 GiB</td>
+<td>1.91 GiB</td>
+<td>0.95 GiB</td>
+<td>随便一台机器的内存</td>
+</tr>
+<tr>
+<td>全公司文档（10 万份）</td>
+<td>1 亿</td>
+<td><strong>381 GiB</strong></td>
+<td>191 GiB</td>
+<td><strong>95 GiB</strong></td>
+<td>FP32 塞不进常见单机；int8 可以</td>
+</tr>
+<tr>
+<td>全网级</td>
+<td>100 亿</td>
+<td><strong>37.3 TiB</strong></td>
+<td>18.6 TiB</td>
+<td><strong>9.3 TiB</strong></td>
+<td><strong>任何精度都必须分片</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   验算第二行：
+     FP32  1e8 × 1024 × 4 = 4.096e11 字节 ÷ 2^30 = 381.5 GiB
+     int8  1e8 × 1024 × 1 = 1.024e11 字节 ÷ 2^30 =  95.4 GiB
+
+   验算第三行（★ 注意量级，1e10 是 1e8 的 100 倍，不是 10 倍）：
+     FP32  1e10 × 1024 × 4 = 4.096e13 字节 ÷ 2^40 = 37.3 TiB
+     int8  1e10 × 1024 × 1 = 1.024e13 字节 ÷ 2^40 =  9.3 TiB
+</code></pre></div>
+
+<p><strong>⟹ 所以向量库的两项基本功 —— 量化和分片 —— 不是炫技，是上面这张表逼出来的。</strong> int8 把 381 GiB 压到 95 GiB，就是"要不要买 8 台机器"和"一台机器就够"的区别。</p>
+<p><strong>量化的标准补救办法</strong>：粗召回用量化向量（快、省内存），拿到 top-100 之后，再用<strong>原始精度</strong>的向量把这 100 个重新算一遍距离、重新排序（这叫 rescoring / 精排）。只对 100 个向量做全精度计算，代价可以忽略。</p>
+<p><strong>查询延迟：为什么非要用"近似"最近邻。</strong></p>
+<div class="codehilite"><pre><span></span><code>   精确做法（暴力扫描 100 万个 FP32 向量）：
+     必须把 3.81 GiB 全读一遍
+     按内存带宽 ⚠️ 200 GB/s 算 ⟹ 4.096e9 / 200e9 ≈ 20 ms / 次查询
+     ⟹ 单机每秒只能服务 50 次查询，还把内存带宽吃光了
+
+   ANN 做法（HNSW）：
+     只沿着图走访约 efSearch（典型 100）× 几层 ≈ 数千个节点
+     ⟹ ⚠️ 亚毫秒到几毫秒，比暴力快 1–2 个数量级
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这里有第二个"召回率"，极容易和 §3.2 的召回率混。</strong> ANN 的召回率指的是「ANN 返回的 top-k 里，有多少个确实属于<strong>真正的</strong> top-k」，典型值 95–99%；它衡量的是<strong>索引近似得准不准</strong>。而 §3.2 的召回率衡量的是<strong>资料库里该找的块有没有找全</strong>。两者的分母完全不同。本章凡是提到 ANN 时，一律写成「<strong>ANN 召回率</strong>」以示区别。</p>
+</blockquote>
+<hr />
+<h3 id="36-token">3.6 ★★ 重排：它存在的理由，是 token 预算</h3>
+<p>检索快但粗。标准做法是<strong>两段式</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   第一段：检索（稀疏 + 稠密 + RRF）
+        ⟹ 快速捞出 100 个候选块
+        ⟹ 这一段冲的是【召回率】：宁滥勿缺，别漏
         │
-   第二段：rerank →  用一个更贵、更准的小模型逐个打分，
-                    只留最好的 3~5 块（要的是【别错】）
+   第二段：rerank（重排）
+        ⟹ 用一个更贵、更准的 cross-encoder（交叉编码器）逐个打分
+           ★ 它把【问题 + 这一块】拼成一条输入一起过模型，
+             所以能看到词级别的对应关系，比&quot;两个向量算距离&quot;准得多
+        ⟹ 只留最好的 5 块
+        ⟹ 这一段冲的是【精确率】：宁缺勿滥，别错
         │
         ▼
      塞进 prompt
 </code></pre></div>
 
-<p>✅ rerank 是长上下文评测里的标准子任务 —— MiniMax M3 论文 Table 3 的 HELMET-128K 就有 <code>Rerank/RAG</code> 这一项（详见 <a href="../业界模型技术报告/MiniMax-M3.html">业界模型技术报告/MiniMax-M3.md</a>）。</p>
+<p><strong>为什么非要砍到 5 块？把 token 预算算出来就清楚了。</strong> 固定块长 512 token，窗口 128K（131,072 token）：</p>
+<table>
+<thead>
+<tr>
+<th>top-k</th>
+<th>检索内容占多少 token</th>
+<th><strong>占 128K 窗口</strong></th>
+<th>⚠️ Prefill 耗时（按 15 µs/token 粗算）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3</td>
+<td>1,536</td>
+<td><strong>1.2%</strong></td>
+<td>23 ms</td>
+</tr>
+<tr>
+<td><strong>5</strong></td>
+<td><strong>2,560</strong></td>
+<td><strong>2.0%</strong></td>
+<td><strong>38 ms</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td>5,120</td>
+<td><strong>3.9%</strong></td>
+<td>77 ms</td>
+</tr>
+<tr>
+<td>20</td>
+<td>10,240</td>
+<td><strong>7.8%</strong></td>
+<td>154 ms</td>
+</tr>
+<tr>
+<td>50</td>
+<td>25,600</td>
+<td><strong>19.5%</strong></td>
+<td>384 ms</td>
+</tr>
+<tr>
+<td><strong>100（召回的全量）</strong></td>
+<td><strong>51,200</strong></td>
+<td><strong>39.1%</strong></td>
+<td><strong>768 ms</strong> ⟹ ⚠️ 实际更久，见下</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ★ 占比验算（两行都是纯数字，可以直接核）：
+        2560 / 131072 = 1.953%  ⟹   2.0%  ✓
+       51200 / 131072 = 39.06%  ⟹  39.1%  ✓
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>上表的 Prefill 耗时有两处必须说清楚，否则就是把推断当结论。</strong><br />
+<strong>第一，这 15 µs/token 不是我编的，也不是实测</strong>：它来自 <a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">推理框架/推理优化入门/03-Prefill与Decode两阶段</a> 的 roofline 扫描表（Llama-3-8B、单张 H100、40% MFU），该表里 prompt = 2048 时的 Prefill 单 token 成本是 <strong>14.7 µs</strong>。<br />
+<strong>第二，它不是常数，长 prompt 会变贵</strong>：同一张表里 prompt = 32768 时单 token 成本涨到 <strong>22.8 µs</strong>（注意力的平方项开始发作）。所以上表最后一行 51,200 token 的真实耗时更接近 <code>51200 × 23 µs ≈ 1,180 ms</code>，而不是 768 ms。<strong>⟹ 这个偏差是往"重排更有必要"的方向偏的，下面的账我按 1,180 ms 算。</strong></p>
+</blockquote>
+<p><strong>⟹ 现在把"要不要 rerank"做成一道对比题</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   方案 A：不重排，100 个候选块全塞进 prompt
+     Prefill ≈ 1,180 ms
+     ⟹ 总计 ≈ 1,180 ms
+
+   方案 B：先用小模型重排，只塞 5 块
+     rerank：100 条 ×（问题 50 + 块 512）≈ 56,200 token，过一个 0.5B 的 cross-encoder
+             ⚠️ 粗算 2 × 5e8 × 56200 = 5.6e13 FLOP ÷ 396e12 ≈ 142 ms
+     主模型 Prefill：2,560 token × 15 µs ≈ 38 ms
+     ⟹ 总计 ≈ 180 ms
+
+   ★★ 对比（⚠️ 全程是量级估计，不是实测）：
+       时间从 1,180 ms 降到 180 ms
+       ⟹ 时间【减少 85%】
+       ⟹ 加速【6.6 倍】       ← 1 / (1 − 0.85) = 6.67
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>「时间减少 85%」和「加速 85%」是两回事，差得很远。</strong> 换算只有一条：<code>加速倍数 = 1 / (1 − 时间减少比例)</code>。减少 50% = 加速 2 倍；减少 85% = 加速 6.6 倍；减少 90% = 加速 10 倍。<strong>本仓库在这上面栽过跟头</strong>（<a href="../推理框架/推理优化入门/10-PD分离.html">推理框架/推理优化入门/10-PD分离</a> 专门记了一笔）。</p>
+</blockquote>
+<p><strong>但 rerank 不是免费的，它会掉召回率 —— 这笔账也要算。</strong> 假设资料库里真正和问题相关的块有 4 个：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>返回几块</th>
+<th>其中相关的</th>
+<th><strong>召回率</strong></th>
+<th><strong>精确率</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>第一段检索 top-100</td>
+<td>100</td>
+<td>4（全在里面）</td>
+<td><strong>100%</strong></td>
+<td><strong>4%</strong></td>
+</tr>
+<tr>
+<td>rerank 后 top-5</td>
+<td>5</td>
+<td>3（漏掉了 1 个）</td>
+<td><strong>75%</strong></td>
+<td><strong>60%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ★★ 这张表怎么读（三句话都要写对）：
+     召回率  100% → 75%   ⟹ 掉了【25 个百分点】
+     精确率    4% → 60%   ⟹ 涨了【56 个百分点】，也可以说涨了【15 倍】（60 ÷ 4）
+     ⚠️ 但【绝不能说&quot;精确率提升了 56%&quot;】——
+        那会被读成相对提升 56%，即 4% → 6.2%，差了一个数量级。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是 rerank 的本质：拿 25 个百分点的召回率，换 56 个百分点的精确率 + 6.6 倍的速度。</strong> 它不是"让检索变准的魔法步骤"，它是一笔<strong>在 token 预算约束下的明码交易</strong>。如果你的窗口无限大、Prefill 免费，那 rerank 的性价比会大幅下降 —— 直接把 100 块全塞进去，召回率白拿 100%。<strong>rerank 之所以是必需的，全部理由就是 token 预算有限。</strong></p>
+</blockquote>
 <hr />
 <h2 id="4-rag">4. RAG 在本仓库的三个角色</h2>
 <p><strong>别串了 —— 同一个词，在三个目录里扮演三种完全不同的东西。</strong></p>
-<h3 id="41">4.1 在 <a href="../推理框架/">推理框架/</a>：它是"长输入短输出"的典型负载</h3>
-<p><a href="../推理框架/推理优化入门/10-PD分离.html">推理优化入门/10-PD分离</a> 整章拿 RAG 当例子：</p>
-<div class="codehilite"><pre><span></span><code>   输入：一份文档 + 问题 = 4096 个 token   ⟸ Prefill 要干的活
-   输出：200 个字                          ⟸ Decode 要干的活
+<h3 id="41-prefill">4.1 在 <a href="../推理框架/">推理框架/</a>：它是"长输入"的典型负载 —— 但"Prefill 为主"有前提</h3>
+<p>RAG 的 prompt 天生很长（§3.6 算过：top-5 就是 2,560 token，长文场景动辄几万），所以它是 <strong>Prefill 重</strong>的负载。<a href="../推理框架/推理优化入门/10-PD分离.html">推理框架/推理优化入门/10-PD分离</a> 整章拿一次 4K 文档的 RAG 问答当主线例子。</p>
+<p><strong>⚠️ 但"输入长所以 Prefill 是瓶颈"这个推论是错的，原版这篇笔记就错在这里。</strong> 真正决定瓶颈的是<strong>输入输出长度比（P:D ratio）</strong>，不是输入的绝对长度。把本仓库两章里的三组数并排看：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>prompt</th>
+<th>输出</th>
+<th>Prefill 耗时</th>
+<th>Decode 耗时</th>
+<th><strong>Prefill 占墙上时间</strong></th>
+<th>瓶颈</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4K 文档问答，答 200 字</td>
+<td>4,096</td>
+<td>200</td>
+<td>177 ms</td>
+<td>200 × 8.7 = 1,740 ms</td>
+<td><strong>9.2%</strong></td>
+<td>★ <strong>Decode</strong></td>
+</tr>
+<tr>
+<td>32K 文档总结，答 200 token</td>
+<td>32,768</td>
+<td>200</td>
+<td>747 ms</td>
+<td>200 × 5.77 = 1,154 ms</td>
+<td><strong>39%</strong></td>
+<td>★ Prefill</td>
+</tr>
+<tr>
+<td>32K 文档抽一个字段，答 20 token</td>
+<td>32,768</td>
+<td>20</td>
+<td>747 ms</td>
+<td>20 × 5.77 = 115 ms</td>
+<td><strong>87%</strong></td>
+<td>★★ Prefill</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ✅ 第 1 行出自 [推理框架/推理优化入门/10-PD分离]
+      （Llama-3-8B、单张 H100、8 个用户共卡，Prefill 177 ms、稳态 TBT 8.7 ms）
+   ✅ 第 2、3 行出自 [推理框架/推理优化入门/03-Prefill与Decode两阶段]
+      （同模型同卡，但是 batch = 1 的单请求）
+
+   ⚠️⚠️ 这三行【来自两种不同的设定】，不能横着相减、不能拼成一条曲线。
+        只能各自看自己那一行的占比。
+        （本仓库最高频的一类错就是把两套设定的数字混成一张表，这里特意标出来。）
 </code></pre></div>
 
-<p>⚠️ 该章按 roofline 粗算（Llama-3-8B、单张 H100，<strong>量级估计不是实测</strong>）：</p>
-<ul>
-<li>Prefill 那 4096 个 token ≈ <strong>165 ms</strong> —— 算力受限</li>
-<li>Decode 那 200 个字 ≈ <strong>1.4 秒</strong>（每个 token 约 7 ms）—— 访存受限</li>
-</ul>
-<p><strong>🔑 两件事的瓶颈完全不同，硬塞在一张卡上会互相拖累 —— 这就是 PD 分离（Prefill/Decode 分离）要解决的问题。</strong></p>
-<p>顺带，<a href="../推理框架/推理优化入门/08-投机解码.html">08-投机解码</a> 里说 RAG 是 <strong>n-gram 投机解码的神器</strong>：因为 RAG 的答案经常<strong>大段照抄</strong>参考资料，而原文就摆在 prompt 里，直接查表就能猜中下一个词，零成本加速。</p>
+<p><strong>⟹ 修正后的结论</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>原版笔记的说法</th>
+<th>实际情况</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"RAG 输入长输出短 ⟹ Prefill 为主 ⟹ 要上 PD 分离"</td>
+<td>⚠️ <strong>只在输出很短时成立。</strong> 4K 文档 + 200 字回答，Prefill 只占 9.2%，Decode 才是大头</td>
+</tr>
+<tr>
+<td>引用"Prefill 4096 token ≈ 165 ms"</td>
+<td>❌ <strong>过期</strong>。该章重写后是 <strong>177 ms</strong>（40% MFU 下的算力侧耗时）</td>
+</tr>
+<tr>
+<td>引用"Decode 200 个字 ≈ 1.4 秒"</td>
+<td>❌ <strong>过期</strong>。该章重写后是 <strong>1.74 秒</strong>（8 人共卡、TBT 8.7 ms）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>🔑 所以这一节真正该记住的是</strong>：RAG 把 prompt 拉长，<strong>于是它把 Prefill 从"可以忽略的 0.5%"推到了"占 9% 到 87% 的一个大区间"</strong> —— 瓶颈从此不再是一个固定答案，而是随业务形态（让它答一句话还是写一篇总结）来回翻转。两个阶段抢同一张卡、而各自把一种资源用到上限、另一种闲着，这才是 PD 分离（Prefill/Decode Disaggregation，把两阶段拆到不同卡上跑）要解决的问题。</p>
+<p><strong>⟹ 所以前缀缓存（Prefix Caching）对 RAG 特别值钱 —— 但有一个工程前提容易被忽略。</strong></p>
+<div class="codehilite"><pre><span></span><code>   前缀缓存能跳过 Prefill 的条件：从第 0 个 token 开始【逐字相同】。
+   「前缀」是真的前缀，不是「prompt 里出现过的任意片段」。
+
+   ⟹ 于是 prompt 的【拼接顺序】直接决定了命中率：
+
+   ✗ 写法 ① 检索块放最前面
+       [块#37][块#38]…[系统提示词][问题]
+       每次查询检索到的块都不同 ⟹ 第 0 个 token 就不一样
+       ⟹ 缓存命中率【归零】，一个 token 都省不下
+
+   ✓ 写法 ② 固定内容放最前面
+       [系统提示词 + 输出格式约定][块#37][块#38]…[问题]
+       前面那一截每次都一样 ⟹ 这部分 Prefill 【直接跳过】
+       ⟹ 系统提示词有多长，就省下多少
+
+   ✓✓ 写法 ③ 多轮追问同一批资料（收益最大）
+       第 1 轮：[系统提示词][检索到的 5 块][问题 1]
+         ⟹ 全量 Prefill
+       第 2 轮：[系统提示词][检索到的 5 块][问题 2]
+         ⟹ 前面全部命中，2,560 token 的检索内容一个字都不用重算
+</code></pre></div>
+
+<p>机制见 <a href="../推理框架/推理优化入门/05-PagedAttention与前缀缓存.html">推理框架/推理优化入门/05-PagedAttention与前缀缓存</a>。⚠️ 我的判断：写法 ① / ② 的差别是 RAG 工程里最便宜的一次优化 —— 只是调了个拼接顺序，不改模型、不改检索。</p>
+<p>顺带，<a href="../推理框架/推理优化入门/08-投机解码.html">推理框架/推理优化入门/08-投机解码</a> 里说 RAG 是 <strong>n-gram 投机解码的神器</strong>：RAG 的答案经常<strong>大段照抄</strong>参考资料，而原文就摆在 prompt 里，直接查表就能猜中下一个词。✅ 该章的结论是「代码补全 / RAG / 文本改写 —— 先上 n-gram，零显存零训练，额外开销 &lt; 2%，零风险」。⚠️ 但该章同时引了一篇实测论文提醒：接受长度在请求之间剧烈波动，别把理论加速比当实测（它的例子里理论上限 2.75× 而实测只有 2.1×）。</p>
 <h3 id="42-harness">4.2 在 <a href="../harness评测框架/">harness评测框架/</a>：它是"弱脚手架"的反面教材</h3>
-<p>✅ SWE-agent 论文 Table 1，SWE-bench Lite，<strong>同一个 GPT-4 Turbo，一个字没换</strong>：</p>
+<p>✅ SWE-agent 论文 Table 1，SWE-bench Lite（300 题），<strong>同一个 GPT-4 Turbo，一个字没换</strong>：</p>
 <table>
 <thead>
 <tr>
 <th>脚手架</th>
 <th>% Resolved</th>
+<th>✅ 论文同表给的平均成本</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>RAG（一轮盲写）</strong></td>
+<td><strong>RAG（一轮盲写，BM25 检索）</strong></td>
 <td><strong>2.67</strong></td>
+<td>$0.13</td>
 </tr>
 <tr>
 <td>Shell-only agent（能跑 shell，但界面是原生 Linux）</td>
 <td>11.00</td>
+<td>$1.46</td>
 </tr>
 <tr>
-<td>SWE-agent（专门设计的界面）</td>
+<td>SWE-agent（专门设计的交互界面）</td>
+<td><strong>18.00</strong></td>
+<td>$1.67</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 差出来的这些，全是【脚手架】贡献的，模型一个字没换。
+
+   ⚠️ 但「差了多少」有三种说法，别混成一句（本仓库在这上面反复栽）：
+       18.00 − 2.67          = 15.33   ⟹ 这叫【差 15.33 个百分点】
+       18.00 ÷ 2.67          = 6.74    ⟹ 这叫【6.7 倍】
+       (18.00 − 2.67) / 2.67 = 574%    ⟹ 这叫【相对提升 574%】
+     ★ 三句话都对，说的是同一件事。
+       ✗ 唯一错的说法是「提升了 15%」——15 是百分点，不是百分比。
+</code></pre></div>
+
+<p><strong>为什么 RAG 只有 2.67？</strong> 因为它的流程是：BM25 关键词搜出几个文件 → 塞进 prompt → 模型一次性吐补丁 → 用正则抠出来 → 完。</p>
+<p><strong>★★ 一轮。没有工具。没有反馈。不跑测试。不知道自己改对没有。</strong></p>
+<p><strong>⚠️ 但有一个反向的事实值得诚实地记下来</strong> —— 按"每花一美元换到多少个百分点"算，RAG 反而是三者里最划算的：</p>
+<div class="codehilite"><pre><span></span><code>   RAG        ：2.67 ÷ 0.13 = 20.5 百分点 / 美元
+   SWE-agent  ：18.00 ÷ 1.67 = 10.8 百分点 / 美元
+   ⟹ RAG 的【单位成本效率】是 SWE-agent 的 1.9 倍，
+      但它的【天花板】只有 2.67，再多给钱也上不去。
+
+   ★ 这才是第 5 节要讲的事：RAG 便宜，但它的问题不是贵，是【封顶】。
+</code></pre></div>
+
+<p>详见 <a href="../harness评测框架/agent脚手架/01-两个harness不是一个东西.html">harness评测框架/agent脚手架/01-两个harness不是一个东西</a>。</p>
+<h3 id="43">4.3 在 <a href="../多模态大模型/">多模态大模型/</a>：它是一条被看好的路线的参照物</h3>
+<p>超长视频不可能整段塞进模型 —— <strong>这件事也能一行算出来</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   1 小时视频，按 1 帧/秒抽帧 = 3,600 帧
+   ⚠️ 每帧按 256 个 token 编码（取决于视觉编码器和分辨率，量级假设）
+   ⟹ 3,600 × 256 = 921,600 token
+   ⟹ 921600 / 131072 = ★ 128K 窗口的 7.0 倍，根本装不下
+</code></pre></div>
+
+<p><strong>⟹ 于是只能先检索出相关的几个片段，再塞进模型 —— 这个思路和文本 RAG 是一个形状</strong>：切块（文本切段落 / 视频切片段）、编码成向量、按查询检索、只把 top-k 塞进 prompt。四步一一对应。</p>
+<p><a href="../多模态大模型/05-位置编码与视频.html">多模态大模型/05-位置编码与视频</a> 和 <a href="../多模态大模型/14-演进主线与开放问题.html">多模态大模型/14-演进主线与开放问题</a> 都提到"检索路线和文本 RAG 同构"，并（⚠️ 作者判断，不是业界共识）倾向认为检索路线会赢过"无脑把窗口拉长"。</p>
+<p><strong>⚠️ 一处要点出来的不对称</strong>：文本 RAG 的块是<strong>自然有边界</strong>的（段落、小节），视频没有 —— "一个完整的动作"从第几秒到第几秒，机器不知道。所以 §3.2 那条 <code>重叠 ≥ 片段长度</code> 的兜底法则在视频上更难用，因为你量不出那个 L。</p>
+<p><strong>✅ 另外，rerank 本身已经是长上下文评测里的一个标准子项</strong>：MiniMax M3 论文 Table 3 的 HELMET-128K 下就有 <code>Rerank/RAG</code> 这一项（Full 注意力 34.60 vs MSA-CPT 稀疏注意力 32.50，差 −2.10）。⚠️ <strong>注意这两个数比的是"两种注意力实现"，不是"rerank 做得好不好"</strong> —— 它只能说明"检索重排类任务对注意力的稀疏化比较敏感"，不能拿来评价任何一套 RAG 系统。详见 <a href="../业界模型技术报告/MiniMax-M3.html">业界模型技术报告/MiniMax-M3.md</a>。</p>
+<hr />
+<h2 id="5-rag-agent">5. 天花板：RAG 不是 agent</h2>
+<div class="codehilite"><pre><span></span><code>   RAG（单轮）
+     查资料 --&gt; 写答案。
+     【一轮，不看结果】
+
+   agent（多轮）
+     想 --&gt; 动手 --&gt; 看报错 --&gt; 再想 --&gt; 再动手。
+     【多轮，看结果】
+</code></pre></div>
+
+<p>这是 §4.2 那 6.7 倍差距的根源。<strong>RAG 把资料递过去就撒手了，模型写错了也没有第二次机会。</strong></p>
+<p><strong>逐项对照</strong>（右边一列既包括 agentic RAG，也包括通用 agent）：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th><strong>RAG（单轮）</strong></th>
+<th><strong>agentic RAG / agent</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>检索次数</td>
+<td><strong>固定 1 次</strong>，写死在代码里</td>
+<td>模型自己决定，0 到 N 次</td>
+</tr>
+<tr>
+<td>能不能<strong>改写查询</strong></td>
+<td>△ 只能做<strong>不看结果</strong>的固定改写（同义词表、HyDE 等），改完还是一次性的</td>
+<td>✓ 看到结果不对就换词重搜</td>
+</tr>
+<tr>
+<td>能不能<strong>验证结果</strong></td>
+<td>✗ 捞到什么用什么，没有"够不够"的概念</td>
+<td>✓ 能判断"这几块够不够回答"，不够就再搜一轮</td>
+</tr>
+<tr>
+<td><strong>多跳问题</strong></td>
+<td>✗ 结构性做不到（见下面的例子）</td>
+<td>✓ 拆成两步查</td>
+</tr>
+<tr>
+<td>能不能<strong>调工具</strong></td>
+<td>✗ 只有一个检索动作</td>
+<td>✓ 检索只是它的工具之一（还能跑代码、读文件、调 API）</td>
+</tr>
+<tr>
+<td><strong>失败时会怎样</strong></td>
+<td>⚠️ <strong>静默编一个答案</strong>，用那几块不相关的资料硬答</td>
+<td>可以回答"资料里没有"</td>
+</tr>
+<tr>
+<td>延迟</td>
+<td>1 次检索 + 1 次生成，<strong>可预测</strong></td>
+<td>N 轮，<strong>不可预测</strong>，要设超时</td>
+</tr>
+<tr>
+<td>成本</td>
+<td>固定（✅ $0.13/题）</td>
+<td>发散（✅ $1.67/题），<strong>必须设预算上限</strong></td>
+</tr>
+<tr>
+<td>调试难度</td>
+<td>容易：日志里就是"搜了什么、塞了什么"</td>
+<td>难：要回放整条轨迹</td>
+</tr>
+<tr>
+<td>✅ 天花板（SWE-bench Lite）</td>
+<td><strong>2.67</strong></td>
 <td><strong>18.00</strong></td>
 </tr>
 </tbody>
 </table>
-<div class="codehilite"><pre><span></span><code>   ⟹ 🔑 差出来的 15 个点，全是【脚手架】贡献的。
+<p><strong>"多跳问题"为什么是结构性做不到，看一个具体例子</strong>：</p>
+<div class="codehilite"><pre><span></span><code>   问题：「《员工手册》报销那一章是谁起草的？他还起草过哪些制度？」
+
+   ★ 单轮 RAG 的下场：
+     检索一次，查询里有&quot;员工手册 报销 起草 制度&quot;
+     ⟹ 捞回来的是【讲报销标准的那几块】——因为那几块词面最像
+     ⟹ 但手册正文里【根本不写起草人是谁】
+     ⟹ 模型手里只有报销标准，却必须回答&quot;他还起草过什么&quot;
+     ⟹ ⚠️ 它会编。而且编得很像，因为语气和格式都对。
+
+   ★ agentic RAG 的下场：
+     第 1 跳：搜「员工手册 修订记录 起草人」 ⟹ 查到&quot;张三，2024 年 3 月&quot;
+     第 2 跳：用【上一跳的结果】当新的查询词，搜「张三 起草 制度」
+              ⟹ 查到另外 3 份文件
+     ⟹ 🔑 第 2 跳的查询词【是第 1 跳的答案】。
+        单轮架构里没有&quot;第 2 跳&quot;这个位置可以放它——
+        这不是检索质量不够好，是【结构里少一个环】。
 </code></pre></div>
 
-<p><strong>为什么 RAG 只有 2.67？</strong> 因为它的流程是：关键词搜出几个文件 → 塞进 prompt → 模型一次性吐补丁 → 用正则抠出来 → 完。</p>
-<p><strong>★★ 一轮。没有工具。没有反馈。不跑测试。不知道自己改对没有。</strong></p>
-<p>详见 <a href="../harness评测框架/agent脚手架/01-两个harness不是一个东西.html">agent脚手架/01-两个harness不是一个东西</a>。</p>
-<h3 id="43">4.3 在 <a href="../多模态大模型/">多模态大模型/</a>：它是一条被看好的路线的参照物</h3>
-<p>超长视频不可能整段塞进模型，得先检索出相关的几个片段 —— <strong>这个思路和文本 RAG 是一个形状</strong>。<a href="../多模态大模型/05-位置编码与视频.html">05-位置编码与视频</a> 和 <a href="../多模态大模型/14-演进主线与开放问题.html">14-演进主线与开放问题</a> 都提到"检索路线和文本 RAG 同构"，并（⚠️ 作者判断）倾向认为检索路线会赢。</p>
-<hr />
-<h2 id="5-rag-agent">5. 天花板：RAG 不是 agent</h2>
-<div class="codehilite"><pre><span></span><code>   ★★ RAG      ：查资料 → 写答案。【一轮，不看结果】
-   ★★ agent    ：想 → 动手 → 看报错 → 再想 → 再动手。【多轮，看结果】
-</code></pre></div>
-
-<p>这是 4.2 节那 6.7 倍差距的根源。<strong>RAG 把资料递过去就撒手了，模型写错了也没有第二次机会。</strong></p>
-<p><strong>agentic RAG</strong>（⚠️ 这个方向变化很快）是把检索本身变成 agent 的一个<strong>工具</strong>：模型自己决定搜什么、要不要再搜一次、搜到的够不够。这时"翻书"的动作从<strong>你替它做</strong>变成<strong>它自己做</strong>，就跨到了 <a href="../harness评测框架/agent脚手架/README.html">agent脚手架/</a> 那一层。</p>
-<p><strong>一句话记住它的适用边界：</strong></p>
 <blockquote>
-<p><strong>RAG 擅长"答案就在某份文档里、找到就能抄"的活；不擅长"要试几次才知道对不对"的活。</strong><br />
-前者是问答、客服、文档总结；后者是改代码、跑实验 —— 那些得上 agent。</p>
+<p>📖 <strong>HyDE</strong>（Hypothetical Document Embeddings，假设性文档嵌入）—— 一种单轮查询改写技巧：先让模型凭空编一个"理想答案"，再拿这个编出来的答案去做向量检索。它能缓解"问题和文档的措辞差太远"，但它<strong>不看检索结果</strong>，所以仍然属于上表左列。</p>
+</blockquote>
+<p><strong>agentic RAG</strong>（⚠️ 这个方向变化很快）把检索本身变成 agent 的一个<strong>工具</strong>：模型自己决定搜什么、要不要再搜一次、搜到的够不够。这时"翻书"的动作从<strong>你替它做</strong>变成<strong>它自己做</strong>，就跨到了 <a href="../harness评测框架/agent脚手架/README.html">harness评测框架/agent脚手架/</a> 那一层。</p>
+<p><strong>⚠️ 但也别把 agentic RAG 当免费升级</strong>，上表最后四行是它实打实的代价：延迟不可预测、成本发散、难调试。✅ §4.2 的成本数据说明了这一点 —— 单位成本效率上 RAG 反而赢 1.9 倍，它输的是天花板。<strong>所以选型问题不是"要不要上 agent"，而是"我这个场景的天花板够不够用"</strong>：</p>
+<blockquote>
+<p><strong>RAG 擅长"答案就在某一块文档里、找到就能抄"的活；不擅长"要试几次才知道对不对"和"第二步要用第一步的答案"的活。</strong><br />
+前者是问答、客服、文档总结 —— RAG 的 2.67 对这些场景完全够用。后者是改代码、跑实验、多跳推理 —— 那些得上 agent。</p>
 </blockquote>
 <hr />
-<h2 id="_3">附：缩写速查</h2>
+<h2 id="6">6. 本章小结</h2>
+<p><strong>三步的形状</strong></p>
+<div class="codehilite"><pre><span></span><code>   切块 --&gt; 检索 --&gt; 重排 --&gt; 塞 prompt --&gt; 生成
+
+   每一步卡在哪：
+     ├── 切块：块长由&quot;一条完整的意思有多长&quot;反推（§3.2）
+     ├── 检索：稀疏 + 稠密 + RRF，因为两者失败模式互补（§3.3–3.4）
+     ├── 重排：拿召回率换精确率 + 速度（§3.6）
+     └── 塞 prompt：token 预算在这里卡死（§3.6）
+</code></pre></div>
+
+<p><strong>五个数，记住就够用</strong></p>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>答案</th>
+<th>算式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10 万字按 512/50 切出多少块</td>
+<td><strong>109 块</strong></td>
+<td>5 万 token ÷ 步长 462</td>
+</tr>
+<tr>
+<td>重叠带来多少存储膨胀</td>
+<td><strong>+10.8%</strong></td>
+<td>重叠 ÷ 步长 = 50 ÷ 462</td>
+</tr>
+<tr>
+<td>一条 L token 的片段不被切断的概率</td>
+<td><strong>(块长 − L) ÷ 步长</strong></td>
+<td>重叠 ≥ L 时为 100%</td>
+</tr>
+<tr>
+<td>100 万块 × 1024 维 FP32 占多少</td>
+<td><strong>3.81 GiB</strong></td>
+<td>1e6 × 1024 × 4 ÷ 2^30</td>
+</tr>
+<tr>
+<td>top-5 × 512 token 占 128K 窗口多少</td>
+<td><strong>2.0%</strong></td>
+<td>2560 ÷ 131072</td>
+</tr>
+</tbody>
+</table>
+<p><strong>四个最容易写错的表述</strong>（本章全程按这四条约束自己）</p>
+<table>
+<thead>
+<tr>
+<th>✗ 错的说法</th>
+<th>✓ 对的说法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"时间减少 85% = 加速 85%"</td>
+<td>加速 = 1 ÷ (1 − 0.85) = <strong>6.6 倍</strong></td>
+</tr>
+<tr>
+<td>"精确率从 4% 提到 60%，提升了 56%"</td>
+<td>涨了 <strong>56 个百分点</strong>，或者说涨了 <strong>15 倍</strong></td>
+</tr>
+<tr>
+<td>"召回率"（不说哪个）</td>
+<td>分清<strong>检索召回率</strong>（该找的找全没）和 <strong>ANN 召回率</strong>（索引近似准不准）</td>
+</tr>
+<tr>
+<td>"100 万 × 1024 维 FP32 = 4.1 GB，所以要 4.1 GiB 内存"</td>
+<td>4.096 GB = <strong>3.81 GiB</strong>，两者差 7.4%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自测四题</strong>（答案在下面，都能用本章的公式一行算出来）</p>
+<ol>
+<li>一份 30 万汉字的技术文档，块长 1024 token、重叠 100 token。切出多少块？存储膨胀多少？</li>
+<li>你的资料里"一条完整的意思"典型长 400 token。块长开 768、重叠 64，一条这样的片段不被切断的概率是多少？想做到 100%，重叠要开多大、代价是多少？</li>
+<li>500 万块、768 维向量。FP16 和 int8 各要多少 GiB？加上 HNSW 图（按 137 字节/向量）总共多少？</li>
+<li>某 RAG 系统优化后端到端延迟从 900 ms 降到 300 ms。下面四句话哪两句是对的？(a) 时间减少了 67% (b) 加速了 3 倍 (c) 加速了 67% (d) 时间减少了 3 倍</li>
+</ol>
+<h3 id="_3">参考答案</h3>
+<p><strong>1.</strong> 30 万汉字 ÷ 2 = <strong>15 万 token</strong>；步长 = 1024 − 100 = <strong>924</strong>；块数 = <code>ceil((150000 − 1024) ÷ 924) + 1 = 162 + 1 =</code> <strong>163 块</strong>。膨胀 = <code>100 ÷ 924 =</code> <strong>+10.8%</strong>（逐项核：162 × 1024 + 312 = 166,200 token，166200 ÷ 150000 − 1 = 10.8% ✓）。见 §3.1。</p>
+<p><strong>2.</strong> 步长 = 768 − 64 = 704；<code>P = (768 − 400) ÷ 704 = 368 ÷ 704 =</code> <strong>52.3%</strong>，即近一半的概率被切断。要 100%，需要 <code>重叠 ≥ 400</code>，于是步长降到 368，膨胀 = <code>400 ÷ 368 =</code> <strong>+109%，存储翻一倍多</strong>。见 §3.2。</p>
+<p><strong>3.</strong> FP16 = <code>5e6 × 768 × 2 ÷ 2^30 =</code> <strong>7.15 GiB</strong>；int8 = <code>5e6 × 768 × 1 ÷ 2^30 =</code> <strong>3.58 GiB</strong>；图 = <code>5e6 × 137 ÷ 2^30 =</code> <strong>0.64 GiB</strong>。合计 FP16 <strong>7.79 GiB</strong> / int8 <strong>4.21 GiB</strong>。★ 注意 int8 方案里图开销已经占到 15%，继续量化收益递减。见 §3.5。</p>
+<p><strong>4.</strong> <strong>(a) 和 (b) 对。</strong> 时间减少 = <code>600 ÷ 900 =</code> 66.7% ✓；加速 = <code>900 ÷ 300 =</code> 3 倍 ✓；两者的关系是 <code>1 ÷ (1 − 0.667) = 3.0</code> ✓。<strong>(c) 错</strong> —— "加速 67%" 意味着降到 <code>900 ÷ 1.67 = 539 ms</code>，不是 300 ms。<strong>(d) 错</strong> —— "时间减少 N 倍"没有定义，减少量是 600 ms（原来的 2/3），该说"减少 67%"或"变成原来的 1/3"。见 §3.6。</p>
+<hr />
+<h2 id="_4">附：为什么本章的框图都不封右边</h2>
+<p>本仓库的 markdown 要渲染成 HTML，而 <strong>HTML 里的等宽字体对中文和对 ASCII 的宽度处理不一致</strong> —— 一个汉字在终端里占 2 列，在网页的等宽字体里占的却不一定正好是 2 个 ASCII 字符的宽度。于是终端里对得整整齐齐的 <code>┌───┬───┐</code> 一旦框里有中文，渲染出来的右边框<strong>必然是一条狗牙</strong>。</p>
+<div class="codehilite"><pre><span></span><code>   ✗ 不要这样：框里有中文 + 封了右边框 ⟹ 渲染必错位
+
+   ✓ 本章的做法：
+     ① 对照表一律改成 markdown 表格
+     ② 流程 / 结构图只画左边框，右边不封口
+     ③ 标注写在图外，或者改用 ├── 树状分支
+     ④ 需要列对齐的图里不用 ► ▲ ░ █ ▒ ▼ 这类宽度不确定的字符
+     ⑤ 需要对齐的那几列，整列都用纯 ASCII（数字、字母），中文只放在行尾
+</code></pre></div>
+
+<hr />
+<h2 id="_5">附：缩写速查</h2>
+<p><strong>三步与数据单位</strong></p>
 <table>
 <thead>
 <tr>
@@ -486,16 +1528,89 @@ RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a hre
 <td>资料切分后的最小检索单位</td>
 </tr>
 <tr>
-<td><strong>embedding</strong></td>
+<td><strong>overlap / stride</strong></td>
 <td>—</td>
-<td>嵌入向量</td>
-<td>把一段文字压成一串代表"意思"的数字</td>
+<td>重叠 / 步长</td>
+<td><code>步长 = 块长 − 重叠</code>；膨胀 = 重叠 ÷ 步长</td>
+</tr>
+<tr>
+<td><strong>token</strong></td>
+<td>—</td>
+<td>词元</td>
+<td>模型的计量单位；⚠️ 中文约 1.5–2 汉字/token</td>
+</tr>
+<tr>
+<td><strong>GB / GiB</strong></td>
+<td>Gigabyte / Gibibyte</td>
+<td>—</td>
+<td>10^9 字节 / 2^30 字节，<strong>差 7.4%</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>检索</strong></p>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>中文</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>稀疏检索</strong></td>
+<td>Sparse Retrieval</td>
+<td>—</td>
+<td>对字面；靠倒排索引</td>
+</tr>
+<tr>
+<td><strong>稠密检索</strong></td>
+<td>Dense Retrieval</td>
+<td>—</td>
+<td>对语义；靠向量距离</td>
 </tr>
 <tr>
 <td><strong>BM25</strong></td>
 <td>Best Matching 25</td>
 <td>—</td>
-<td>经典关键词检索打分算法</td>
+<td>经典关键词打分公式，稀疏检索的代表</td>
+</tr>
+<tr>
+<td><strong>倒排索引</strong></td>
+<td>Inverted Index</td>
+<td>—</td>
+<td>"词 → 含这个词的块" 的大表</td>
+</tr>
+<tr>
+<td><strong>embedding</strong></td>
+<td>—</td>
+<td>嵌入向量</td>
+<td>把一整段文字压成一串定长实数；⚠️ 和 tokenizer 完全是两件事</td>
+</tr>
+<tr>
+<td><strong>ANN</strong></td>
+<td>Approximate Nearest Neighbor</td>
+<td>近似最近邻</td>
+<td>不保证找到最近的，但快 1–2 个数量级</td>
+</tr>
+<tr>
+<td><strong>HNSW</strong></td>
+<td>Hierarchical Navigable Small World</td>
+<td>分层可导航小世界图</td>
+<td>最常用的 ANN 索引实现</td>
+</tr>
+<tr>
+<td><strong>IVF</strong></td>
+<td>Inverted File Index</td>
+<td>倒排文件索引</td>
+<td>另一类 ANN 索引：先聚类，只搜几个簇</td>
+</tr>
+<tr>
+<td><strong>RRF</strong></td>
+<td>Reciprocal Rank Fusion</td>
+<td>倒数排名融合</td>
+<td><code>Σ 1/(k+排名)</code>，k=60；<strong>只用排名、不调权重</strong></td>
 </tr>
 <tr>
 <td><strong>rerank</strong></td>
@@ -504,16 +1619,90 @@ RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a hre
 <td>用更准的模型对候选块二次打分</td>
 </tr>
 <tr>
+<td><strong>cross-encoder</strong></td>
+<td>—</td>
+<td>交叉编码器</td>
+<td>把"问题+块"拼成一条一起过模型，比算向量距离准</td>
+</tr>
+<tr>
+<td><strong>HyDE</strong></td>
+<td>Hypothetical Document Embeddings</td>
+<td>假设性文档嵌入</td>
+<td>先编一个理想答案，再拿它去检索</td>
+</tr>
+</tbody>
+</table>
+<p><strong>质量指标</strong>（⚠️ 本仓库最容易混的两个词）</p>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>定义</th>
+<th>大白话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>召回率</strong></td>
+<td>Recall</td>
+<td>捞回的相关块 ÷ <strong>全部</strong>相关块</td>
+<td><strong>别漏</strong>（第一段检索冲这个）</td>
+</tr>
+<tr>
+<td><strong>精确率</strong></td>
+<td>Precision</td>
+<td>捞回的相关块 ÷ <strong>捞回的全部</strong>块</td>
+<td><strong>别错</strong>（重排冲这个）</td>
+</tr>
+<tr>
+<td><strong>ANN 召回率</strong></td>
+<td>ANN Recall</td>
+<td>ANN 返回的 top-k ÷ <strong>真正的</strong> top-k</td>
+<td>索引<strong>近似得准不准</strong>，和上面两个分母不同</td>
+</tr>
+</tbody>
+</table>
+<p><strong>推理侧</strong></p>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>中文</th>
+<th>一句话</th>
+</tr>
+</thead>
+<tbody>
+<tr>
 <td><strong>Prefill</strong></td>
 <td>—</td>
 <td>预填充</td>
-<td>读完输入 prompt 的阶段（算力受限）</td>
+<td>读完输入 prompt 的阶段（prompt 够长时算力受限）</td>
 </tr>
 <tr>
 <td><strong>Decode</strong></td>
 <td>—</td>
 <td>解码</td>
-<td>一个字一个字往外吐的阶段（访存受限）</td>
+<td>一个 token 一个 token 往外吐的阶段（访存受限）</td>
+</tr>
+<tr>
+<td><strong>P:D ratio</strong></td>
+<td>Prefill:Decode ratio</td>
+<td>输入输出长度比</td>
+<td>★ <strong>决定谁是瓶颈的那个数</strong>，不是输入的绝对长度</td>
+</tr>
+<tr>
+<td><strong>TTFT</strong></td>
+<td>Time To First Token</td>
+<td>首 token 延迟</td>
+<td>基本等于 Prefill 耗时</td>
+</tr>
+<tr>
+<td><strong>TBT / TPOT</strong></td>
+<td>Time Between Tokens / Time Per Output Token</td>
+<td>出字间隔</td>
+<td>Decode 每步的耗时</td>
 </tr>
 <tr>
 <td><strong>PD 分离</strong></td>
@@ -521,12 +1710,30 @@ RAG 在本仓库是个"到处被引用、但没有主场"的概念 —— <a hre
 <td>—</td>
 <td>把两阶段拆到不同卡上跑</td>
 </tr>
+<tr>
+<td><strong>前缀缓存</strong></td>
+<td>Prefix Caching</td>
+<td>—</td>
+<td>prompt 的<strong>前缀逐字相同</strong>就跳过那段 Prefill；⚠️ 所以拼接顺序决定命中率</td>
+</tr>
+<tr>
+<td><strong>MFU</strong></td>
+<td>Model FLOPs Utilization</td>
+<td>模型算力利用率</td>
+<td>实际算力 ÷ 峰值算力；本章引用的估算统一按 40%</td>
+</tr>
+<tr>
+<td><strong>agentic RAG</strong></td>
+<td>—</td>
+<td>—</td>
+<td>把检索变成 agent 的一个工具，模型自己决定搜不搜、搜几次</td>
+</tr>
 </tbody>
 </table>
 <hr />
 <blockquote>
 <p>上一级：<a href="../README.html">仓库总目录</a><br />
-深入：<a href="../推理框架/推理优化入门/10-PD分离.html">推理框架/10-PD分离</a>｜<a href="../harness评测框架/agent脚手架/README.html">harness评测框架/agent脚手架</a>｜<a href="../多模态大模型/">多模态大模型/</a></p>
+深入：<a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">推理框架/推理优化入门/03-Prefill与Decode两阶段</a>｜<a href="../推理框架/推理优化入门/05-PagedAttention与前缀缓存.html">推理框架/推理优化入门/05-PagedAttention与前缀缓存</a>｜<a href="../推理框架/推理优化入门/10-PD分离.html">推理框架/推理优化入门/10-PD分离</a>｜<a href="../harness评测框架/agent脚手架/README.html">harness评测框架/agent脚手架</a>｜<a href="../数据格式和数据处理/09-Tokenizer与词表.html">数据格式和数据处理/09-Tokenizer与词表</a>｜<a href="../多模态大模型/">多模态大模型/</a></p>
 </blockquote>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>

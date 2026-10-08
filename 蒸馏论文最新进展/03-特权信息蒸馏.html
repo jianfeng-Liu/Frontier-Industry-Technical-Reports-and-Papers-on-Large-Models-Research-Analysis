@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 · 特权信息蒸馏：用「老师看得见、学生看不见」的信息差来教</title>
+<style>
+    :root {
+      --bg:        oklch(97% 0.005 250);
+      --surface:   oklch(100% 0 0);
+      --border:    oklch(88% 0.01 250);
+      --muted:     oklch(55% 0.02 250);
+      --text:      oklch(20% 0.02 250);
+      --accent:    oklch(52% 0.18 260);
+      --accent-bg: oklch(95% 0.04 260);
+      --code-bg:   oklch(22% 0.03 250);
+      --code-fg:   oklch(88% 0.02 250);
+      --link:      oklch(48% 0.18 260);
+      --link-v:    oklch(42% 0.14 290);
+      --head-bg:   oklch(28% 0.06 260);
+      --head-fg:   oklch(97% 0.01 260);
+      --th-bg:     oklch(94% 0.04 260);
+      --tr-alt:    oklch(96% 0.01 250);
+      --blockquote: oklch(92% 0.05 250);
+      --star-gold: oklch(72% 0.18 85);
+      font-size: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB",
+                   "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+      line-height: 1.75;
+    }
+    .page-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    /* headings */
+    h1,h2,h3,h4,h5,h6 {
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 2rem 0 0.6rem;
+    }
+    h1 { font-size: 1.9rem; color: oklch(30% 0.08 260); border-bottom: 2px solid var(--accent); padding-bottom: 0.3rem; }
+    h2 { font-size: 1.45rem; color: oklch(28% 0.06 260); border-left: 4px solid var(--accent); padding-left: 0.6rem; }
+    h3 { font-size: 1.15rem; color: oklch(32% 0.05 250); }
+    h4 { font-size: 1rem; color: var(--muted); }
+    /* links */
+    a { color: var(--link); text-decoration: none; }
+    a:visited { color: var(--link-v); }
+    a:hover { text-decoration: underline; }
+    /* paragraph */
+    p { margin: 0.6rem 0 0.8rem; }
+    /* blockquote */
+    blockquote {
+      margin: 1rem 0;
+      padding: 0.7rem 1rem;
+      background: var(--blockquote);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 6px 6px 0;
+      color: oklch(30% 0.04 250);
+    }
+    blockquote p { margin: 0.2rem 0; }
+    /* inline code */
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", "SF Mono", "Fira Code",
+                   "Source Code Pro", Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+    }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
+    /* fenced code blocks */
+    .codehilite {
+      margin: 1rem 0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px oklch(0% 0 0 / 15%);
+    }
+    .codehilite pre {
+      margin: 0;
+      padding: 1rem 1.2rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      background: var(--code-bg) !important;
+      color: var(--code-fg) !important;
+    }
+    .codehilite code { background: none; padding: 0; font-size: inherit; color: inherit; }
+    /* plain pre (ASCII diagrams) */
+    pre:not(.codehilite pre) {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem 1.2rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+      margin: 1rem 0;
+    }
+    /* tables */
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.2rem 0;
+      font-size: 0.92rem;
+      box-shadow: 0 1px 3px oklch(0% 0 0 / 10%);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-body thead tr { background: var(--th-bg); color: oklch(25% 0.07 260); }
+    .md-body th { padding: 0.65rem 0.9rem; text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); }
+    .md-body td { padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .md-body tr:last-child td { border-bottom: none; }
+    .md-body tbody tr:nth-child(even) { background: var(--tr-alt); }
+    .md-body tbody tr:hover { background: var(--accent-bg); transition: background 0.12s; }
+    /* bold inside td */
+    td strong { color: oklch(35% 0.12 260); }
+    /* ★ markers */
+    .md-body p, .md-body li {
+      /* keep star chars but add colour */
+    }
+    /* horizontal rule */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+    /* lists */
+    ul, ol { padding-left: 1.4rem; margin: 0.4rem 0 0.8rem; }
+    li { margin: 0.25rem 0; }
+    li > ul, li > ol { margin: 0.2rem 0; }
+    /* nav breadcrumb at top */
+    .nav-bar {
+      background: var(--head-bg);
+      color: var(--head-fg);
+      padding: 0.5rem 1.2rem;
+      font-size: 0.82rem;
+      border-radius: 8px 8px 0 0;
+      margin-bottom: 0;
+    }
+    .nav-bar a { color: oklch(80% 0.08 250); }
+    .nav-bar a:hover { color: #fff; }
+    /* TOC */
+    .toc { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 8px;
+            padding: 0.8rem 1.2rem; margin: 1.2rem 0; font-size: 0.9rem; }
+    .toc ul { margin: 0.2rem 0; }
+    /* footer */
+    .page-footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    /* Pygments one-dark overrides */
+    pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+.codehilite { background: #282C34; color: #ABB2BF }
+.codehilite .c { color: #7F848E } /* Comment */
+.codehilite .err { color: #ABB2BF } /* Error */
+.codehilite .esc { color: #ABB2BF } /* Escape */
+.codehilite .g { color: #ABB2BF } /* Generic */
+.codehilite .k { color: #C678DD } /* Keyword */
+.codehilite .l { color: #ABB2BF } /* Literal */
+.codehilite .n { color: #E06C75 } /* Name */
+.codehilite .o { color: #56B6C2 } /* Operator */
+.codehilite .x { color: #ABB2BF } /* Other */
+.codehilite .p { color: #ABB2BF } /* Punctuation */
+.codehilite .ch { color: #7F848E } /* Comment.Hashbang */
+.codehilite .cm { color: #7F848E } /* Comment.Multiline */
+.codehilite .cp { color: #7F848E } /* Comment.Preproc */
+.codehilite .cpf { color: #7F848E } /* Comment.PreprocFile */
+.codehilite .c1 { color: #7F848E } /* Comment.Single */
+.codehilite .cs { color: #7F848E } /* Comment.Special */
+.codehilite .gd { color: #E06C75 } /* Generic.Deleted */
+.codehilite .ge { color: #ABB2BF; font-style: italic } /* Generic.Emph */
+.codehilite .ges { color: #ABB2BF } /* Generic.EmphStrong */
+.codehilite .gr { color: #E06C75 } /* Generic.Error */
+.codehilite .gh { color: #ABB2BF; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #98C379 } /* Generic.Inserted */
+.codehilite .go { color: #E06C75 } /* Generic.Output */
+.codehilite .gp { color: #ABB2BF } /* Generic.Prompt */
+.codehilite .gs { color: #ABB2BF; font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #ABB2BF; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #E06C75 } /* Generic.Traceback */
+.codehilite .kc { color: #E5C07B } /* Keyword.Constant */
+.codehilite .kd { color: #C678DD } /* Keyword.Declaration */
+.codehilite .kn { color: #C678DD } /* Keyword.Namespace */
+.codehilite .kp { color: #C678DD } /* Keyword.Pseudo */
+.codehilite .kr { color: #C678DD } /* Keyword.Reserved */
+.codehilite .kt { color: #E5C07B } /* Keyword.Type */
+.codehilite .ld { color: #ABB2BF } /* Literal.Date */
+.codehilite .m { color: #D19A66 } /* Literal.Number */
+.codehilite .s { color: #98C379 } /* Literal.String */
+.codehilite .na { color: #E06C75 } /* Name.Attribute */
+.codehilite .nb { color: #E5C07B } /* Name.Builtin */
+.codehilite .nc { color: #E5C07B } /* Name.Class */
+.codehilite .no { color: #E06C75 } /* Name.Constant */
+.codehilite .nd { color: #61AFEF } /* Name.Decorator */
+.codehilite .ni { color: #E06C75 } /* Name.Entity */
+.codehilite .ne { color: #E06C75 } /* Name.Exception */
+.codehilite .nf { color: #61AFEF; font-weight: bold } /* Name.Function */
+.codehilite .nl { color: #E06C75 } /* Name.Label */
+.codehilite .nn { color: #E06C75 } /* Name.Namespace */
+.codehilite .nx { color: #E06C75 } /* Name.Other */
+.codehilite .py { color: #E06C75 } /* Name.Property */
+.codehilite .nt { color: #E06C75 } /* Name.Tag */
+.codehilite .nv { color: #E06C75 } /* Name.Variable */
+.codehilite .ow { color: #56B6C2 } /* Operator.Word */
+.codehilite .pm { color: #ABB2BF } /* Punctuation.Marker */
+.codehilite .w { color: #ABB2BF } /* Text.Whitespace */
+.codehilite .mb { color: #D19A66 } /* Literal.Number.Bin */
+.codehilite .mf { color: #D19A66 } /* Literal.Number.Float */
+.codehilite .mh { color: #D19A66 } /* Literal.Number.Hex */
+.codehilite .mi { color: #D19A66 } /* Literal.Number.Integer */
+.codehilite .mo { color: #D19A66 } /* Literal.Number.Oct */
+.codehilite .sa { color: #98C379 } /* Literal.String.Affix */
+.codehilite .sb { color: #98C379 } /* Literal.String.Backtick */
+.codehilite .sc { color: #98C379 } /* Literal.String.Char */
+.codehilite .dl { color: #98C379 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #98C379 } /* Literal.String.Doc */
+.codehilite .s2 { color: #98C379 } /* Literal.String.Double */
+.codehilite .se { color: #98C379 } /* Literal.String.Escape */
+.codehilite .sh { color: #98C379 } /* Literal.String.Heredoc */
+.codehilite .si { color: #98C379 } /* Literal.String.Interpol */
+.codehilite .sx { color: #98C379 } /* Literal.String.Other */
+.codehilite .sr { color: #98C379 } /* Literal.String.Regex */
+.codehilite .s1 { color: #98C379 } /* Literal.String.Single */
+.codehilite .ss { color: #98C379 } /* Literal.String.Symbol */
+.codehilite .bp { color: #E5C07B } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #56B6C2; font-weight: bold } /* Name.Function.Magic */
+.codehilite .vc { color: #E06C75 } /* Name.Variable.Class */
+.codehilite .vg { color: #E06C75 } /* Name.Variable.Global */
+.codehilite .vi { color: #E06C75 } /* Name.Variable.Instance */
+.codehilite .vm { color: #E06C75 } /* Name.Variable.Magic */
+.codehilite .il { color: #D19A66 } /* Literal.Number.Integer.Long */
+</style>
+</head>
+<body>
+<div class="page-wrap">
+<div class="md-body">
+<blockquote>
+<p><a href="02-自蒸馏.html">← 02 自蒸馏</a> ｜ <a href="README.html">目录</a> ｜ 下一篇 → <a href="04-OPD方法改进.html">04 OPD 方法改进</a> ｜ 基础先读 → <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08 On-Policy 蒸馏</a></p>
+</blockquote>
+<h1 id="03">03 · 特权信息蒸馏：用「老师看得见、学生看不见」的信息差来教</h1>
+<blockquote>
+<p><strong>一句话</strong>：训练时给模型一份它在推理时拿不到的材料（标准答案、专家动作序列、解法前缀），让它先把题做对；然后想办法把「做对的那套本事」转移到<strong>没有这份材料</strong>的自己身上。</p>
+<p><strong>本篇覆盖 3 篇论文</strong>，全部读自本地 PDF：</p>
+<table>
+<thead>
+<tr>
+<th>简称</th>
+<th>论文</th>
+<th>我读到哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>π-Distill / OPSD</strong></td>
+<td>Privileged Information Distillation for Language Models<br>✅ arXiv:2602.04942v3，2026-02-16，ServiceNow / Mila</td>
+<td>✅ 正文 §1–§11 全读（§1 引言 ~ §11 结论）<br>⚠️ 附录 A–H（变分推导、超参表、提示词）<strong>未读</strong></td>
+</tr>
+<tr>
+<td><strong>HDPO</strong></td>
+<td>HDPO: Hybrid Distillation Policy Optimization via Privileged Self-Distillation<br>✅ arXiv:2603.23871v1，2026-03-25，NVIDIA（Ken Ding 单作者）</td>
+<td>✅ 正文 §1–§7 全读（含两条命题的证明梗概、Table 1）<br>⚠️ 附录 A–D（完整证明、8×H100 复现表）<strong>未读</strong></td>
+</tr>
+<tr>
+<td><strong>POPE</strong></td>
+<td>POPE: Learning to Reason on Hard Problems via Privileged On-Policy Exploration<br>✅ arXiv:2601.18779v1，2026-01-26，CMU</td>
+<td>✅ 正文 §1–§8 全读（含 Table 1、Table 2）<br>⚠️ 附录 A–G（pass@k 梯度推导、超参、样例）<strong>未读</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>先读哪一节</strong>：3.1 把「特权」这个词的定义钉死，<strong>不读这一节后面全看不懂</strong>。3.4 是本篇最该讲清的那个问题——推理时拿不到特权信息，学生到底学到了什么。3.6 是数字可信度的核查，⚠️ 结论比论文摘要保守得多。</p>
+<p><strong>和基础篇的分工</strong>：OPD 是什么、为什么 on-policy 比普通蒸馏好、逆 KL 为什么能当密集奖励——这些在 <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a> 已经讲完了，本篇不重复，只在需要时链过去。</p>
+</blockquote>
+<hr />
+<h2 id="_1">本章关键词</h2>
+<p><strong>特权信息（privileged information，PI）</strong> —— <strong>只在训练时提供、推理时一定不给</strong>的额外输入。可以是标准答案、专家的动作序列、解法的前半段。⚠️ 这个词来自 Vapnik &amp; Vashist 2009 的 <strong>LUPI</strong>（Learning Using Privileged Information，利用特权信息学习）框架，三篇论文都引了同一个出处。</p>
+<p><strong>不对称（asymmetry）</strong> —— 本篇全部机制的来源：<strong>训练时给、推理时不给</strong>。如果推理时也给，那叫「加提示词」，不是特权信息。</p>
+<p><strong>OPD</strong>（On-Policy Distillation，在策略蒸馏）—— 学生自己采样、老师逐 token 打分。基础见 <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a>。</p>
+<p><strong>OPSD</strong>（On-Policy Self-Distillation，在策略自蒸馏）—— OPD 的一个特例：<strong>老师和学生是同一份权重</strong>，只是输入不同（老师的输入里有特权信息）。⚠️ 2026 年至少有四组人各自独立提出了同一个目标函数，π-Distill 那篇在脚注 1 里点名了三组（✅ 论文 §3.1 脚注 1）。</p>
+<p><strong>KL 散度</strong>（Kullback-Leibler divergence）—— 衡量两个概率分布差多远。</p>
+<p><strong>逆 KL（reverse KL）</strong> —— 指 <code>KL(学生 ‖ 老师)</code>，<strong>寻峰（mode-seeking）</strong>：学生只要挑老师的一个高概率模式钻进去就能把它压小。</p>
+<p><strong>正 KL（forward KL）</strong> —— 指 <code>KL(老师 ‖ 学生)</code>，<strong>覆盖质量（mass-covering）</strong>：学生必须把老师所有有质量的地方都盖住。</p>
+<p><strong>JSD</strong>（Jensen-Shannon Divergence，JS 散度）—— 介于正逆 KL 之间的对称散度，偏覆盖。HDPO 用它而不是逆 KL，理由见 3.3。</p>
+<p><strong>sg[·]</strong>（stop-gradient，停止梯度）—— 只取数值、不回传梯度。</p>
+<p><strong>GRPO</strong>（Group Relative Policy Optimization，组相对策略优化）—— 三篇的 RL 底座都是它。细节见 <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05</a>。</p>
+<p><strong>cliff prompt（悬崖提示）</strong> —— HDPO 的叫法：一道题采 G 次全错，GRPO 的优势全为 0，梯度精确为零。⚠️ 这就是 <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05</a> 讲过的「优势归零 / 退化组」，只是换了个名字。</p>
+<p><strong>ray interference（射线干扰）</strong> —— POPE 的核心诊断：同一批训练里混了易题和难题时，on-policy RL 会优先在<strong>已经能拿到奖励</strong>的题上继续优化，反过来压住难题的进展。✅ 概念出自 Schaul 等人的多任务 RL 工作（POPE 论文 §3.2 引为文献 [32]）。</p>
+<p><strong>CoT</strong>（Chain-of-Thought，思维链）—— 模型的中间推理过程。</p>
+<p><strong>SFT</strong>（Supervised Fine-Tuning，监督微调）—— 对着标准答案做下一词预测训练。</p>
+<p><strong>pass@k</strong> —— 采 k 次里至少有一次对的概率。⚠️ 它有三种算法，其中插值估计量是有偏的，见 <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05</a>。</p>
+<p><strong>realizability gap（可实现性差距）</strong> —— 学生的分布族里<strong>最好的那个</strong>离老师还有多远。HDPO 的命题 1 就是在说这个。</p>
+<hr />
+<h2 id="31">3.1 先把「特权」这个词钉死</h2>
+<h3 id="_2">定义：不对称才是关键</h3>
+<p>读这三篇之前必须先分清三件很像但完全不同的事：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>做法</th>
+<th>推理时还有吗</th>
+<th>是不是特权信息</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>加提示词 / 系统提示</strong></td>
+<td>在输入里写「请一步步想」</td>
+<td>✅ <strong>还在</strong>，推理时照样给</td>
+<td>✗ <strong>不是</strong>。没有不对称</td>
+</tr>
+<tr>
+<td><strong>RAG 检索增强</strong></td>
+<td>检索到的文档拼进上下文</td>
+<td>✅ <strong>还在</strong>，线上也要检索</td>
+<td>✗ <strong>不是</strong>。线上成本更高而已</td>
+</tr>
+<tr>
+<td>★ <strong>特权信息（PI）</strong></td>
+<td>训练时把标准答案 / 专家动作 / 解法前缀拼进输入</td>
+<td>✗ ★ <strong>一定没有</strong>。线上拿不到标准答案</td>
+<td>✅ <strong>是</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>所以「特权」不是指信息有多好，而是指这份信息在训练和推理两个时刻的「有无」不一样。</strong> 整篇的全部技术难度都压在这一个落差上：一个在有答案时能做对的模型，怎么在没答案时也做对。</p>
+<div class="codehilite"><pre><span></span><code>训练时（有特权）
+├── 输入：题目 ＋ 标准答案 / 专家动作 / 解法前缀
+└── 结果：模型能做对
+
+推理时（无特权）
+├── 输入：只有题目
+└── 要求：模型【仍然】要能做对     ← ★ 全部难点在这里
+
+⟹ 这三篇论文都在回答同一个问题：
+   上面那一组里学到的本事，怎么搬到下面那一组？
+</code></pre></div>
+
+<h3 id="sft">为什么非要绕这一圈：直接用答案做 SFT 不行吗</h3>
+<p>这是最自然的质疑，而且<strong>三篇论文全部正面回答了，答案都是「不行」</strong>，这一点很重要，因为它是整条路线存在的理由：</p>
+<table>
+<thead>
+<tr>
+<th>谁说的</th>
+<th>怎么说的</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>POPE</strong></td>
+<td>对人写的标准解法做多轮 SFT 会<strong>背下来</strong>，得到一个低熵的初始化，后续 RL 探索不动；早停避免背诵，又得到一个高熵初始化，两边的风格都产不稳</td>
+<td>✅ 论文 §4「Limitations of training on oracle solutions」</td>
+</tr>
+<tr>
+<td><strong>POPE（数据）</strong></td>
+<td>「Full-oracle SFT」在难题集上把 pass@1 从 <strong>13.55 打到 2.00</strong>、pass@16 从 <strong>32.89 打到 12.37</strong>，AIME 2025 的 pass@1 从 <strong>49.58 掉到 33.89</strong></td>
+<td>✅ 论文 Table 2</td>
+</tr>
+<tr>
+<td><strong>π-Distill</strong></td>
+<td>把特权条件化的策略先训好、再蒸馏给无条件策略的<strong>两段式流水线</strong>，存在「该蒸哪个 checkpoint」「从它的轨迹学是 off-policy、不稳」「分开训两个策略算力低效」三个问题</td>
+<td>✅ 论文 §3.1「Motivation」</td>
+</tr>
+<tr>
+<td><strong>HDPO</strong></td>
+<td>没有外部解法可用时，<strong>模型自己</strong>在看到答案后生成的轨迹就是最合适的目标，因为它和学生共享权重，分布差距有界</td>
+<td>✅ 论文 §3.1</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ POPE 给出的那个 <strong>13.55 → 2.00</strong> 是全篇最刺眼的数字：<strong>拿标准答案直接做 SFT，比什么都不做（基座 0.57）只强一点点，比纯 RL（13.55）差了一个数量级</strong>。论文的解释是「标准解法的推理风格和模型自己的推理风格根本不同，克隆这种 off-policy 数据会破坏模型本来的推理能力」（✅ 论文 §6 Result 4）。</p>
+<blockquote>
+<p><strong>这条和基础篇是一脉相承的</strong>：<a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a> 讲过 off-policy 蒸馏的病根是<strong>曝光偏差</strong>——学生只在老师的正确前缀上被训练过。这里是同一个病，只是「老师」换成了人类写的标准解法，而人和模型的推理风格差得更远，所以病得更重。</p>
+</blockquote>
+<hr />
+<h2 id="32">3.2 ★★★ 三篇的同口径对照表</h2>
+<p>这张表是本篇的骨架。<strong>同一个栏目下三篇的答案经常是不一样的，这些不一样比相同的部分更有信息量。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>π-Distill / OPSD</strong></th>
+<th><strong>HDPO</strong></th>
+<th><strong>POPE</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>特权信息具体是什么</strong></td>
+<td>前沿模型成功轨迹里的<strong>动作序列</strong>，做成三种密度：<br>① 工具调用名 + 实参<br>② 只给工具调用名<br>③ 让模型自己把轨迹总结成一句提示<br>✅ 论文 §4.2</td>
+<td><strong>标准答案 <code>y*</code></strong>，直接拼进提示词<br>✅ 论文 §3.2</td>
+<td>人写的标准解法的<strong>一段前缀</strong> <code>z_0:i</code><br>✅ 论文 §4</td>
+</tr>
+<tr>
+<td><strong>给谁</strong></td>
+<td>老师。老师和学生<strong>同一份权重</strong>，只是老师的输入里多了 PI<br>✅ 论文 §3</td>
+<td>老师。同样<strong>同一份权重</strong>，输入多了 <code>y*</code><br>✅ 论文 §3.1</td>
+<td>⚠️ <strong>没有老师</strong>。特权变体只是训练集里<strong>另一条提示词</strong><br>✅ 论文 §4</td>
+</tr>
+<tr>
+<td><strong>怎么用</strong></td>
+<td>两个目标函数加权：老师目标（带逆 KL 拉回学生）+ 学生目标（重要性加权地学老师轨迹）<br><code>J = α·J_老师 + (1−α)·J_学生</code><br>✅ 论文 §3.1 式 (4)</td>
+<td>GRPO 损失 + <strong>只在悬崖题上</strong>的 JSD 蒸馏项<br><code>L = L_GRPO + λ·L_JSD</code><br>✅ 论文 §3.2</td>
+<td>纯 GRPO，<strong>没有任何蒸馏项</strong>。训练集 = 无引导难题 : 有引导难题 = <strong>1:1</strong><br>✅ 论文 §4</td>
+</tr>
+<tr>
+<td><strong>老师要不要额外前向</strong></td>
+<td>✅ 要（采样 + 算 KL）</td>
+<td>✅ 要（生成特权 rollout + 取 top-64 logits）</td>
+<td>✗ <strong>不要</strong>。引导变体只是多一条 rollout</td>
+</tr>
+<tr>
+<td><strong>是不是蒸馏</strong></td>
+<td>✅ 是。有显式的分布级目标</td>
+<td>✅ 是。有显式的 JSD 项</td>
+<td>⚠️ <strong>不是</strong>。它是 RL 的采样改造<br>⚠️ 本目录 README 把它归进「特权信息蒸馏」是按主题归的，<strong>不是说它做了蒸馏</strong></td>
+</tr>
+<tr>
+<td><strong>推理时怎么撤掉</strong></td>
+<td>不给 PI，直接用无条件那一路 <code>π_S(o\|s)</code></td>
+<td>不给 <code>y*</code>，用无特权提示词</td>
+<td>不给前缀、不给那条系统指令，用原始题目</td>
+</tr>
+<tr>
+<td><strong>在什么任务上验证</strong></td>
+<td><strong>多轮工具调用智能体</strong>：τ-Bench retail/airline、Travel Planner、GEM 的 7 个检索工具环境</td>
+<td><strong>数学</strong>：OpenMathInstruct-2（来自 MATH + GSM8K）</td>
+<td><strong>数学竞赛</strong>：自建难题集（来自 DAPO-MATH-17K / OmniMath 5–8 级 / AceReason）+ AIME 2025 + HMMT 2025</td>
+</tr>
+<tr>
+<td><strong>基座模型</strong></td>
+<td>Qwen3-4B、Qwen3-8B、R1-Distill-Llama-8B</td>
+<td>Qwen2.5-Math-1.5B-Instruct</td>
+<td>Qwen3-4B-Instruct-2507</td>
+</tr>
+<tr>
+<td><strong>特权信息从哪来</strong></td>
+<td>✅ DeepSeek-chat-v3.1 的轨迹（选它因为开源、能看到 reasoning token，这样「有 CoT」的基线才跑得起来当<strong>软上界</strong>）</td>
+<td>✅ 数据集<strong>自带</strong>的标准答案</td>
+<td>✅ 数据集<strong>自带</strong>的人写解法</td>
+</tr>
+<tr>
+<td><strong>提升多少</strong></td>
+<td>⚠️ 看 3.6。<strong>论文写的「%」实际是百分点</strong></td>
+<td>⚠️ 看 3.6。<strong>论文写的「%」实际是百分点，而且区间对不上表</strong></td>
+<td>⚠️ 看 3.6。<strong>论文写的「%」是相对提升</strong>，和前两篇口径相反</td>
+</tr>
+<tr>
+<td><strong>算力规模</strong></td>
+<td>✅ <strong>2 张 H100</strong>，上下文 25k token</td>
+<td>✅ <strong>8 张 H200</strong>，训 2000 步</td>
+<td>⚠️ 论文正文<strong>没给卡数</strong>；只说用了 CMU FLAME 的 Orchard 集群、DeltaAI 和 TPU Research Cloud（✅ 论文致谢段）。<strong>读不到具体卡时</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️⚠️ <strong>这张表里最容易被写反的一格是「POPE 是不是蒸馏」</strong>。POPE 的标题里有 "Privileged"，被收录在「特权信息蒸馏」这一组里，但<strong>它的损失函数里没有任何散度项，没有老师学生两套分布</strong>。它只是把「题目 + 解法前缀 + 一条让你接着写的系统指令」当成另一道题丢进 RL 的训练集。论文自己反复强调这一点：<em>"use them solely to steer on-policy rollouts"</em>、<em>"POPE operates fully on-policy"</em>（✅ 论文 §4）。<strong>把 POPE 说成「蒸馏方法」是错的。</strong></p>
+<hr />
+<h2 id="33">3.3 三篇各自的机制，逐条拆开</h2>
+<h3 id="1-distill">① π-Distill：两个目标函数，一个 α 旋钮</h3>
+<p><strong>核心设计</strong>：老师 <code>π_T(o|s,I)</code> 和学生 <code>π_S(o|s)</code> 是<strong>同一份参数 θ</strong>，区别只在输入里有没有特权信息 <code>I</code>。两者<strong>同时训</strong>。</p>
+<p>老师目标（✅ 论文 §3.1 式 (2)）：</p>
+<div class="codehilite"><pre><span></span><code>J_老师(θ) = E_{o~π_T(o|s,I)} [ R(o,s) ]  −  β · KL( π_T(o|s,I) ‖ sg[π_S(o|s)] )
+
+├── 第一项  E_{o~π_T}[ R(o,s) ]        从【老师】采样，最大化奖励
+└── 第二项  β · KL( π_T ‖ sg[π_S] )    逆 KL，把【老师】拉回【学生】够得着的地方
+</code></pre></div>
+
+<p>学生目标（✅ 论文 §3.1 式 (3)）：</p>
+<div class="codehilite"><pre><span></span><code>J_学生(θ) = E_{o~π_T(o|s,I)} [ (π_S(o|s) / sg[π_T(o|s,I)]) · R(o,s) ]  −  β · KL( sg[π_T] ‖ π_S )
+
+├── 轨迹由【老师】采，但被更新的是【学生】
+├── 所以要除以 sg[π_T(o|s,I)] 做重要性修正
+└── 第二项的 KL 方向：sg[π_T] 在前、π_S 在后
+</code></pre></div>
+
+<p>合起来（✅ 论文 §3.1 式 (4)）：<code>J = α·J_老师 + (1−α)·J_学生</code>，<code>α ∈ [0,1]</code>。</p>
+<p><strong>α 的三个档位在干什么</strong>（✅ 论文 §3.1）：</p>
+<table>
+<thead>
+<tr>
+<th>α</th>
+<th>谁在被显式更新</th>
+<th>另一边靠什么改善</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td>只有老师</td>
+<td>学生靠<strong>共享参数</strong>被动受益</td>
+</tr>
+<tr>
+<td><strong>0</strong></td>
+<td>只有学生</td>
+<td>老师不被更新，就是个固定的数据源</td>
+</tr>
+<tr>
+<td><strong>0.5</strong></td>
+<td>两边都更新</td>
+<td>——</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>老师目标里那个逆 KL 的方向值得单独说</strong>：它把<strong>老师</strong>往<strong>学生</strong>那边拉，不是反过来。论文给的两个理由（✅ 论文 §3.1）：(i) 让老师去拟合那些<strong>学生已经熟悉</strong>的高奖励模式，这样学生学起来容易；(ii) 共享参数本身就在促进知识转移。⚠️ 这和常规蒸馏的直觉是反的——常规蒸馏是把学生往老师那边拉。<strong>这里是主动给老师「降智」到学生够得着的范围</strong>，否则老师越强、学生越学不会。</p>
+<p><strong>OPSD（论文的第二个方法，✅ 论文 §3.2 式 (5)）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>J_OPSD(θ) = E_{o~π_S(o|s)} [ R(o,s) ]  −  β · KL( π_S(o|s) ‖ sg[π_T(o|s,I)] )
+
+├── 第一项  从【学生】π_S 采样 ⟹ 这才是 on-policy
+└── 第二项  逆 KL，当作逐 token 的密集奖励
+</code></pre></div>
+
+<p>⚠️ <strong>π-Distill 和 OPSD 的根本差别是「谁在采样」</strong>：π-Distill 从老师采样（所以是 off-policy，学生在学别人写的句子），OPSD 从学生采样（on-policy）。这正是 <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a> 里那条分界线，只是这里的「老师」碰巧和学生同权重。</p>
+<p>✅ 论文 §3.2 明说 OPSD 的逆 KL 项「acts as a dense per-token reward」——<strong>和基础篇里那个「老师当免费的逐 token 稠密奖励模型」是同一句话</strong>。</p>
+<h3 id="2-hdpo">② HDPO：只在「悬崖」上开一盏灯</h3>
+<p><strong>它要解决的问题极其具体</strong>：GRPO 下一道题采 G 次，三种结果——全对（优势全 0）、有对有错（正常学习）、<strong>全错（优势全 0，梯度精确为零）</strong>。第三种就是 cliff（✅ 论文 §2.3）。</p>
+<p>⚠️ 这个问题在 <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05</a> 里叫<strong>优势归零</strong>，那一章给过退化组概率 <code>p^G + (1−p)^G</code>。把 HDPO 的参数代进去可以自己验算一遍：</p>
+<table>
+<thead>
+<tr>
+<th>单条正确率 p</th>
+<th>G=16 时全错概率 <code>(1−p)^16</code></th>
+<th>全对概率 <code>p^16</code></th>
+<th>退化组总概率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.05</td>
+<td>0.4401</td>
+<td>≈0</td>
+<td><strong>44.0%</strong></td>
+</tr>
+<tr>
+<td>0.10</td>
+<td>0.1853</td>
+<td>≈0</td>
+<td><strong>18.5%</strong></td>
+</tr>
+<tr>
+<td>0.30</td>
+<td>0.0033</td>
+<td>≈0</td>
+<td>0.3%</td>
+</tr>
+<tr>
+<td>0.50</td>
+<td>0.0000153</td>
+<td>0.0000153</td>
+<td>0.003%</td>
+</tr>
+<tr>
+<td>0.90</td>
+<td>≈0</td>
+<td>0.1853</td>
+<td><strong>18.5%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这张表是我按 HDPO 的 <code>G=16</code>（✅ 论文 §4.1）自己算的，<strong>论文没有给这张表</strong>。读法：真正的悬崖是<strong>左上角那一块</strong>——<code>p</code> 低到 0.05 时，一道题有 44% 的概率整组全错，梯度直接是零。HDPO 要抢救的就是这一块。</p>
+<p><strong>HDPO 的三步（✅ 论文 §3.2、算法 1）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>每一步训练：
+├── 跑标准 GRPO，拿到 L_GRPO
+├── 挑出悬崖题          C = { x ∈ batch : Σ_k R(x, y^(k)) = 0 }
+├── 对每道悬崖题
+│   ├── 把标准答案拼进提示词，生成特权 rollout   ȳ ~ π_θ(· | x ⊕ y*)
+│   └── 【只保留答对的】                          T = { (x, ȳ) : R(x, ȳ) = 1 }
+├── 在 T 上算逐 token 的 JSD 蒸馏损失 L_JSD
+└── 一起更新：  L_HDPO = L_GRPO + λ · L_JSD
+</code></pre></div>
+
+<p>★ <strong>为什么用 JSD 而不是逆 KL</strong>：✅ 论文 §2.5 给了明确理由——引用 DPH-RL 发现的<strong>多样性坍缩</strong>问题，逆 KL 是寻峰的，会让策略集中到单个模式，pass@1 涨但 pass@k 掉；JSD 是覆盖质量的，能把学生的支撑集撑开。<strong>而 HDPO 的实验结果恰好验证了这一点：它涨的是 pass@4 / pass@8，pass@1 基本不动甚至下降</strong>（见 3.6）。⚠️ 这是一个<strong>目标和结果自洽</strong>的例子，但也意味着：<strong>如果你要的是 pass@1，HDPO 不是你要的东西</strong>。</p>
+<p><strong>工程细节</strong>（✅ 论文 §3.2）：JSD 用老师 <strong>top-k（k=64）</strong> 的 logits 重新归一化来近似；学生落在 top-k 之外的那部分质量有一个<strong>精确的尾部修正项 <code>P_rest · ln2</code></strong>。⚠️ 为什么是 <code>ln2</code>：JSD 的取值上界就是 <code>ln2</code>（以 e 为底），把 top-k 之外的质量全部按最坏情况记上界——<strong>这是我的推断，论文只给了式子没给理由</strong>。</p>
+<p><strong>两条命题</strong>（✅ 论文 §3.4）：</p>
+<table>
+<thead>
+<tr>
+<th>命题</th>
+<th>说了什么</th>
+<th>⚠️ 怎么读</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>命题 1（可实现性差距）</strong></td>
+<td>同一份权重的师生，<code>KL(P_老师 ‖ P_学生) ≤ L_θ²·Δ(g)²/2</code>，<code>L_θ</code> 是模型 logit 函数的局部 Lipschitz 常数，<code>Δ(g)</code> 是特权信息造成的输入空间距离。<strong>跨模型蒸馏的界多一项模型失配项</strong> <code>‖f_φ(c_T) − f_θ(c_T)‖_∞</code></td>
+<td>⚠️ 论文自己说得很诚实：「贡献不是这个界本身，而是这个<strong>对比</strong>」（✅ 论文 §3.4 "Relation to prior work"）。界本身是 softmax 在 logit 扰动下的标准结论。⚠️ 而且 <code>L_θ</code> 和 <code>Δ(g)</code> 两个量<strong>论文没给任何数值估计</strong>，所以这个界<strong>没法用来算具体数</strong></td>
+</tr>
+<tr>
+<td><strong>命题 2（R=1 过滤的意义）</strong></td>
+<td>对二值奖励，KL 正则化 RL 的最优解是 <code>π* ∝ π_ref·exp(R/β)</code>；当 <code>β→0⁺</code>，<code>π*</code> 收敛到 <code>π_ref(·\|R=1)</code>，而<strong>按 R=1 拒绝采样恰好就能得到它</strong></td>
+<td>✅ 这一条站得住，是 DPO 那套推导的直接推论。⚠️ 但论文<strong>自己点明了两处偏离</strong>：代理参考分布 <code>π_priv</code> 替掉了 <code>π_ref</code>（差距由命题 1 兜）；难题上特权通过率<strong>远低于 1</strong>，引入采样噪声（✅ 论文 §3.4 末段）</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>HDPO 和 π-Distill 的关系，论文自己讲清楚了</strong>（✅ 论文 §3.4 末段）：π-Distill 的老师目标 <code>E[R] − β·KL(π_T ‖ sg[π_S])</code> 和 HDPO 是<strong>同一个结构</strong>（取 <code>π_ref = sg[π_S]</code>）。差别是：<strong>π-Distill 在有限 β 下用梯度上升在所有题上优化它；HDPO 用硬性 R=1 过滤机械地实现 β→0 的极限，并且只在悬崖题上启动</strong>。这是两篇论文之间最干净的一条连接线，而且是 HDPO 自己写的，不是我推的。</p>
+<h3 id="3-pope">③ POPE：不教答案，只教「从哪儿开始走」</h3>
+<p><strong>POPE 的诊断部分比方法部分更有价值</strong>，先看它排除了什么（✅ 论文 §3）：</p>
+<table>
+<thead>
+<tr>
+<th>试过的办法</th>
+<th>结果</th>
+<th>论文给的机制解释</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>熵奖励 + KL 惩罚</strong></td>
+<td>✗ 可解题比例和朴素 RL 几乎一样，而且<strong>熵在训练早期爆炸</strong>、之后恢复不了</td>
+<td>✅ 论文 §3.1 + 图 3</td>
+</tr>
+<tr>
+<td><strong>放大 <code>ε_high</code>（DAPO 式的 Clip-Higher）</strong></td>
+<td>✗ 熵<strong>同样</strong>上升（论文说这有点出乎意料），可解题比例没有实质改善</td>
+<td>✅ 论文 §3.1 + 附录 A：用重要性采样策略梯度去拟合罕见正样本，一步梯度既降低了基座偏好 token 的置信度、又没把正样本拟合好，<strong>不确定性反而上升，滚雪球式熵爆炸</strong></td>
+</tr>
+<tr>
+<td><strong>混入易题指望迁移</strong></td>
+<td>✗ 不但没帮上，混入「更易」的题反而让可解难题<strong>更少</strong></td>
+<td>✅ 论文 §3.2：<strong>ray interference</strong></td>
+</tr>
+<tr>
+<td><strong>直接优化 pass@k</strong></td>
+<td>✗ <strong>k 越大越差</strong>，pass@k（可解性）和平均 pass@1 都掉</td>
+<td>✅ 论文 §3.2：pass@k 是 per-problem pass@1 的单调函数，难题上 pass@1 近似为 0 时它没有任何可优化的东西；而且它会把奖励<strong>重新分配给错误轨迹</strong>以鼓励多样性，缩小正负样本的奖励差</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>「混入易题会害了难题」这条是反直觉的，而且 POPE 用一个只有两道题的玩具实验做了隔离</strong>（✅ 论文 §3.2 图 5）：一道易题 + 一道难题。混入一道<strong>语义不相关</strong>的易题（按基座模型文本嵌入的余弦相似度挑最低的），难题的收敛<strong>比只训难题还慢</strong>；混入<strong>相关</strong>的易题能部分缓解但仍然低效。⚠️ 关键控制：相关易题、不相关易题、引导变体三者<strong>在基座模型下的成功率是配平的</strong>，所以差异不是难度造成的。</p>
+<p><strong>POPE 的做法（✅ 论文 §4 式 (3)）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>给一道难题 x 和它的人写解法 z：
+├── 取 z 的一段前缀  z_0:i
+├── 配一条系统指令 I：「这是题目和一份部分解答，请研究它已经做了哪些推理，
+│                      然后从它停下的地方接着往下解」
+├── 构造引导变体     D_guided = { concat(x, z_0:i, I) | x ∈ D_hard }
+└── 在 D_hard 和 D_guided 的 【1:1 混合】 上跑 GRPO
+</code></pre></div>
+
+<p>★ <strong>前缀长度怎么定</strong>（✅ 论文 §4）：不是拍脑袋。对每道题，用<strong>粗粒度均匀间隔</strong>的若干候选前缀去试，挑<strong>能让基座模型采出至少一条成功轨迹的最短前缀</strong>。如果所有前缀都试不出成功轨迹，就<strong>随机取一个短于解法 1/4 的前缀</strong>。⚠️ 论文给的理由很实在：<strong>前缀太长就把题做掉了大半，学到的东西没法迁移到无引导的情形</strong>。</p>
+<p>⚠️ 和 Amani 等人的工作对比，POPE 特意说明：对方（非推理模型、短回答）<strong>需要自适应调整前缀长度的课程</strong>，而 POPE <strong>不需要</strong>，因为长 CoT 模型的回溯和复查行为天然提供了覆盖（✅ 论文 §7 "Most related prior works"）。</p>
+<hr />
+<h2 id="34">3.4 ★★★ 推理时拿不到特权信息，学生到底学到了什么</h2>
+<p><strong>这是本篇唯一一个「必须问、而且三篇答得深浅差很多」的问题。</strong> 常见的糊弄答案是「学到了在没有特权信息时也该走的推理路径」——这句话不算错，但它什么机制都没说。下面按「论文自己说到什么程度」排序。</p>
+<h3 id="_3">三篇的回答，按可信度排序</h3>
+<table>
+<thead>
+<tr>
+<th>篇</th>
+<th>它的回答</th>
+<th>证据类型</th>
+<th>⚠️ 我的评价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★★★ <strong>POPE</strong></td>
+<td><strong>缝合（stitching）</strong>：引导前缀把模型推进一组「从这儿出发能稳定拿到奖励」的状态 <code>S_good</code>；RL 在这些状态上学会了「续写策略」；而长 CoT 模型的<strong>回溯与自我复查</strong>会在引导 rollout 里回访到<strong>靠近题目开头</strong>的状态，于是有引导和无引导两套状态访问分布产生了<strong>重叠</strong>；学生剩下要做的只是「走到 <code>S_good</code>」，而不是「从零发现 <code>S_good</code> 并且还要会解」</td>
+<td>✅ <strong>因果干预实验</strong>（见下）</td>
+<td>✅ <strong>三篇里唯一做了因果验证的</strong>。可信</td>
+</tr>
+<tr>
+<td>★★ <strong>HDPO</strong></td>
+<td>学生学的是<strong>自己在已知答案时的逐 token 分布</strong>；因为用 JSD（覆盖质量），学到的是<strong>多条策略的支撑集</strong>而不是单一模式</td>
+<td>⚠️ <strong>间接</strong>：pass@4 / pass@8 涨而 pass@1 不涨，和「学到的是覆盖而非锐度」自洽</td>
+<td>⚠️ 自洽但不是验证。而且<strong>只是结果反推机制</strong></td>
+</tr>
+<tr>
+<td>⚠️ <strong>π-Distill</strong></td>
+<td><strong>共享参数</strong>：为使用 PI 而学到的表征会转移给学生，学生侧的更新又保证这些表征在没有 PI 时仍然有效</td>
+<td>⚠️ <strong>观察性统计</strong>：转移成功与否可以用两个基座模型统计量预测——初始 KL <code>D_KL(π_T,base ‖ π_S,base)</code> 和 PI 效用 <code>Δ = score(π_T,base) − score(π_S,base)</code></td>
+<td>⚠️ <strong>它回答的是「什么时候能转移」，不是「转移了什么」</strong>。论文 §10 自己承认 §7 的分析是观察性的、没有系统控制变量</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pope">★ POPE 的因果干预：本篇最有说服力的一个实验</h3>
+<p>✅ 论文 §5.2。做法是<strong>改一条系统指令</strong>，把原来的「研究这段部分解答，从它停下的地方接着写」改成：</p>
+<div class="codehilite"><pre><span></span><code>【修改后的指令】
+你的任务是推断已经完成了哪些推理，并【不得重复、改写或引用】部分解答的任何内容
+继续解题。你【不能】复述、总结或以任何形式引用先前步骤，直接从下一个尚未完成的
+逻辑步骤开始。
+重要：静默地使用部分解答里的信息。不要复制、改写或明确提及其中任何内容。
+</code></pre></div>
+
+<p><strong>结果（✅ 论文 §5.2 + 图 9）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>改指令之后：
+├── 【有引导】那一侧的表现   ↑ 变好   ← 合理：禁止复述让条件化之后的 RL 问题更简单
+└── 【无引导】那一侧的 pass@32 ↓ 变差  ← ★ 这才是关键
+</code></pre></div>
+
+<p>⚠️ <strong>为什么这个结果是因果证据</strong>：如果学生学到的只是「一套和引导无关的通用解题能力」，那禁不禁止复述引导内容<strong>不该影响</strong>无引导侧的成绩。实际是<strong>有引导侧更好、无引导侧更差</strong>——说明转移这件事<strong>确实依赖于「模型在引导 rollout 里回头复述 / 重算引导内容」这个行为</strong>。论文把这个行为叫做制造「重叠」，干预把重叠掐掉，转移就跟着掉。</p>
+<p>✅ 论文 §5.2 还给了定性证据（Table 1）：默认指令训出来的模型，在<strong>无引导</strong>的解答里会出现引导里才有的概念和中间步骤（用了不等式结构、用了循环下标、用了 <code>λ = max S</code> 这个想法）；修改指令训出来的那个，无引导解答走了一条<strong>完全不同的路</strong>，几乎不复用引导里的概念。</p>
+<h3 id="_4">把三篇的答案合成一句话</h3>
+<p>⚠️ 下面这段是<strong>我的综合推断</strong>，不是任何一篇的原话：</p>
+<blockquote>
+<p><strong>三篇都没有真的「把特权信息压进权重」，它们做的是让模型在一个「本来采不到的状态分布」上获得经验，再利用这个状态分布和原始状态分布的重叠把经验接回去。</strong></p>
+<ul>
+<li>POPE 的重叠来自<strong>回溯行为</strong>（已验证）；</li>
+<li>π-Distill 的重叠由<strong>初始 KL</strong> 直接度量——初始 KL 越大，重叠越小，转移越差（✅ 论文 §7.1 的主要发现之一就是「初始 KL 升高，最终表现普遍下降」）；</li>
+<li>HDPO 则是<strong>用共享权重把重叠做到结构上</strong>：师生同参数，命题 1 说差距只剩特权信息本身造成的那一项。</li>
+</ul>
+<p>⟹ 所以三篇的「特权」其实都不是在传递<strong>内容</strong>，而是在<strong>改变采样落点</strong>。</p>
+</blockquote>
+<h3 id="_5">⚠️ 三篇都没回答的一个问题：答案泄漏</h3>
+<p><strong>老师在看到标准答案之后写出来的推理链，有没有可能是「从答案倒推」的？</strong> 比如 HDPO 把 <code>y*</code> 拼进提示词之后生成的轨迹，模型完全可能写出「我们验证一下 42 是否满足条件……成立，所以答案是 42」这种<strong>只有已知答案才写得出来</strong>的步骤。学生去拟合这种轨迹的逐 token 分布，学到的可能是一个<strong>在没有答案时根本走不通</strong>的模式。</p>
+<table>
+<thead>
+<tr>
+<th>篇</th>
+<th>有没有防这一手</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>HDPO</strong></td>
+<td>⚠️ <strong>正文没有讨论</strong>。R=1 过滤只保证<strong>答案对</strong>，不保证<strong>推理路径不依赖答案</strong>。命题 1 界的是分布距离，不是「路径可复现性」</td>
+</tr>
+<tr>
+<td><strong>π-Distill</strong></td>
+<td>⚠️ 部分地规避了：它的 PI 是<strong>前沿模型的动作序列</strong>，不是标准答案；而且任务是多轮工具调用，动作要在环境里真的执行才拿得到奖励</td>
+</tr>
+<tr>
+<td><strong>POPE</strong></td>
+<td>✅ <strong>结构上躲开了</strong>：前缀只是解法的<strong>前半段</strong>，后半段仍要模型自己推；而且 POPE 从不把 oracle 内容当训练目标</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>以上是我的推断，三篇正文都没有专门做「答案泄漏」的消融。</strong> 如果要复现 HDPO，这是我会第一个去查的地方。</p>
+<hr />
+<h2 id="35-pope-rlvr">3.5 POPE 和 RLVR 那个死穴的连接</h2>
+<h3 id="_6">先把死穴摆出来</h3>
+<p><a href="../后训练/05-RLVR-可验证奖励.html">后训练/05</a> 讲过：GRPO 一道题采 G 次，<strong>全对或全错</strong>时组内优势全为零，梯度精确是零。退化组概率是 <code>p^G + (1−p)^G</code>。难题上 <code>p ≈ 0</code>，于是 <code>(1−p)^G ≈ 1</code>——<strong>几乎必然退化</strong>。</p>
+<p><strong>这不是工程 bug，是组相对优势这个设计的直接推论</strong>：优势是「减去组内均值」，组内所有样本奖励相同时均值就等于每一个，差值当然是零。</p>
+<h3 id="pope_1">工业界原来的三条路，和 POPE 的第四条</h3>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>代表</th>
+<th>对难题做了什么</th>
+<th>⚠️ 代价</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 丢掉</strong></td>
+<td>DAPO 的动态采样、zero-variance 过滤</td>
+<td><strong>跳过</strong>退化组，补采到够</td>
+<td>✗ <strong>难题被永久丢弃</strong>。POPE §1 直接点名：「常见的吞吐导向启发式，比如动态采样和零方差过滤，进一步把这些题<strong>显式丢掉</strong>」</td>
+</tr>
+<tr>
+<td><strong>② 指望迁移</strong></td>
+<td>易题到难题的课程</td>
+<td>混入易题，希望能力外溢</td>
+<td>✗ POPE §3.2 的<strong>负面结论</strong>：ray interference，混易题后难题 pass@32 反而更早进入平台期、收敛到更低的渐近值</td>
+</tr>
+<tr>
+<td><strong>③ 强行探索</strong></td>
+<td>熵奖励、Clip-Higher、直接优化 pass@k</td>
+<td>从分布层面推高多样性</td>
+<td>✗ POPE §3.1 三条全部试过，<strong>全部失败</strong>，而且熵爆炸</td>
+</tr>
+<tr>
+<td>★ <strong>④ 改采样落点</strong></td>
+<td><strong>POPE</strong>（也包括 HDPO 的悬崖分支）</td>
+<td>用特权信息把 rollout 的<strong>起点</strong>挪到能拿到奖励的地方</td>
+<td>⚠️ 需要数据集<strong>自带</strong>人写解法 / 标准答案</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>第四条路的要害</strong>：前三条都在<strong>同一个状态分布</strong>里折腾（丢掉它、绕过它、把它摊平）；POPE 换的是<strong>状态分布本身</strong>。✅ 论文 §4 用经典 RL 的话讲得很准：<em>"learning from on-policy actions from off-policy states"</em>——<strong>状态是离策略的（题目被人写的前缀污染过），但动作是在策略的（rollout 是模型自己写的）</strong>。这正是「Lightning OPD 那个 offline / on-policy 矛盾」的近亲，见 <a href="04-OPD方法改进.html">04</a>。</p>
+<h3 id="_7">✅ 一手数字：死穴有多死</h3>
+<table>
+<thead>
+<tr>
+<th>事实</th>
+<th>数值</th>
+<th>出处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qwen3-4B-Instruct 在 DAPO-MATH-17K 上，<strong>K=32 次尝试 + 16k token 预算</strong>，产不出任何正确 rollout 的题目占比</td>
+<td>✅ <strong>超过 50%</strong></td>
+<td>✅ POPE 论文 §1</td>
+</tr>
+<tr>
+<td>POPE 自建难题集的入选标准：基座在 <strong>k=128 次采样 + 32k token 预算</strong>下仍然一条都对不了</td>
+<td>✅ 近似零奖励区</td>
+<td>✅ POPE 论文 §6</td>
+</tr>
+<tr>
+<td>Qwen3-4B-Instruct 在该难题集上的基座 pass@1 / pass@16</td>
+<td>✅ <strong>0.57 / 7.42</strong></td>
+<td>✅ POPE 论文 Table 2</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 注意第三行那个 <strong>7.42 的 pass@16</strong>：入选标准明明是「k=128 全错」，为什么 pass@16 还有 7.42？⚠️ 我的推断：入选筛选和最终评测<strong>用的不是同一个采样温度 / 同一次运行</strong>，近似零不等于严格零；而且 Table 2 的评测预算是 32768 token、题集是 256 道，统计上少数题偶尔碰对完全正常。<strong>论文没有解释这个不一致，这一点我拿不准。</strong></p>
+<h3 id="pope_2">⚠️ 但 POPE 不是万灵药：论文自己点出的边界</h3>
+<p>✅ 论文 §8 列了一类它救不了的题：<strong>模型根本不具备解题所需知识</strong>的那一类。此时「给个前缀 + 靠指令遵循」不够用，必须从 oracle 里构造显式训练目标——而那又回到了会把模型搞坏的 SFT 路线。<strong>论文把这个留成了开放问题。</strong></p>
+<p>还有一条前置条件：✅ 论文 §5.1 明说，转移是否成功<strong>取决于基座模型能不能听懂系统指令、在引导上接着写</strong>。⟹ ⚠️ <strong>指令遵循弱的基座用不了 POPE</strong>，这是我按论文那句话的直接推断。</p>
+<hr />
+<h2 id="36">3.6 ★★★ 数字核查：三篇的「%」是三种不同的东西</h2>
+<h3 id="_8">先说结论</h3>
+<p><strong>同一个符号「%」，三篇论文指的东西不一样。混着读会把结论读反。</strong></p>
+<table>
+<thead>
+<tr>
+<th>篇</th>
+<th>它写的「%」是什么</th>
+<th>怎么确认的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>π-Distill</strong></td>
+<td>⚠️ <strong>百分点</strong></td>
+<td>正文说 Qwen3-8B 最好情况下「11.8% on Travel Planner」；✅ Table 1 里 π-Distill(α=1) 是 <strong>44.1</strong>、SFT w/CoT+RL 是 <strong>32.3</strong>，<code>44.1 − 32.3 = 11.8</code> ⟹ 是<strong>相减</strong>，不是相除</td>
+</tr>
+<tr>
+<td><strong>HDPO</strong></td>
+<td>⚠️ <strong>百分点</strong></td>
+<td>附录 D 说 H100 上 λ=0.01 的 pass@4 提升是「+0.4%」；✅ Table 3 里 <code>0.7783 − 0.7739 = 0.0044</code> ⟹ <strong>0.44 个百分点</strong></td>
+</tr>
+<tr>
+<td><strong>POPE</strong></td>
+<td>⚠️ <strong>相对提升</strong></td>
+<td>✅ Table 2 表注自己写了 <em>"relative gains"</em>；验算：pass@1 <code>15.50</code> vs <code>13.55</code>，<code>(15.50−13.55)/13.55 = 14.4%</code> ⟹ 表里标的正是 <strong>+14%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>所以 POPE 那个最醒目的「+524%」绝对不能和前两篇并排读</strong>：<code>13.98</code> vs <code>2.24</code>，相对提升 <code>11.74/2.24 = 524%</code>，<strong>绝对提升只有 11.74 个百分点</strong>。基数小的时候相对提升会被放大几十倍。</p>
+<h3 id="_9">噪声门槛：哪些差异根本不能当结论</h3>
+<p>用 <code>SE ≈ √(p(1−p)/n)</code> 算每个评测集的单臂标准误（两臂相比再乘 <code>√2</code>）。⚠️ <strong>下面整张表都是我算的，三篇论文都没有给噪声门槛。</strong></p>
+<table>
+<thead>
+<tr>
+<th>评测集</th>
+<th>题数 n</th>
+<th>典型 p</th>
+<th><strong>单臂 SE</strong></th>
+<th><strong>两臂比较门槛 ≈ √2·SE</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HDPO：OpenMathInstruct-2 验证集</td>
+<td>✅ <strong>2048</strong></td>
+<td>0.78</td>
+<td>0.92 pp</td>
+<td>≈ <strong>1.3 pp</strong></td>
+</tr>
+<tr>
+<td>π-Distill：τ-Bench retail 留出</td>
+<td>✅ <strong>115</strong></td>
+<td>0.30</td>
+<td>4.27 pp</td>
+<td>≈ <strong>6.0 pp</strong></td>
+</tr>
+<tr>
+<td>π-Distill：Travel Planner 留出</td>
+<td>✅ <strong>180</strong></td>
+<td>0.40</td>
+<td>3.65 pp</td>
+<td>≈ <strong>5.2 pp</strong></td>
+</tr>
+<tr>
+<td>π-Distill：τ-Bench airline（OOD）</td>
+<td>✅ <strong>50</strong></td>
+<td>0.10</td>
+<td>4.24 pp</td>
+<td>≈ <strong>6.0 pp</strong></td>
+</tr>
+<tr>
+<td>POPE：自建难题集</td>
+<td>✅ <strong>256</strong></td>
+<td>0.14</td>
+<td>2.17 pp</td>
+<td>≈ <strong>3.1 pp</strong></td>
+</tr>
+<tr>
+<td>POPE：AIME 2025 / HMMT 2025</td>
+<td>⚠️ <strong>各 30（我的假设，论文未说明）</strong></td>
+<td>0.50</td>
+<td>9.13 pp</td>
+<td>≈ <strong>12.9 pp</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 最后一行的 AIME / HMMT 要补一句：论文报的 pass@1 是多次采样的平均，<strong>采样噪声被压下去了，但 30 道题这个「题目集合」的噪声压不下去</strong>。即便把每题分数当成 [0,1] 上的连续值、组间标准差取 0.35，<code>SE = 0.35/√30 ≈ 6.4 pp</code>。⟹ <strong>AIME / HMMT 上小于约 6–9 个百分点的差异都不该当结论。</strong></p>
+<h3 id="_10">逐篇体检</h3>
+<p><strong>① π-Distill（Qwen3-8B，对比基线是 SFT w/ CoT + RL）</strong></p>
+<table>
+<thead>
+<tr>
+<th>评测</th>
+<th>最好的特权方法</th>
+<th>基线</th>
+<th>差值</th>
+<th>门槛</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Travel Planner</strong></td>
+<td>π-Distill α=1：✅ <strong>44.1</strong> ±2.16</td>
+<td>✅ 32.3 ±1.10</td>
+<td><strong>+11.8 pp</strong></td>
+<td>5.2 pp</td>
+<td>✅ <strong>站得住</strong></td>
+</tr>
+<tr>
+<td><strong>τ-Bench retail</strong></td>
+<td>π-Distill α=0：✅ <strong>31.1</strong> ±0.73</td>
+<td>✅ 29.1 ±2.14</td>
+<td><strong>+2.0 pp</strong></td>
+<td>6.0 pp</td>
+<td>⚠️ <strong>不能当结论</strong></td>
+</tr>
+<tr>
+<td><strong>τ-Bench airline（OOD）</strong></td>
+<td>OPSD：✅ <strong>14.0</strong> ±5.66</td>
+<td>✅ 8.00 ±3.46</td>
+<td><strong>+6.0 pp</strong></td>
+<td>6.0 pp</td>
+<td>⚠️ <strong>刚好在门槛上，而且两边的种子标准差分别是 5.66 和 3.46，比差值本身还大</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️⚠️ <strong>一个必须指出的统计陷阱</strong>：论文报的 <code>±</code> 是<strong>三个随机种子之间</strong>的标准差，<strong>不包含「换一批测试题会怎样」的不确定性</strong>——三个种子跑的是同样那 115 / 180 / 50 道题。所以 retail 上那个 <code>±0.73</code> 看着很稳，<strong>但它只说明「同一批题上重跑很稳定」，不说明「换 115 道题还是赢 2 个百分点」</strong>。⟹ 真正的不确定性以表里那个 6.0 pp 门槛为准。</p>
+<p>✅ <strong>但有一个发现是稳的，而且很震撼</strong>：Travel Planner 上，<strong>Qwen3-8B 做完 π-Distill(α=1) 拿到 44.1%，而提供特权信息的那个 DeepSeek V3.1 Chat-671B 自己只有 45.0%</strong>（✅ Table 1 第一行）。两者差 0.9 pp，远在 5.2 pp 门槛之内——<strong>一个 8B 模型在这个任务上追平了 671B 的老师</strong>。⚠️ 注意这个追平<strong>只发生在 Travel Planner</strong>：retail 上 31.1 vs 51.3、airline 上 14.0 vs 40.0，差距依然巨大。</p>
+<p><strong>② HDPO（Qwen2.5-Math-1.5B-Instruct，对比 GRPO 基线）</strong></p>
+<p>✅ 两套硬件的完整数字（Table 1 = 8×H200，Table 3 = 8×H100）：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>pass@1 (H200 / H100)</th>
+<th>pass@4 (H200 / H100)</th>
+<th>pass@8 (H200 / H100)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GRPO 基线</td>
+<td>0.6519 / 0.6509</td>
+<td>0.7749 / 0.7739</td>
+<td>0.8228 / 0.8223</td>
+</tr>
+<tr>
+<td>frozen λ=0.01</td>
+<td>0.6519 / 0.6484</td>
+<td>0.7812 / 0.7773</td>
+<td><strong>0.8218 / 0.8252</strong></td>
+</tr>
+<tr>
+<td>frozen λ=0.1</td>
+<td>0.6304 / 0.6343</td>
+<td>0.7812 / 0.7856</td>
+<td>0.8398 / 0.8369</td>
+</tr>
+<tr>
+<td>drifting λ=0.01</td>
+<td>0.6514 / 0.6499</td>
+<td>0.7861 / 0.7783</td>
+<td>0.8271 / <strong>0.8213</strong></td>
+</tr>
+<tr>
+<td>drifting λ=0.1</td>
+<td>0.6294 / 0.6343</td>
+<td>0.7856 / 0.7832</td>
+<td>0.8364 / 0.8359</td>
+</tr>
+</tbody>
+</table>
+<p>我按这两张表逐格相减（⚠️ 以下全是我算的）：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>实际差值范围（百分点）</th>
+<th>论文自己写的</th>
+<th>⚠️ 对不对得上</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pass@4</strong></td>
+<td>H200：+0.63 ~ +1.12<br>H100：+0.34 ~ +1.17</td>
+<td>摘要：「+0.8–1.1%」</td>
+<td>⚠️ <strong>对不上</strong>。区间下沿 0.8 比实际最小值（0.34 / 0.63）都高</td>
+</tr>
+<tr>
+<td><strong>pass@8</strong></td>
+<td>H200：<strong>−0.10</strong> ~ +1.70<br>H100：<strong>−0.10</strong> ~ +1.46</td>
+<td>摘要：「+0.4–1.7%」</td>
+<td>⚠️ 上沿对得上（+1.70 = H200 frozen λ=0.1）；<strong>但区间悄悄排除了「比基线更差」的那一格</strong>——H200 上 frozen λ=0.01 是 <strong>0.8218 &lt; 0.8228</strong>，H100 上 drifting λ=0.01 是 <strong>0.8213 &lt; 0.8223</strong></td>
+</tr>
+<tr>
+<td><strong>pass@1 下降</strong></td>
+<td>H200：−2.15 / −2.25<br>H100：−1.66 / −1.66</td>
+<td>正文 §4.2：「下降约 2.3–2.8%」</td>
+<td>⚠️ <strong>三个口径都对不上</strong>。按百分点是 1.66~2.25；按相对是 2.55%（H100）或 3.3~3.45%（H200）</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>和噪声门槛（1.3 pp）比</strong>：pass@4 的全部提升（0.34 ~ 1.17 pp）<strong>都低于门槛</strong>；pass@8 只有 λ=0.1 那两格（1.36 ~ 1.70 pp）勉强越过。</p>
+<p>✅ <strong>而论文自己在附录 D 里承认了这一点</strong>，原话是 λ=0.01 的提升「close to the noise floor introduced by hardware-level floating-point non-determinism and temperature-1 evaluation variance」，只有 λ=0.1 的覆盖率提升「robust across both configurations」。<strong>这段自我否定写得很诚实，但它没有写进摘要。</strong></p>
+<p>⚠️ <strong>两条额外的可信度折扣，都是我按论文附录 C/D 推的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>① 单种子           ✅ 附录 C 超参表：Seed 42，只有这一个
+                   ⟹ 没有种子间方差可报，&quot;run-to-run variance&quot; 无从量化
+
+② &quot;训练过程中的最好值&quot;  ✅ §4.1：每 10 步评一次，训 2000 步 ⟹ 约 200 个评测点
+                   ⟹ 在 200 个点上取最大值，本身就会把噪声【系统性地往上抬】
+                   ⟹ 5 个配置各取各的最大值，这个偏置对基线和对 HDPO 是一样的，
+                      但它让每一格的方差都比单点评测大
+</code></pre></div>
+
+<p>⚠️ <strong>还有一条必须披露的事实</strong>：✅ HDPO 论文末尾有一份 <strong>LLM Usage Statement</strong>，作者明确写了命题 1 和命题 2 的数学形式化、证明结构与正确性验证是「与 LLM 协作开发的」，论文正文（含相关工作综述、理论阐述、讨论）也是「大量借助 LLM 起草和编辑的」；实验部分（训练运行、指标测量）由作者独立完成。<strong>这是作者自己的一手披露，不是我的揣测。</strong> ⟹ 读它的两条命题时，把它当成「结构合理但未经同行评审验证」的论证来看更稳妥。</p>
+<p><strong>③ POPE（Qwen3-4B-Instruct-2507）</strong></p>
+<p>✅ Table 2 关键行（左边是 pass@1，右边是 pass@16）：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>难题集</th>
+<th>AIME 2025</th>
+<th>HMMT 2025</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>基座 Qwen3-4B-Instruct</td>
+<td>0.57 / 7.42</td>
+<td>48.13 / 77.29</td>
+<td>29.06 / 52.99</td>
+</tr>
+<tr>
+<td>+ hard（纯 RL）</td>
+<td>13.55 / 32.89</td>
+<td>49.58 / 81.43</td>
+<td>31.04 / 63.79</td>
+</tr>
+<tr>
+<td><strong>+ hard + guide（POPE）</strong></td>
+<td><strong>15.50 / 42.53</strong></td>
+<td>53.12 / 82.61</td>
+<td>37.81 / 67.49</td>
+</tr>
+<tr>
+<td>+ hard（Full-oracle SFT）</td>
+<td>2.00 / 12.37</td>
+<td>33.89 / 64.12</td>
+<td>24.50 / 48.09</td>
+</tr>
+<tr>
+<td>+ hard（前缀 + 拒绝采样 SFT）</td>
+<td>5.14 / 24.50</td>
+<td>38.12 / 77.62</td>
+<td>30.08 / 50.91</td>
+</tr>
+<tr>
+<td>+ hard + easy(256)</td>
+<td>8.22 / 23.81</td>
+<td>57.19 / 82.50</td>
+<td>37.19 / 62.81</td>
+</tr>
+<tr>
+<td><strong>+ hard + guide + easy(256)</strong></td>
+<td><strong>14.32 / 38.93</strong></td>
+<td>58.75 / 83.87</td>
+<td>38.12 / 67.15</td>
+</tr>
+<tr>
+<td>+ hard + easy(1K)</td>
+<td>2.24 / 25.12</td>
+<td>61.88 / 83.79</td>
+<td>37.03 / 60.07</td>
+</tr>
+<tr>
+<td><strong>+ hard + guide + easy(1K)</strong></td>
+<td><strong>13.98 / 36.42</strong></td>
+<td>62.01 / 84.31</td>
+<td>40.45 / 70.38</td>
+</tr>
+</tbody>
+</table>
+<p>按 3.1 节那张噪声表逐条判（⚠️ 以下判定是我做的）：</p>
+<table>
+<thead>
+<tr>
+<th>比较</th>
+<th>差值</th>
+<th>门槛</th>
+<th>判定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>难题 pass@1：<strong>hard+guide+1K easy 13.98 vs hard+1K easy 2.24</strong></td>
+<td><strong>+11.74 pp</strong></td>
+<td>3.1 pp</td>
+<td>✅ <strong>非常稳</strong>（≈3.8 倍门槛）。<strong>这是全文最硬的一个结论</strong></td>
+</tr>
+<tr>
+<td>难题 pass@16：<strong>42.53 vs 32.89</strong></td>
+<td><strong>+9.64 pp</strong></td>
+<td>≈4.3 pp（p≈0.4 时）</td>
+<td>✅ <strong>站得住</strong></td>
+</tr>
+<tr>
+<td>难题 pass@16：<strong>38.93 vs 23.81</strong></td>
+<td><strong>+15.12 pp</strong></td>
+<td>≈4.3 pp</td>
+<td>✅ <strong>站得住</strong></td>
+</tr>
+<tr>
+<td>难题 pass@1：<strong>hard+guide 15.50 vs hard 13.55</strong></td>
+<td>+1.95 pp</td>
+<td>3.1 pp</td>
+<td>⚠️ <strong>不能当结论</strong></td>
+</tr>
+<tr>
+<td><strong>Full-oracle SFT 13.55 → 2.00</strong></td>
+<td><strong>−11.55 pp</strong></td>
+<td>3.1 pp</td>
+<td>✅ <strong>崩塌是真的</strong></td>
+</tr>
+<tr>
+<td>AIME 2025 pass@1：<strong>53.12 vs 49.58</strong></td>
+<td>+3.54 pp</td>
+<td>≈6–9 pp</td>
+<td>⚠️ <strong>不能当结论</strong></td>
+</tr>
+<tr>
+<td>HMMT 2025 pass@1：<strong>37.81 vs 31.04</strong></td>
+<td>+6.77 pp</td>
+<td>≈6–9 pp</td>
+<td>⚠️ <strong>勉强，别当结论</strong></td>
+</tr>
+<tr>
+<td>HMMT 2025 pass@16：<strong>70.38 vs 60.07</strong></td>
+<td><strong>+10.31 pp</strong></td>
+<td>≈6–9 pp</td>
+<td>⚠️ <strong>可能是真的，但不宽裕</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>所以 POPE 真正被数据支撑的是什么</strong>：不是「刷榜涨了多少」，而是 ★ <strong>「在混入大量易题之后，难题上的学习不塌」</strong>。看最后两组对比——混进 1000 道易题之后，无引导那一组的难题 pass@1 从 13.55 <strong>崩到 2.24</strong>（ray interference 把难题的学习彻底压死了），而带引导那一组仍然保持 <strong>13.98</strong>。<strong>11.74 个百分点、接近 4 倍噪声门槛、而且机制解释（ray interference）有独立的玩具实验支撑。这是本篇里证据链最完整的一条。</strong></p>
+<p>⚠️ <strong>论文自己点出的一条不利事实，值得尊敬</strong>：AIME 2025 上，<strong>不带引导、只是多混易题的那两组反而更好</strong>（57.19 / 61.88 的 pass@1，比 hard+guide 单独的 53.12 高）。✅ 论文 §6 Result 3 大方承认：易题集和标准榜单的难度重叠，所以混易题对 AIME 这种相对简单的榜更有效；POPE 的价值体现在<strong>更难的 HMMT 2025</strong> 上。⟹ <strong>「POPE 能刷榜」是读反了，正确的读法是「POPE 让你在混易题刷榜的同时，不至于把难题上的学习牺牲掉」。</strong></p>
+<p>⚠️ <strong>摘要和表格有一处不一致</strong>：摘要说在 AIME 2025 / HMMT 2025 上「达到 58% pass@1 和 83% pass@16（基座是 48% 和 77%）」，对应的是 Table 2 里 <code>hard+guide+easy(256)</code> 那一行（58.75 / 83.87）；但表里最好的其实是 <code>hard+guide+1K easy</code> 的 <strong>62.01 / 84.31</strong>。⚠️ <strong>摘要报的不是表里的最好值，原因读不出来</strong>，可能是摘要写于表格定稿之前。</p>
+<hr />
+<h2 id="37">3.7 这一篇的五句话总结</h2>
+<p><strong>① 「特权」= 训练时给、推理时不给。</strong> 不对称是全部机制的来源；推理时还在的东西（提示词、RAG）都不算特权信息。</p>
+<p><strong>② 直接拿标准答案做 SFT 是最差的一条路，而且有一手数据。</strong> ✅ POPE Table 2：Full-oracle SFT 把难题 pass@1 从 13.55 打到 2.00，把 AIME pass@1 从 49.58 打到 33.89。病根和 <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08</a> 讲的曝光偏差是同一个，只是「老师」换成了风格差异更大的人类解法。</p>
+<p><strong>③ 三篇对「学生学到了什么」答得深浅差很多，只有 POPE 做了因果验证。</strong> ✅ 改一条禁止复述引导内容的系统指令，<strong>有引导侧变好、无引导侧变差</strong>——说明转移依赖「模型在引导 rollout 里回头复述、重算」这个具体行为。⚠️ π-Distill 回答的是「什么时候能转移」（初始 KL 要小、PI 效用要为正），不是「转移了什么」；HDPO 只有「pass@k 涨而 pass@1 不涨」这个间接自洽。⚠️ <strong>三篇都没有做答案泄漏的消融，这是我会第一个去查的空白。</strong></p>
+<p><strong>④ 三篇的「%」是三种口径，混读必错。</strong> π-Distill 和 HDPO 写的「%」其实是<strong>百分点</strong>，POPE 写的是<strong>相对提升</strong>。POPE 那个 +524% 的绝对值只有 11.74 个百分点。</p>
+<p><strong>⑤ 按噪声门槛筛一遍，真正站得住的结论只剩三条。</strong> ✅ Travel Planner 上 Qwen3-8B 做 π-Distill 后追平 671B 的 DeepSeek V3.1（44.1 vs 45.0，+11.8 pp 超基线）；✅ POPE 在混入 1000 道易题后仍把难题 pass@1 保在 13.98 而对照组崩到 2.24（+11.74 pp，≈3.8 倍门槛）；✅ 直接 SFT 标准答案会造成崩塌。⚠️ <strong>HDPO 的全部 pass@4 提升都在噪声门槛之下</strong>，只有 λ=0.1 的 pass@8（+1.4~1.7 pp）勉强越线——而且论文附录 D 自己承认了这一点。</p>
+<hr />
+<blockquote>
+<p>上一级：<a href="README.html">本目录</a> ｜ 上一篇：<a href="02-自蒸馏.html">02 自蒸馏</a> ｜ 下一篇：<a href="04-OPD方法改进.html">04 OPD 方法改进</a> ｜ <a href="附-速查表.html">附-速查表</a></p>
+<p>基础篇：<a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08 On-Policy 蒸馏</a> ｜ 相关：<a href="../后训练/05-RLVR-可验证奖励.html">后训练/05 RLVR</a></p>
+</blockquote>
+</div>
+<div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
+</div>
+</body>
+</html>

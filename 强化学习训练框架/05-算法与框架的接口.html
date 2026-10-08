@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -250,51 +255,477 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一篇干什么</strong>：算法论文只写公式，不写「实现它需要框架配合什么」。这一篇补上这层。<br />
 <strong>难度</strong> ★★ · <strong>前置</strong>：<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.2</a>（四个模型与显存账）<br />
-<strong>本篇 🌐 材料统一出处</strong>：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>（下称「HF 横评」），访问于 2026-08，以官方仓库现状为准。</p>
+<strong>本篇 🌐 材料统一出处</strong>：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>（下称「HF 横评」），访问于 2026-08，以官方仓库现状为准。<br />
+<strong>⚠️ 边界声明</strong>：PPO / GRPO / DAPO 这些算法<strong>本身</strong>（目标函数长什么样、裁剪为什么那么设计、奖励从哪来）不在这里讲，它们在 <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05-RLVR-可验证奖励.md</a> 和 <a href="../后训练/06-奖励从哪来.html">后训练/06-奖励从哪来.md</a>。本章只问一个问题：<strong>这个算法要能跑起来，框架必须额外提供什么？</strong></p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong>（第一次出现的缩写在这里一次性给全称）</p>
+<p><strong>Ψ</strong>（Psi）—— 本仓库统一用它表示<strong>模型参数量</strong>。7B 模型的 Ψ = 7×10⁹。<br />
+<strong>IS</strong>（Importance Sampling，重要性采样）—— 用「旧策略采的样」去估计「新策略的期望」时，必须乘上的那个修正比值。<br />
+<strong>logprob</strong>（log-probability，对数概率）—— 模型给某个 token 打的概率取对数。RL 的 loss 几乎全部建立在它之上。<br />
+<strong>π_old / old_logprob</strong> —— 生成这批样本时那一版权重给出的 logprob。注意是<strong>那一版</strong>，不是当前这一版。<br />
+<strong>GAE</strong>（Generalized Advantage Estimation，广义优势估计）—— PPO 默认的优势估计方法，需要 critic。<br />
+<strong>critic</strong>（价值网络）—— 和主模型同规模的辅助模型，预测「当前状态未来能拿多少分」。<br />
+<strong>TITO</strong>（Token-In-Token-Out，令牌进令牌出）—— 推理引擎直接收发 token id，中间不经过「文本」这一层，避免二次分词。见 <a href="04-训推一致性.html">04 章 §4.5</a>。<br />
+<strong>MoE</strong>（Mixture of Experts，混合专家）—— 每个 token 只激活一部分「专家」子网络的模型结构。<br />
+<strong>EP</strong>（Expert Parallelism，专家并行）—— MoE 里把不同专家放到不同 GPU 上的并行方式。<br />
+<strong>PRM</strong>（Process Reward Model，过程奖励模型）—— 不只给最终答案打分，还给中间每一步打分的奖励模型。<br />
+<strong>OPD</strong>（On-Policy Distillation，在策略蒸馏）—— 学生模型自己生成，老师模型给概率，两边按 KL 散度拉齐。<br />
+<strong>sg</strong>（stop-gradient，停止梯度）—— 让某个量只参与数值计算、不参与反向传播。<br />
+<strong>p90</strong> —— 第 90 百分位耗时：100 条轨迹里排第 90 慢的那一条用了多久。</p>
+<hr />
+<h2 id="_1">本章总表：算法要什么，框架就得给什么</h2>
+<p>先给一个比喻，这一章的全部内容都在这个比喻里。</p>
+<p><strong>算法是菜谱，框架是厨房。</strong> 换一道菜，有四种可能：<strong>A</strong> 只是换个调料配比，厨房一点不用动；<strong>B</strong> 要求「所有配菜必须同时下锅」，于是备菜流程得重排；<strong>C</strong> 要求「必须用上一锅的汤底」，于是厨房得多一个冰柜专门存汤底，还得给每份汤底贴上日期标签；<strong>D</strong> 要求多一道配菜，于是得多请一个厨师、多买一口锅。算法论文只写菜谱，B 和 C 这两类要求藏在字缝里 —— 这一章就是把它们挖出来。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>算法侧的要求</th>
+<th>算法为什么需要它</th>
+<th>⚠️ 框架必须提供什么（硬要求）</th>
+<th>不提供会怎样</th>
+<th>类别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>优势基线来自 critic</strong>（PPO / GAE）</td>
+<td>要知道「这个状态本来能拿多少分」才能算优势</td>
+<td>多养一个和主模型同规模的网络：权重 + 梯度 + 优化器状态 + 它自己的并行切分 + 它自己的 checkpoint</td>
+<td>跑不了 PPO</td>
+<td><strong>D</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>组内归一化</strong>（GRPO / RLOO / Dr. GRPO / GRPO-PassK）</td>
+<td>用同一道题的 G 个答案互相当基线，省掉 critic</td>
+<td>⚠️ <strong>调度器必须保证同一个 prompt 的 k 条轨迹落在同一个优化批次里</strong>，并且每条样本带 <code>group_id</code>；过滤要<strong>整组丢</strong>，不能丢半组</td>
+<td>组被打散 → 基线算错 → 优势全错，而且<strong>不报错</strong></td>
+<td><strong>B</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>token 级 IS 比值</strong> <code>π_new(t)/π_old(t)</code>（PPO / CISPO / clip 系）</td>
+<td>样本是旧权重采的，必须修正分布偏移</td>
+<td>① 拿得到 <code>old_logprob</code>（见下方推演）；② 训练与推理的 tokenizer、chat 模板、特殊 token、截断位置<strong>逐字节一致</strong>（TITO）</td>
+<td>比值逐 token 错位 → loss 看着正常、模型就是不涨</td>
+<td><strong>C</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>序列级 IS 比值</strong>（GSPO）</td>
+<td>把比值做在整条序列上，方差更小</td>
+<td>需要整条序列的 logprob 之和<strong>与长度</strong>；两侧的 mask（padding、工具返回段、思考段）必须完全一致</td>
+<td>一个 mask 不一致，整条序列的比值就偏</td>
+<td><strong>C</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>KL 约束到 reference</strong></td>
+<td>防止模型跑太远、崩掉风格</td>
+<td>常驻一份 reference 权重（2Ψ 字节，只要 BF16），或在 rollout 时就把 reference logprob 算好随样本带走</td>
+<td>要么多占显存，要么多占一次前向</td>
+<td><strong>A / C</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>动态过滤 / 动态采样</strong>（DAPO 一类：丢掉全对或全错的组）</td>
+<td>没有区分度的组梯度恒为 0，算了白算</td>
+<td>⚠️ 批大小变成<strong>动态的</strong> —— 框架要么支持变长 batch，要么支持「过采样再截断」，要么支持<strong>边过滤边补采样</strong></td>
+<td>批大小忽大忽小 → 学习率的有效步长跟着抖</td>
+<td><strong>B</strong></td>
+</tr>
+<tr>
+<td>7</td>
+<td><strong>陈旧度门控</strong></td>
+<td>异步架构下样本有新有旧，太旧的要丢</td>
+<td><strong>逐样本</strong>（agentic 场景下是逐样本的<strong>版本序列</strong>）打权重版本标签，一路带到训练侧</td>
+<td>只在 batch 级看平均陈旧度，会看不见 §5.5 那个偏差</td>
+<td><strong>C</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>过程奖励 PRM</strong></td>
+<td>稀疏的最终奖励不够，要给中间步骤打分</td>
+<td>奖励计算本身要变成一个<strong>要跑前向、要排队、要异步</strong>的服务，不再是一个纯 CPU 函数</td>
+<td>奖励计算卡在关键路径上，GPU 等打分</td>
+<td><strong>B</strong></td>
+</tr>
+<tr>
+<td>9</td>
+<td><strong>MoE 模型上做 IS 修正</strong></td>
+<td>同上第 3、4 条</td>
+<td>路由必须可复现：R3 / Keep Routing（见 <a href="04-训推一致性.html">04 章 §4.4</a>）；后端要支持 EP</td>
+<td>同一个 token 走了不同专家 → 两份 logprob 根本不可比</td>
+<td><strong>C</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td><strong>OPD 在策略蒸馏</strong></td>
+<td>用教师概率代替奖励</td>
+<td>把「奖励模型」这一槽位换成「教师模型前向」，其余 rollout / buffer / 权重同步<strong>一行不改</strong></td>
+<td>—（这一条恰好是最便宜的）</td>
+<td><strong>A</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>四个类别的含义</strong>（这是读懂这张表的钥匙）：</p>
+<p><strong>A. 只改一个函数。</strong> loss 换个写法、加个系数 —— 写一个新函数挂个装饰器就完事，框架完全不用动。§5.2 会看到 veRL 把这一类做成了注册表。</p>
+<p><strong>B. 要改调度。</strong> 算法对「哪些样本必须在一起」「一批要多大」提出了要求 —— 得动 rollout 调度器和批次组装逻辑。</p>
+<p><strong>C. 要改数据通路契约。</strong> 算法要求某个<strong>额外的字段</strong>从推理侧一路活着传到训练侧（logprob、版本号、路由、失败原因）—— 这是最贵的一类，因为它贯穿推理引擎、传输层、buffer、训练引擎四段，任何一段把字段丢了，整条链就断了。</p>
+<p><strong>D. 要多养一个模型。</strong> 整张表里只有第 1 行（critic）属于这一类。它不改契约、不改调度，但要多一套权重 + 梯度 + 优化器状态 + 并行切分 + checkpoint 保存恢复。⚠️ 它是四类里<strong>唯一能用钱解决</strong>的 —— 加卡就行。</p>
+<p>⚠️ <strong>「为什么换个算法要动框架」的答案就是这一句：论文只写 A，真正的工程量在 B 和 C。</strong> 一个团队看着 GRPO 的公式说「不就是改个 advantage 嘛」，然后花三周在调度器上 —— 卡住他们的是总表第 2 行和第 6 行，而这两行在论文里只占半句话。</p>
+<h3 id="old_logprob">一个逐步推演：拿到 <code>old_logprob</code> 到底有几条路，各要付多少钱</h3>
+<p>总表第 3 行里那个 <code>old_logprob</code> 看起来人畜无害，但它是本章最典型的 C 类要求。设定一个具体场景：</p>
+<table>
+<thead>
+<tr>
+<th>设定项</th>
+<th>取值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>模型</td>
+<td>7B（Ψ = 7×10⁹）</td>
+</tr>
+<tr>
+<td>一个迭代的批次</td>
+<td>256 道题 × G=8 = <strong>2,048 条轨迹</strong></td>
+</tr>
+<tr>
+<td>单条长度</td>
+<td>prompt 512 token + 回答 1,536 token = <strong>2,048 token</strong></td>
+</tr>
+<tr>
+<td>批次总 token</td>
+<td>2,048 × 2,048 = <strong>4.19×10⁶ token</strong></td>
+</tr>
+<tr>
+<td>训练卡</td>
+<td>8 × H100，BF16 稠密算力 989 TFLOPS/卡，⚠️ 按 MFU 40% 折算 = <strong>396 TFLOPS/卡</strong></td>
+</tr>
+</tbody>
+</table>
+<p>三条路：</p>
+<table>
+<thead>
+<tr>
+<th>路线</th>
+<th>怎么做</th>
+<th>额外显存</th>
+<th>额外算力</th>
+<th>⚠️ 风险</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A. 推理引擎顺手吐</strong></td>
+<td>rollout 时推理引擎本来就算了 logits，把采样位置的 logprob 一并返回</td>
+<td>0</td>
+<td>0（前向本来就在做）</td>
+<td>这份 logprob 来自<strong>推理内核</strong>，和训练内核算出来的不一样 —— 整个 <a href="04-训推一致性.html">04 章</a> 都在处理这个口子</td>
+</tr>
+<tr>
+<td><strong>B. 训练侧用旧权重重算</strong></td>
+<td>多存一份生成时的 BF16 权重，训练前拿它跑一遍前向</td>
+<td><strong>+2Ψ = 14 GB</strong>（分到 8 卡 = 1.75 GB/卡）</td>
+<td>一次完整前向</td>
+<td>要管理「旧权重」的生命周期：存哪一版、存几版、异步架构下一批样本可能跨了好几版</td>
+</tr>
+<tr>
+<td><strong>C. 干脆用当前权重算</strong></td>
+<td>不存旧权重，直接拿当前权重算 <code>old_logprob</code></td>
+<td>0</td>
+<td>一次完整前向</td>
+<td>⚠️ <strong>比值恒等于 1，IS 修正直接失效</strong> —— 等于偷偷把 off-policy 算法降级成了 on-policy，而指标上看不出来</td>
+</tr>
+</tbody>
+</table>
+<p>路线 B 的算力这一项可以算到秒：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>算什么</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>一次前向的 FLOPs（经验公式：每参数每 token 约 2 次乘加）</td>
+<td>2 × 7×10⁹ × 4.19×10⁶</td>
+<td><strong>5.87×10¹⁶ FLOP = 58.7 PFLOP</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td>8 卡的有效算力</td>
+<td>8 × 396×10¹²</td>
+<td>3.17×10¹⁵ FLOP/s</td>
+</tr>
+<tr>
+<td>③</td>
+<td>耗时</td>
+<td>5.87×10¹⁶ ÷ 3.17×10¹⁵</td>
+<td><strong>≈ 18.6 秒 / 迭代</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 18.6 秒是「为了拿到一个字段」付出的代价，外加 14 GB 显存。拿它对比路线 A 的 0 秒 0 字节，就明白为什么几乎所有框架的默认选择是 A —— 也就明白了为什么 <a href="04-训推一致性.html">04 章</a> 那一整章的问题是躲不掉的：<strong>大家都选了便宜的那条路，然后不得不去修它带来的不一致。</strong></p>
 <hr />
 <h2 id="51-critic">5.1 去掉 critic 这笔账，两边都要记</h2>
 <p>RL 后训练最大的一次算法变迁，是从 PPO 走到 GRPO 这一类<strong>去 critic</strong> 的算法。</p>
 <blockquote>
-<p><strong>术语</strong>：PPO = Proximal Policy Optimization（近端策略优化），RL 的基线算法。critic（价值网络）是一个和主模型同规模的辅助模型，负责预测「当前状态未来能拿多少分」。GRPO = Group Relative Policy Optimization（分组相对策略优化），同一道题生成 G 个答案，用组内的平均分当基线，从而<strong>不需要 critic</strong>。</p>
+<p><strong>术语回顾</strong>：PPO = Proximal Policy Optimization（近端策略优化），RL 的基线算法。GRPO = Group Relative Policy Optimization（分组相对策略优化），同一道题生成 G 个答案，用组内的平均分当基线，从而<strong>不需要 critic</strong>。两者的目标函数长什么样见 <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05-RLVR-可验证奖励.md</a>；这里只看它们对框架的要求差在哪。</p>
 </blockquote>
 <h3 id="16">✅ 收益侧：省掉 16Ψ 显存</h3>
-<p><a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章</a> 已经把这笔账算过了（Ψ = 参数量）：</p>
-<div class="codehilite"><pre><span></span><code>PPO 的四个模型：
-  actor     16 Ψ 字节（权重 + 梯度 + 优化器状态，全套）
-  critic    16 Ψ 字节（全套）
-  reference  2 Ψ 字节（只要 BF16 权重）
-  reward     2 Ψ 字节
-  ──────────────────────────────
-  合计     ~36 Ψ 字节 ← 是预训练（16Ψ）的 2.25 倍
-
-去掉 critic：36Ψ → 20Ψ，省掉整整 16Ψ，将近一半
-</code></pre></div>
-
-<h3 id="rollout">⚠️ 代价侧：这笔账记在 rollout 上</h3>
-<p>省下来的显存不是白来的。<strong>GRPO 需要同一道题生成 G 个答案才能算组内基线</strong>，G 通常取 8~32。</p>
-<div class="codehilite"><pre><span></span><code>PPO   ：64 道题 × 1 个答案  =    64 个 rollout
-GRPO  ：64 道题 × G=16     = 1,024 个 rollout    ← 生成量 ×16
-</code></pre></div>
-
-<p>而 <a href="02-架构主轴-同步到全异步.html">02 章</a> 已经说过，生成占了 RL 的 ~80% 时间。<strong>把生成量乘以 16，等于把整个系统的瓶颈往生成侧又推了一大步。</strong></p>
+<p><a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章</a> 已经把这笔账算过了（Ψ = 参数量，单位是字节）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>要存什么</th>
+<th>占用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>actor</strong>（被训练的主模型）</td>
+<td>BF16 权重 2Ψ + 梯度 2Ψ + FP32 主权重 4Ψ + Adam 一阶动量 4Ψ + 二阶动量 4Ψ</td>
+<td><strong>16 Ψ</strong></td>
+</tr>
+<tr>
+<td><strong>critic</strong>（价值网络）</td>
+<td>同上，全套</td>
+<td><strong>16 Ψ</strong></td>
+</tr>
+<tr>
+<td><strong>reference</strong>（参考模型）</td>
+<td>只要 BF16 权重，不训练</td>
+<td><strong>2 Ψ</strong></td>
+</tr>
+<tr>
+<td><strong>reward</strong>（奖励模型）</td>
+<td>只要 BF16 权重，不训练</td>
+<td><strong>2 Ψ</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>PPO 合计</strong></td>
+<td><strong>36 Ψ</strong></td>
+</tr>
+<tr>
+<td></td>
+<td>去掉 critic 后（GRPO）</td>
+<td><strong>20 Ψ</strong></td>
+</tr>
+</tbody>
+</table>
+<p>对照一下预训练：预训练只有 actor 一个模型，16Ψ。所以 <strong>PPO 的显存是预训练的 36÷16 = 2.25 倍</strong>；去掉 critic 之后降到 20÷16 = 1.25 倍。</p>
+<p>省下的是 16Ψ，占原来的 16÷36 = <strong>44.4%</strong>（⚠️ 不是「一半」，也不要写成「省了 50%」—— 这一章后面还会再用到这个数）。7B 模型上就是 16 × 7×10⁹ = <strong>112 GB</strong>，正好是一台 8 卡 H100（8×80 = 640 GB）里相当可观的一块。</p>
+<h3 id="rollout">⚠️ 代价侧：这笔账记在 rollout 上，但很容易算错</h3>
+<p>省下来的显存不是白来的。<strong>GRPO 需要同一道题生成 G 个答案才能算组内基线</strong>，G 通常取 8~32。于是常见的对比是这样写的：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>题目数</th>
+<th>每题答案数 G</th>
+<th>rollout 总数</th>
+<th>相对 PPO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PPO</td>
+<td>64</td>
+<td>1</td>
+<td>64</td>
+<td>1×</td>
+</tr>
+<tr>
+<td>GRPO（G=16）</td>
+<td>64</td>
+<td>16</td>
+<td>1,024</td>
+<td>16×</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这个对比有一个没说出口的前提：它固定了「题目数」。</strong> 如果固定的是「轨迹数」（一个优化批次里有多少条样本参与反向传播），账完全不一样 —— 而实践中更常见的恰恰是后者：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>题目数</th>
+<th>G</th>
+<th>rollout 总数</th>
+<th>进入训练的轨迹数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PPO</td>
+<td>1,024</td>
+<td>1</td>
+<td>1,024</td>
+<td>1,024 条</td>
+</tr>
+<tr>
+<td>GRPO（G=8）</td>
+<td>128</td>
+<td>8</td>
+<td>1,024</td>
+<td>1,024 条</td>
+</tr>
+</tbody>
+</table>
+<p><strong>同样 1,024 条轨迹，生成量一模一样。</strong> 所以「GRPO 把生成量乘以 G」这句话<strong>不是无条件成立的</strong> —— 它只在「题目数不变」这个口径下成立。⚠️ 这是本章要拆掉的第一个含糊说法：<strong>比较两个算法的开销之前，先问「固定的是哪个量」。</strong></p>
+<p>那么同口径（固定轨迹数）下，GRPO 真正比 PPO 多花的生成在哪？有两处，都能算到小数点。</p>
+<h4 id="a-critic">(a) 去掉 critic 之后训练侧变便宜了，生成占比被动上升</h4>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>算什么</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>约定计算单位：一次前向 = 1，一次反向 ≈ 2（反向大约是前向的两倍）</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>②</td>
+<td>PPO 训练侧的工作量</td>
+<td>actor(1+2) + critic(1+2) + reference(1) + reward(1)</td>
+<td><strong>8 单位</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td>GRPO 训练侧的工作量</td>
+<td>actor(1+2) + reference(1) + reward(1)</td>
+<td><strong>5 单位</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td>训练侧减少了</td>
+<td>(8−5) ÷ 8</td>
+<td><strong>37.5%</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>设 PPO 的生成 : 训练 = 80 : 20，换算 1 个训练单位</td>
+<td>20 ÷ 8</td>
+<td>2.5 时间单位</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>GRPO 的训练时间</td>
+<td>5 × 2.5</td>
+<td>12.5</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>GRPO 的生成占比</td>
+<td>80 ÷ (80 + 12.5)</td>
+<td><strong>86.5%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 从 80% 到 86.5%，是涨了 <strong>6.5 个百分点</strong>，不是「涨了 6.5%」—— 后者会被读成 80% × 1.065 = 85.2%，差着一截。本仓库这类地方一律写「百分点」。（这组数字是 ⚠️ 本文按上述假设推算的，不是任何一家的实测。）</p>
+<h4 id="b">(b) 动态过滤要过采样，这一项才是大头</h4>
+<p>GRPO 这类算法通常配一个动态过滤（§5.5 会细讲）：组内<strong>全对</strong>或<strong>全错</strong>的题丢掉，因为组内没有区分度、优势全是 0、梯度也是 0。被丢掉那些题的生成算力是白花的，必须靠过采样补回来。</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>算什么</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>⚠️ 设全对/全错的组占 40%（这个比例随数据难度与模型能力大幅变动，这里只做量级示意）</td>
+<td>—</td>
+<td>40%</td>
+</tr>
+<tr>
+<td>②</td>
+<td>要填满批次，必须过采样</td>
+<td>1 ÷ (1 − 0.40)</td>
+<td><strong>1.67 倍</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td>生成时间</td>
+<td>80 × 1.67</td>
+<td>133.3</td>
+</tr>
+<tr>
+<td>④</td>
+<td>一个迭代的总时间（训练侧用 (a) 的 12.5）</td>
+<td>133.3 + 12.5</td>
+<td><strong>145.8</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>相对 PPO 的 100</td>
+<td>145.8 ÷ 100</td>
+<td><strong>时间变成 1.46 倍</strong></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>换成吞吐口径</td>
+<td>1 ÷ 1.46</td>
+<td><strong>吞吐降到 68.6%，即减少 31.4%</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>生成占比</td>
+<td>133.3 ÷ 145.8</td>
+<td><strong>91.4%</strong>（比 PPO 高 <strong>11.4 个百分点</strong>）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>口径提醒 —— 本仓库最高频的一类错</strong>：⑤ 的「时间变成 1.46 倍」和 ⑥ 的「吞吐减少 31.4%」说的是同一件事；但「时间增加 46%」和「吞吐减少 46%」<strong>不是</strong>同一件事。换算公式只有一条：<code>加速倍数 = 1 ÷ (1 − 时间减少比例)</code>。所以「时间减少 50%」= 加速 <strong>2 倍</strong>；「时间减少 90%」= 加速 <strong>10 倍</strong>；反过来「加速 50%」只对应时间减少 <strong>33.3%</strong>。看到「提速 X%」和「省了 X% 时间」，必须当成两个不同的数。</p>
+</blockquote>
 <p>⚠️ 于是形成一条完整的因果链，这是本章最重要的一条：</p>
-<div class="codehilite"><pre><span></span><code>去 critic（省显存）
-   ↓
-生成量 ×G（G=8~32）
-   ↓
-生成成为压倒性瓶颈
-   ↓
-必须上异步架构（否则训练卡全程空转）
-   ↓
-样本变陈旧
-   ↓
-需要 IS 修正 + 陈旧度管理
-   ↓
-需要更频繁/更快的权重同步
+<div class="codehilite"><pre><span></span><code>去 critic（省 44% 显存，36 Psi -&gt; 20 Psi）
+   |
+   v
+训练侧工作量 -37.5%，同时动态过滤逼着过采样 x1.67
+   |
+   v
+生成从占迭代时间 80% 涨到 91%
+（分离部署下，训练卡的空闲时间占比同步上升）
+   |
+   v
+同步架构里这 91% 的时间训练卡在白等 -&gt; 必须上异步
+   |
+   v
+样本不再来自最新那一版权重 -- 变陈旧
+   |
+   v
+需要 IS 修正（要 old_logprob，本章总表第 3 行）
+需要陈旧度管理（要逐样本版本标签，第 7 行）
+   |
+   v
+需要更频繁、更快的权重同步（见 03 章）
 </code></pre></div>
 
-<p><strong>一个「省显存」的算法改动，最终倒逼出了整套异步基建。</strong> 这就是「算法倒逼框架」的最典型例子——你不能只看论文里那个「省掉一个模型」的结论。</p>
+<p><strong>一个「省显存」的算法改动，最终倒逼出了整套异步基建。</strong> 对照本章总表看得更清楚：去 critic 砍掉了第 1 行的要求，却同时点亮了第 2、3、6、7 行 —— <strong>省掉一个 D 类要求，换来四个 B/C 类要求：省掉的那个能用钱解决（加卡），换来的四个只能用人解决（改调度、改契约）。</strong></p>
 <hr />
 <h2 id="52-verl">5.2 ✅ veRL 的注册表：算法多样性有多少</h2>
 <p>框架侧要支撑多少种算法？veRL 给了一个可以直接数的答案。</p>
@@ -316,44 +747,71 @@ GRPO  ：64 道题 × G=16     = 1,024 个 rollout    ← 生成量 ×16
 <span class="n">GDPO</span> <span class="o">=</span> <span class="s2">&quot;gdpo&quot;</span>
 </code></pre></div>
 
-<p>紧跟着是 <code>ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}</code>（L113）和 <code>def register_adv_est(...)</code>（L116）——<strong>注册表模式</strong>。</p>
+<p>紧跟着是 <code>ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}</code>（L113）和 <code>def register_adv_est(...)</code>（L116）—— <strong>注册表模式</strong>：新算法写一个函数，挂一个 <code>@register_adv_est("我的名字")</code>，框架启动时自动认领。</p>
+<p>⚠️ 但请对照本章总表看这 14 个：<code>GAE</code> 需要 critic（第 1 行），<code>GRPO</code> / <code>RLOO</code> / <code>GRPO_PASSK</code> / <code>GRPO_VECTORIZED</code> / <code>RLOO_VECTORIZED</code> 这 5 个都需要<strong>组内采样</strong>（第 2 行）。<strong>注册表只解决了 A 类要求 —— 组怎么采、怎么保证同组不被打散，这件事注册表管不了，它在调度器里。</strong></p>
 <h3 id="policy-loss12">策略损失（policy loss）：12 种</h3>
-<p>✅ 同一文件里的 12 个 <code>@register_policy_loss</code>（行号见 <a href="04-训推一致性.html">04 章 §4.6</a> 的表）：<br />
-<code>vanilla</code> · <code>dppo_tv</code> · <code>dppo_kl</code> · <code>gspo</code> · <code>sapo</code> · <code>gpg</code> · <code>clip_cov</code> · <code>kl_cov</code> · <code>geo_mean</code> · <code>dro</code> · <code>cispo</code> · <code>bypass_mode</code></p>
-<p>⚠️ <strong>14 × 12 的注册表说明了一件事：算法层已经被框架彻底「插件化」了。</strong><br />
-加一个新算法，只需要写一个函数、挂一个装饰器——不需要碰 rollout、不需要碰权重同步、不需要碰分布式。</p>
-<h3 id="openrlhf">✅ OpenRLHF 把这条原则写成了设计声明</h3>
+<p>✅ 同一文件里的 12 个 <code>@register_policy_loss</code>（行号见 <a href="04-训推一致性.html">04 章 §4.6</a> 的表）：</p>
+<p><code>vanilla</code> · <code>dppo_tv</code> · <code>dppo_kl</code> · <code>gspo</code> · <code>sapo</code> · <code>gpg</code> · <code>clip_cov</code> · <code>kl_cov</code> · <code>geo_mean</code> · <code>dro</code> · <code>cispo</code> · <code>bypass_mode</code></p>
+<p>名义上 14 × 12 = 168 种组合（⚠️ 并非每一对都有意义，比如 <code>bypass_mode</code> 是个旁路开关而不是真正的损失），而<strong>加一个新的只需要写一个函数、挂一个装饰器</strong> —— 不用碰 rollout、不用碰权重同步、不用碰分布式。这就是「算法层已经被插件化」的含义。</p>
+<h3 id="openrlhf">✅ OpenRLHF 把「正交」写成了设计声明</h3>
 <p>OpenRLHF 的 README 里有一条明确的设计原则（✅ 原文）：</p>
 <table>
 <thead>
 <tr>
 <th>原则</th>
-<th>描述</th>
+<th>原文</th>
 <th>收益</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>Algorithm-Agnostic</strong></td>
+<td><strong>Algorithm-Agnostic</strong>（算法无关）</td>
 <td><em>"RL algorithms (PPO, REINFORCE++, etc.) are </em><em>decoupled from agent executors</em><em>"</em></td>
 <td>任何算法配任何执行模式</td>
 </tr>
 </tbody>
 </table>
-<p>并且它把「执行模式」和「RL 算法」明确标为<strong>正交</strong>（✅ 原文小标题：<em>"Two Execution Modes (</em><em>Orthogonal to RL Algorithms</em><em>)"</em>）：</p>
-<div class="codehilite"><pre><span></span><code>        执行模式 →     Single-Turn        Multi-Turn
-  算法 ↓
-  PPO                    ✓                  ✓
-  REINFORCE++            ✓                  ✓
-  GRPO                   ✓                  ✓
-  RLOO                   ✓                  ✓
-  Dr. GRPO               ✓                  ✓
-</code></pre></div>
-
-<p>⚠️ 这个二维表是 RL 框架设计的一个成熟标志。<strong>早期框架把「多轮」和「某个算法」耦在一起</strong>（比如「我们的多轮实现只支持 GRPO」），成熟的框架会把它们拆成两个正交维度。选型时可以直接拿这条当检查项。</p>
+<p>并且它把「执行模式」和「RL 算法」明确标为<strong>正交</strong>（✅ 原文小标题：<em>"Two Execution Modes (</em><em>Orthogonal to RL Algorithms</em><em>)"</em>）。原文那张打勾表的信息，用 markdown 表格表达是这样：</p>
+<table>
+<thead>
+<tr>
+<th>RL 算法</th>
+<th>Single-Turn（单轮）</th>
+<th>Multi-Turn（多轮）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PPO</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td>REINFORCE++</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td>GRPO</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td>RLOO</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td>Dr. GRPO</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这张「全是支持」的表看着像废话，其实是个<strong>成熟度标志</strong>。早期框架常常把「多轮」和「某个算法」耦在一起 —— 典型症状是文档里写「我们的多轮实现目前只支持 GRPO」。这种耦合意味着两件事被同一段代码管着：算多轮轨迹的优势（算法的事）和驱动工具调用循环（执行器的事）。一旦拆开，这张表就必然全是勾。<strong>选型时可以直接把这张表当检查项：对着候选框架的文档，看它能不能填满。</strong></p>
 <hr />
-<h2 id="53-cispo">5.3 ★ 三方交叉验证：CISPO 从报告走到注册表</h2>
-<p>一个算法从技术报告走到开源框架，这条路径是可以逐条回查的：</p>
+<h2 id="53-cispo">5.3 ★ 三方交叉验证：CISPO 从技术报告走到注册表</h2>
+<p>一个算法从「某家报告里提了一嘴」走到「我今天就能用」，这条路径是可以逐条回查的。以 CISPO（Clipped Importance Sampling Policy Optimization，裁剪重要性采样策略优化）为例：</p>
 <table>
 <thead>
 <tr>
@@ -364,116 +822,306 @@ GRPO  ：64 道题 × G=16     = 1,024 个 rollout    ← 生成量 ×16
 </thead>
 <tbody>
 <tr>
-<td><strong>① 报告里用了</strong></td>
-<td>MiniMax-M2 §6.2.2：Train Engine 计算 <strong>CISPO</strong> 策略梯度</td>
+<td><strong>① 某家报告里用了</strong></td>
+<td>MiniMax-M2 论文 §6.2.2：Train Engine 计算 <strong>CISPO</strong> 策略梯度</td>
 <td>✅</td>
 </tr>
 <tr>
 <td><strong>② 开源框架实现了</strong></td>
 <td>veRL <code>verl/trainer/ppo/core_algos.py:2046</code> → <code>@register_policy_loss("cispo")</code></td>
-<td>✅ 实测</td>
+<td>✅ 本地实测</td>
 </tr>
 <tr>
-<td><strong>③ 生态里有更全的</strong></td>
-<td>ROLL 被 HF 横评点名为 IS 修正菜单最全的一家</td>
+<td><strong>③ 生态里有更全的菜单</strong></td>
+<td>ROLL 被 HF 横评点名为 IS 修正手段最全的一家</td>
 <td>🌐</td>
 </tr>
 </tbody>
 </table>
-<p>同样可查的还有 GSPO：✅ <code>core_algos.py:1545</code> → <code>@register_policy_loss("gspo")</code>。</p>
-<p>⚠️ 这类核对的价值在于：<strong>它能区分「论文里提过」和「框架里能用」</strong>。很多算法只停留在前者。</p>
+<p>同样可查的还有 GSPO（Group Sequence Policy Optimization，分组序列策略优化）：✅ <code>core_algos.py:1545</code> → <code>@register_policy_loss("gspo")</code>。</p>
+<p>⚠️ 这类核对的价值在于它能区分三种状态，而这三种状态在读论文时长得一模一样：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>你能做什么</th>
+<th>怎么确认</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只在论文里提过</td>
+<td>自己从头实现</td>
+<td>搜不到任何开源实现</td>
+</tr>
+<tr>
+<td>框架里有，但是 experimental</td>
+<td>能跑，要自己兜底</td>
+<td>在 <code>experimental/</code> 目录下</td>
+</tr>
+<tr>
+<td>框架主干里有，有测试</td>
+<td>改一行配置就能开</td>
+<td>在注册表里，且有对应的单测</td>
+</tr>
+</tbody>
+</table>
+<p>很多算法停留在第一种。<strong>在决定「我们下个季度上 XXX 算法」之前，先花十分钟在候选框架里 grep 一下它的注册名。</strong></p>
 <hr />
 <h2 id="54-is">5.4 IS 修正为什么属于「算法与框架的接口」</h2>
-<p><a href="04-训推一致性.html">04 章 §4.6</a> 讲了 IS（Importance Sampling，重要性采样）修正家族。但这里要补一个视角：<strong>IS 修正不是纯算法，它对框架有硬性要求。</strong></p>
-<p>要在 loss 里算 <code>π_new(t) / π_old(t)</code>，框架必须提供：</p>
+<p><a href="04-训推一致性.html">04 章 §4.6</a> 讲了 IS 修正家族本身。这里要补的视角是：<strong>IS 修正不是纯算法，它对框架有硬性要求。</strong> 这正是本章总表第 3、4 行。</p>
+<p>要在 loss 里算出 <code>π_new(t) / π_old(t)</code> 这个比值，框架必须同时满足四件事 —— 缺任何一件，比值都会悄悄算错：</p>
 <table>
 <thead>
 <tr>
 <th>需求</th>
 <th>框架侧要做什么</th>
+<th>缺了会怎样</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>π_old</code> 的值</td>
 <td>推理引擎必须<strong>吐出 logprob</strong>，而且是训练侧信得过的那一份</td>
+<td>退化成 §5.1 的路线 C：比值恒为 1</td>
 </tr>
 <tr>
 <td>逐 token 对齐</td>
 <td>两份 logprob 要能一一对上 → 必须 <strong>TITO</strong>（见 <a href="04-训推一致性.html">04 章 §4.5</a>）</td>
+<td>错位一个 token，后面全错</td>
 </tr>
 <tr>
 <td>样本的版本号</td>
-<td>要知道这个样本落后几步 → 需要<strong>逐样本打版本标签</strong></td>
+<td>要知道这个样本落后几步 → <strong>逐样本打版本标签</strong></td>
+<td>用一个过旧的样本做大幅更新，训练发散</td>
 </tr>
 <tr>
 <td>MoE 的路由</td>
-<td>路由不同则 logprob 不可比 → 需要 <strong>R3 / Keep Routing</strong>（见 <a href="04-训推一致性.html">04 章 §4.4</a>）</td>
+<td>路由不同则 logprob 不可比 → <strong>R3 / Keep Routing</strong>（见 <a href="04-训推一致性.html">04 章 §4.4</a>）</td>
+<td>比值里混进了「换了个专家」造成的差异</td>
 </tr>
 </tbody>
 </table>
-<p>⚠️ 所以「换个 loss 函数」这件事，在 dense 小模型上确实只是改一行；<strong>在 MoE + 异步的场景下，它牵动整条数据通路的契约</strong>。这也是 <a href="04-训推一致性.html">04 章</a> 那句「接口契约要扩展」的另一个角度的印证。</p>
+<p>举个最小的例子说明「错位一个 token」有多隐蔽：</p>
+<div class="codehilite"><pre><span></span><code>推理侧吐出的 token 序列：  [你] [好] [，] [世] [界]
+训练侧重新分词得到的：     [你好] [，] [世界]
+
+推理侧 5 个 logprob，训练侧 3 个 logprob。
+两边长度都对不上，更别说逐位相除。
+
+而代码不会报错 —— 它会用某种对齐规则（截断/补齐）硬凑，
+然后给你一个「看起来挺正常」的 loss 曲线。
+</code></pre></div>
+
+<p>⚠️ 所以「换个 loss 函数」这件事：在 dense 小模型 + 同步训练上确实只是改一行；<strong>在 MoE + 异步的场景下，它牵动从推理引擎到训练引擎的整条数据通路契约。</strong> 这也是 <a href="04-训推一致性.html">04 章</a> 那句「接口契约要扩展」的另一个角度的印证。</p>
 <hr />
 <h2 id="55">5.5 ⚠️ 一个容易踩空的坑：非对称过滤让存活样本更陈旧</h2>
 <p>这条值得单列，因为它同时属于算法和框架，两边都容易漏。</p>
-<p>GRPO 这类算法通常配一个<strong>动态过滤</strong>：把组内<strong>全对</strong>或<strong>全错</strong>的题丢掉——因为组内没有区分度，优势全是 0，梯度也是 0，算了白算。</p>
-<p>问题是：</p>
-<div class="codehilite"><pre><span></span><code>简单题  → 模型基本全对 → 被过滤掉
-        → 而且答案短，生成得快
+<p>§5.1(b) 已经提过动态过滤：把组内<strong>全对</strong>或<strong>全错</strong>的题丢掉，因为组内没有区分度、优势全是 0。这个优化本身没问题，问题出在它和「谁跑得快」是相关的：</p>
+<div class="codehilite"><pre><span></span><code>简单题  -&gt;  模型基本全对  -&gt;  被过滤掉
+         而且答案短，生成得快，最早完成
 
-难题    → 组内有对有错 → 保留下来 ★
-        → 但答案长（要推理），生成得慢，完成得最晚
+难题    -&gt;  组内有对有错  -&gt;  保留下来  &lt;-- 就是这批
+         但答案长（要推理），生成得慢，最晚才完成
 </code></pre></div>
 
-<p><strong>结果：真正贡献梯度的那些样本，系统性地比批次平均更陈旧。</strong></p>
-<p>⚠️ 而 batch 级的陈旧度门控<strong>看不见这个偏差</strong>——整批的平均陈旧度可能很健康，但存活下来的那部分全是最旧的。</p>
-<p>🌐 HF 横评据此认为：<strong>逐样本打版本号是必需的</strong>，只在 batch 级别管陈旧度是不够的。</p>
-<p>⚠️ 我的补充：这条还有一个推论——<strong>过滤越激进，陈旧度偏差越大</strong>。如果你同时开了「激进的动态过滤」和「宽松的 batch 级陈旧度上限」，实际训练用的样本可能比你以为的旧得多。这两个旋钮要一起调。</p>
+<p><strong>于是：真正贡献梯度的那些样本，系统性地比批次平均更陈旧。</strong> 这就是「非对称」的含义 —— 过滤不是随机地丢一半，它偏向于丢掉新鲜的那一半。</p>
+<p>用一个具体的批次把这件事算出来：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>情况</th>
+<th>数字</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>一批 512 条轨迹：简单题 256 条、难题 256 条</td>
+<td>512</td>
+</tr>
+<tr>
+<td>②</td>
+<td>简单题生成完的时刻（早）：对应权重版本 w₅₀</td>
+<td>陈旧度 = 2 步</td>
+</tr>
+<tr>
+<td>③</td>
+<td>难题生成完的时刻（晚）：对应权重版本 w₄₄</td>
+<td>陈旧度 = 8 步</td>
+</tr>
+<tr>
+<td>④</td>
+<td>全批次的平均陈旧度</td>
+<td>(2×256 + 8×256) ÷ 512 = <strong>5 步</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>过滤后：简单题留下 10%（25.6 条），难题留下 90%（230.4 条）</td>
+<td>256 条</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td><strong>存活样本</strong>的平均陈旧度</td>
+<td>(2×25.6 + 8×230.4) ÷ 256 = <strong>7.4 步</strong></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>如果门控设在「平均陈旧度 ≤ 6 步」</td>
+<td>④ 是 5 步，<strong>门控判定通过</strong></td>
+</tr>
+<tr>
+<td>⑧</td>
+<td>而真正算梯度的那批</td>
+<td>⑥ 是 7.4 步，<strong>已经超了</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ ⑦⑧ 两行就是这个坑的全貌：<strong>batch 级的陈旧度门控看不见这个偏差。</strong> 整批的平均陈旧度一切健康，但存活下来的那部分全是最旧的。（⚠️ 上表的具体数字是本文为了说明机制构造的，不是实测；成立的只是「⑥ &gt; ④」这个方向性结论。）</p>
+<p>🌐 HF 横评据此认为：<strong>逐样本打版本号是必需的</strong>，只在 batch 级别管陈旧度是不够的。✅ 而 GLM-5 的做法更严格一层，见 <a href="06-AgenticRL-环境与沙箱.html">06 章 §6.6</a>。</p>
+<p>⚠️ 本文的一个推论：<strong>过滤越激进，陈旧度偏差越大。</strong> 如果你同时开了「激进的动态过滤」和「宽松的 batch 级陈旧度上限」，实际训练用的样本会比你以为的旧得多。<strong>这两个旋钮必须一起调</strong> —— 把过滤率从 40% 提到 70% 的那次改动，等于偷偷把陈旧度上限也放宽了。</p>
 <hr />
 <h2 id="56">5.6 下一波会倒逼框架改什么</h2>
-<p>🌐 HF 横评列了几个正在到来的压力，这里按「对框架的要求」重新组织：</p>
+<p>🌐 HF 横评列了几个正在到来的压力，这里按「对框架的要求」重新组织，并标回本章总表的行号：</p>
 <table>
 <thead>
 <tr>
 <th>算法趋势</th>
 <th>对框架的新要求</th>
+<th>总表第几行</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>去 critic 成为默认</strong></td>
-<td>省下的 ~50% 训练显存被 rollout 吃掉 → 权重同步压力更大</td>
+<td>省下的 44% 训练显存会被 rollout 吃掉；生成占比升到 90%+ → 权重同步压力更大</td>
+<td>去掉 D，换来 B/C</td>
 </tr>
 <tr>
 <td><strong>非对称过滤普及</strong></td>
 <td>逐样本版本标签从「优化」变成「必需」</td>
+<td>7</td>
 </tr>
 <tr>
-<td><strong>过程奖励模型（PRM）</strong></td>
-<td>奖励不再便宜——PRM 是一个要跑前向的模型 → 奖励计算本身要异步化（✅ 对照 veRL <code>experimental/reward_loop/</code> 1,961 行）</td>
+<td><strong>过程奖励模型 PRM</strong></td>
+<td>奖励不再便宜 —— PRM 是一个要跑前向的模型 → 奖励计算本身要异步化（✅ 对照 veRL <code>experimental/reward_loop/</code>，1,961 行）</td>
+<td>8</td>
 </tr>
 <tr>
 <td><strong>多智能体协同进化</strong></td>
-<td>两个 agent 各自 p90 = 中位数的 5 倍 → <strong>联合 p90 ≈ 中位数的 25 倍</strong>，长尾指数级恶化</td>
+<td>多个 agent 都跑完才算一条轨迹，长尾按智能体数量<strong>成倍</strong>恶化（下面算）</td>
+<td>2</td>
 </tr>
 <tr>
 <td><strong>MoE + EP 支持</strong></td>
-<td>🌐 目前只有 Megatron 系后端和 PRIME-RL 的 FSDP2+EP 能处理 → 这是<strong>新的分水岭</strong></td>
+<td>🌐 截至材料访问时，只有 Megatron 系后端和 PRIME-RL 的 FSDP2+EP 能处理 → 这是<strong>新的分水岭</strong></td>
+<td>9</td>
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>术语</strong>：PRM = Process Reward Model（过程奖励模型），不只给最终答案打分，还给中间每一步打分。EP = Expert Parallelism（专家并行），MoE 里把不同专家放到不同卡上。p90 = 第 90 百分位耗时。</p>
-</blockquote>
-<p>⚠️ 「联合 p90 ≈ 25 倍」那条最值得警惕：<strong>长尾在多智能体场景下是相乘的，不是相加的。</strong> 两个 agent 要同时都不慢才行，而它们各自慢的概率是独立的。这意味着 <a href="02-架构主轴-同步到全异步.html">02 章</a> 讲的那些长尾手段，在多智能体场景下会从「优化项」变成「不做就跑不动」。</p>
-<h3 id="_1">★ 在策略蒸馏用的是同一套管线</h3>
+<h3 id="_2">⚠️ 多智能体的长尾到底恶化多少：一个要纠正的说法</h3>
+<p>本章上一版（以及这类讨论里常见的说法）写的是：「两个 agent 各自 p90 = 中位数的 5 倍 ⟹ 联合 p90 ≈ 中位数的 <strong>25 倍</strong>」。</p>
+<p>⚠️ <strong>这个算法不成立：p90 不能相乘。</strong> 百分位数不是期望、不是方差，没有任何运算律允许把两个 p90 乘起来得到联合 p90。方向（多智能体会让长尾恶化）是对的，倍数是错的。正确的做法是先把「重尾」这件事标定成一个分布，再算。</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>做什么</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>用帕累托分布刻画重尾：<code>P(T &gt; t) = (t_min / t)^α</code></td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>②</td>
+<td>中位数 m 满足 <code>(t_min/m)^α = 0.5</code>；p90 满足 <code>(t_min/t₉₀)^α = 0.1</code></td>
+<td>两式相除</td>
+<td><code>t₉₀/m = 5^(1/α)</code></td>
+</tr>
+<tr>
+<td>③</td>
+<td>题设 <code>t₉₀/m = 5</code>，反解形状参数</td>
+<td><code>5^(1/α) = 5</code></td>
+<td><strong>α = 1</strong>（极重的尾）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>此时 <code>m = 2·t_min</code></td>
+<td>代入 ②</td>
+<td>—</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>两个 agent 并行、<strong>都</strong>跑完才算完：<code>P(max ≤ t) = F(t)²</code></td>
+<td>要 <code>F(t)² = 0.9</code></td>
+<td><code>F(t) = √0.9 = 0.9487</code></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>于是 <code>P(T &gt; t) = 0.0513</code>，反解 t</td>
+<td><code>t = t_min / 0.0513</code></td>
+<td><code>t = 19.49 · t_min</code></td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>换算成中位数的倍数</td>
+<td><code>19.49 ÷ 2</code></td>
+<td><strong>联合 p90 ≈ 9.7 × 中位数</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>正确答案是 ≈ 9.7 倍，不是 25 倍。</strong> 换个角度：联合 p90 ≈ 单 agent p90 的 <strong>1.95 倍</strong>，差不多就是「翻一番」。</p>
+<p>那 25 倍对应什么？也能算出来：<code>t/m = 25</code> ⟹ <code>t = 50·t_min</code> ⟹ <code>P(T&gt;t) = 0.02</code> ⟹ <code>F = 0.98</code> ⟹ <code>F² = 0.9604</code>。⚠️ <strong>所以「中位数的 25 倍」其实是联合的 p96，不是 p90。</strong> 这两个数差 6 个百分点的分位，在重尾分布下就差出 2.5 倍的时间 —— 这正是重尾最反直觉的地方。</p>
+<p>把 agent 数量推广开（同样 α = 1 的标定）：</p>
+<table>
+<thead>
+<tr>
+<th>同时要跑完的 agent 数 N</th>
+<th>每个要达到的分位 <code>0.9^(1/N)</code></th>
+<th>联合 p90 ÷ 中位数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>0.9000</td>
+<td><strong>5.0×</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td>0.9487</td>
+<td><strong>9.7×</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td>0.9740</td>
+<td><strong>19.2×</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>0.9869</td>
+<td><strong>38.2×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 规律是<strong>大致线性</strong>（agent 数翻倍，联合 p90 翻倍），不是「指数级」。⚠️ 但请注意这个线性结论依赖 α = 1 这个很极端的标定（α = 1 的帕累托分布连期望都不存在）；如果你的实际分布没那么重尾，p90/中位数就不会是 5，整张表都要重算。<strong>这里真正该记住的不是数字，是方法：先用一个你能观测到的比值（p90 ÷ 中位数）标定分布，再算联合分位数。</strong></p>
+<p>无论 9.7 还是 38，结论方向都一样：<a href="02-架构主轴-同步到全异步.html">02 章</a> 讲的那些长尾手段（partial rollout、提前截断、落后者替换），在多智能体场景下会从「优化项」变成「不做就跑不动」。</p>
+<h3 id="_3">★ 在策略蒸馏用的是同一套管线</h3>
 <p>✅ 三家报告（GLM-5、Kimi-K3、openPangu）都提到了 <strong>OPD = On-Policy Distillation（在策略蒸馏）</strong>：学生模型自己生成，老师模型给概率，按 KL 散度拉齐。共享的形式是：</p>
-<div class="codehilite"><pre><span></span><code>Â = sg[ log(π_teacher / π_θ) ]
+<div class="codehilite"><pre><span></span><code>A_hat = sg[ log( pi_teacher / pi_theta ) ]
 </code></pre></div>
 
-<p>（<code>sg</code> = stop-gradient，不回传梯度。）</p>
-<p>⚠️ 从框架的角度看，<strong>这就是把 RL 里的「奖励模型」换成了「教师模型」，其他一切照旧</strong>——同样的 rollout、同样的 buffer、同样的权重同步。✅ veRL 的 <code>experimental/teacher_loop/</code>（373 行）就是这个：把 <code>reward_loop</code> 那套换成教师前向。</p>
-<p><strong>所以做过异步 RL 基建的团队，做 OPD 几乎是零边际成本。</strong> 反过来，只做过 SFT 的团队想上 OPD，要补的是整套 RL 基建。</p>
+<p>（<code>sg</code> = stop-gradient，不回传梯度；<code>pi_theta</code> 是学生当前策略。）</p>
+<p>⚠️ 从框架的角度看，<strong>这就是把 RL 里的「奖励模型」这一个槽位换成「教师模型」，其他一切照旧</strong> —— 同样的 rollout、同样的 buffer、同样的权重同步、同样的 IS 修正。✅ veRL 的 <code>experimental/teacher_loop/</code>（373 行）就是这个：把 <code>reward_loop</code> 那套换成教师前向。</p>
+<p>对照本章总表，OPD 是第 10 行 —— 也是整张表里<strong>唯一一个 A 类要求</strong>：没有新的调度约束，没有新的数据通路字段。</p>
+<p><strong>所以做过异步 RL 基建的团队，做 OPD 几乎是零边际成本。</strong> 反过来，只做过 SFT（Supervised Fine-Tuning，监督微调）的团队想上 OPD，要补的是整套 RL 基建 —— 因为 OPD 的「学生自己生成」这四个字，已经把 rollout、buffer、权重同步全要上了。OPD 的算法细节见 <a href="../后训练/08-蒸馏与合并-OPD.html">后训练/08-蒸馏与合并-OPD.md</a>。</p>
 <hr />
 <h2 id="57">5.7 本章小结</h2>
 <table>
@@ -485,48 +1133,61 @@ GRPO  ：64 道题 × G=16     = 1,024 个 rollout    ← 生成量 ×16
 </thead>
 <tbody>
 <tr>
-<td>去 critic 省 16Ψ 显存（36Ψ→20Ψ），但代价是生成量 ×G（8~32）</td>
-<td>✅ 14 章 + ⚠️</td>
+<td><strong>本章骨架</strong>：算法对框架的要求分四类 —— A 只改一个函数、B 要改调度、C 要改数据通路契约、D 要多养一个模型。论文只写 A，工程量全在 B 和 C，而 D 是唯一能用钱解决的</td>
+<td>⚠️ 本文归纳</td>
 </tr>
 <tr>
-<td>完整因果链：去 critic → 生成量暴涨 → 必须异步 → 样本陈旧 → 需要 IS 修正与快速权重同步</td>
+<td>去 critic 省 16Ψ 显存（36Ψ→20Ψ，<strong>44%</strong> 不是 50%）</td>
+<td>✅ 14 章</td>
+</tr>
+<tr>
+<td>⚠️ 「GRPO 把生成量 ×G」只在<strong>固定题目数</strong>的口径下成立；固定轨迹数时生成量不变</td>
+<td>⚠️ 本文更正</td>
+</tr>
+<tr>
+<td>同口径下 GRPO 的真实代价：训练侧 −37.5%（被动抬高生成占比到 86.5%）+ 动态过滤过采样 ×1.67 → 生成占比 <strong>91.4%</strong>，总时间 ×1.46</td>
+<td>⚠️ 本文推算</td>
+</tr>
+<tr>
+<td>完整因果链：去 critic → 生成占比逼近 90% → 必须异步 → 样本陈旧 → 需要 IS 修正与逐样本版本号 → 需要快速权重同步</td>
 <td>⚠️ 关键归纳</td>
 </tr>
 <tr>
 <td>veRL 注册了 14 个优势估计器（<code>core_algos.py:97-110</code>）+ 12 个策略损失</td>
-<td>✅ 实测</td>
+<td>✅ 本地实测</td>
 </tr>
 <tr>
-<td>算法层已被彻底插件化：加算法 = 写函数 + 挂装饰器</td>
+<td>注册表只解决 A 类要求；组内采样怎么不被打散，注册表管不了，在调度器里</td>
 <td>⚠️</td>
 </tr>
 <tr>
-<td>OpenRLHF 明确把「执行模式」与「RL 算法」设为正交，这是框架成熟度的检查项</td>
+<td>OpenRLHF 明确把「执行模式」与「RL 算法」设为正交，这张全勾表是框架成熟度的检查项</td>
 <td>✅ 原文</td>
 </tr>
 <tr>
-<td>CISPO：MiniMax 报告用 ↔ veRL <code>core_algos.py:2046</code> 有 ↔ ROLL 菜单最全</td>
+<td>CISPO：MiniMax 报告用 ↔ veRL <code>core_algos.py:2046</code> 有 ↔ ROLL 菜单最全。三种状态（论文里 / experimental / 主干）要分清</td>
 <td>✅ + 🌐</td>
 </tr>
 <tr>
-<td>IS 修正对框架有硬要求：logprob 输出 + TITO + 逐样本版本 + MoE 路由</td>
+<td>IS 修正对框架有四条硬要求：logprob 输出 + TITO 逐 token 对齐 + 逐样本版本 + MoE 路由一致</td>
 <td>⚠️</td>
 </tr>
 <tr>
-<td>非对称过滤让存活样本系统性更陈旧；过滤越激进偏差越大，两个旋钮要一起调</td>
+<td>非对称过滤让存活样本系统性更陈旧（示例：批平均 5 步 vs 存活样本 7.4 步）；过滤率和陈旧度上限这两个旋钮要一起调</td>
 <td>🌐 + ⚠️</td>
 </tr>
 <tr>
-<td>多智能体的长尾是<strong>相乘</strong>的：两个 p90=5× 的 agent，联合 p90 ≈ 25×</td>
-<td>🌐</td>
+<td>⚠️ <strong>更正</strong>：「两个 p90=5× 的 agent 联合 p90 = 25×」是把 p90 相乘，不成立。按 α=1 帕累托标定，正确值 <strong>≈ 9.7×</strong>；25× 对应的是联合 <strong>p96</strong>。恶化大致<strong>线性</strong>于 agent 数，不是指数</td>
+<td>⚠️ 本文更正</td>
 </tr>
 <tr>
-<td>OPD 复用整套 RL 管线，只把奖励模型换成教师模型（✅ veRL <code>teacher_loop/</code> 373 行）</td>
+<td>OPD 复用整套 RL 管线，只把奖励模型换成教师模型（✅ veRL <code>teacher_loop/</code> 373 行），是总表里唯一的 A 类要求</td>
 <td>✅ + ⚠️</td>
 </tr>
 </tbody>
 </table>
-<p><strong>下一篇</strong> → <a href="06-AgenticRL-环境与沙箱.html">06-AgenticRL-环境与沙箱.md</a></p>
+<hr />
+<p><strong>上一篇</strong> → <a href="04-训推一致性.html">04-训推一致性.md</a> ｜ <strong>下一篇</strong> → <a href="06-AgenticRL-环境与沙箱.html">06-AgenticRL-环境与沙箱.md</a> ｜ <strong>算法本身</strong> → <a href="../后训练/05-RLVR-可验证奖励.html">后训练/05-RLVR-可验证奖励.md</a></p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

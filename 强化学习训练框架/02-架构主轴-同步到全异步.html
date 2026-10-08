@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -250,23 +255,67 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一篇干什么</strong>：讲清楚 RL 训练框架<strong>唯一的核心矛盾</strong>，以及业界在这条轴上的四个位置。<br />
 <strong>难度</strong> ★★★ · <strong>这是全目录最重要的一篇</strong><br />
-<strong>前置</strong>：<a href="01-格局全景.html">01-格局全景.md</a>、<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.3</a></p>
+<strong>前置</strong>：<a href="01-格局全景.html">01-格局全景.md</a>、<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.3</a><br />
+<strong>读法</strong>：本章 §2.1 和 §2.2 的每个数字都能自己验算，而且<strong>后面所有章节都复用这两节的那批数字</strong>。⚠️ 强烈建议拿纸笔跟着算一遍——「气泡」这个词只有变成 GPU·秒之后才有意义。<br />
+<strong>分工</strong>：RL 的算法与数据在 <a href="../后训练/README.html">../后训练/</a>，推理引擎本身在 <a href="../推理框架/README.html">../推理框架/</a>。本章只讲系统编排。</p>
 </blockquote>
 <hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>气泡</strong>（bubble）—— GPU 占着没干活的那段时间。本章把它统一换算成 <strong>GPU·秒</strong>（卡数 × 秒数）来结账，否则「利用率低」是一句说不清的话。<br />
+<strong>长尾</strong>（long tail）—— 一批样本里极少数特别长的那几条，它们决定整批什么时候结束。<br />
+<strong>buffer 深度</strong>—— 生成好的样本在队列里最多能攒几批。<strong>这个整数就是「有多异步」的全部定义</strong>。<br />
+<strong>陈旧度</strong>（staleness）—— 一个样本生成时用的权重，落后当前权重几个训练步。<br />
+<strong>on-policy / off-policy</strong>（在策略 / 离策略）—— 样本是不是当前这版权重生成的。<br />
+<strong>IS</strong>（Importance Sampling，重要性采样）—— 承认样本来自旧策略，在 loss 里乘一个比值把偏差纠回来。展开在 <a href="04-训推一致性.html">04 章 §4.6</a>。<br />
+<strong>partial rollout</strong>（部分 rollout）—— 长样本不必一次写完，到预算就存盘，下一轮接着写。<br />
+<strong>PD 分离</strong>（Prefill-Decode Disaggregation，预填充-解码分离）—— 推理的两个阶段拆到不同机器上，见 <a href="../推理框架/推理优化入门/10-PD分离.html">../推理框架/推理优化入门/10-PD分离.md</a>。</p>
+<hr />
 <h2 id="21">2.1 先看清楚问题有多严重</h2>
-<p>RL 的一步训练长这样：</p>
-<div class="codehilite"><pre><span></span><code>生成 512 个答案  ────►  算奖励  ────►  算梯度更新参数  ────►  权重同步回去
-     ~80% 时间          ~5%            ~10%                  ~5%
-</code></pre></div>
-
-<p>大部分人对「生成占 80%」是有概念的。但真正致命的不是<strong>平均</strong>耗时，是<strong>长尾</strong>。</p>
+<p>RL 的一步训练，拆成四个阶段：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>做什么</th>
+<th>🌐 常见的占比说法</th>
+<th>⚠️ 本章 §2.2 实际算出来的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① rollout</td>
+<td>生成 512 个答案</td>
+<td>~80%</td>
+<td><strong>82.9%</strong></td>
+</tr>
+<tr>
+<td>② 奖励</td>
+<td>判对错、算优势</td>
+<td>~5%</td>
+<td>5.3%</td>
+</tr>
+<tr>
+<td>③ 训练</td>
+<td>前向 + 反向 + 优化器</td>
+<td>~10%</td>
+<td>10.5%</td>
+</tr>
+<tr>
+<td>④ 权重同步</td>
+<td>新权重搬回生成引擎</td>
+<td>~5%</td>
+<td>1.3%</td>
+</tr>
+</tbody>
+</table>
+<p>大部分人对「生成占 80%」是有概念的。但真正致命的不是<strong>平均</strong>耗时，是<strong>长尾</strong>。下面把长尾算成数字。</p>
 <h3 id="_1">🌐 一组能把问题量化的数字</h3>
-<p>单张 H100 上用 vLLM 做离线推理（bf16 精度）的吞吐大致是：</p>
+<p>单张 H100 上用 vLLM 做离线推理（BF16 精度）的<strong>聚合输出吞吐</strong>大致是：</p>
 <table>
 <thead>
 <tr>
 <th>模型规模</th>
-<th>输出吞吐</th>
+<th>聚合输出吞吐</th>
 </tr>
 </thead>
 <tbody>
@@ -280,110 +329,483 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<p>拿这个算一步 RL 要多久。设定：64 道题 × 每题生成 8 个答案（G=8）= <strong>512 个 rollout</strong>：</p>
+<blockquote>
+<p>来源：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>，访问于 2026-08。<strong>只有这两个吞吐数字是 🌐 来源的，下面所有分钟数都是 ⚠️ 本文按它们算出来的</strong>，不是博客直接给的。</p>
+</blockquote>
+<p>拿这个算一步 RL 要多久。设定：<strong>64 道题 × 每题生成 8 个答案（G=8）= 512 个 rollout</strong>。算式一律是 <code>总 token ÷ 聚合吞吐</code>：</p>
 <table>
 <thead>
 <tr>
-<th>每个答案的输出长度</th>
-<th>7B 单卡耗时</th>
-<th>32B 单卡耗时</th>
+<th>每个答案的长度</th>
+<th>总输出 token = 512 × 长度</th>
+<th>7B 单卡：÷ 6,300</th>
+<th>32B 单卡：÷ 1,200</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>2K token</td>
-<td>~3 分钟</td>
-<td>~14 分钟</td>
+<td>2K = 2,048</td>
+<td>1,048,576</td>
+<td>166 s = <strong>2.8 分钟</strong></td>
+<td>874 s = <strong>14.6 分钟</strong></td>
 </tr>
 <tr>
-<td>8K token</td>
-<td>~11 分钟</td>
-<td>~56 分钟</td>
+<td>8K = 8,192</td>
+<td>4,194,304</td>
+<td>666 s = <strong>11.1 分钟</strong></td>
+<td>3,495 s = <strong>58.3 分钟</strong></td>
 </tr>
 <tr>
-<td><strong>32K token</strong></td>
-<td><strong>~45 分钟</strong></td>
-<td><strong>~3.7 小时</strong></td>
+<td><strong>32K = 32,768</strong></td>
+<td><strong>16,777,216</strong></td>
+<td>2,663 s = <strong>44.4 分钟</strong></td>
+<td>13,981 s = <strong>3.9 小时</strong></td>
 </tr>
 </tbody>
 </table>
-<p>就算把生成摊到 8 张推理卡上并行，32B 模型生成 32K 长度的一步仍要 <strong>~28 分钟</strong>。</p>
+<p>就算把生成摊到 <strong>8 张</strong>推理卡上并行，32B 模型生成 32K 长度的一步仍要 <code>13,981 ÷ 8 = 1,748 s</code> ≈ <strong>29 分钟</strong>。</p>
+<p>⚠️ 这组数字要读出的<strong>不是</strong>「生成很慢」，而是：<strong>在同步架构下，训练 GPU 在这 29 分钟里完全空转。</strong></p>
+<h3 id="_2">★ 长尾的账：为什么「平均」是个骗人的口径</h3>
+<p>上面那张表假设 512 条答案<strong>一样长</strong>。真实情况不是——有的 500 个 token 就写完了，有的写满 32K 才停。同步架构必须<strong>等最慢的那一个</strong>。这一段把这笔账算出来，它是 partial rollout 存在的<strong>全部</strong>理由。</p>
+<p><strong>第一步：单条序列到底能跑多快。</strong></p>
+<p>聚合吞吐（1,200 token/s）是靠<strong>很多条序列同时跑</strong>堆出来的，单条序列没这么快。单条的速度由屋顶线决定——decode 阶段每吐一个 token，都必须把<strong>整个模型的权重</strong>从显存读一遍：</p>
+<table>
+<thead>
+<tr>
+<th>量</th>
+<th>数值</th>
+<th>算式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32B 模型的 BF16 权重</td>
+<td>64 GB</td>
+<td>32 × 10⁹ 参数 × 2 字节</td>
+</tr>
+<tr>
+<td>H100 SXM5 的 HBM3 带宽</td>
+<td>3.35 TB/s</td>
+<td>规格值</td>
+</tr>
+<tr>
+<td>读完一遍权重的时间</td>
+<td><strong>19.1 ms</strong></td>
+<td>64 GB ÷ 3,350 GB/s</td>
+</tr>
+<tr>
+<td>⟹ 单条序列的解码速度上限</td>
+<td><strong>52 token/s</strong></td>
+<td>1 ÷ 0.0191 s</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
-<p>来源：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>，访问于 2026-08。</p>
+<p>⚠️ 52 token/s 是<strong>屋顶线上限</strong>，实测通常只有它的 60–70%。下面一律按 52 算，<strong>结论只会比算出来的更糟，不会更好</strong>。屋顶线怎么用见 <a href="../大模型算子开发/02-屋顶线与性能剖析.html">../大模型算子开发/02-屋顶线与性能剖析.md</a>，decode 为什么卡在带宽上见 <a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">../推理框架/推理优化入门/03-Prefill与Decode两阶段.md</a>。</p>
 </blockquote>
-<p>⚠️ 这组数字要读出的<strong>不是</strong>「生成很慢」，而是：<strong>在同步架构下，训练 GPU 在这 28 分钟里完全空转。</strong> 而且 512 个答案不是同时结束的——有的 500 token 就写完了，有的写满 32K 才停。同步架构必须<strong>等最慢的那一个</strong>。这就是长尾。</p>
-<p>✅ GLM-5 报告把这件事说得很直接：</p>
-<blockquote>
-<p><em>"the optimization target is not aggregate throughput but </em><em>end-to-end latency, dominated by the slowest (long-tail) sample in each step</em><em>"</em><br />
-（优化目标不是总吞吐，而是端到端延迟——它由每一步里最慢的那个样本决定。）<br />
-—— GLM-5 §3.6.2 Scaling Up: Tail-Latency Optimization</p>
-</blockquote>
-<hr />
-<h2 id="22">2.2 唯一的解法方向：让训练不等生成</h2>
-<p>所有架构分歧，都是这一句话的不同实现。而实现的关键，就落在<strong>五模块里的第 ③ 块：data buffer 有多深</strong>。</p>
-<h3 id="buffer">🌐 Buffer 深度四档</h3>
-<div class="codehilite"><pre><span></span><code>深度 0（同步）
-  生成一批 ──► 训完 ──► 生成下一批 ──► ...
-  训练卡在生成时空转，生成卡在训练时空转
-  样本 100% on-policy（在策略）
-
-深度 1（一步离策略 / one-step-off-policy）
-  生成第 N+1 批  ┐
-                 ├─ 同时进行
-  训练第 N 批    ┘
-  样本落后 1 个版本。这是&quot;最便宜的异步&quot;——只多一个缓冲区
-
-深度 2~K（有界队列）
-  生成 ────► [ 队列，最多 K 批 ] ────► 训练
-  队列满了才阻塞生成。K 越大越不容易卡，但样本越陈旧
-
-深度 ∞（无界流 / fully async）
-  生成永不停 ────► [ 流 ] ────► 训练按自己的节奏取
-  吞吐最高，陈旧度完全靠算法侧修正兜底
+<p>★ 顺便得到一个有用的换算：<strong>聚合 1,200 ÷ 单条 52 ≈ 23</strong>，也就是这张卡上大约能同时跑 23 条序列。记住这个 23，下面要用。</p>
+<p><strong>第二步：给 512 条样本一个长度分布。</strong></p>
+<p>⚠️ 下面这个分布是<strong>示意分布，不是实测</strong>，形状取自「推理类任务上极少数样本特别长」这个公认经验。关键不是具体分位，是<strong>比例关系</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>分位段</th>
+<th>条数</th>
+<th>输出长度</th>
+<th>单条耗时 = 长度 ÷ 52</th>
+<th>该段总 token</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>p0–p50</td>
+<td>256</td>
+<td>2,048</td>
+<td><strong>39.4 s</strong></td>
+<td>524,288</td>
+</tr>
+<tr>
+<td>p50–p90</td>
+<td>205</td>
+<td>8,192</td>
+<td>158 s</td>
+<td>1,679,360</td>
+</tr>
+<tr>
+<td>p90–p99</td>
+<td>46</td>
+<td>16,384</td>
+<td>315 s</td>
+<td>753,664</td>
+</tr>
+<tr>
+<td>p99–p100</td>
+<td><strong>5</strong></td>
+<td><strong>32,768</strong></td>
+<td><strong>630 s</strong></td>
+<td>163,840</td>
+</tr>
+<tr>
+<td>合计</td>
+<td>512</td>
+<td>—</td>
+<td>—</td>
+<td><strong>3,121,152</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>最慢的那条 ÷ 中位数 = 630 s ÷ 39.4 s = 16 倍。</strong> ⚠️ 这正好等于长度比 <code>32,768 ÷ 2,048 = 16</code>，<strong>不是巧合</strong>：单条序列的解码速度几乎与 batch 里有多少条无关（它被权重读取带宽卡住，而这一遍权重是全 batch 共享的），所以<strong>耗时比 = 长度比</strong>，一比一。</p>
+<p><strong>第三步：两笔账一起算。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>理想</strong>：完美打包，按聚合吞吐算</td>
+<td>3,121,152 token ÷ 1,200 token/s</td>
+<td><strong>2,601 GPU·秒</strong>（单卡口径）</td>
+</tr>
+<tr>
+<td>摊到 8 张推理卡</td>
+<td>2,601 ÷ 8</td>
+<td>325 s = 5.4 分钟</td>
+</tr>
+<tr>
+<td><strong>实际</strong>：同步架构，必须等最慢那条</td>
+<td>那 5 条 32K 样本各自要 630 s</td>
+<td><strong>墙钟 ≥ 630 s = 10.5 分钟</strong></td>
+</tr>
+</tbody>
+</table>
+<p>为什么 8 张卡救不了最后那 630 秒？因为<strong>一条序列没法拆给两张卡去写</strong>——第 n 个 token 必须等第 n−1 个 token 出来。加卡能提高并发度，提不高单条的速度。</p>
+<p>⟹ <strong>推理侧利用率 = 2,601 ÷ (8 × 630) = 2,601 ÷ 5,040 = 51.6%。</strong> 近一半的推理机时被长尾吃掉了。而训练侧那 8 张卡，在整整 630 秒里利用率是 <strong>0%</strong>。</p>
+<p><strong>第四步：长尾还有第二笔隐性账——它占着 KV cache 的槽位。</strong></p>
+<p>到 t = 315 秒之后，队列里只剩 5 条活着的序列，而这张卡本来能同时跑 23 条（第一步算的）。<strong>并发度掉到 5 ÷ 23 ≈ 22%</strong>，聚合吞吐随之掉到 <code>5 × 52 = 260 token/s</code>——只剩峰值的 21.7%。上面那个 51.6% 的物理来源就是这个。KV cache 怎么占显存见 <a href="../推理框架/推理优化入门/02-KV-Cache与显存账.html">../推理框架/推理优化入门/02-KV-Cache与显存账.md</a>。</p>
+<p><strong>第五步：partial rollout 能救回多少。</strong></p>
+<p>把那 5 条超长样本在 t = 325 秒处<strong>切断、存进 buffer、下一轮接着写</strong>，这一轮的工作量变成：</p>
+<div class="codehilite"><pre><span></span><code>  2,957,312 token   &lt;-- 其余 507 条本来就要写完的
++    84,500 token   &lt;-- 5 条超长样本只写了 325 s x 52 token/s 那一段
+= 3,041,812 token
+/ 1,200 token/s / 8 张卡 = 317 s
 </code></pre></div>
 
 <table>
 <thead>
 <tr>
-<th>深度</th>
-<th>名称</th>
-<th>训练卡空转</th>
-<th>样本陈旧度</th>
-<th>谁在用</th>
+<th></th>
+<th>墙钟</th>
+<th>推理侧利用率</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>0</td>
-<td>同步</td>
+<td>不做 partial rollout</td>
+<td>630 s</td>
+<td>51.6%</td>
+</tr>
+<tr>
+<td>做 partial rollout</td>
+<td><strong>317 s</strong></td>
+<td>~100%</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 317 s 比「完美打包」的 325 s 还小一点，不是算错了：partial rollout <strong>把那 5 条样本剩下的一半 token 推迟到了下一轮</strong>，这一轮的工作量本来就少了。它不是凭空变快，是<strong>把工作摊平</strong>——这正是它和「加卡」的本质区别。</p>
+</blockquote>
+<p>⚠️ <strong>这里有个最高频的算术陷阱，必须拎出来说</strong>：时间从 630 s 降到 317 s，是「<strong>时间减少 49.7%</strong>」，<strong>不是「加速 49.7%」</strong>。</p>
+<div class="codehilite"><pre><span></span><code>时间减少比例 = (630 - 317) / 630 = 49.7%
+加速倍数     = 630 / 317 = 1.99 倍
+验算         = 1 / (1 - 0.497) = 1.99   &lt;-- 公式：加速倍数 = 1 / (1 - 减少比例)
+</code></pre></div>
+
+<p><strong>「减少一半时间」等于「快两倍」，不等于「快 50%」。</strong> 本仓库在这一条上出过错，看到百分数先问是哪个口径。</p>
+<p>✅ GLM-5 报告把长尾这件事说得很直接：</p>
+<blockquote>
+<p><em>"the optimization target is not aggregate throughput but </em><em>end-to-end latency, dominated by the slowest (long-tail) sample in each step</em><em>"</em><br />
+（优化目标不是总吞吐，而是端到端延迟——它由每一步里最慢的那个样本决定。）<br />
+—— GLM-5 §3.6.2 Scaling Up: Tail-Latency Optimization</p>
+</blockquote>
+<p>⚠️ 把上面那笔账和这句话对上：<strong>2,601 GPU·秒是「aggregate throughput」的口径，630 秒是「end-to-end latency」的口径。两者差 1.94 倍，而这 1.94 倍全部来自 512 条里的 5 条。</strong></p>
+<hr />
+<h2 id="22">2.2 唯一的解法方向：让训练不等生成</h2>
+<p>所有架构分歧，都是这一句话的不同实现。先把「不这么做会怎样」结成一笔完整的账。</p>
+<h3 id="_3">★ 同步架构一个迭代的完整时间账</h3>
+<p>设定（沿用 §2.1 那批 512 条样本、32B 模型）：<strong>16 张 H100，8 张做 rollout、8 张做训练，分离部署，同步架构</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>做什么</th>
+<th>墙钟</th>
+<th>8 张推理卡在干什么</th>
+<th>8 张训练卡在干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① rollout</td>
+<td>生成 512 条答案</td>
+<td><strong>630 s</strong></td>
+<td>在算，但只有 51.6% 有效（§2.1）</td>
+<td><strong>全空</strong></td>
+</tr>
+<tr>
+<td>② 奖励</td>
+<td>跑测试用例 / 判对错 / 算优势</td>
+<td>40 s</td>
+<td>空（这活在 CPU 和沙箱上）</td>
+<td>空</td>
+</tr>
+<tr>
+<td>③ 训练</td>
+<td>前向 + 反向 + 优化器</td>
+<td>80 s</td>
+<td><strong>全空</strong></td>
+<td>满负荷</td>
+</tr>
+<tr>
+<td>④ 权重同步</td>
+<td>64 GB 权重重切分 + 搬回推理侧</td>
+<td>10 s</td>
+<td>等着收</td>
+<td>发完就等</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td></td>
+<td><strong>760 s</strong></td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ ③ 的 80 秒和 ④ 的 10 秒是<strong>量级设定</strong>，不是实测。④ 为什么是 10 秒而不是 1 秒，见 <a href="03-权重同步.html">03 章 §3.2</a>——纯传输只要 1.3 秒，剩下的全是 resharding（重切分）和引擎唤醒。</p>
+</blockquote>
+<p>把墙钟换算成 <strong>GPU·秒</strong>（卡数 × 秒数）来结账，这才是真正该看的口径：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>有效计算 GPU·秒</th>
+<th>占用 GPU·秒</th>
+<th>利用率</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8 张推理卡</td>
+<td>2,601（§2.1 算的打包工作量）</td>
+<td>8 × 760 = 6,080</td>
+<td><strong>42.8%</strong></td>
+</tr>
+<tr>
+<td>8 张训练卡</td>
+<td>8 × 80 = 640</td>
+<td>8 × 760 = 6,080</td>
+<td><strong>10.5%</strong></td>
+</tr>
+<tr>
+<td><strong>全机 16 张</strong></td>
+<td><strong>3,241</strong></td>
+<td><strong>12,160</strong></td>
+<td><strong>26.7%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>把这三个数字记住：推理卡 42.8%、训练卡 10.5%、全机 26.7%。</strong> 这就是「同步 RL」的真实成本。③ 的 80 秒里训练卡确实在满负荷跑，但它为了这 80 秒，要陪着等 680 秒（630 + 40 + 10）。</p>
+<p>把浪费掉的 73.3% 拆开，看清楚每一块该用什么手段打：</p>
+<table>
+<thead>
+<tr>
+<th>气泡来源</th>
+<th>GPU·秒</th>
+<th>占总机时</th>
+<th>消灭它的手段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练卡等生成</strong>（①②④ 三段，8 × 680）</td>
+<td>5,440</td>
+<td><strong>44.7%</strong></td>
+<td><strong>异步</strong>：让训练卡去训上一批（本节「深度 1 及以上」）</td>
+</tr>
+<tr>
+<td><strong>推理卡等训练</strong>（②③④ 三段，8 × 130）</td>
+<td>1,040</td>
+<td>8.6%</td>
+<td><strong>异步</strong>：让推理卡接着生成下一批</td>
+</tr>
+<tr>
+<td><strong>推理卡内部的长尾空转</strong>（① 之内，5,040 − 2,601）</td>
+<td>2,439</td>
+<td>20.1%</td>
+<td><strong>partial rollout</strong>（§2.4 Kimi）或<strong>窗口化调度</strong>（§2.4 MiniMax）</td>
+</tr>
+<tr>
+<td>真正在算</td>
+<td>3,241</td>
+<td>26.7%</td>
+<td>—</td>
+</tr>
+<tr>
+<td>合计</td>
+<td>12,160</td>
+<td>100%</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这张表是全章最该记住的一张。</strong> 它说明两件事：</p>
+<ol>
+<li><strong>最大的一块气泡（44.7%）靠「异步」打，第三大的一块（20.1%）靠「partial rollout」打。这两个手段打的不是同一块，所以它们可以同时用</strong>——这一点在 <a href="03-权重同步.html">03 章 §3.5.1</a> 还会从另一个角度再说一遍。</li>
+<li><strong>第二块（8.6%）是最小的一块，但它恰恰是「一步离策略」唯一能打到的那块。</strong> 下面会看到这导致了一个很反直觉的结论。</li>
+</ol>
+<h3 id="buffer">🌐 Buffer 深度四档</h3>
+<p>所有异步方案的分类，都落在<strong>五模块里的第 ③ 块：data buffer 有多深</strong>。</p>
+<div class="codehilite"><pre><span></span><code>深度 0（同步）
+  生成一批 --&gt; 训完 --&gt; 生成下一批 --&gt; ...
+  训练卡在生成时空转，生成卡在训练时空转；样本 100% on-policy
+
+深度 1（一步离策略 / one-step-off-policy）
+  生成第 N+1 批  --+
+                   +-- 同时进行
+  训练第 N 批    --+
+  样本恰好落后 1 个版本。这是「最便宜的异步」——只多一个缓冲区
+
+深度 2~K（有界队列）
+  生成 --&gt; [ 队列，最多攒 K 批 ] --&gt; 训练
+  队列满了才阻塞生成。K 越大越不容易卡，但样本越陈旧
+
+深度无穷（无界流 / fully async）
+  生成永不停 --&gt; [ 流 ] --&gt; 训练按自己的节奏取
+  吞吐最高，陈旧度完全靠算法侧修正兜底
+</code></pre></div>
+
+<h3 id="_4">★★ 三档放进同一笔账：加速倍数算出来</h3>
+<p>现在把 §2.1 和上面那笔账里的数字，逐档重算一遍。<strong>算式全部列出来，可以自己验。</strong></p>
+<p><strong>深度 1（单步异步）</strong>：第 N+1 批的 rollout 和第 N 批的训练并行跑。</p>
+<div class="codehilite"><pre><span></span><code>每迭代墙钟   = max(rollout + 奖励, 训练) + 权重同步
+             = max(630 + 40, 80) + 10
+             = 670 + 10 = 680 s
+时间减少     = (760 - 680) / 760 = 10.5%
+加速倍数     = 760 / 680 = 1.12 倍       &lt;-- 验算 1/(1-0.105) = 1.12 OK
+训练卡利用率 = 640 / (8 x 680) = 11.8%
+</code></pre></div>
+
+<p>⚠️ <strong>收益只有 1.12 倍。为什么这么小？</strong> 因为瓶颈在 rollout 那 670 秒里，而单步异步<strong>没动这 670 秒的任何一个字节</strong>。它只消灭了上表里「推理卡等训练」那 8.6% 的气泡。</p>
+<blockquote>
+<p>★ <strong>这是本章最反直觉的一条结论：如果你的长尾很严重，先做 partial rollout，不要先做异步。</strong> 异步打的是 44.7% 那块（让训练卡别闲着），但它<strong>不缩短墙钟</strong>，因为墙钟由 rollout 决定。要缩短墙钟只有两条路：切长尾，或者让 rollout 跨迭代流起来。</p>
+</blockquote>
+<p><strong>深度无穷（全异步）</strong>：rollout 永不停，一批的长尾和下一批的头部重叠。墙钟退化成「这批样本的打包工作量」。</p>
+<div class="codehilite"><pre><span></span><code>每迭代墙钟   = 2,601 GPU-秒 / 8 张卡 = 325 s
+时间减少     = (760 - 325) / 760 = 57.2%
+加速倍数     = 760 / 325 = 2.34 倍       &lt;-- 验算 1/(1-0.572) = 2.34 OK
+训练卡利用率 = 640 / (8 x 325) = 24.6%
+全机利用率   = 3,241 / (16 x 325) = 62.3%
+</code></pre></div>
+
+<p>⚠️ 注意全异步之后<strong>训练卡的利用率只有 24.6%，它仍然在等</strong>。这暴露了一个被普遍忽略的问题：</p>
+<blockquote>
+<p>★ <strong>8 训 + 8 推这个配比本身就是错的。</strong> 从上面的账可以直接读出来：训练只需要 640 GPU·秒，推理需要 2,601 GPU·秒，<strong>需求比是 1 : 4</strong>。16 张卡应该切成 <strong>3 训 + 13 推</strong>：</p>
+<p><code>rollout 墙钟   = 2,601 / 13 = 200 s
+训练墙钟       =   640 /  3 = 213 s
+每迭代墙钟     = max(200, 213) = 213 s
+全机利用率     = 3,241 / (16 x 213) = 95.1%
+相对同步的加速 = 760 / 213 = 3.57 倍</code></p>
+<p>⚠️ <strong>这是本文从上表推出的，不是任何一份技术报告的结论</strong>，而且它忽略了显存约束（训练态每参数 16 字节，3 张卡装不下 32B，见下方提示）。但方向是对的：<strong>异步真正的收益，一大半来自「它允许你把训推卡数解耦地调」</strong>，而不是来自并行本身。</p>
+<p>⚠️ <strong>显存口径别记错</strong>：训练一个 32B 模型，按 BF16 权重 2 + 梯度 2 + FP32 主副本 4 + Adam 一阶动量 m 4 + 二阶动量 v 4 = <strong>16 字节/参数</strong>（m 和 v <strong>各</strong> 4 字节，不是合计 4），光静态显存就是 32 × 16 = <strong>512 GB</strong>，一张 80 GB 的 H100 装不下，必须靠 ZeRO / FSDP 切开。详见 <a href="../训练框架/分布式训练入门/02-显存去哪了.html">../训练框架/分布式训练入门/02-显存去哪了.md</a>。</p>
+</blockquote>
+<h3 id="_5">四档对照总表</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>深度 0 · 同步</th>
+<th>深度 1 · 单步异步</th>
+<th>深度 K · 有界队列</th>
+<th>深度无穷 · 全异步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>样本陈旧度</strong></td>
+<td><strong>0 步</strong>，完全 on-policy</td>
+<td><strong>恰好 1 步</strong></td>
+<td><strong>≤ K 步</strong>，硬上界</td>
+<td>无上界，只能实测分布</td>
+</tr>
+<tr>
+<td><strong>每迭代墙钟</strong>（上面那笔账）</td>
+<td>760 s</td>
+<td>680 s</td>
+<td>680 s 与 325 s 之间</td>
+<td>325 s</td>
+</tr>
+<tr>
+<td><strong>相对同步的加速倍数</strong></td>
+<td>1.00×</td>
+<td><strong>1.12×</strong></td>
+<td>1.1× ~ 2.3×</td>
+<td><strong>2.34×</strong></td>
+</tr>
+<tr>
+<td><strong>训练卡利用率</strong></td>
+<td>10.5%</td>
+<td>11.8%</td>
+<td>介于两者</td>
+<td>24.6%（重配卡数后可到 ~95%）</td>
+</tr>
+<tr>
+<td><strong>训练卡气泡</strong></td>
 <td><strong>严重</strong></td>
-<td>0（完全 on-policy）</td>
-<td>TRL、OpenRLHF 默认、veRL 默认</td>
-</tr>
-<tr>
-<td>1</td>
-<td>一步离策略</td>
+<td><strong>仍然严重</strong>（瓶颈没动）</td>
 <td>小</td>
-<td>落后 1 版</td>
-<td>SkyRL、open-instruct、veRL <code>one_step_off_policy/</code></td>
-</tr>
-<tr>
-<td>2~K</td>
-<td>有界队列</td>
-<td>很小</td>
-<td>落后 ≤K 版</td>
-<td>ROLL、NeMo-RL、MiniMax Forge</td>
-</tr>
-<tr>
-<td>∞</td>
-<td>全异步</td>
 <td>几乎没有</td>
-<td>不确定</td>
+</tr>
+<tr>
+<td><strong>长尾还在不在</strong></td>
+<td>在</td>
+<td><strong>还在</strong></td>
+<td>看窗口开多大</td>
+<td>在，但被跨迭代吸收了</td>
+</tr>
+<tr>
+<td><strong>需不需要 IS 修正</strong></td>
+<td>理论上不需要</td>
+<td>建议要</td>
+<td>要</td>
+<td><strong>必须要</strong></td>
+</tr>
+<tr>
+<td><strong>实现复杂度</strong>（✅ veRL 行数）</td>
+<td>1（基准）</td>
+<td>~1.1（553 行）</td>
+<td>中</td>
+<td><strong>~8</strong>（4,335 行）</td>
+</tr>
+<tr>
+<td><strong>谁在用</strong></td>
+<td>TRL、OpenRLHF 默认、veRL 默认</td>
+<td>SkyRL、open-instruct、veRL <code>one_step_off_policy/</code></td>
+<td>ROLL、NeMo-RL、MiniMax Forge</td>
 <td>AReaL、PipelineRL、TorchForge、<strong>GLM-5 / slime</strong></td>
 </tr>
 </tbody>
 </table>
-<p>⚠️ 这张表最重要的是<strong>第 3 列和第 4 列此消彼长</strong>。你没法两头都要：训练卡不空转，就意味着它在用旧样本训练。这是 RL 系统设计的<strong>根本权衡</strong>，后面所有东西都是在这条曲线上找位置。</p>
+<p>⚠️ 关于「需不需要 IS 修正」那一行，有一个<strong>必须分清的混淆</strong>：</p>
+<blockquote>
+<p>同步档位下 <code>π_推理 = π_训练</code> 在<strong>理论上</strong>成立，所以 IS 比值应当恒等于 1。<strong>但实测它不等于 1。</strong> 那部分偏离<strong>不是陈旧度造成的，是数值失配</strong>——两个引擎的 kernel 算出了不同的 logprob。这是 <a href="04-训推一致性.html">04 章</a> 的话题，和本章的异步档位<strong>毫无关系</strong>。<br />
+★ 把两者分开的办法很简单：<strong>把配置改成「一批数据只做一次梯度更新 + <code>logp_old</code> 由训练引擎自己算」，此时 ratio 必须精确等于 1。</strong> 如果不是，剩下的 100% 是数值失配。这条判据的完整版在 <a href="../大模型算子开发/11-训推一致性算子层.html">../大模型算子开发/11-训推一致性算子层.md</a>。</p>
+</blockquote>
+<p>⚠️ 这张表最重要的是<strong>第 1 行和第 5 行此消彼长</strong>。你没法两头都要：训练卡不空转，就意味着它在用旧样本训练。这是 RL 系统设计的<strong>根本权衡</strong>，后面所有东西都是在这条曲线上找位置。</p>
 <hr />
 <h2 id="23-verl-experimental">2.3 ✅ veRL 的 <code>experimental/</code> 就是这条谱系的源码实证</h2>
 <p>最有意思的证据是：veRL 把这条轴上的<strong>几乎每一档都实现了一遍</strong>，全部放在 <code>experimental/</code> 目录下。</p>
@@ -414,7 +836,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><code>verl/experimental/fully_async_policy/</code></td>
 <td>14</td>
 <td><strong>4,335</strong></td>
-<td>深度 ∞</td>
+<td>深度无穷</td>
 </tr>
 <tr>
 <td><code>verl/experimental/agent_loop/</code></td>
@@ -440,16 +862,19 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="codehilite"><pre><span></span><code>fully_async_main.py        主入口
 fully_async_rollouter.py   生成侧，独立进程
 fully_async_trainer.py     训练侧，独立进程
-message_queue.py           ★ 两者之间的队列——就是「深度 ∞」的那个流
+message_queue.py           &lt;-- 两者之间的队列，就是「深度无穷」的那个流
 detach_utils.py            解耦工具
 dynamic_schedule/          动态调度
 config/  shell/  unittest/
 </code></pre></div>
 
 <p>而 <code>one_step_off_policy/</code> 只有 3 个文件、553 行：<code>main_ppo.py</code> + <code>ray_trainer.py</code> + <code>__init__.py</code>。</p>
-<p>⚠️ 我的解读：<strong>553 行 vs 4,335 行，差 7.8 倍，这个比例本身就是结论。</strong><br />
-从同步走到「一步离策略」，你只需要多开一个缓冲区、把两个阶段并行起来——改动很小，收益却拿走了大半。而从「一步离策略」走到「全异步」，你要额外处理：独立的生成进程生命周期、消息队列、动态调度、陈旧度追踪、失败恢复……复杂度陡增。</p>
-<p><strong>这是选型上最实用的一条经验：如果你不是在做超长上下文或 agentic 任务，一步离策略往往是性价比最高的位置。</strong> 见 <a href="07-选型与实践.html">07-选型与实践.md</a>。</p>
+<p>⚠️ 我的解读：<strong>4,335 ÷ 553 = 7.8 倍，这个比例本身就是结论。</strong></p>
+<p>从同步走到「一步离策略」，你只需要多开一个缓冲区、把两个阶段并行起来——改动很小。而从「一步离策略」走到「全异步」，你要额外处理：独立的生成进程生命周期、消息队列、动态调度、陈旧度追踪、失败恢复……复杂度陡增。</p>
+<p>⚠️ 但要和 §2.2 的账对着读：<strong>改动小不等于收益大。</strong> 一步离策略只值 1.12 倍，全异步值 2.34 倍（重配卡数后 3.57 倍）。所以准确的说法是：</p>
+<blockquote>
+<p><strong>一步离策略是「最便宜的一档」，不是「性价比最高的一档」。</strong> 它的真正价值在于：代码改动小到可以在现有同步管线上渐进验证，适合当第一步。但如果你的长尾严重（agentic、长 CoT、1M 上下文），<strong>跳过它、直接上 partial rollout</strong> 收益更大。选型见 <a href="07-选型与实践.html">07-选型与实践.md</a>。</p>
+</blockquote>
 <hr />
 <h2 id="24">2.4 ★★ 三家前沿模型，三个不同的位置</h2>
 <p>这一节是全篇的核心。三份技术报告，在同一条轴上选了三个不同的点。</p>
@@ -476,7 +901,7 @@ config/  shell/  unittest/
 <tr>
 <td>continuously generates</td>
 <td>生成永不停</td>
-<td><strong>buffer 深度 = ∞</strong></td>
+<td><strong>buffer 深度 = 无穷</strong></td>
 </tr>
 <tr>
 <td>reaches a predefined threshold</td>
@@ -490,18 +915,20 @@ config/  shell/  unittest/
 </tr>
 </tbody>
 </table>
+<p>⚠️ 对照 §2.2 的账看第三条：「攒够阈值才发一批」这个设计，正是把那 20.1% 的长尾空转吸收掉的机制——<strong>不等最慢那条，攒够数就走，慢的那条算进下一批</strong>。</p>
 <p>✅ 还有一句容易被漏掉但很关键的：</p>
 <blockquote>
 <p><em>"we also </em><em>reset the optimizer</em><em> after each weight update of the inference engine."</em></p>
 </blockquote>
-<p>⚠️ 我的理解：优化器状态（Adam 的一阶、二阶动量）是「对过去梯度的记忆」。异步 RL 里数据分布一直在漂，旧动量可能反而是噪声。每次推权重就重置一次优化器，等于<strong>主动放弃跨版本的动量累积</strong>，换取每一段训练内部的稳定性。这是个反直觉但很实在的工程选择——正常训练里没人会这么干。</p>
+<p>⚠️ 我的理解：优化器状态（Adam 的一阶、二阶动量）是「对过去梯度的记忆」。异步 RL 里数据分布一直在漂，旧动量可能反而是噪声。每次推权重就重置一次优化器，等于<strong>主动放弃跨版本的动量累积</strong>，换取每一段训练内部的稳定性。这是个反直觉但很实在的工程选择——正常预训练里没人会这么干。</p>
 <p>✅ 配套的还有一个 <strong>Multi-Task Rollout Orchestrator</strong>（多任务 rollout 编排器）：每个任务是一个独立的微服务，向中央编排器注册；编排器控制每个任务的 rollout 配比和生成速度；所有任务用统一的 message list 表示；<strong>支持超过 1000 路并发 rollout</strong>。</p>
 <h3 id="2-kimi-k3">② Kimi-K3：留在最左边，同置</h3>
 <p>✅ 原文（§5.3 Infra for 1M Agentic RL）：</p>
 <blockquote>
 <p><em>"We adopt </em><em>co-located RL training</em><em> to keep each 1M-context Kimi K3 RL experiment </em><em>within a few hundred GPUs</em><em>, and use </em><em>partial rollouts</em><em> to reduce tail latency from ultra-long trajectories."</em></p>
 </blockquote>
-<p>⚠️ 注意这句话的因果方向：<strong>同置是结论，不是前提。</strong> 前提是「每次实验要控制在几百张卡内」。K3 是 1M（一百万 token）上下文，分离部署要给训练侧和推理侧各留一整套卡，几百张的预算下这笔账划不来。</p>
+<p>⚠️ 注意这句话的因果方向：<strong>同置是结论，不是前提。</strong> 前提是「每次实验要控制在几百张卡内」。</p>
+<p>把这个约束和 §2.2 的账对上，就知道为什么：<strong>分离部署要求训练侧和推理侧各自独占一批卡，而且这两批卡在对方工作时是闲着的。</strong> §2.2 那张表里，同步 + 分离的全机利用率只有 26.7%——你买了 16 张卡，真正在算的只相当于 4.3 张。卡多的时候这笔浪费可以靠异步补回来；卡只有几百张、而上下文是 1M token 的时候，<strong>与其买两套卡再想办法让它们重叠，不如一套卡轮流用</strong>。同置的全机利用率天然更高，代价是训练和推理必须互相等。</p>
 <p>那长尾怎么办？Kimi 不靠分离，靠另外三招：</p>
 <table>
 <thead>
@@ -514,7 +941,7 @@ config/  shell/  unittest/
 <tbody>
 <tr>
 <td><strong>partial rollout</strong>（部分 rollout）</td>
-<td><em>"use partial rollouts to reduce tail latency from ultra-long trajectories"</em></td>
+<td><em>"use partial rollouts to </em><em>reduce tail latency</em><em> from ultra-long trajectories"</em></td>
 <td>超长样本不必一次生成完，下一轮接着生成</td>
 </tr>
 <tr>
@@ -530,31 +957,34 @@ config/  shell/  unittest/
 </tbody>
 </table>
 <p>⚠️ 这三招合起来，本质是<strong>把「异步」从系统层挪到了样本层</strong>：系统仍然是同步的，但单个样本可以跨步继续。这是一条被低估的路径。</p>
+<p>★ <strong>这条路线值多少，§2.1 第五步已经算过了</strong>：512 条样本、长尾 5 条，partial rollout 把墙钟从 630 秒压到 317 秒，<strong>加速 1.99 倍，推理侧利用率从 51.6% 到接近 100%</strong>。注意这个 1.99 倍比「一步离策略」的 1.12 倍大得多，而且<strong>它和异步是两件事，可以叠加</strong>。两者为什么正交，<a href="03-权重同步.html">03 章 §3.5.1</a> 从中断模型的角度再讲一遍。</p>
+<blockquote>
+<p>⚠️ 一个容易被跳过的代价：partial rollout 要求把<strong>没写完的序列连同它的 KV cache 一起存下来</strong>。1M 上下文的 KV cache 有多大，是 Kimi 必须自建外部 KV 池的直接原因——这也是为什么这条路线「听起来简单、做起来贵」。KV cache 的显存账见 <a href="../推理框架/推理优化入门/02-KV-Cache与显存账.html">../推理框架/推理优化入门/02-KV-Cache与显存账.md</a>。</p>
+</blockquote>
 <h3 id="3-minimax-forge">③ MiniMax Forge：在中间插值</h3>
-<p>✅ Forge（§6.2）的架构是三层解耦：</p>
-<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────┐
-│  Agent Side（agent 侧）                     │
-│  纯粹的轨迹生产者，对训练/推理完全无感知    │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│  Middleware Abstraction Layer（中间件层）   │
-│  · Gateway Server：路由所有补全请求         │
-│  · Data Pool：分布式轨迹存储，异步收集      │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│  Training / Inference Side（训推侧）        │
-│  · Rollout Engine 扮演 π_θ                  │
-│  · Train Engine 算 CISPO 梯度，同步权重回去 │
-└─────────────────────────────────────────────┘
+<p>✅ Forge（§6.2）的架构是三层解耦。<strong>每一层只认下一层的接口，不认实现</strong>：</p>
+<div class="codehilite"><pre><span></span><code>Agent Side  agent 侧
+    纯粹的轨迹生产者，对「训练还是推理」完全无感知
+  |
+  |  发出补全请求
+  v
+Middleware Abstraction Layer  中间件抽象层
+    |- Gateway Server : 路由所有补全请求
+    |- Data Pool      : 分布式轨迹存储，异步收集
+  |
+  |  攒够一批就下发
+  v
+Training / Inference Side  训推侧
+    |- Rollout Engine : 扮演策略 pi_theta，负责生成
+    |- Train Engine   : 算 CISPO 梯度，同步权重回去
 </code></pre></div>
 
+<p>⚠️ 这个分层的价值在于：<strong>agent 代码不需要知道自己是在被训练还是在被推理服务。</strong> 10 万个 agent 脚手架只要会发 HTTP 补全请求就行，这是 agentic RL 能规模化的前提（见 <a href="06-AgenticRL-环境与沙箱.html">06</a>）。</p>
 <p>真正有意思的是它的调度策略——<strong>Windowed FIFO（窗口化先进先出）</strong>：</p>
 <p>✅ 队列 <code>Q = [T_0, T_1, ..., T_{N-1}]</code>，维护一个头指针 <code>i</code>，窗口是 <code>[T_i, T_{i+W-1}]</code>。<strong>窗口内</strong>谁先完成用谁（贪心，不等顺序），<strong>跨窗口边界</strong>必须严格按序。实践取 <strong><code>W = 0.3N</code></strong>。</p>
 <p>⚠️ 这条规则太抽象，用一个具体例子走一遍。设 N = 10 道题，窗口 <code>W = 3</code>，各题生成耗时差别极大：</p>
-<div class="codehilite"><pre><span></span><code>T_0: 60s   T_1: 5s   T_2: 8s   T_3: 5s   T_4: 50s   T_5: 6s  ...
-  ↑ 长尾
+<div class="codehilite"><pre><span></span><code>T_0: 60s    T_1: 5s    T_2: 8s    T_3: 5s    T_4: 50s    T_5: 6s  ...
+ ^ 长尾                                       ^ 长尾
 </code></pre></div>
 
 <p>头指针 <code>i = 0</code>，窗口 = <code>[T_0, T_1, T_2]</code>，这三道题同时在跑：</p>
@@ -563,44 +993,82 @@ config/  shell/  unittest/
 <tr>
 <th>时刻</th>
 <th>发生什么</th>
+<th>窗口里还剩谁</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>t=0</code></td>
+<td><code>t = 0</code></td>
 <td>窗口 <code>[T_0 T_1 T_2]</code> 三个一起启动。T_3 想进来？门关着</td>
+<td>T_0 T_1 T_2</td>
 </tr>
 <tr>
-<td><code>t=5s</code></td>
-<td>T_1 完成 → <strong>立刻交付</strong>训练侧（窗口内不等顺序，这就是「贪心」的部分）</td>
+<td><code>t = 5s</code></td>
+<td>T_1 完成 → <strong>立刻交付</strong>训练侧（窗口内不等顺序，这就是「贪心」）</td>
+<td>T_0 T_2</td>
 </tr>
 <tr>
-<td><code>t=8s</code></td>
+<td><code>t = 8s</code></td>
 <td>T_2 完成 → 立刻交付。窗口里只剩 T_0 在磨</td>
+<td>T_0</td>
 </tr>
 <tr>
-<td><code>t=60s</code></td>
-<td>T_0 完成 → 交付，头指针前进到 3，窗口滑到 <code>[T_3 T_4 T_5]</code>，三个一起启动</td>
+<td><code>t = 8s ~ 60s</code></td>
+<td><strong>空转 52 秒</strong>。T_3 明明只要 5 秒，但门关着</td>
+<td>T_0</td>
+</tr>
+<tr>
+<td><code>t = 60s</code></td>
+<td>T_0 完成 → 交付，头指针前进到 3，窗口滑到 <code>[T_3 T_4 T_5]</code></td>
+<td>T_3 T_4 T_5</td>
 </tr>
 </tbody>
 </table>
-<p>关键在 <code>t=8s → t=60s</code> 这一段：<strong>T_3 明明只要 5 秒，却必须干等 T_0</strong>。这是故意的，就是「跨窗口边界严格按序」的代价。</p>
-<p>这个「等」买到的是<strong>陈旧度的硬上界</strong>：任何一条进入训练的轨迹，它出发时的权重与当前权重最多差一个窗口（<code>W = 0.3N</code>，约三分之一步）。全异步里这个差距没有上界。顺带还堵住了另一个坑——完全贪心下长难题会被系统性地挤出 batch，<strong>数据分布会偏</strong>。</p>
-<p>⚠️ 这就是在两个极端之间<strong>显式插值</strong>：</p>
-<div class="codehilite"><pre><span></span><code>W = 1  ──────────────────► 严格 FIFO：完全按顺序，长尾全暴露
-                              ↑
-                        W = 0.3N（Forge 实际取值）
-                              ↓
-W = N  ──────────────────► 完全贪心：谁快用谁，但陈旧度不可控
-</code></pre></div>
-
+<p>关键在 <code>t = 8s → t = 60s</code> 这一段：<strong>T_3 明明只要 5 秒，却必须干等 T_0</strong>。这是故意的，就是「跨窗口边界严格按序」的代价。</p>
+<p>这个「等」买到的是<strong>陈旧度的硬上界</strong>：任何一条进入训练的轨迹，它出发时的权重与当前权重最多差一个窗口。全异步里这个差距<strong>没有上界</strong>——这正是 §2.2 那张四档表里「深度无穷」那一列写「无上界，只能实测分布」的意思。</p>
+<p>顺带还堵住了另一个坑——完全贪心下长难题会被系统性地挤出 batch，<strong>数据分布会偏</strong>。这一点在 §2.5 还会再出现一次。</p>
+<p>⚠️ 把 W 从 1 调到 N，就是在两个极端之间<strong>显式插值</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>窗口 <code>W</code></th>
+<th>行为</th>
+<th>陈旧度上界</th>
+<th>长尾暴露程度</th>
+<th>等价于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>W = 1</code></td>
+<td>严格 FIFO，完全按顺序交付</td>
+<td>0</td>
+<td><strong>全部暴露</strong></td>
+<td>同步（深度 0）</td>
+</tr>
+<tr>
+<td><code>W = 0.3N</code></td>
+<td><strong>Forge 实际取值</strong></td>
+<td>≤ 一个窗口</td>
+<td>窗口内的长尾被吸收</td>
+<td>有界队列（深度 K）</td>
+</tr>
+<tr>
+<td><code>W = N</code></td>
+<td>完全贪心，谁先完成用谁</td>
+<td><strong>无上界</strong></td>
+<td>完全不暴露</td>
+<td>全异步（深度无穷）</td>
+</tr>
+</tbody>
+</table>
 <p>W 越大，吞吐越高、陈旧度越不可控；W 越小，越接近同步。<strong>把一个架构选择变成了一个可调旋钮</strong>，这是三家里最工程化的做法。</p>
 <p>✅ 另外两个 Forge 的加速手段值得单独记：</p>
 <ul>
-<li><strong>Prefix Tree Merging（前缀树合并）</strong>：同一道题的 G 个答案共享同一段前缀，前缀只算一次然后分叉。报告称「<strong>数学上等价于独立样本训练</strong>」「<strong>零近似误差</strong>」，带来 <strong>最高 40× 的训练加速</strong>。</li>
+<li><strong>Prefix Tree Merging（前缀树合并）</strong>：同一道题的 G 个答案共享同一段前缀，前缀只算一次然后分叉。报告称「<strong>数学上等价于独立样本训练</strong>」「<strong>零近似误差</strong>」，带来 <strong>最高 40× 的训练加速</strong>。⚠️ 「最高 40×」是报告给的上界，不是常态值；它的收益完全取决于前缀占总长度的比例——prompt 长、答案短的任务收益大，agentic 那种 prompt 短、轨迹极长的任务收益小。</li>
 <li><strong>全局 L3 KV Cache 池</strong>：由分布式文件系统托底，配一个成本感知的请求路由器。</li>
 </ul>
-<h3 id="_2">三家放在一起</h3>
+<h3 id="_6">三家放在一起</h3>
 <table>
 <thead>
 <tr>
@@ -619,15 +1087,27 @@ W = N  ──────────────────► 完全贪心：
 </tr>
 <tr>
 <td>buffer 深度</td>
-<td>∞（连续生成）</td>
+<td>无穷（连续生成）</td>
 <td>0（但样本可跨步）</td>
-<td>有界，窗口 <code>W=0.3N</code></td>
+<td>有界，窗口 <code>W = 0.3N</code></td>
+</tr>
+<tr>
+<td>陈旧度上界</td>
+<td>无</td>
+<td>0（样本层面跨步除外）</td>
+<td><strong>一个窗口，硬上界</strong></td>
 </tr>
 <tr>
 <td>长尾怎么解</td>
 <td>靠异步吸收 + PD 分离 + FP8</td>
 <td><strong>partial rollout + 外部 KV 池</strong></td>
 <td><strong>窗口内贪心 + 前缀树合并</strong></td>
+</tr>
+<tr>
+<td>打的是 §2.2 哪一块气泡</td>
+<td>44.7% + 8.6%</td>
+<td><strong>20.1%</strong></td>
+<td>20.1% 的一部分 + 8.6%</td>
 </tr>
 <tr>
 <td>明说的约束</td>
@@ -638,21 +1118,20 @@ W = N  ──────────────────► 完全贪心：
 </tbody>
 </table>
 <p>⚠️ <strong>我的综合判断：这三个点在同一条「吞吐 ↔ 分布一致性」的权衡曲线上，谁也没有推翻谁。</strong></p>
-<div class="codehilite"><pre><span></span><code>分布一致性（样本越新越好）
-   ▲
-   │  ★ Kimi-K3（同置）
-   │      同置 → 样本永远是最新权重生成的
-   │      代价：训练卡要等生成
-   │
-   │           ★ MiniMax（W=0.3N）
-   │               显式旋钮，可调
-   │
-   │                        ★ GLM-5（全异步）
-   │                            吞吐拉满，一致性交给算法侧兜底
-   └────────────────────────────────────────► 吞吐
+<div class="codehilite"><pre><span></span><code>  分布一致性（样本越新越好）
+      ^
+      |  [Kimi-K3 同置]
+      |     样本永远由最新权重生成；代价是训练卡要等生成
+      |
+      |              [MiniMax W=0.3N]
+      |                 显式旋钮，陈旧度有硬上界
+      |
+      |                            [GLM-5 全异步]
+      |                               吞吐拉满，一致性交给算法侧兜底
+      +----------------------------------------------------------&gt; 吞吐
 </code></pre></div>
 
-<p>选哪个点，取决于三个约束：<strong>卡够不够</strong>（Kimi 明说不够）、<strong>上下文多长</strong>（越长长尾越致命）、<strong>有没有算法侧的一致性兜底手段</strong>（见 <a href="04-训推一致性.html">04</a>）。</p>
+<p>选哪个点，取决于三个约束：<strong>卡够不够</strong>（Kimi 明说不够）、<strong>上下文多长</strong>（越长长尾越致命，§2.1 的 16 倍比值就是长度比）、<strong>有没有算法侧的一致性兜底手段</strong>（见 <a href="04-训推一致性.html">04</a>）。</p>
 <hr />
 <h2 id="25">2.5 陈旧度怎么管：三种正交的手段</h2>
 <p>一旦离开深度 0，样本就带上了「版本落后」这个属性。🌐 业界的处理手段有三种，而且它们是<strong>正交的</strong>——可以同时用：</p>
@@ -682,19 +1161,127 @@ W = N  ──────────────────► 完全贪心：
 <td><strong>③ IS 加权修正</strong></td>
 <td>不丢样本，在 loss 里乘一个重要性采样比值来纠偏</td>
 <td>不浪费算力</td>
-<td>比值方差大时反而更不稳（见 <a href="04-训推一致性.html">04</a>）</td>
+<td>比值方差大时反而更不稳（见 <a href="04-训推一致性.html">04 §4.6</a>）</td>
 </tr>
 </tbody>
 </table>
 <p>🌐 HF 横评的结论是：<strong>生产环境的趋势是三种混用</strong>，而不是只靠一种。</p>
-<p>⚠️ 这里有个容易踩的坑，值得单独拎出来：</p>
+<p>⚠️ 用 §2.2 的账给手段 ① 估个价：全异步下每迭代 325 秒，如果版本门限设成「最多落后 2 步」，那么任何生成时间超过 650 秒的样本都会被丢掉——对照 §2.1 的分布表，<strong>那 5 条 32K 的样本（630 秒）正好擦着线</strong>。门限再紧一点，它们就全被丢了。而它们恰恰是最难的题。这直接引出下面这个坑。</p>
+<h3 id="_7">⚠️ 非对称过滤会让「存活的正样本」系统性地更陈旧</h3>
 <blockquote>
-<p><strong>非对称过滤会让「存活的正样本」系统性地更陈旧。</strong></p>
+<p><strong>这是本节最该记住的一条，因为它不会报错，只会让模型学偏。</strong></p>
 </blockquote>
-<p>很多 RL 训练会做动态过滤——把全对或全错的组丢掉（因为组内没有区分度，梯度是零）。但难题的 rollout 通常<strong>更长</strong>，所以完成得更晚。结果是：难题的样本天然更旧，而难题恰恰是训练最需要的那部分。</p>
-<p><strong>batch 级的陈旧度门控看不见这个偏差</strong>——整批的平均陈旧度可能很正常，但真正贡献梯度的那些样本全都是最旧的。🌐 HF 横评据此认为<strong>逐样本打版本号是必需的</strong>，不能只在 batch 级别管。</p>
+<p>很多 RL 训练会做动态过滤——把全对或全错的组丢掉（因为组内没有区分度，优势全为零、梯度也为零，这是 DAPO 这类算法的标准做法，见 <a href="../后训练/05-RLVR-可验证奖励.html">../后训练/05-RLVR-可验证奖励.md</a>）。</p>
+<p>但难题的 rollout 通常<strong>更长</strong>，所以完成得更晚。把 §2.1 的分布表和这条规则叠起来：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>p0–p50（2K）</th>
+<th>p99–p100（32K）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>完成时刻</td>
+<td>39.4 s</td>
+<td>630 s</td>
+</tr>
+<tr>
+<td>生成它的权重落后几步（按 325 s/步算）</td>
+<td>0 步</td>
+<td><strong>约 2 步</strong></td>
+</tr>
+<tr>
+<td>题目难度</td>
+<td>偏简单</td>
+<td>偏难</td>
+</tr>
+<tr>
+<td>被「全对/全错」过滤掉的概率</td>
+<td>高（简单题容易全对）</td>
+<td>低（难题答案分散，组内有区分度）</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>活下来、真正贡献梯度的那些样本，恰恰是最旧的那一批。</strong></p>
+<p><strong>batch 级的陈旧度门控看不见这个偏差</strong>——整批的平均陈旧度可能很正常（512 条里 500 条都是 0 步），但真正进 loss 的那几十条全是落后 2 步的。🌐 HF 横评据此认为<strong>逐样本打版本号是必需的</strong>，不能只在 batch 级别管。</p>
+<p>⚠️ 这条和 §2.4 MiniMax 那条「完全贪心下长难题会被系统性挤出 batch」是<strong>同一个病的两种症状</strong>：长 = 难 = 晚 = 旧，而训练最需要的恰好是难的那些。</p>
 <hr />
 <h2 id="26">2.6 本章小结</h2>
+<h3 id="_8">一张表记住全部数字</h3>
+<table>
+<thead>
+<tr>
+<th>口径</th>
+<th>同步（深度 0）</th>
+<th>单步异步（深度 1）</th>
+<th>全异步（深度无穷）</th>
+<th>全异步 + 重配卡数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每迭代墙钟</td>
+<td>760 s</td>
+<td>680 s</td>
+<td>325 s</td>
+<td><strong>213 s</strong></td>
+</tr>
+<tr>
+<td>加速倍数</td>
+<td>1.00×</td>
+<td>1.12×</td>
+<td>2.34×</td>
+<td><strong>3.57×</strong></td>
+</tr>
+<tr>
+<td>训练卡利用率</td>
+<td>10.5%</td>
+<td>11.8%</td>
+<td>24.6%</td>
+<td>~95%（全机）</td>
+</tr>
+<tr>
+<td>样本陈旧度</td>
+<td>0</td>
+<td>1 步</td>
+<td>无上界</td>
+<td>无上界</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>气泡的三块</th>
+<th>占总机时</th>
+<th>打它的手段</th>
+<th>值多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训练卡等生成</td>
+<td>44.7%</td>
+<td>异步</td>
+<td>1.12× ~ 2.34×</td>
+</tr>
+<tr>
+<td>推理卡等训练</td>
+<td>8.6%</td>
+<td>异步</td>
+<td>含在上一行里</td>
+</tr>
+<tr>
+<td>长尾空转</td>
+<td>20.1%</td>
+<td><strong>partial rollout</strong></td>
+<td><strong>1.99×</strong>，且与异步正交</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_9">结论清单</h3>
 <table>
 <thead>
 <tr>
@@ -704,24 +1291,44 @@ W = N  ──────────────────► 完全贪心：
 </thead>
 <tbody>
 <tr>
-<td>长尾是核心问题：32B 模型 512 个 32K rollout，单卡要 3.7 小时；8 卡并行仍要 28 分钟</td>
-<td>🌐</td>
+<td>单条序列的解码速度被权重读取带宽卡死：32B BF16 在 H100 上是 64 GB ÷ 3.35 TB/s = 19.1 ms/token = <strong>52 token/s 上限</strong></td>
+<td>⚠️ 屋顶线推算</td>
+</tr>
+<tr>
+<td>⟹ <strong>长尾的耗时比 = 长度比</strong>（32K ÷ 2K = 16 倍），加卡救不了</td>
+<td>⚠️ 由上一行推出</td>
+</tr>
+<tr>
+<td>512 条样本、5 条超长：理想打包 2,601 GPU·秒，实际墙钟 630 s，<strong>推理侧利用率只有 51.6%</strong></td>
+<td>⚠️ 本文推算</td>
+</tr>
+<tr>
+<td>同步 + 分离部署的全机利用率 = 3,241 ÷ 12,160 = <strong>26.7%</strong></td>
+<td>⚠️ 本文推算</td>
 </tr>
 <tr>
 <td>优化目标是端到端延迟（由最慢样本决定），不是总吞吐</td>
 <td>✅ GLM-5 §3.6.2</td>
 </tr>
 <tr>
-<td>buffer 深度四档（0 / 1 / 2~K / ∞）是架构的分类主轴</td>
+<td>buffer 深度四档（0 / 1 / 2~K / 无穷）是架构的分类主轴</td>
 <td>🌐</td>
 </tr>
 <tr>
-<td>veRL 同时实现了三档：<code>one_step_off_policy/</code> 553 行 vs <code>fully_async_policy/</code> 4,335 行</td>
-<td>✅ 实测</td>
+<td><strong>一步离策略只值 1.12 倍</strong>，因为它没动 rollout 那 670 秒——便宜不等于性价比高</td>
+<td>⚠️ 本文推算</td>
 </tr>
 <tr>
-<td>从同步到「一步离策略」改动小、收益大；再往后复杂度陡增</td>
-<td>⚠️ 由上一行推出</td>
+<td>partial rollout 值 1.99 倍，<strong>而且和异步正交可叠加</strong></td>
+<td>⚠️ 本文推算 + ✅ Kimi 原文</td>
+</tr>
+<tr>
+<td>异步真正的大头收益来自「允许把训推卡数解耦地调」（8+8 → 3+13，3.57 倍）</td>
+<td>⚠️ 本文推断，非任何报告结论</td>
+</tr>
+<tr>
+<td>veRL 同时实现了三档：<code>one_step_off_policy/</code> 553 行 vs <code>fully_async_policy/</code> 4,335 行，差 7.8 倍</td>
+<td>✅ 实测</td>
 </tr>
 <tr>
 <td>GLM-5 全异步 / Kimi-K3 同置 / MiniMax 窗口插值 = 同一条权衡曲线上的三个点</td>
@@ -732,16 +1339,32 @@ W = N  ──────────────────► 完全贪心：
 <td>✅ §4.1.1</td>
 </tr>
 <tr>
-<td>Forge 前缀树合并声称零近似误差、最高 40× 加速</td>
-<td>✅ §6.2.5</td>
+<td>MiniMax Windowed FIFO：<code>W = 0.3N</code>，陈旧度有硬上界</td>
+<td>✅ §6.2</td>
+</tr>
+<tr>
+<td>Forge 前缀树合并声称零近似误差、<strong>最高</strong> 40× 加速（⚠️ 是上界不是常态）</td>
+<td>✅ §6.2.5 + ⚠️</td>
 </tr>
 <tr>
 <td>陈旧度三手段正交，生产环境混用；逐样本打版本号是必需的</td>
 <td>🌐 + ⚠️</td>
 </tr>
+<tr>
+<td>非对称过滤 ⟹ 活下来贡献梯度的样本系统性地更旧，batch 级门控看不见</td>
+<td>🌐 + ⚠️</td>
+</tr>
+<tr>
+<td>⚠️ 「时间减少 X%」≠「加速 X%」：<code>加速倍数 = 1 / (1 − 减少比例)</code></td>
+<td>⚠️ 算术纪律</td>
+</tr>
+<tr>
+<td>⚠️ 同步档位下 ratio 偏离 1 是<strong>数值失配</strong>不是陈旧度，两件事必须分开</td>
+<td>⚠️ 关键区分</td>
+</tr>
 </tbody>
 </table>
-<p><strong>下一篇</strong> → <a href="03-权重同步.html">03-权重同步.md</a>：新权重到底怎么搬回生成引擎</p>
+<p><strong>下一篇</strong> → <a href="03-权重同步.html">03-权重同步.md</a>：新权重到底怎么搬回生成引擎，以及「搬的时候生成要不要停」</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

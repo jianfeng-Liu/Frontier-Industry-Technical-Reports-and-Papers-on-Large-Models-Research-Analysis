@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -250,17 +255,75 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一篇干什么</strong>：源码级走查。对标 <a href="../训练框架/Megatron-LM拆解.html">训练框架/Megatron-LM拆解.md</a> 的写法。<br />
 <strong>难度</strong> ★★<br />
-<strong>✅ 本文所有行号钉在 commit <code>3778dbf</code>（tag <code>v0.3.2</code>，2026-08-28）</strong>。行号会随版本漂移，换版本请重新定位。</p>
+<strong>✅ 本文所有行号钉在 commit <code>3778dbf</code></strong>（本地 clone 于 <a href="源码/slime/">源码/slime/</a>，tag <code>v0.3.2</code>，2026-08-28）。<br />
+⚠️ <strong>RL 框架迭代极快，行号几个月就会失效。</strong> 本文每条引用都同时给出<strong>文件名 + 符号名</strong>（类名 / 函数名 / 参数名），换版本时请按符号名重新定位，不要照抄行号。</p>
 </blockquote>
 <hr />
+<h2 id="0">0 · 七问速答：三份拆解共用的同一组问题</h2>
+<p>本目录的三份源码拆解（slime / <a href="OpenRLHF拆解.html">OpenRLHF</a> / <a href="MILES拆解.html">MILES</a>）回答的是<strong>同一组七个问题</strong>，这样你可以把三张表并排放着横向比。先看 slime 的答案：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>问题</th>
+<th>slime 的答案</th>
+<th>展开于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>架构档位：同步 / 单步异步 / 全异步？</td>
+<td><strong>三档都有</strong>，但不是同一套代码：<code>train.py</code> 同步、<code>train_async.py</code> 单步异步、<code>examples/fully_async/</code> + <code>slime/rollout/fully_async_rollout.py</code> 全异步</td>
+<td>§4 · §5</td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>训练后端是谁？</td>
+<td><strong>只有 Megatron-LM</strong>，不做抽象层，Megatron 的参数直读</td>
+<td>§2 · §1</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>rollout 引擎用谁？训练进程怎么和它说话？</td>
+<td><strong>只有 SGLang</strong>（带 router）。通过 <strong>Ray actor 调用</strong>：<code>RolloutManager.generate.remote(rollout_id)</code> 返回一个 Ray ObjectRef</td>
+<td>§3 · §7</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>权重同步怎么做？要不要停推理？</td>
+<td><strong>四条通路可选</strong>（Ray IPC / NCCL 广播 / 磁盘全量 / 磁盘增量），由两个参数组合决定；<strong>要停</strong>——换权重前先把在飞的生成排空</td>
+<td>§6</td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>支持哪些算法？加一个新算法要动哪些文件？</td>
+<td>6 个优势估计器（内置 choices）。加估计器动 <strong>2 个文件</strong>；加一个全新 loss <strong>0 个文件</strong>（有 <code>--custom-loss-function-path</code> 逃生口）</td>
+<td>§10</td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>沙箱 / 环境怎么接？</td>
+<td>接成<strong>数据生成函数</strong>，不碰训练内核。<code>slime/agent/</code> 分 <code>adapters/</code>（API 协议）和 <code>harness/</code>（真实 CLI）两层</td>
+<td>§9</td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>一次迭代的时序长什么样？谁在等？</td>
+<td>同步档：训练卡等 rollout，<strong>空转约 2/3 的时间</strong>；单步异步档：两边重叠，迭代时间被 rollout 单独决定</td>
+<td>§4</td>
+</tr>
+</tbody>
+</table>
+<hr />
 <h2 id="1">1 · 规模实测</h2>
-<p>✅ 本地 clone 后实测：</p>
+<p>✅ 本地 clone 后实测（commit <code>3778dbf</code>）：</p>
 <div class="codehilite"><pre><span></span><code>整仓：332 个 .py 文件 · 72,468 行 · 18 MB
 
 顶层：
-  train.py             99 行   ← 同步训练主循环
-  train_async.py       81 行   ← 异步训练主循环
-  slime/                       ← 主包，152 文件 / 35,708 行
+  train.py             99 行   &lt;-- 同步训练主循环
+  train_async.py       81 行   &lt;-- 异步训练主循环
+  slime/                       &lt;-- 主包，152 文件 / 35,708 行
   slime_plugins/  examples/  tests/  tools/  scripts/  docs/
 </code></pre></div>
 
@@ -285,7 +348,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><code>utils/</code></td>
 <td>30</td>
 <td>7,900</td>
-<td>工具</td>
+<td>工具（含 <code>ppo_utils.py</code>、<code>arguments.py</code>）</td>
 </tr>
 <tr>
 <td><code>rollout/</code></td>
@@ -314,100 +377,287 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <p>★ <code>backends/</code> 内部有一个很说明问题的不对称：</p>
-<div class="codehilite"><pre><span></span><code>slime/backends/megatron_utils/   16,220 行   ← 训练侧
-slime/backends/sglang_utils/      2,101 行   ← 推理侧
-                                  ────────
-                                  7.7 倍
-</code></pre></div>
-
-<p>⚠️ <strong>接一个训练引擎，比接一个推理引擎难 7.7 倍。</strong><br />
-原因不难理解：推理引擎是个服务，接口是「发请求、收 token」；训练引擎要处理并行切分、优化器状态、checkpoint、梯度累积——而且这些都要和权重同步对上。这也解释了为什么开源框架里「多推理后端」比「多训练后端」常见得多。</p>
-<p><strong>对照组</strong>（✅ 见 <a href="01-格局全景.html">01 章 §1.2</a>）：veRL 171,584 行 · slime 72,468 行 · OpenRLHF 13,411 行。</p>
+<table>
+<thead>
+<tr>
+<th>适配对象</th>
+<th>目录</th>
+<th>行数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>训练侧（Megatron）</td>
+<td><code>slime/backends/megatron_utils/</code></td>
+<td><strong>16,220</strong></td>
+</tr>
+<tr>
+<td>推理侧（SGLang）</td>
+<td><code>slime/backends/sglang_utils/</code></td>
+<td><strong>2,101</strong></td>
+</tr>
+<tr>
+<td><strong>比值</strong></td>
+<td></td>
+<td><strong>7.7 倍</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>接一个训练引擎，比接一个推理引擎难 7.7 倍。</strong></p>
+<p>原因不难理解：推理引擎是个服务，接口是「发请求、收 token」；训练引擎要处理并行切分、优化器状态、checkpoint、梯度累积——而且这些都要和权重同步对上。这也解释了为什么开源框架里「多推理后端」比「多训练后端」常见得多。</p>
+<p><strong>对照组</strong>（✅ 见 <a href="01-格局全景.html">01 章</a>）：veRL 171,584 行 · slime 72,468 行 · OpenRLHF 13,411 行。</p>
 <hr />
 <h2 id="2">2 · ✅ 设计哲学：明确拒绝抽象</h2>
 <p>slime 是本目录里<strong>唯一把设计取舍写在 README 第一屏</strong>的框架。这些不是我的归纳，是它自己的原话：</p>
-<h3 id="1_1">① 只接一个推理后端，是为了不丢特性</h3>
+<h3 id="21">2.1 只接一个推理后端，是为了不丢特性</h3>
 <blockquote>
 <p>✅ <em>"By choosing </em><em>one</em><em> rollout backend, slime can use SGLang-specific capabilities directly instead of </em><em>flattening multiple inference engines into a lowest-common-denominator abstraction</em><em>."</em><br />
 （选定单一 rollout 后端，slime 就能直接用 SGLang 的专属能力，而不是把多个推理引擎压平成一个最小公分母的抽象。）</p>
 </blockquote>
 <p>⚠️ 这句话是对 veRL 那条路线的正面回应。veRL 接了 4 个推理引擎，代价就是：任何一个引擎的新特性，都要先在抽象层里找到位置才能用上。slime 用「少一个自由度」换「零延迟接入 SGLang 新能力」。</p>
-<h3 id="2-pass-through">② 参数直通（pass-through），不做包装</h3>
+<h3 id="22-pass-through">2.2 参数直通（pass-through），不做包装</h3>
 <blockquote>
 <p>✅ <em>"every argument supported by the installed SGLang can be used by adding the <code>--sglang-</code> prefix"</em><br />
 ✅ <em>"slime reads Megatron arguments directly, so Megatron-side parallelism, optimizer, checkpointing, and model options remain available </em><em>without wrapper code</em><em>"</em></p>
 </blockquote>
 <p>⚠️ 这是「拒绝抽象」的具体落地：slime 不重新定义参数体系，SGLang 有什么参数，加个 <code>--sglang-</code> 前缀就能用。<strong>上游升级了新功能，slime 一行代码都不用改就能用上。</strong></p>
-<h3 id="3-fork">③ 环境「不 fork 训练内核」</h3>
+<h3 id="23-fork">2.3 环境「不 fork 训练内核」</h3>
 <blockquote>
 <p>✅ <em>"math, code, search, tools, sandboxes, verifiers, environments, multi-agent systems, and long-horizon agentic workflows plug in as </em><em>data generation or reward workflows</em><em>. They </em><em>do not fork the training kernel</em><em>."</em></p>
 </blockquote>
-<p>⚠️ 这和 ✅ GLM-5 报告里那句 <em>"cleanly isolates task-specific logic from the core training loop"</em>（见 <a href="06-AgenticRL-环境与沙箱.html">06 章 §6.2</a>）是<strong>同一条原则的两处表述</strong>——一处在论文里，一处在 README 里。<strong>报告与源码互相印证。</strong></p>
-<h3 id="4">④ 一句值得抄下来的话</h3>
+<p>⚠️ 这和 ✅ GLM-5 报告里那句 <em>"cleanly isolates task-specific logic from the core training loop"</em>（见 <a href="06-AgenticRL-环境与沙箱.html">06 章</a>）是<strong>同一条原则的两处表述</strong>——一处在论文里，一处在 README 里。<strong>报告与源码互相印证。</strong></p>
+<h3 id="24">2.4 一句值得抄下来的话</h3>
 <blockquote>
 <p>✅ <em>"</em><em>RL bugs are often silent.</em><em> slime keeps the dataflow explicit, supports separate rollout-only and train-only debugging paths."</em></p>
 </blockquote>
 <p>⚠️ 「RL 的 bug 通常是沉默的」——这正是 <a href="04-训推一致性.html">04 章</a> 开头讲的那件事。而 slime 的应对是<strong>工程手段</strong>：把 rollout 和 train 拆成可以独立调试的两条路径，出问题时能二分定位。</p>
 <hr />
 <h2 id="3-training-rollout-data-buffer">3 · ★★ 三个模块：training / rollout / data buffer</h2>
-<p>✅ README 的 Architecture Overview 只列了三个模块：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────┐        ┌──────────────────────────┐
-│                          │        │                          │
-│   training (Megatron)    │        │  rollout (SGLang+router) │
-│                          │        │                          │
-│ 从 Data Buffer 读数据    │        │ 生成新数据（含 reward /  │
-│ 训完把参数同步给 rollout │        │ verifier 输出）          │
-│                          │        │                          │
-└───────────┬──────────────┘        └─────────────┬────────────┘
-            │                                     │
-            │  读                             写  │
-            │      ┌──────────────────────┐       │
-            └─────►│     data buffer      │◄──────┘
-                   │                      │
-                   │ 管理 prompt 初始化、 │
-                   │ 自定义数据、生成方法 │
-                   └──────────────────────┘
+<p>✅ README 的 Architecture Overview 只列了三个模块。把它们的职责摊成一张表：</p>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>跑在哪</th>
+<th>它做什么</th>
+<th>和 data buffer 的关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>training</strong></td>
+<td>Megatron（训练卡）</td>
+<td>从 data buffer <strong>读</strong>数据做梯度更新；训完把参数推给 rollout</td>
+<td>只读</td>
+</tr>
+<tr>
+<td><strong>rollout</strong></td>
+<td>SGLang + router（推理卡）</td>
+<td>生成新数据，含 reward / verifier 的输出</td>
+<td>只写</td>
+</tr>
+<tr>
+<td><strong>data buffer</strong></td>
+<td>中间层</td>
+<td>管理 prompt 初始化、自定义数据、生成方法</td>
+<td>是<strong>唯一</strong>的数据桥</td>
+</tr>
+</tbody>
+</table>
+<p>连接关系（纯连接线，无右边框）：</p>
+<div class="codehilite"><pre><span></span><code>   training (Megatron)            rollout (SGLang + router)
+          |                                 |
+          | read                      write |
+          +---------&gt;  data buffer  &lt;-------+
 </code></pre></div>
 
-<p>⚠️ <strong>注意这里没有「weight sync」这个模块。</strong> 权重同步在 slime 里不是一个平级模块，而是 training 模块的一个动作（<code>actor_model.update_weights()</code>）。这和 veRL 把 <code>checkpoint_engine/</code> 单独抽一层（见 <a href="03-权重同步.html">03 章 §3.3</a>）是不同的组织方式。</p>
+<p>⚠️ <strong>注意这里没有「weight sync」这个模块。</strong> 权重同步在 slime 里不是一个平级模块，而是 training 模块的一个动作（<code>actor_model.update_weights()</code>）。这和 veRL 把 <code>checkpoint_engine/</code> 单独抽一层（见 <a href="03-权重同步.html">03 章</a>）是不同的组织方式。</p>
 <p>⚠️ <strong>data buffer 是唯一的数据桥。</strong> ✅ README 原话：<em>"Custom generate functions can wrap this with multi-turn loops, tool calls, environment/sandbox interaction, and verifier-based reward"</em>——不管你的环境多复杂，最后都是往 data buffer 里放样本。<strong>这就是「环境即数据生成」的架构实现。</strong></p>
-<p>✅ 源码里对应的是 <code>slime/rollout/data_source.py</code>（229 行）：</p>
-<div class="codehilite"><pre><span></span><code>class DataSource(abc.ABC)                  # 抽象接口：get_samples / add_samples / save / load / __len__
-    └─ class RolloutDataSource             # 基础实现
-         └─ class RolloutDataSourceWithBuffer   # ★ 带 buffer 的版本
-              ├─ _get_samples_from_buffer()
-              └─ get_buffer_length()
+<p>✅ 源码里对应的是 <code>slime/rollout/data_source.py</code>（229 行），三个类是一条继承链：</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>类名</th>
+<th>关键方法</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>DataSource(abc.ABC)</code></td>
+<td><code>get_samples</code> / <code>add_samples</code> / <code>save</code> / <code>load</code> / <code>__len__</code></td>
+<td>抽象接口</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>RolloutDataSource</code></td>
+<td>继承上面五个</td>
+<td>基础实现，<strong>不带 buffer</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>RolloutDataSourceWithBuffer</code></td>
+<td><code>_get_samples_from_buffer()</code> · <code>get_buffer_length()</code></td>
+<td>★ <strong>带 buffer 的版本</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 类名的继承关系直接对应了 <a href="02-架构主轴-同步到全异步.html">02 章</a> 讲的 buffer 深度：<strong>不带 buffer 的是深度 0，带 buffer 的才有深度。</strong> 深度这个概念在 slime 里不是一个数字参数，而是「你用哪个类」。</p>
+<hr />
+<h2 id="4">4 · ★★★ 一次迭代的完整时序：谁在算、谁在等</h2>
+<p>这是拆解文档最该有、却通常没有的一张图。先看同步档（<code>train.py</code>），再看单步异步档（<code>train_async.py</code>）。</p>
+<h3 id="41">4.1 同步档：训练卡大部分时间在空转</h3>
+<p>分离部署（训练卡和推理卡是两批卡）+ 同步主循环，一次迭代的时间轴：</p>
+<div class="codehilite"><pre><span></span><code>  time ------------------------------------------------------------&gt;
+            0s                        32s          46s   47s
+
+  TRAIN   |..........idle...........|#### train ####|=sync=|
+  ROLLOUT |##### generate N ########|.... idle .....|=sync=|
+
+  legend:  #### = busy     .... = idle     =sync= = weight sync
 </code></pre></div>
 
-<p>⚠️ 类名的继承关系直接对应了 <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 的 buffer 深度：<strong>不带 buffer 的是深度 0，带 buffer 的才有深度。</strong></p>
+<p>每一段对应 <code>train.py</code> 的哪一行：</p>
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>训练卡在干什么</th>
+<th>推理卡在干什么</th>
+<th>源码位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>卡在 <code>ray.get(...)</code> 上<strong>空转</strong></td>
+<td>生成这一轮全部样本</td>
+<td><code>train.py:53</code> <code>rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))</code></td>
+</tr>
+<tr>
+<td>②</td>
+<td>前向 + 反向 + 优化器</td>
+<td><strong>空转</strong>（同置时则被 offload 吐出显存）</td>
+<td><code>train.py:69</code> <code>ray.get(actor_model.async_train(...))</code></td>
+</tr>
+<tr>
+<td>③</td>
+<td>把新权重推给推理引擎</td>
+<td>接收权重、重建 KV cache 池</td>
+<td><code>train.py:85</code> <code>actor_model.update_weights()</code></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>第 53 行那个 <code>ray.get(...)</code> 是整个同步架构的全部秘密</strong>：它在这里等着，直到所有样本生成完。这一等，训练卡就空转了。</p>
+<h3 id="42">4.2 ⚠️ 本文推演：同步档的空转到底有多贵</h3>
+<p>用 <a href="../大模型算子开发/10-RL算子.html">大模型算子开发/10-RL算子.md</a> §10.8.2 那套 8B 模型的分阶段耗时做一次可验算的推演。⚠️ <strong>下面是本文的推算，不是 slime 项目公布的数字</strong>，效率因子全部来自那一节的 ⚠️ 量级估计。</p>
+<p><strong>第 1 步 · 把一次迭代的耗时按「跑在哪批卡上」分成两堆</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>耗时</th>
+<th>跑在哪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rollout（Prefill + Decode 权重读 + KV 读）</td>
+<td>1.06 + 24.5 + 6.8 = <strong>32.4 s</strong></td>
+<td>推理卡</td>
+</tr>
+<tr>
+<td>Reference 前向</td>
+<td><strong>3.71 s</strong></td>
+<td>训练卡</td>
+</tr>
+<tr>
+<td>Re-forward + Backward + AdamW</td>
+<td>13.9 + 0.02 = <strong>13.9 s</strong></td>
+<td>训练卡</td>
+</tr>
+<tr>
+<td>打分（CPU 验证器）</td>
+<td>0.3 s</td>
+<td>CPU</td>
+</tr>
+<tr>
+<td>权重同步</td>
+<td>0.3 s</td>
+<td>两边都参与</td>
+</tr>
+<tr>
+<td><strong>合计</strong></td>
+<td><strong>≈ 50.6 s</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>第 2 步 · 算两批卡各自的忙时</strong>：</p>
+<div class="codehilite"><pre><span></span><code>训练卡忙 = 3.71 + 13.9        = 17.6 s
+推理卡忙 = 32.4               = 32.4 s
+一次迭代总长（同步，串行） = 50.6 s
+</code></pre></div>
+
+<p><strong>第 3 步 · 算利用率</strong>：</p>
+<div class="codehilite"><pre><span></span><code>同步档：
+  训练卡利用率 = 17.6 / 50.6 = 34.8%     &lt;-- 空转 65.2%
+  推理卡利用率 = 32.4 / 50.6 = 64.0%     &lt;-- 空转 36.0%
+</code></pre></div>
+
+<p><strong>第 4 步 · 单步异步档：两边重叠，迭代时间由慢的那一边单独决定</strong>：</p>
+<div class="codehilite"><pre><span></span><code>稳态迭代时间 = max(训练卡忙, 推理卡忙) = max(17.6, 32.4) = 32.4 s
+</code></pre></div>
+
+<p><strong>第 5 步 · 换算成收益</strong>（⚠️ 这里是本目录最容易写错的一处换算）：</p>
+<div class="codehilite"><pre><span></span><code>时间减少比例 = 1 - 32.4 / 50.6 = 36.0%
+加速倍数     = 50.6 / 32.4     = 1.56 倍
+交叉验算     = 1 / (1 - 0.360) = 1.5625  ✓ 对上
+</code></pre></div>
+
+<p>⚠️ <strong>「时间减少 36%」不等于「加速 36%」</strong>，它等于「加速 1.56 倍」。公式是 <code>加速倍数 = 1 / (1 − 时间减少比例)</code>。这条换算在 <a href="附-速查表.html">附-速查表.md</a> 末尾有专门一节。</p>
+<p>⚠️ 这个 1.56 倍是<strong>上界</strong>，三件事会把它吃掉：① rollout 本身的长尾（同一批里最慢的那条决定整批何时结束）；② 权重同步时要排空在飞的生成（见 §6）；③ 离策略带来的样本质量损失——异步省下的时间，有一部分会以「需要更多步才收敛」的形式还回去。</p>
+<h3 id="43">4.3 单步异步档的时序</h3>
+<div class="codehilite"><pre><span></span><code>  time ------------------------------------------------------------&gt;
+            0s                 32s                64s              96s
+
+  TRAIN   |...idle(warmup)...|### train N ###...|### train N+1 ##..|
+  ROLLOUT |#### gen N #######|#### gen N+1 #####|#### gen N+2 #####|
+
+  数据流： gen N 产出 --&gt; train N 消费（晚一拍）
+</code></pre></div>
+
+<p>⚠️ 「晚一拍」就是 buffer 深度 = 1，也就是 <a href="02-架构主轴-同步到全异步.html">02 章</a> 讲的<strong>一步离策略</strong>：训练 N 用的样本，是上一版权重生成的。</p>
 <hr />
-<h2 id="4-99-vs-81">4 · ★★★ 主循环：99 行 vs 81 行</h2>
-<p>这是 slime 最好读的地方，也是本目录里<strong>能把「同步 vs 异步」讲得最清楚的一处源码</strong>。两个主循环几乎一样长，差别集中在两处。</p>
-<h3 id="trainpy99">同步版 <code>train.py</code>（99 行）</h3>
-<p>✅ 关键行：</p>
+<h2 id="5-99-vs-81">5 · ★★★ 两个主循环：99 行 vs 81 行</h2>
+<p>这是 slime 最好读的地方，也是本目录里<strong>能把「同步 vs 异步」讲得最清楚的一处源码</strong>。</p>
+<h3 id="51-trainpy99">5.1 同步版 <code>train.py</code>（99 行）</h3>
+<p>✅ 关键行（commit <code>3778dbf</code>，⚠️ 行号会漂移，按右列的符号名定位）：</p>
 <table>
 <thead>
 <tr>
 <th>行号</th>
-<th>代码</th>
+<th>符号</th>
 <th>对应什么</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>14</td>
-<td><code>pgs = create_placement_groups(args)</code></td>
+<td><code>create_placement_groups(args)</code></td>
 <td>分配 GPU</td>
 </tr>
 <tr>
 <td>19</td>
-<td><code>rollout_manager, num_rollout_per_epoch = create_rollout_manager(...)</code></td>
+<td><code>create_rollout_manager(...)</code></td>
 <td>建 rollout 管理器（内含 SGLang 引擎）</td>
 </tr>
 <tr>
 <td>21</td>
-<td><code>actor_model, critic_model = create_training_models(...)</code></td>
-<td>建训练模型</td>
+<td><code>create_training_models(...)</code></td>
+<td>建训练模型（actor + 可选 critic）</td>
 </tr>
 <tr>
 <td>27</td>
@@ -416,17 +666,17 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 </tr>
 <tr>
 <td><strong>49</strong></td>
-<td><code>for rollout_id in range(args.start_rollout_id, args.num_rollout):</code></td>
+<td><code>for rollout_id in range(...)</code></td>
 <td><strong>主循环</strong></td>
 </tr>
 <tr>
 <td><strong>53</strong></td>
-<td><code>rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))</code></td>
+<td><code>ray.get(rollout_manager.generate.remote(...))</code></td>
 <td>★ <strong>阻塞式生成</strong></td>
 </tr>
 <tr>
 <td>69</td>
-<td><code>ray.get(actor_model.async_train(rollout_id, rollout_data_ref))</code></td>
+<td><code>ray.get(actor_model.async_train(...))</code></td>
 <td>训练</td>
 </tr>
 <tr>
@@ -436,21 +686,20 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 </tr>
 </tbody>
 </table>
-<p>⚠️ 第 53 行的 <code>ray.get(...)</code> 是整个同步架构的全部秘密：<strong>它在这里等着，直到所有样本生成完。</strong> 这一等，训练卡就空转了。</p>
-<h3 id="train_asyncpy81">异步版 <code>train_async.py</code>（81 行）</h3>
-<p>✅ 差别只有三处，但每一处都对应本目录的一个概念：</p>
-<p><strong>差别一 · L11：异步必须分离部署</strong></p>
+<h3 id="52-train_asyncpy81">5.2 异步版 <code>train_async.py</code>（81 行）：三处改动</h3>
+<p><strong>改动一 · L11：异步必须分离部署</strong></p>
 <div class="codehilite"><pre><span></span><code><span class="k">assert</span> <span class="ow">not</span> <span class="n">args</span><span class="o">.</span><span class="n">colocate</span><span class="p">,</span> <span class="s2">&quot;Colocation is not supported for async training.&quot;</span>
 </code></pre></div>
 
 <p>⚠️ 一行断言，把 <a href="02-架构主轴-同步到全异步.html">02 章</a> 那条「同置 vs 分离」的选择变成了硬约束：<strong>要异步，就必须分开放。</strong></p>
-<p><strong>差别二 · L32 / L36 / L40：一步离策略的教科书实现</strong></p>
+<p><strong>改动二 · L32 / L35-36 / L39-40：一步离策略的教科书实现</strong></p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># L32  循环【开始之前】就先发出第一次生成请求（不 ray.get，拿的是 future）</span>
 <span class="n">rollout_data_next_future</span> <span class="o">=</span> <span class="n">rollout_manager</span><span class="o">.</span><span class="n">generate</span><span class="o">.</span><span class="n">remote</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">start_rollout_id</span><span class="p">)</span>
 
 <span class="k">for</span> <span class="n">rollout_id</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">start_rollout_id</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">num_rollout</span><span class="p">):</span>
-    <span class="c1"># L36  等上一次的生成结果</span>
-    <span class="n">rollout_data_curr_ref</span> <span class="o">=</span> <span class="n">ray</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">rollout_data_next_future</span><span class="p">)</span>
+    <span class="c1"># L35-36  等上一次的生成结果</span>
+    <span class="k">if</span> <span class="n">rollout_data_next_future</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">rollout_data_curr_ref</span> <span class="o">=</span> <span class="n">ray</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">rollout_data_next_future</span><span class="p">)</span>
 
     <span class="c1"># L39-40  ★ 立刻发出【下一次】生成请求，然后才去训练</span>
     <span class="k">if</span> <span class="n">rollout_id</span> <span class="o">+</span> <span class="mi">1</span> <span class="o">&lt;</span> <span class="n">args</span><span class="o">.</span><span class="n">num_rollout</span><span class="p">:</span>
@@ -459,9 +708,8 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
     <span class="c1"># ... 训练当前这批（此时下一批正在生成）</span>
 </code></pre></div>
 
-<p>⚠️ <strong>这就是 <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 的「buffer 深度 = 1」，用 8 行代码实现。</strong><br />
-<code>next_future</code> 这个变量名本身就是那个深度为 1 的缓冲区。同步版是「生成 → 训练 → 生成 → 训练」，异步版是「生成 N+1 ‖ 训练 N」。</p>
-<p><strong>差别三 · L66-70：权重同步频率是个参数</strong></p>
+<p>⚠️ <strong>这就是 §4.3 那张图的 8 行实现。</strong> <code>next_future</code> 这个变量名本身就是那个深度为 1 的缓冲区。</p>
+<p><strong>改动三 · L66-70：权重同步频率是个参数</strong></p>
 <div class="codehilite"><pre><span></span><code><span class="k">if</span> <span class="n">release_train</span> <span class="ow">or</span> <span class="p">(</span><span class="n">rollout_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">%</span> <span class="n">args</span><span class="o">.</span><span class="n">update_weights_interval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
     <span class="c1"># sync generate before update weights to prevent update weight in the middle of generation</span>
     <span class="n">rollout_data_curr_ref</span> <span class="o">=</span> <span class="n">ray</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">if</span> <span class="p">(</span><span class="n">x</span> <span class="o">:=</span> <span class="n">rollout_data_next_future</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
@@ -469,24 +717,158 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
     <span class="n">actor_model</span><span class="o">.</span><span class="n">update_weights</span><span class="p">()</span>
 </code></pre></div>
 
-<p>★ 这五行同时印证了两个前面章节的结论：</p>
+<p>★ 这五行同时印证了两件事：</p>
 <ol>
-<li>
-<p><strong><code>args.update_weights_interval</code></strong> = ✅ GLM-5 报告里那句 <em>"pushes the new weights back to the inference engine </em><em>every K gradient updates</em><em>"</em>（见 <a href="02-架构主轴-同步到全异步.html">02 章 §2.4</a>）。<strong>报告里的 K，在源码里就是这个参数。</strong></p>
-</li>
-<li>
-<p><strong>那行注释</strong> —— <em>"sync generate before update weights to prevent update weight in the middle of generation"</em>（换权重前先把生成同步掉，避免在生成中途换权重）——正是 <a href="03-权重同步.html">03 章 §3.5</a> 中断模型的<strong>第 3 档「软暂停 / 排空」</strong>。slime 选的不是「永不停」，而是排空后再换。</p>
-</li>
+<li><strong><code>args.update_weights_interval</code></strong>（定义在 <code>slime/utils/arguments.py:547</code>）= ✅ GLM-5 报告里那句 <em>"pushes the new weights back to the inference engine </em><em>every K gradient updates</em><em>"</em>（见 <a href="02-架构主轴-同步到全异步.html">02 章</a>）。<strong>报告里的 K，在源码里就是这个参数。</strong></li>
+<li><strong>那行注释</strong> —— <em>"sync generate before update weights to prevent update weight in the middle of generation"</em>（换权重前先把生成同步掉，避免在生成中途换权重）——说明 slime 选的<strong>不是「永不停」，而是排空后再换</strong>，对应 <a href="03-权重同步.html">03 章</a> 中断模型里「软暂停 / 排空」那一档。</li>
 </ol>
-<p>⚠️ 把三处差别合起来看：<strong>从同步走到一步离策略，slime 只改了 18 行代码。</strong> 这和 <a href="02-架构主轴-同步到全异步.html">02 章 §2.3</a> 那个观察（veRL <code>one_step_off_policy/</code> 只有 553 行，<code>fully_async_policy/</code> 却有 4,335 行）说的是同一件事——<strong>这一档的性价比极高。</strong></p>
-<p>✅ 而 L9 的注释指出真正的全异步在别处：</p>
+<h3 id="53-18">5.3 ⚠️ 一处要纠正的说法：异步版不是「在同步版上改了 18 行」</h3>
+<p>本文早先的版本写过「从同步走到一步离策略，slime 只改了 18 行代码」。✅ 逐行对读两个文件后，这个说法<strong>不准确</strong>，真实情况是：</p>
+<table>
+<thead>
+<tr>
+<th>变化</th>
+<th>内容</th>
+<th>行数量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>加</strong></td>
+<td>L11 断言 + L32/35-36/39-40 的 future 调度</td>
+<td>约 +8 行</td>
+</tr>
+<tr>
+<td><strong>改</strong></td>
+<td>L66-70 的权重同步条件（从「每步」改成「每 K 步，且先排空」）</td>
+<td>约 5 行</td>
+</tr>
+<tr>
+<td><strong>删</strong></td>
+<td><strong>整套 offload / onload 机制</strong>：<code>train.py</code> 的 L23-24、L32-33、L39-46 的 <code>offload_train()</code>、L55-56、L82-84、L87-88</td>
+<td>约 −25 行</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>异步版更短，不是因为它更简单，而是因为 L11 那条断言禁掉了同置——不同置就不需要显存换入换出，<code>offload</code> / <code>onload_weights</code> / <code>onload_kv</code> 那一整块直接消失了。</strong></p>
+<p>⚠️ 这个修正反而让结论更强：<a href="02-架构主轴-同步到全异步.html">02 章</a> 观察到的「veRL 的 <code>one_step_off_policy/</code> 只有 553 行，<code>fully_async_policy/</code> 却有 4,335 行」说的是同一件事——<strong>从同步走到一步离策略，代价极小；真正的复杂度出现在再往下一档。</strong></p>
+<p>✅ 而 <code>train_async.py</code> L9 的注释明确指出真正的全异步在别处：</p>
 <div class="codehilite"><pre><span></span><code><span class="c1"># The framework supports other asynchronous approaches such as fully async</span>
 <span class="c1"># (which is shown in examples/full_async).</span>
 </code></pre></div>
 
 <p>✅ 对应 <code>slime/rollout/fully_async_rollout.py</code>（274 行）和 <code>examples/fully_async/</code>。</p>
 <hr />
-<h2 id="5-ray-1228">5 · Ray 编排层：1,228 行</h2>
+<h2 id="6">6 · ★★★ 权重同步：四条通路，两个参数决定走哪条</h2>
+<p><a href="03-权重同步.html">03 章</a> 讲了权重同步的各种做法。slime 把它们收在一个目录里：<code>slime/backends/megatron_utils/update_weight/</code>（2,093 行，8 个文件）。</p>
+<h3 id="61">6.1 选择逻辑写在一个工厂函数里</h3>
+<p>✅ <code>update_weight/__init__.py</code> 的 <code>create_weight_updater()</code>，整个选择逻辑只看两个参数：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>取值</th>
+<th>定义在</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--update-weight-mode</code></td>
+<td><code>full</code>（默认）/ <code>delta</code></td>
+<td><code>slime/utils/arguments.py:134</code></td>
+</tr>
+<tr>
+<td><code>--update-weight-transport</code></td>
+<td><code>nccl</code>（默认）/ <code>disk</code></td>
+<td><code>slime/utils/arguments.py:144</code></td>
+</tr>
+</tbody>
+</table>
+<p>组合结果（⚠️ <code>--colocate</code> 会抢在前面覆盖 transport 的选择）：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>选中的类</th>
+<th>数据实际怎么走</th>
+<th>适合什么场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--colocate</code></td>
+<td><code>UpdateWeightFromTensor</code>（432 行）</td>
+<td>GPU→CPU 序列化 → Gloo gather → <strong>Ray IPC 句柄</strong>交给同一张卡上的 SGLang 引擎</td>
+<td>卡少、同置、单机</td>
+</tr>
+<tr>
+<td>默认（分离 + <code>nccl</code> + <code>full</code>）</td>
+<td><code>UpdateWeightFromDistributed</code>（373 行）</td>
+<td>按 PP rank 建进程组 <code>slime-pp_{pp_rank}</code>，只有 <code>DP=0 且 TP=0</code> 的 rank 负责发，<strong>NCCL 分块广播</strong></td>
+<td>分离部署的标准路径</td>
+</tr>
+<tr>
+<td><code>transport=disk</code> + <code>mode=full</code></td>
+<td><code>UpdateWeightFromDisk</code>（95 行）</td>
+<td>写一份<strong>完整的 HF 格式 checkpoint</strong>，引擎自己 reload</td>
+<td>跨集群、推理池弹性扩缩容</td>
+</tr>
+<tr>
+<td><code>mode=delta</code>（<strong>只能配 disk</strong>）</td>
+<td><code>UpdateWeightFromDiskDelta</code>（304 行）</td>
+<td>和上一次的 pinned-CPU 快照<strong>做差</strong>，只发变化的字节</td>
+<td>大模型、慢网络</td>
+</tr>
+</tbody>
+</table>
+<p>✅ 三条硬约束直接写成了断言（<code>update_weight/__init__.py</code> 与 <code>slime/utils/arguments.py:2059-2075</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># delta 模式只能走 disk</span>
+<span class="k">assert</span> <span class="n">update_weight_transport</span> <span class="o">==</span> <span class="s2">&quot;disk&quot;</span><span class="p">,</span> <span class="s2">&quot;--update-weight-mode=delta requires --update-weight-transport=disk&quot;</span>
+<span class="c1"># delta 模式不能和同置一起用</span>
+<span class="k">assert</span> <span class="ow">not</span> <span class="n">args</span><span class="o">.</span><span class="n">colocate</span><span class="p">,</span> <span class="s2">&quot;--update-weight-mode=delta is not supported with --colocate&quot;</span>
+<span class="c1"># 非 disk、非同置的情况下，full 模式只支持 nccl</span>
+<span class="k">assert</span> <span class="n">update_weight_transport</span> <span class="o">==</span> <span class="s2">&quot;nccl&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;unsupported weight sync mode/transport: ...&quot;</span>
+</code></pre></div>
+
+<p>⚠️ <strong>「Delta Weight Sync」在 <a href="附-速查表.html">附-速查表.md</a> 里被列为 slime 的专有名词，这里是它的源码落点。</strong> 注意它有个反直觉的限制：<strong>增量同步只能走磁盘，不能走 NCCL。</strong> 原因在 <code>__init__.py</code> 的注释里写着——delta 的落地方式是「每台主机把发布出来的 delta 应用进本机的 checkpoint，引擎再走普通的 <code>update_weights_from_disk</code> 重载」，这条路径天然是文件语义，不是集合通信语义。</p>
+<h3 id="62-nccl-all-gather-broadcast">6.2 NCCL 路径的两跳：先 all-gather，再 broadcast</h3>
+<p>✅ <code>update_weight_from_distributed.py</code> 的 <code>connect_rollout_engines()</code> 里有一段注释把 TP 情形说得很清楚：</p>
+<div class="codehilite"><pre><span></span><code>For TP:
+  1. AllGather parameters to rank 0
+  2. Broadcast parameters from rank 0 to all sglang engines
+</code></pre></div>
+
+<p>⚠️ 这两跳就是 <a href="03-权重同步.html">03 章</a> 讲的 <strong>resharding</strong>（重切分）的实现：训练侧的张量是按 Megatron 的 TP 切开的，推理侧的切法不一样，所以必须先在训练侧把一个完整参数拼回来（AllGather），再广播出去。<strong>只有 <code>DP=0 且 TP=0</code> 的 rank 参与发送</strong>，其余 rank 不占网络——这是个很实在的优化，否则 DP 组里每个副本都发一遍，流量翻 DP 倍。</p>
+<h3 id="63-slime">6.3 要不要停推理：slime 的答案是「停，但先排空」</h3>
+<table>
+<thead>
+<tr>
+<th>档位</th>
+<th>做法</th>
+<th>slime 选哪个</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 永不停</td>
+<td>边生成边换权重，一条轨迹可能横跨两个版本</td>
+<td>✗</td>
+</tr>
+<tr>
+<td>② 硬打断</td>
+<td>立即中止在飞的生成，丢掉或存起来</td>
+<td>✗</td>
+</tr>
+<tr>
+<td>③ <strong>软暂停 / 排空</strong></td>
+<td><strong>先把在飞的生成同步掉，再换权重</strong></td>
+<td>✅ <code>train_async.py:67</code> 注释</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 代价很直白：排空期间推理卡在收尾、训练卡在等，两边都不满负荷。<strong>这就是 §4.2 推演里那个 1.56 倍上界被吃掉的第二个来源。</strong></p>
+<hr />
+<h2 id="7-ray-1228">7 · Ray 编排层：1,228 行</h2>
 <p>✅ <code>slime/ray/</code> 只有 7 个文件：</p>
 <table>
 <thead>
@@ -534,61 +916,62 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 <thead>
 <tr>
 <th>方法组</th>
-<th>方法</th>
+<th>方法（行号）</th>
 <th>说明</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>主流程</td>
-<td><code>generate</code> (L163) · <code>eval</code> (L184)</td>
+<td><code>generate</code> (163) · <code>eval</code> (184)</td>
 <td>生成与评测</td>
 </tr>
 <tr>
+<td>数据持久化</td>
+<td><code>save</code> (201) · <code>load</code> (204)</td>
+<td>断点续训</td>
+</tr>
+<tr>
 <td><strong>显存管理</strong></td>
-<td><code>offload</code> (L207) · <code>onload</code> (L212) · <strong><code>onload_weights</code></strong> (L216) · <strong><code>onload_kv</code></strong> (L220)</td>
+<td><code>offload</code> (207) · <code>onload</code> (212) · <strong><code>onload_weights</code></strong> (216) · <strong><code>onload_kv</code></strong> (220)</td>
 <td>★ 权重和 KV cache <strong>分开</strong>换入换出</td>
 </tr>
 <tr>
 <td>权重</td>
-<td><code>check_weights</code> (L251)</td>
+<td><code>check_weights</code> (251)</td>
 <td>校验训推权重一致</td>
 </tr>
 <tr>
 <td><strong>容错</strong></td>
-<td><code>recover_updatable_engines</code> (L224) · <code>health_monitoring_pause</code> (L243) · <code>health_monitoring_resume</code> (L247)</td>
+<td><code>recover_updatable_engines</code> (224) · <code>health_monitoring_pause</code> (243) · <code>health_monitoring_resume</code> (247)</td>
 <td>★ 对应 ✅ GLM-5 的「心跳驱动容错」</td>
 </tr>
 <tr>
 <td>数据加工</td>
-<td><code>_post_process_rewards</code> (L279) · <code>_convert_samples_to_train_data</code> (L306)</td>
+<td><code>_post_process_rewards</code> (279) · <code>_convert_samples_to_train_data</code> (306)</td>
 <td>样本 → 训练数据</td>
 </tr>
 <tr>
 <td>并行适配</td>
-<td><code>set_train_parallel_config</code> (L425) · <code>_split_train_data_by_dp</code> (L428)</td>
+<td><code>set_train_parallel_config</code> (425) · <code>_split_train_data_by_dp</code> (428)</td>
 <td>按训练侧 DP 切数据</td>
 </tr>
 </tbody>
 </table>
 <p>⚠️ 两处值得单独记：</p>
 <ol>
-<li>
-<p><strong><code>onload_weights</code> 和 <code>onload_kv</code> 是分开的两个方法。</strong> 同置模式下，训练要用显存时，推理引擎必须把权重和 KV cache 都吐出来；但恢复时<strong>先恢复权重、再恢复 KV</strong>——因为权重恢复完就能开始接请求了，KV 可以慢慢来。✅ <code>train.py</code> L84 和 L88 正是分两次调用的。这是个很细但很实在的优化。</p>
-</li>
-<li>
-<p><strong><code>health_monitoring_pause/resume</code></strong> 对应 ✅ GLM-5 §3.6.3 的 <em>"heartbeat-driven rollout fault tolerance and router-level server lifecycle management"</em>——<strong>报告里的容错机制，在源码里能找到对应的方法名。</strong></p>
-</li>
+<li><strong><code>onload_weights</code> 和 <code>onload_kv</code> 是分开的两个方法。</strong> 同置模式下，训练要用显存时，推理引擎必须把权重和 KV cache 都吐出来；但恢复时<strong>先恢复权重、再恢复 KV</strong>——因为权重恢复完就能开始接请求了，KV 可以慢慢来。✅ <code>train.py:84</code> 和 <code>train.py:88</code> 正是分两次调用的，中间夹着 <code>actor_model.update_weights()</code>（L85）。<strong>顺序是：onload 权重 → 推新权重 → onload KV。</strong> 这是个很细但很实在的优化。</li>
+<li><strong><code>health_monitoring_pause</code> / <code>health_monitoring_resume</code></strong> 对应 ✅ GLM-5 技术报告里的 <em>"heartbeat-driven rollout fault tolerance and router-level server lifecycle management"</em>——<strong>报告里描述的容错机制，在源码里能找到同名的方法。</strong> ⚠️ 注意这是「名字对得上」级别的互证，不是「我验证了它的行为」。</li>
 </ol>
 <hr />
-<h2 id="6-rollout-slime">6 · rollout 层：一个目录读懂 slime 支持什么</h2>
+<h2 id="8-rollout-slime">8 · rollout 层：一个目录读懂 slime 支持什么</h2>
 <p>✅ <code>slime/rollout/</code>（21 文件 / 3,015 行），文件名几乎就是功能清单：</p>
 <table>
 <thead>
 <tr>
 <th>文件</th>
 <th>行数</th>
-<th>对应本目录哪一章</th>
+<th>干什么</th>
 </tr>
 </thead>
 <tbody>
@@ -600,12 +983,12 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 <tr>
 <td><code>fully_async_rollout.py</code></td>
 <td><strong>274</strong></td>
-<td><a href="02-架构主轴-同步到全异步.html">02 章</a> 全异步</td>
+<td>全异步（见 <a href="02-架构主轴-同步到全异步.html">02 章</a>）</td>
 </tr>
 <tr>
 <td><code>data_source.py</code></td>
 <td>229</td>
-<td><a href="02-架构主轴-同步到全异步.html">02 章</a> data buffer</td>
+<td>data buffer（见 §3）</td>
 </tr>
 <tr>
 <td><code>sglang_streaming_rollout.py</code></td>
@@ -618,14 +1001,14 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 <td>负载调度</td>
 </tr>
 <tr>
-<td><code>on_policy_distillation.py</code></td>
-<td><strong>67</strong></td>
-<td><a href="05-算法与框架的接口.html">05 章 §5.6</a> OPD</td>
-</tr>
-<tr>
 <td><code>sft_rollout.py</code></td>
 <td>68</td>
 <td>SFT 混训</td>
+</tr>
+<tr>
+<td><code>on_policy_distillation.py</code></td>
+<td><strong>67</strong></td>
+<td>在策略蒸馏（见 <a href="05-算法与框架的接口.html">05 章</a>）</td>
 </tr>
 <tr>
 <td><code>sample_hooks.py</code></td>
@@ -644,58 +1027,244 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 </tr>
 </tbody>
 </table>
-<p>⚠️ <strong><code>on_policy_distillation.py</code> 只有 67 行</strong>，这是 <a href="05-算法与框架的接口.html">05 章 §5.6</a> 那个结论的最硬证据：<strong>在策略蒸馏就是把奖励换成教师概率，其他一切照旧。</strong> 复用了整套 rollout、buffer、权重同步，所以只需要 67 行。</p>
-<p>⚠️ <code>filter_hub/</code> 的存在对应 <a href="05-算法与框架的接口.html">05 章 §5.5</a> 讲的动态过滤，也对应 ✅ GLM-5 那条「按失败原因排除环境崩溃样本」（<a href="06-AgenticRL-环境与沙箱.html">06 章 §6.3</a>）。</p>
+<p>⚠️ <strong><code>on_policy_distillation.py</code> 只有 67 行</strong>，这是 <a href="05-算法与框架的接口.html">05 章</a> 那个结论的最硬证据：<strong>在策略蒸馏（OPD）就是把奖励换成教师概率，其他一切照旧。</strong> 复用了整套 rollout、buffer、权重同步，所以只需要 67 行。</p>
+<p>✅ 而且在 commit <code>3778dbf</code> 这一版里，OPD 已经被做成<strong>和优势估计器正交</strong>的一个开关——<code>slime/utils/arguments.py:952</code> 那个 <code>--advantage-estimator</code> 的 help 原话是：<em>"on-policy distillation (OPD) is now orthogonal to the advantage estimator. Use <code>--opd-kl-coef &gt; 0</code> to enable OPD on top of any estimator."</em> <strong>也就是说 OPD 可以叠在 GRPO / GSPO / CISPO 任意一个上面。</strong></p>
+<p>⚠️ <code>filter_hub/</code> 的存在对应 <a href="05-算法与框架的接口.html">05 章</a> 讲的动态过滤，也对应 ✅ GLM-5 那条「按失败原因排除环境崩溃样本」（<a href="06-AgenticRL-环境与沙箱.html">06 章</a>）。</p>
 <hr />
-<h2 id="7-agent-cli">7 · agent 层：把真实 CLI 拉进训练</h2>
-<p>这一块在 <a href="06-AgenticRL-环境与沙箱.html">06 章 §6.4</a> 已经详细讲过，这里只放结构：</p>
-<div class="codehilite"><pre><span></span><code>slime/agent/  (13 文件 / 2,727 行)
-├── trajectory.py        508    轨迹
-├── sandbox.py           399    沙箱抽象（&quot;intentionally small&quot; 的接口）
-├── parsing.py           114
-├── aiohttp_threaded.py   98
-├── adapters/                   按 API 协议适配
-│   ├── common.py        523
-│   ├── openai.py        378
-│   └── anthropic.py     350
-└── harness/                    ★ 按真实 agent CLI 适配
-    ├── common.py        178
-    ├── claude_code.py    86    ★ Claude Code
-    └── codex.py          71    ★ Codex
+<h2 id="9-agent-cli">9 · agent 层：沙箱和真实 CLI 怎么接进来</h2>
+<p>这一块在 <a href="06-AgenticRL-环境与沙箱.html">06 章</a> 已经详细讲过，这里只放结构。<code>slime/agent/</code>：13 文件 / 2,727 行。</p>
+<div class="codehilite"><pre><span></span><code>slime/agent/
+├── trajectory.py
+├── sandbox.py
+├── parsing.py
+├── aiohttp_threaded.py
+├── adapters/
+│   ├── common.py
+│   ├── openai.py
+│   └── anthropic.py
+└── harness/
+    ├── common.py
+    ├── claude_code.py
+    └── codex.py
 </code></pre></div>
 
-<p>⚠️ <strong><code>adapters/</code> 和 <code>harness/</code> 是两层不同的抽象</strong>，这个区分很关键：<br />
-- <code>adapters/</code> 解决「模型怎么被调用」——OpenAI 协议还是 Anthropic 协议<br />
-- <code>harness/</code> 解决「agent 程序怎么被跑起来」——装 Node、装 npm 包、拼命令行参数</p>
-<p><strong>一个 agent CLI 可以走任意一种 API 协议，所以这两层必须分开。</strong></p>
+<p>行数和职责（标注写在图外，避免对齐问题）：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>trajectory.py</code></td>
+<td>508</td>
+<td>轨迹数据结构</td>
+</tr>
+<tr>
+<td><code>sandbox.py</code></td>
+<td>399</td>
+<td>沙箱抽象（README 自称 <em>"intentionally small"</em> 的接口）</td>
+</tr>
+<tr>
+<td><code>parsing.py</code></td>
+<td>114</td>
+<td>输出解析</td>
+</tr>
+<tr>
+<td><code>aiohttp_threaded.py</code></td>
+<td>98</td>
+<td>异步 HTTP 客户端</td>
+</tr>
+<tr>
+<td><code>adapters/common.py</code></td>
+<td>523</td>
+<td>协议适配公共部分</td>
+</tr>
+<tr>
+<td><code>adapters/openai.py</code></td>
+<td>378</td>
+<td>OpenAI 协议</td>
+</tr>
+<tr>
+<td><code>adapters/anthropic.py</code></td>
+<td>350</td>
+<td>Anthropic 协议</td>
+</tr>
+<tr>
+<td><code>harness/common.py</code></td>
+<td>178</td>
+<td>CLI 拉起的公共部分</td>
+</tr>
+<tr>
+<td><code>harness/claude_code.py</code></td>
+<td><strong>86</strong></td>
+<td>★ Claude Code</td>
+</tr>
+<tr>
+<td><code>harness/codex.py</code></td>
+<td><strong>71</strong></td>
+<td>★ Codex</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong><code>adapters/</code> 和 <code>harness/</code> 是两层不同的抽象</strong>，这个区分很关键：</p>
+<ul>
+<li><code>adapters/</code> 解决「<strong>模型</strong>怎么被调用」——走 OpenAI 协议还是 Anthropic 协议</li>
+<li><code>harness/</code> 解决「<strong>agent 程序</strong>怎么被跑起来」——装 Node、装 npm 包、拼命令行参数</li>
+</ul>
+<p><strong>一个 agent CLI 可以走任意一种 API 协议，所以这两层必须分开。</strong> 也正因为分开了，接一个新的 agent CLI 只要写几十行（<code>claude_code.py</code> 86 行、<code>codex.py</code> 71 行）。</p>
+<p>⚠️ 回到 §2.3 那条原则：这一整个目录都挂在 <strong>rollout 侧</strong>，训练内核一行都没动。这就是 <em>"They do not fork the training kernel"</em> 的实际样子。</p>
 <hr />
-<h2 id="8-miles-slime">8 · ✅ 生态：MILES 其实建在 slime 上</h2>
+<h2 id="10">10 · ★★ 加一个新算法，要动哪些文件</h2>
+<p>这是选框架时最该问、却最少被回答的问题。slime 的答案分三档。</p>
+<h3 id="101">10.1 内置了哪些</h3>
+<p>✅ <code>slime/utils/arguments.py:952</code> 的 <code>--advantage-estimator</code>，choices 写死了 6 个：</p>
+<table>
+<thead>
+<tr>
+<th>取值</th>
+<th>中文</th>
+<th>要不要 critic</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>grpo</code>（默认）</td>
+<td>分组相对策略优化</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>gspo</code></td>
+<td>分组序列策略优化</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>cispo</code></td>
+<td>裁剪重要性采样策略优化</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>reinforce_plus_plus</code></td>
+<td>REINFORCE++</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>reinforce_plus_plus_baseline</code></td>
+<td>REINFORCE++ 带基线</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>ppo</code></td>
+<td>近端策略优化</td>
+<td><strong>是</strong></td>
+</tr>
+</tbody>
+</table>
+<p>✅ 这个「要不要 critic」不用你自己记——<code>arguments.py:1913</code> 一行就推出来了：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">args</span><span class="o">.</span><span class="n">use_critic</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">advantage_estimator</span> <span class="o">==</span> <span class="s2">&quot;ppo&quot;</span>
+</code></pre></div>
+
+<p>⚠️ <strong>六选一里只有 PPO 需要 critic。</strong> 对照 <a href="05-算法与框架的接口.html">05 章</a> 讲的「去 critic 潮流」：这一行代码就是那个潮流的结果——critic 从「默认配置」退成了「一个取值的特例」。</p>
+<h3 id="102">10.2 三档改动量</h3>
+<table>
+<thead>
+<tr>
+<th>你要加什么</th>
+<th>要动的文件</th>
+<th>量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一个新的优势估计器</strong></td>
+<td>① <code>slime/utils/arguments.py</code> 的 choices 列表加一项；② <code>slime/utils/ppo_utils.py</code> 加对应的 <code>get_xxx_advantages()</code> 函数</td>
+<td><strong>2 个文件</strong></td>
+</tr>
+<tr>
+<td><strong>一个新的策略损失</strong></td>
+<td><code>slime/backends/megatron_utils/loss.py</code>：<code>policy_loss_function()</code>（L933）里加分支，<code>loss_function()</code>（L1282）的 <code>match args.loss_type</code> 分发（L1326）里挂上</td>
+<td><strong>1 个文件</strong></td>
+</tr>
+<tr>
+<td><strong>一个完全自定义的 loss</strong></td>
+<td>⭐ <strong>不用改仓库</strong>：<code>--loss-type custom_loss</code> + <code>--custom-loss-function-path &lt;你的函数路径&gt;</code>（<code>arguments.py:926</code> 和 <code>:936</code>）</td>
+<td><strong>0 个文件</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 第三档那个逃生口很值得注意：<strong>slime 给算法研究者留了一条「不 fork 仓库也能换损失函数」的路</strong>。这和 §2 那条「拒绝抽象」的哲学是一致的——不替你设计一套算法注册体系，而是给一个函数路径参数让你自己挂。</p>
+<p>⚠️ <strong>对照 veRL</strong>：veRL 有 14 个优势估计器 + 12 个策略损失的注册表（见 <a href="05-算法与框架的接口.html">05 章</a>）。<strong>slime 的 6 个不是「能力不足」，是「研究者自己挂」的另一种设计选择。</strong></p>
+<hr />
+<h2 id="11-miles-slime">11 · ✅ 生态：MILES 其实建在 slime 上</h2>
 <p>✅ slime README 有一节 <em>"Ecosystem Built on slime"</em>，列了 11 个下游项目：</p>
 <p>Dressage · <strong>Miles</strong> · vime · Relax · OpenClaw-RL · P1 · RLVE · TritonForge · APRIL · qqr · ART(AWS)</p>
 <p>⚠️ <strong>这里有一个需要修正 <a href="01-格局全景.html">01 章</a> 那张开源总表的地方</strong>：🌐 HF 横评把 <strong>MILES</strong> 列为一个独立的库（radixark 出品，~950 star），✅ 而 slime 的 README 把它列在「建立在 slime 之上的生态」里。</p>
-<p><strong>所以「16 个独立框架」这个数字是偏高的</strong>——其中至少有一个是另一个的下游。⚠️ 我的判断：真正的<strong>架构谱系</strong>远少于框架数量，很多「新框架」是在某个基座上换了调度策略或加了环境层。选型时应该先问「它的基座是什么」，而不是把它们当成 18 个平行的选项。</p>
-<p>（这条是本次源码走查带来的、单看联网材料看不出来的发现。）</p>
+<p><strong>所以「16 个独立框架」这个数字是偏高的</strong>——其中至少有一个是另一个的下游。</p>
+<p>⚠️ <strong>这里要分清两件事</strong>：<em>"Ecosystem Built on slime"</em> 这个标题是 ✅ slime README 的原文；而由此推出的「架构谱系远少于框架数量」是 ⚠️ <strong>本文的判断，不是 slime 项目或任何论文的结论</strong>。我的判断是：很多「新框架」是在某个基座上换了调度策略或加了环境层，选型时应该先问「<strong>它的基座是什么</strong>」，而不是把它们当成 16 个平行的选项。</p>
+<p>（这条是本次源码走查带来的、单看联网材料看不出来的发现。MILES 相对 slime 具体加了什么，见 <a href="MILES拆解.html">MILES拆解.md</a>。）</p>
 <hr />
-<h2 id="9">9 · 怎么读这份源码</h2>
+<h2 id="12">12 · 怎么读这份源码</h2>
 <p>✅ slime README 自己给了一条阅读路径，实测和源码结构对得上：</p>
-<div class="codehilite"><pre><span></span><code>train.py: train
-├─ slime/ray/placement_group.py        Ray 资源与 worker 初始化
-├─ slime/ray/rollout.py                RolloutManager.generate：rollout 编排
-│  └─ slime/rollout/sglang_rollout.py    样本生成与奖励计算
-└─ slime/ray/actor_group.py            RayTrainGroup.async_train：训练分发
-   └─ slime/backends/megatron_utils/actor.py
-      ├─ model.py                      Megatron 模型执行
-      └─ loss.py                       RL 损失与优势
+<div class="codehilite"><pre><span></span><code>train.py : train()
+├── slime/ray/placement_group.py
+├── slime/ray/rollout.py
+│   └── slime/rollout/sglang_rollout.py
+└── slime/ray/actor_group.py
+    └── slime/backends/megatron_utils/actor.py
+        ├── model.py
+        └── loss.py
 </code></pre></div>
 
-<p>✅ 并给了两条「可以先跳过」的建议：<code>slime/backends/sglang_utils/</code> 的部署细节和 <code>update_weight/</code> 的权重同步实现，等要改那块时再看。</p>
+<p>每一层在干什么：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>这一层负责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>slime/ray/placement_group.py</code></td>
+<td>Ray 资源与 worker 初始化</td>
+</tr>
+<tr>
+<td><code>slime/ray/rollout.py</code></td>
+<td><code>RolloutManager.generate</code>：rollout 编排</td>
+</tr>
+<tr>
+<td><code>slime/rollout/sglang_rollout.py</code></td>
+<td>样本生成与奖励计算</td>
+</tr>
+<tr>
+<td><code>slime/ray/actor_group.py</code></td>
+<td><code>RayTrainGroup.async_train</code>：训练分发</td>
+</tr>
+<tr>
+<td><code>slime/backends/megatron_utils/actor.py</code></td>
+<td>训练侧主体</td>
+</tr>
+<tr>
+<td><code>.../model.py</code></td>
+<td>Megatron 模型执行</td>
+</tr>
+<tr>
+<td><code>.../loss.py</code></td>
+<td>RL 损失与优势</td>
+</tr>
+</tbody>
+</table>
+<p>✅ README 并给了两条「可以先跳过」的建议：<code>slime/backends/sglang_utils/</code> 的部署细节和 <code>update_weight/</code> 的权重同步实现，等要改那块时再看。</p>
 <p>⚠️ 我的补充建议——<strong>如果你的目的是理解本目录讲的概念，最高效的读法是只读两个文件</strong>：</p>
 <div class="codehilite"><pre><span></span><code>train.py (99 行) + train_async.py (81 行)  =  180 行
 </code></pre></div>
 
-<p><strong>这 180 行里包含了：同置 vs 分离、buffer 深度 0 vs 1、权重同步频率 K、中断模型的软暂停、offload/onload 的显存管理。</strong> 本目录前五章的核心概念，在这里全都有一行代码对应。</p>
+<p><strong>这 180 行里能一行代码对应一个概念：</strong> 同置 vs 分离（<code>assert not args.colocate</code>）、buffer 深度 0 vs 1（<code>ray.get</code> vs <code>next_future</code>）、权重同步频率 K（<code>update_weights_interval</code>）、中断模型的排空档（L67 注释）、offload / onload 的显存管理（<code>onload_weights</code> / <code>onload_kv</code>）。本目录前五章的核心概念，在这里全都有一行代码对应。</p>
 <hr />
-<h2 id="10">10 · 本篇小结</h2>
+<h2 id="13">13 · 本篇小结</h2>
 <table>
 <thead>
 <tr>
@@ -710,50 +1279,74 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 </tr>
 <tr>
 <td>训练后端适配 16,220 行 vs 推理后端 2,101 行 = <strong>7.7 倍</strong>，接训练引擎难得多</td>
-<td>✅ 实测 + ⚠️</td>
+<td>✅ 实测 + ⚠️ 推断原因</td>
 </tr>
 <tr>
 <td>明确拒绝多后端抽象：<em>"instead of flattening ... into a lowest-common-denominator abstraction"</em></td>
-<td>✅ 原文</td>
+<td>✅ README 原文</td>
 </tr>
 <tr>
 <td>参数直通：<code>--sglang-</code> 前缀 + Megatron 参数直读，上游升级零改动</td>
-<td>✅ 原文</td>
+<td>✅ README 原文</td>
 </tr>
 <tr>
-<td>环境「不 fork 训练内核」↔ GLM-5 报告的「隔离 task-specific logic」，README 与论文互证</td>
+<td>环境「不 fork 训练内核」↔ GLM-5 报告的「隔离 task-specific logic」，README 与报告互证</td>
 <td>✅ 双向</td>
 </tr>
 <tr>
-<td>三模块：training / rollout / <strong>data buffer</strong>；权重同步不是平级模块</td>
+<td>三模块：training / rollout / <strong>data buffer</strong>；权重同步不是平级模块，是 training 的一个动作</td>
 <td>✅ + ⚠️</td>
 </tr>
 <tr>
-<td><code>train.py</code> 99 行 vs <code>train_async.py</code> 81 行，差别只有 18 行</td>
-<td>✅ 实测</td>
+<td><strong>同步档训练卡利用率 34.8%、空转 65.2%；单步异步把迭代从 50.6 s 压到 32.4 s</strong></td>
+<td>⚠️ <strong>本文推演</strong>（基于 <a href="../大模型算子开发/10-RL算子.html">10-RL算子.md</a> §10.8.2 的分阶段耗时）</td>
+</tr>
+<tr>
+<td><strong>时间减少 36% = 加速 1.56 倍</strong>，不是「加速 36%」</td>
+<td>⚠️ 换算</td>
 </tr>
 <tr>
 <td><code>assert not args.colocate</code> —— 异步必须分离部署，一行断言</td>
-<td>✅ L11</td>
+<td>✅ <code>train_async.py:11</code></td>
+</tr>
+<tr>
+<td><strong>异步版更短不是因为更简单</strong>：禁掉同置后整套 offload/onload 消失了（约 −25 行），净加约 8 行</td>
+<td>✅ 逐行对读（<strong>纠正旧版「只改了 18 行」</strong>）</td>
 </tr>
 <tr>
 <td><code>args.update_weights_interval</code> = GLM-5 报告里那个「每 K 次梯度更新」的 K</td>
-<td>✅ L66 ↔ 报告</td>
+<td>✅ <code>arguments.py:547</code> ↔ 报告</td>
 </tr>
 <tr>
-<td>换权重前先排空生成（L67 注释）= 中断模型第 3 档「软暂停」</td>
-<td>✅ L67</td>
+<td>换权重前先排空生成 = 中断模型的「软暂停 / 排空」档，不是「永不停」</td>
+<td>✅ <code>train_async.py:67</code></td>
 </tr>
 <tr>
-<td><code>onload_weights</code> / <code>onload_kv</code> 分开：先恢复权重再恢复 KV</td>
-<td>✅ 实测</td>
+<td><strong>权重同步四条通路</strong>：Ray IPC（同置）/ NCCL 广播（默认）/ 磁盘全量 / 磁盘增量；增量<strong>只能走磁盘</strong></td>
+<td>✅ <code>update_weight/__init__.py</code></td>
+</tr>
+<tr>
+<td>NCCL 路径是两跳：先 TP 内 AllGather 回完整参数，再从 <code>DP=0,TP=0</code> 广播</td>
+<td>✅ <code>update_weight_from_distributed.py</code> 注释</td>
+</tr>
+<tr>
+<td><code>onload_weights</code> / <code>onload_kv</code> 分开：先恢复权重、推完新权重、再恢复 KV</td>
+<td>✅ <code>train.py:84/85/88</code></td>
 </tr>
 <tr>
 <td><code>health_monitoring_pause/resume</code> ↔ GLM-5 报告的心跳驱动容错</td>
-<td>✅ 双向</td>
+<td>✅ 名字互证（⚠️ 未验证行为）</td>
 </tr>
 <tr>
-<td><code>on_policy_distillation.py</code> 只有 <strong>67 行</strong>——OPD 确实复用整套 RL 管线</td>
+<td><code>on_policy_distillation.py</code> 只有 <strong>67 行</strong>；且 OPD 已和优势估计器正交（<code>--opd-kl-coef</code>）</td>
+<td>✅ 实测 + README</td>
+</tr>
+<tr>
+<td>6 个优势估计器，<strong>只有 PPO 需要 critic</strong>（<code>args.use_critic = estimator == "ppo"</code>）</td>
+<td>✅ <code>arguments.py:1913</code></td>
+</tr>
+<tr>
+<td>加估计器动 2 个文件；加自定义 loss <strong>0 个文件</strong>（<code>--custom-loss-function-path</code>）</td>
 <td>✅ 实测</td>
 </tr>
 <tr>
@@ -761,8 +1354,12 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 <td>✅ + ⚠️</td>
 </tr>
 <tr>
-<td><strong>MILES 建立在 slime 之上</strong>，所以「16 个独立框架」偏高，架构谱系远少于框架数</td>
-<td>✅ 修正 🌐</td>
+<td><strong>MILES 建立在 slime 之上</strong></td>
+<td>✅ slime README 原文</td>
+</tr>
+<tr>
+<td>由此推出「架构谱系远少于框架数」</td>
+<td>⚠️ <strong>本文判断</strong>，非项目结论</td>
 </tr>
 <tr>
 <td>只读 <code>train.py</code> + <code>train_async.py</code> 共 180 行，能覆盖本目录前五章的核心概念</td>
@@ -770,7 +1367,7 @@ slime/backends/sglang_utils/      2,101 行   ← 推理侧
 </tr>
 </tbody>
 </table>
-<p><strong>下一篇</strong> → <a href="OpenRLHF拆解.html">OpenRLHF拆解.md</a></p>
+<p><strong>下一篇</strong> → <a href="OpenRLHF拆解.html">OpenRLHF拆解.md</a> ｜ <strong>下游</strong> → <a href="MILES拆解.html">MILES拆解.md</a></p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

@@ -254,20 +254,35 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="03">03 · 权重同步：新权重怎么搬回生成引擎</h1>
 <blockquote>
 <p><strong>这一篇干什么</strong>：讲清楚五模块里的第 ⑤ 块。这是 RL 框架里最容易被低估、但工程量最大的一块。<br />
-<strong>难度</strong> ★★ · <strong>前置</strong>：<a href="02-架构主轴-同步到全异步.html">02-架构主轴</a></p>
+<strong>难度</strong> ★★ · <strong>前置</strong>：<a href="02-架构主轴-同步到全异步.html">02-架构主轴</a><br />
+<strong>读法</strong>：本章 §3.2 会把「一个模型的权重要传多久」算成可验算的数字，结论可能和直觉相反——<strong>传输几乎从来不是瓶颈，中断才是</strong>。后面每一节都在这个结论上展开。<br />
+<strong>分工</strong>：RL 的算法与数据在 <a href="../后训练/README.html">../后训练/</a>，推理引擎本身在 <a href="../推理框架/README.html">../推理框架/</a>。本章只讲「权重怎么从训练侧搬到推理侧」这一件事。</p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>resharding</strong>（重切分）—— 训练态的并行切法和推理态不同，权重传过去要重新切一遍。<br />
+<strong>TP / PP / DP / EP</strong>（Tensor / Pipeline / Data / Expert Parallelism，张量 / 流水线 / 数据 / 专家并行）—— 四种把模型摊到多卡上的切法。<br />
+<strong>ZeRO / FSDP</strong>（Zero Redundancy Optimizer / Fully Sharded Data Parallel，零冗余优化器 / 完全分片数据并行）—— DeepSpeed 和 PyTorch 各自的显存分片方案。<br />
+<strong>NCCL / HCCL</strong>（NVIDIA / Huawei Collective Communications Library，集合通信库）—— 一群 GPU 之间高速传数据的标准库。<br />
+<strong>RDMA</strong>（Remote Direct Memory Access，远程直接内存访问）—— 网卡绕过 CPU 和内核，直接读写对端机器的内存。<br />
+<strong>CUDA IPC</strong>（CUDA Inter-Process Communication，CUDA 进程间通信）—— 同一台机器上不同进程直接共享显存指针，零拷贝。<br />
+<strong>NIXL</strong>（NVIDIA Inference Xfer Library，英伟达推理传输库）—— 面向推理场景的点对点传输抽象层。<br />
+<strong>IB</strong>（InfiniBand，无限带宽）—— 一套自带 RDMA 的专用高速网络。<br />
+<strong>NVLink</strong>—— 同一台机器内 GPU 之间的直连总线，不经过网卡。<br />
+<strong>中断模型</strong>—— 搬权重的时候，正在生成的那些序列怎么办。本章 §3.5 的主题。<br />
+<strong>partial rollout</strong>（部分 rollout）—— 长样本不必一次写完，到预算就存盘，下一轮接着写。</p>
 <hr />
 <h2 id="31">3.1 为什么这件事不简单</h2>
 <p>训练完一步，参数更新了。现在要让推理引擎用上新参数。听起来就是「拷贝一下」，但有三个麻烦：</p>
 <p><strong>① 两边的切法不一样（resharding，重切分）。</strong><br />
 训练侧为了省显存，权重按 ZeRO / FSDP 切得七零八落（每张卡只有一小片）；推理侧为了跑得快，按 TP（张量并行）切成另一种形状。<strong>中间必须做一次全局的重组</strong>。这个在 <a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.4</a> 讲过原理，这里只关心工程实现。</p>
+<p><strong>② 权重很大。</strong> 一个 700B 模型的 BF16 权重是 1.4 TB。就算只在机器内部搬，也不是瞬间的事。§3.2 会把这笔账完整算出来。</p>
 <blockquote>
-<p><strong>术语</strong>：TP = Tensor Parallelism（张量并行），把单个矩阵乘法切到多张卡上。ZeRO = Zero Redundancy Optimizer（零冗余优化器），DeepSpeed 的显存分片方案。FSDP = Fully Sharded Data Parallel（完全分片数据并行），PyTorch 官方的对应方案。</p>
+<p>⚠️ <strong>只搬权重，不搬梯度和优化器状态。</strong> 训练态每个参数要占 <strong>16 字节</strong>（BF16 权重 2 + 梯度 2 + FP32 主副本 4 + Adam 一阶动量 m 4 + 二阶动量 v 4 —— <strong>m 和 v 各 4 字节，不是合计 4</strong>），但推理引擎只需要那 2 字节的权重。<strong>搬回去的量是训练态显存的 1/8。</strong> 很多人在估这笔账时会把 16 字节整个算进去，差 8 倍。显存口径详见 <a href="../训练框架/分布式训练入门/02-显存去哪了.html">../训练框架/分布式训练入门/02-显存去哪了.md</a>。</p>
 </blockquote>
-<p><strong>② 权重很大。</strong> 一个 700B 模型的 bf16 权重是 1.4TB。就算只在机器内部搬，也不是瞬间的事。</p>
 <p><strong>③ 搬的时候，生成要不要停？</strong><br />
 如果停，那这段时间推理卡在空转——异步架构辛辛苦苦省下来的时间又还回去了。如果不停，那正在生成的那些样本，前半段用旧权重、后半段用新权重，<strong>一条轨迹里混了两个策略</strong>。</p>
-<p>这三个麻烦对应三个设计维度：<strong>resharding 策略 × 传输层 × 中断模型</strong>。</p>
+<p>这三个麻烦对应三个设计维度：<strong>resharding 策略 × 传输层 × 中断模型</strong>。⚠️ 本章会论证：<strong>第三个维度的代价，比第二个大两个数量级。</strong></p>
 <hr />
 <h2 id="32">3.2 🌐 传输层七档</h2>
 <p>从最慢到最快，业界用过的传输方式大致是这七档：</p>
@@ -326,11 +341,216 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
-<p><strong>术语</strong>：NCCL = NVIDIA Collective Communications Library（英伟达集合通信库），GPU 之间高速传数据的标准库。CUDA IPC = CUDA Inter-Process Communication（CUDA 进程间通信）。<br />
-⚠️ 易混：<strong>NCCL 不等于 RDMA</strong>（Remote Direct Memory Access，远程直接内存访问）。NCCL 是定义「一群 GPU 怎么一起传」的软件库，RDMA 是底下「数据实际怎么跑」的传输能力——跨机时 NCCL 会用 RDMA，机内 8 卡走的是 NVLink，一点 RDMA 都不沾。完整分层关系（含 NIXL / Mooncake 各在哪一层）见 <a href="附-速查表.html">附-速查表 3.1</a>。<br />
+<p>⚠️ 易混：<strong>NCCL 不等于 RDMA</strong>。NCCL 是定义「一群 GPU 怎么一起传」的软件库，RDMA 是底下「数据实际怎么跑」的传输能力——跨机时 NCCL 会用 RDMA，机内 8 卡走的是 NVLink，一点 RDMA 都不沾。完整分层关系（含 NIXL / Mooncake 各在哪一层）见 <a href="附-速查表.html">附-速查表 3.1</a>。<br />
 来源：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing</a>，访问于 2026-08。</p>
 </blockquote>
 <p>⚠️ 注意档 1 和档 2 差了 <strong>5~25 倍</strong>，而两者用的是<strong>同一个底层库</strong>。差别只在「有没有把小张量打包」。这是典型的「工程细节决定量级」——一个 700B MoE 模型有几万个张量，一次一个地广播，光是启动开销就吃掉大部分时间。</p>
+<h3 id="_1">★ 把它算成数字：一个模型的权重要传多久</h3>
+<p>上面那张表给的是量级，下面把它变成能自己验算的算术。</p>
+<p><strong>第一步：权重有多少字节。</strong> 算式只有一条：<code>字节数 = 参数量 × 每参数字节数</code>。</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>参数量</th>
+<th>BF16（2 字节/参数）</th>
+<th>FP8（1 字节/参数）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7B</td>
+<td>7 × 10⁹</td>
+<td><strong>14 GB</strong></td>
+<td>7 GB</td>
+</tr>
+<tr>
+<td>32B</td>
+<td>32 × 10⁹</td>
+<td><strong>64 GB</strong></td>
+<td>32 GB</td>
+</tr>
+<tr>
+<td>70B</td>
+<td>70 × 10⁹</td>
+<td><strong>140 GB</strong></td>
+<td>70 GB</td>
+</tr>
+<tr>
+<td>700B（MoE 总参数）</td>
+<td>700 × 10⁹</td>
+<td><strong>1.4 TB</strong></td>
+<td>700 GB</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第二步：三条链路各有多宽。</strong> ⚠️ <strong>这一步是本章最容易出错的地方</strong>，两个单位坑本仓库都踩过：</p>
+<table>
+<thead>
+<tr>
+<th>链路</th>
+<th>厂商标称</th>
+<th>⚠️ 算「发出去要多久」该用的数</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>NVLink 4.0</strong>（H100 机内）</td>
+<td>900 GB/s</td>
+<td><strong>450 GB/s</strong></td>
+<td>900 是<strong>双向聚合</strong>（同时发 450 + 收 450）。单向发送只能用 450</td>
+</tr>
+<tr>
+<td><strong>InfiniBand NDR</strong>（跨机）</td>
+<td>400 Gb/s</td>
+<td><strong>50 GB/s</strong></td>
+<td>400 的单位是 <strong>Gb（比特）不是 GB（字节）</strong>，÷ 8</td>
+</tr>
+<tr>
+<td><strong>PCIe 5.0 ×16</strong></td>
+<td>128 GB/s</td>
+<td><strong>63 GB/s</strong></td>
+<td>同样是双向聚合值，单向约 63</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>坑 1</strong>：NVLink 900 是双向聚合，<strong>单向 450</strong>。<br />
+⚠️ <strong>坑 2</strong>：IB 的 400 是 <strong>Gb</strong> 不是 GB，<code>400 ÷ 8 = 50 GB/s</code>。<br />
+⟹ 同口径下 <strong>NVLink : IB = 450 : 50 = 9 倍，不是 18 倍</strong>。18 倍是「分子用双向值、分母用单向值」算出来的错误结果，是这一行最常见的错。</p>
+</blockquote>
+<p><strong>第三步：相除。</strong> <code>时间 = 字节数 ÷ 带宽</code>：</p>
+<table>
+<thead>
+<tr>
+<th>模型 / 精度</th>
+<th>字节数</th>
+<th>NVLink 450 GB/s</th>
+<th>IB 50 GB/s</th>
+<th>PCIe 5.0 63 GB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7B BF16</td>
+<td>14 GB</td>
+<td><strong>31 ms</strong></td>
+<td>280 ms</td>
+<td>222 ms</td>
+</tr>
+<tr>
+<td>7B FP8</td>
+<td>7 GB</td>
+<td>16 ms</td>
+<td>140 ms</td>
+<td>111 ms</td>
+</tr>
+<tr>
+<td><strong>32B BF16</strong></td>
+<td>64 GB</td>
+<td><strong>142 ms</strong></td>
+<td><strong>1.28 s</strong></td>
+<td>1.02 s</td>
+</tr>
+<tr>
+<td>70B BF16</td>
+<td>140 GB</td>
+<td>311 ms</td>
+<td><strong>2.80 s</strong></td>
+<td>2.22 s</td>
+</tr>
+<tr>
+<td>70B FP8</td>
+<td>70 GB</td>
+<td>156 ms</td>
+<td>1.40 s</td>
+<td>1.11 s</td>
+</tr>
+<tr>
+<td>700B BF16</td>
+<td>1.4 TB</td>
+<td>3.11 s</td>
+<td><strong>28.0 s</strong></td>
+<td>22.2 s</td>
+</tr>
+<tr>
+<td>700B FP8</td>
+<td>700 GB</td>
+<td>1.56 s</td>
+<td>14.0 s</td>
+<td>11.1 s</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这是<strong>单条链路、点对点、理想线速</strong>的时间。实际还要加上三样东西：</p>
+<table>
+<thead>
+<tr>
+<th>额外开销</th>
+<th>是什么</th>
+<th>量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>resharding</strong></td>
+<td>训练态 ZeRO/FSDP 切法 → 推理态 TP 切法的全局重组，是<strong>计算 + 多轮通信</strong></td>
+<td>⚠️ 常常比传输本身还贵</td>
+</tr>
+<tr>
+<td><strong>broadcast 到 N 个推理实例</strong></td>
+<td>NCCL ring 算法是流水化的，⚠️ 理想模型下时间近似与 N 无关，仍是 <code>字节 ÷ 带宽</code> 量级</td>
+<td>约 1~2 倍</td>
+</tr>
+<tr>
+<td><strong>几万个小张量的启动开销</strong></td>
+<td>这正是上面七档表里档 1 和档 2 差 5~25 倍的原因</td>
+<td>可以吃掉大部分时间</td>
+</tr>
+</tbody>
+</table>
+<h3 id="mooncake-1617">★ 一处可验算的交叉核对：Mooncake 的 16~17 秒</h3>
+<p>🌐 HF 横评提到：<strong>Mooncake 的 checkpoint-engine 能在 256 张 H20 上把 Kimi-K2 的权重更新做到约 16~17 秒</strong>。拿上面的表核一下：</p>
+<div class="codehilite"><pre><span></span><code>Kimi-K2 总参数约 1T，原生 FP8  ==&gt;  权重约 1,000 GB
+
+单条 400G IB 的线速时间 = 1,000 GB / 50 GB/s = 20.0 s
+实测的权重更新时间                           = 16~17 s
+</code></pre></div>
+
+<p>⚠️ <strong>实测比单条链路的线速还快，说明它不止用了一条链路</strong>——多网卡并行，或者把权重分片后多路并发。<strong>这是本文的推断，不是博客的结论。</strong> 但这个核对本身有价值：它说明 16~17 秒<strong>不是实现不好，而是已经贴着物理上限了</strong>。想再快，只剩两条路——<strong>减少要传的字节</strong>（FP8 已经用了，下一步是只传增量，见 §3.4），或者<strong>加链路</strong>。</p>
+<h3 id="_2">⚠️ 所以权重同步到底是不是瓶颈？</h3>
+<p>把上面的传输时间和 <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 那笔迭代时间账放在一起看：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>耗时</th>
+<th>占一个 325 秒迭代的比例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32B BF16 跨机 IB 传输</td>
+<td>1.28 s</td>
+<td><strong>0.39%</strong></td>
+</tr>
+<tr>
+<td>32B BF16 机内 NVLink 传输</td>
+<td>0.14 s</td>
+<td><strong>0.04%</strong></td>
+</tr>
+<tr>
+<td>一次 rollout（打包后）</td>
+<td>325 s</td>
+<td>100%</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>传输本身不是瓶颈，百分之零点几而已。</strong> 这和 <a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.3.4</a> 的结论一致，也解释了 <a href="01-格局全景.html">01 章 §1.3</a> 观察到的现象——五份技术报告全都对「权重同步怎么实现」语焉不详，因为它在端到端里占比太小。</p>
+<blockquote>
+<p>★ <strong>但别就此得出「权重同步不重要」。</strong> 真正贵的不是把字节搬过去，而是<strong>搬的时候要不要让生成停下来</strong>。§3.5 会把这笔账也算出来：<strong>排空一次生成的代价，可以是传输代价的两百倍。</strong></p>
+</blockquote>
 <hr />
 <h2 id="33-verl-checkpoint-engine">3.3 ✅ veRL 的六个 checkpoint engine</h2>
 <p>veRL 把权重同步单独抽成了一个组件层。✅ 本地实测（commit <code>b256ebf</code>，<code>verl/checkpoint_engine/</code>，共 3,540 行）：</p>
@@ -390,10 +610,39 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <li><strong>权重同步值得一个独立的抽象层。</strong> 3,540 行只干这一件事——不是「顺手写个 broadcast」的量级。</li>
 <li><strong><code>delta_checkpoint_engine.py</code> 是里面最大的一个（672 行），比 NCCL 那个还大。</strong> 「只传变化的部分」这个想法很直观，但要处理增量编码、完整性校验、基准版本追踪，实现复杂度反而最高。</li>
 </ol>
-<h3 id="_1">🌐↔✅ 一处交叉验证</h3>
+<h3 id="_3">⚠️ 为什么要做六个后端，而不是一个</h3>
+<p>既然 §3.2 已经算出传输只占百分之零点几，为什么还要为它写 3,540 行、六个后端？答案不在「快多少」，在<strong>参与方约束</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>NCCL 集合通信</th>
+<th>RDMA 点对点（NIXL / Mooncake）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>参与方约束</td>
+<td>所有 rank 必须<strong>同时在线、同步进场</strong>凑齐一个 communicator</td>
+<td>谁准备好谁拉，<strong>推理实例可以随时扩缩容</strong></td>
+</tr>
+<tr>
+<td>适合</td>
+<td>同步架构、固定拓扑</td>
+<td>异步架构、弹性推理池</td>
+</tr>
+<tr>
+<td>一个实例挂了</td>
+<td>整个 communicator 要重建</td>
+<td>只影响它自己</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>异步 RL 不想被「所有人必须同时到齐」卡住。</strong> 这是六个后端存在的根本原因，而不是带宽。完整的分层关系见 <a href="附-速查表.html">附-速查表 3.1</a>。</p>
+<h3 id="_4">🌐↔✅ 一处交叉验证</h3>
 <p>🌐 HF 横评提到：<strong>Mooncake 的 checkpoint-engine 能在 256 张 H20 上把 Kimi-K2 的权重更新做到约 16~17 秒</strong>，该组件已进入 PyTorch 生态，并且有 NIXL 后端。</p>
 <p>✅ 本地核对：veRL 的 <code>mooncake_checkpoint_engine.py</code> 和 <code>nixl_checkpoint_engine.py</code> <strong>确实都存在</strong>，与博客描述的组件与后端一一对应。</p>
-<p>⚠️ 这是一条「联网材料 ↔ 本地源码」互相印证的链路。单看博客是二手信息，单看源码不知道性能量级，两边对上才是可用的结论。</p>
+<p>⚠️ 这是一条「联网材料 ↔ 本地源码」互相印证的链路。单看博客是二手信息，单看源码不知道性能量级，两边对上才是可用的结论。§3.2 又用带宽账给它加了第三个独立的验证角度。</p>
 <hr />
 <h2 id="34-slime-32">3.4 ★ slime 的四条通路：把 3.2 那张表落成了源码</h2>
 <p>slime 的实现方式和 veRL 不同——它不做「后端抽象」，而是<strong>直接把四种传输方式各写一个文件</strong>。✅ 本地实测（commit <code>3778dbf</code>，<code>slime/backends/megatron_utils/update_weight/</code>，共 2,093 行）：</p>
@@ -402,7 +651,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <th>文件</th>
 <th>行数</th>
-<th>对应 3.2 的哪一档</th>
+<th>对应 §3.2 的哪一档</th>
+<th>什么场景用</th>
 </tr>
 </thead>
 <tbody>
@@ -410,54 +660,124 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><code>update_weight_from_tensor.py</code></td>
 <td><strong>432</strong></td>
 <td>档 3~4：同置时直接传张量（CUDA IPC / 共享内存）</td>
+<td><strong>同置</strong>，最快</td>
 </tr>
 <tr>
 <td><code>update_weight_from_distributed.py</code></td>
 <td><strong>373</strong></td>
 <td>档 1~2：分布式集合通信</td>
+<td>同机房分离部署</td>
 </tr>
 <tr>
 <td><code>update_weight_from_disk_delta.py</code></td>
 <td><strong>304</strong></td>
 <td>档 5 + 增量：写共享盘，只写变化的字节</td>
+<td><strong>跨机房</strong>，最省带宽</td>
 </tr>
 <tr>
 <td><code>update_weight_from_disk.py</code></td>
 <td>95</td>
 <td>档 5：写共享盘，全量</td>
+<td>兜底 / 调试</td>
 </tr>
 <tr>
 <td><code>expert_routing.py</code></td>
 <td>380</td>
+<td>—</td>
 <td><strong>MoE 专家在重切分时怎么映射</strong></td>
 </tr>
 <tr>
 <td><code>common.py</code></td>
 <td>206</td>
+<td>—</td>
 <td>公共逻辑</td>
 </tr>
 </tbody>
 </table>
-<p>⚠️ 这个目录结构比任何文字都清楚：<strong>权重同步不是一个方法，是一族方法，选哪个取决于训推放在哪。</strong> 同置就用 <code>from_tensor</code>（最快），跨机房就用 <code>from_disk_delta</code>（最省带宽）。</p>
+<p>⚠️ 这个目录结构比任何文字都清楚：<strong>权重同步不是一个方法，是一族方法，选哪个取决于训推放在哪。</strong></p>
+<p>把它和 §3.2 的带宽表对上，选择标准一目了然：</p>
+<table>
+<thead>
+<tr>
+<th>训推放置</th>
+<th>可用链路</th>
+<th>32B BF16 传输时间</th>
+<th>slime 走哪个文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>同置（同一批 GPU）</td>
+<td>显存内，零拷贝</td>
+<td><strong>~0</strong>（不复制，只换指针）</td>
+<td><code>from_tensor</code></td>
+</tr>
+<tr>
+<td>分离，同机房</td>
+<td>IB 50 GB/s</td>
+<td>1.28 s</td>
+<td><code>from_distributed</code></td>
+</tr>
+<tr>
+<td>分离，跨机房</td>
+<td>广域网，⚠️ 带宽低一到两个数量级</td>
+<td><strong>分钟级</strong></td>
+<td><code>from_disk_delta</code>（只传变化的字节）</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>最后一行解释了增量同步为什么存在</strong>：跨机房时 §3.2 的 50 GB/s 不再成立，全量传一个 70B 模型可能要几分钟——这时候「只传变化的 1%」就从优化变成了必需。</p>
 <h3 id="delta-weight-sync">✅ Delta Weight Sync 的完整机制</h3>
 <p>slime 的 <code>examples/delta_weight_sync/README.md</code> 把设计写得很直白（✅ 原文）：</p>
 <blockquote>
 <p><em>"Non-colocated weight sync that ships only the </em><em>changed bytes</em><em> between two syncs instead of a full checkpoint, for training/inference disaggregation </em><em>across clusters or datacenters</em><em>."</em></p>
 </blockquote>
-<p>流程是：</p>
-<div class="codehilite"><pre><span></span><code>训练侧                          共享文件系统                    推理引擎
-  │                                  │                            │
-  │ 算出与上次同步的差异             │                            │
-  ├─ 按 HF checkpoint 目录格式 ─────►│                            │
-  │  写入 per-tensor delta           │                            │
-  │                                  │◄── /pull_weights ──────────┤
-  │                                  │    拉取 delta              │
-  │                                  │                            │
-  │                        打到本机的完整 checkpoint 上 ─────────►│
-  │                                  │        走普通的            │
-  │                                  │   update_weights_from_disk │
+<p>流程是五步（⚠️ 下图只表示数据流向，不表示时间比例）：</p>
+<div class="codehilite"><pre><span></span><code>  Trainer  --(1)(2)--&gt;  Shared FS  --(3)--&gt;  Inference Engine
+                                                     |
+                                                    (4)
+                                                     |
+                                                    (5)
+                                                     v
+                                          update_weights_from_disk
 </code></pre></div>
 
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>在哪一侧</th>
+<th>做什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(1)</td>
+<td>训练侧</td>
+<td>算出本次权重与上次同步时的差异</td>
+</tr>
+<tr>
+<td>(2)</td>
+<td>训练侧</td>
+<td>按 HuggingFace checkpoint 的目录格式，把 per-tensor delta 写进共享文件系统</td>
+</tr>
+<tr>
+<td>(3)</td>
+<td>推理引擎</td>
+<td>调 <code>/pull_weights</code> 拉取 delta</td>
+</tr>
+<tr>
+<td>(4)</td>
+<td>推理引擎</td>
+<td>把 delta 打到本机已有的完整 checkpoint 上</td>
+</tr>
+<tr>
+<td>(5)</td>
+<td>推理引擎</td>
+<td><strong>走普通的 <code>update_weights_from_disk</code> 路径</strong>加载，不新开一条逻辑</td>
+</tr>
+</tbody>
+</table>
 <p>✅ 几个具体到能直接抄的设计点：</p>
 <table>
 <thead>
@@ -490,12 +810,12 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <p>⚠️ 最后两条是很有品味的工程决策。「打完补丁走普通加载路径」意味着 delta 只是一个<strong>前置优化</strong>，不改变下游任何逻辑，出问题时可以直接关掉降级到全量。「厂商特定代码不进主干」意味着接了新的存储不需要改 slime。</p>
-<h3 id="_2">🌐↔✅ 又一处独立收敛</h3>
+<h3 id="_5">🌐↔✅ 又一处独立收敛</h3>
 <ul>
 <li>✅ slime 有 <code>update_weight_from_disk_delta.py</code>（304 行）+ <code>examples/delta_weight_sync/</code></li>
 <li>✅ veRL 有 <code>delta_checkpoint_engine.py</code>（672 行）+ <code>delta_sync/</code></li>
 </ul>
-<p>⚠️ 两家独立收敛到「只传增量」。这说明当训推跨机房部署成为常态时，<strong>全量传输的带宽成本已经成为主要瓶颈</strong>——不然没人会花几百行去实现一个增量协议。</p>
+<p>⚠️ 两家独立收敛到「只传增量」。这说明当训推跨机房部署成为常态时，<strong>全量传输的带宽成本已经成为主要瓶颈</strong>——不然没人会花几百行去实现一个增量协议。注意这和 §3.2 的「传输不是瓶颈」<strong>不矛盾</strong>：那个结论的前提是<strong>同机房 IB</strong>，一旦跨机房，前提就不成立了。</p>
 <hr />
 <h2 id="35">3.5 🌐 中断模型四档</h2>
 <p>传输层解决「多快」，中断模型解决「传的时候生成怎么办」。</p>
@@ -540,6 +860,101 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <p>⚠️ <strong>档 1 的机制容易写反</strong>：不是「接着用<strong>旧</strong>权重跑完」（那样轨迹就是单版本的，和「跨两个版本」自相矛盾），而是<strong>换成新权重、继续往下生成</strong>，只有前缀的 KV cache 停留在旧版本。🌐 HF 横评进一步指出 PipelineRL 用的是<strong>逐参数流式广播</strong>（每个参数一次 RPC + NCCL broadcast），前向传播穿插在参数更新之间——所以在飞的序列<strong>同一次前向里不同层可能用的是不同版本的权重</strong>。严格说，这已经不只是「跨两个版本」，而是<strong>层间混合</strong>：它的 behavior policy 不对应任何一个真实存在过的模型。</p>
 <p>⚠️ 档 1 看着最激进，但它其实和 <a href="02-架构主轴-同步到全异步.html">02 章</a> 的全异步是一套逻辑：<strong>既然已经接受了样本陈旧，那再多接受「一条轨迹里混两个版本」也不算什么</strong>，反正下游有 IS 修正兜底（见 <a href="04-训推一致性.html">04</a>）。🌐 PipelineRL 就是把这一条当作核心卖点；其论文做了 KL 实验——混合策略 + 复用陈旧 KV 相比完全重算，KL 只略高一点，所以保留了这个设计。</p>
+<h3 id="32_1">★ 中断的代价有多大：和 §3.2 对照着算一遍</h3>
+<p>§3.2 算出 32B 模型跨机传一次权重只要 <strong>1.28 秒</strong>。现在算另一半——<strong>为了传这 1.28 秒，生成要停多久</strong>。</p>
+<p>一次权重同步的总停机时间由四块组成：</p>
+<table>
+<thead>
+<tr>
+<th>组成</th>
+<th>是什么</th>
+<th>32B / 8 卡 / IB 的量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 排空</strong></td>
+<td>等在飞的序列跑完</td>
+<td><strong>取决于当时最长那条还剩多少</strong></td>
+</tr>
+<tr>
+<td>② 传输</td>
+<td>§3.2 算过</td>
+<td>1.28 s</td>
+</tr>
+<tr>
+<td>③ resharding + 引擎唤醒</td>
+<td>重切分、重建 CUDA graph、预热</td>
+<td>⚠️ 量级设定 5~10 s</td>
+</tr>
+<tr>
+<td>④ KV cache 处理</td>
+<td>旧权重算出的 KV 作废时要重算前缀</td>
+<td>看档位，档 1 不重算</td>
+</tr>
+</tbody>
+</table>
+<p><strong>① 是唯一一个量级不确定、也是唯一一个大到离谱的。</strong> 用 <a href="02-架构主轴-同步到全异步.html">02 章 §2.1</a> 那个长度分布算：</p>
+<div class="codehilite"><pre><span></span><code>最长的那 5 条样本，每条要写满 630 s
+在随机时刻叫停，期望还剩  630 / 2 = 315 s
+最坏情况（刚开始写）              = 630 s
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>中断模型</th>
+<th>排空</th>
+<th>传输</th>
+<th>resharding + 唤醒</th>
+<th><strong>合计停机</strong></th>
+<th>是传输时间的几倍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>档 4 逐步阻塞</td>
+<td>~315 s（期望）</td>
+<td>1.3 s</td>
+<td>~8 s</td>
+<td><strong>~324 s</strong></td>
+<td><strong>253×</strong></td>
+</tr>
+<tr>
+<td>档 3 软暂停 / 排空</td>
+<td>~315 s（期望）</td>
+<td>1.3 s</td>
+<td>~8 s</td>
+<td><strong>~324 s</strong></td>
+<td><strong>253×</strong></td>
+</tr>
+<tr>
+<td>档 2 单请求中止</td>
+<td>0（直接砍断）</td>
+<td>1.3 s</td>
+<td>~8 s</td>
+<td><strong>~9 s</strong></td>
+<td>7×</td>
+</tr>
+<tr>
+<td>档 1 永不停</td>
+<td>0</td>
+<td>与生成重叠</td>
+<td>与生成重叠</td>
+<td><strong>~0</strong></td>
+<td>0×</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 三件事：</p>
+<ol>
+<li><strong>排空的代价是传输的两百多倍。</strong> 这就是为什么「选哪个传输层」远没有「选哪个中断模型」重要。⚠️ 315 秒是用 <a href="02-架构主轴-同步到全异步.html">02 章 §2.1</a> 那个<strong>示意分布</strong>算出的期望值，真实数字取决于你自己的长度分布；但<strong>量级上的结论（差两个数量级）对任何长尾明显的任务都成立</strong>。</li>
+<li><strong>档 2 看起来只要 9 秒，但有隐性成本</strong>：被砍断的序列已经写出去的 token 全部作废，重发要从头再 prefill 一遍。按「期望砍在一半处」算，<strong>浪费的算力约等于那些序列已完成工作量的一半</strong>。</li>
+<li><strong>档 1 把停机压到 0，代价是一条轨迹混了多个版本的权重。</strong> 这是一笔明码标价的交易，不是 bug。</li>
+</ol>
+<blockquote>
+<p>★ <strong>一句话串起本章前半段</strong>：§3.2 说传输只占 0.39%，这一节说排空能占到一个迭代的 100%——<strong>权重同步这一块的全部工程量，其实都花在「怎么不排空」上。</strong> veRL 的六个后端、slime 的四条通路、PipelineRL 的逐参数流式广播，目标都是同一个。</p>
+</blockquote>
 <h3 id="351-1-partial-rollout">3.5.1 ⚠️ 档 1 与 partial rollout 差在哪</h3>
 <p>⚠️ 这两条路<strong>光看「一条轨迹由多个版本产生」这个结果分不出来</strong>——在这一点上它们确实一样。区别在目的、切点和时间尺度三个层面。</p>
 <p><strong>① 最本质的：它们解决的根本不是同一个问题</strong></p>
@@ -560,12 +975,15 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>partial rollout</strong></td>
 <td><strong>长尾</strong>——一批里 99% 生成完了，剩 1% 超长样本让整批干等</td>
-<td>见 <a href="02-架构主轴-同步到全异步.html">02 章:41</a>：512 个 32K rollout，必须等最慢那个</td>
+<td>见 <a href="02-架构主轴-同步到全异步.html">02 章 §2.1</a>：512 个 32K rollout，必须等最慢那个</td>
 </tr>
 </tbody>
 </table>
-<p>✅ Kimi 原文自己讲得很清楚（<a href="02-架构主轴-同步到全异步.html">02 章:156</a> 引的那句）：<em>"use partial rollouts to </em><em>reduce tail latency</em><em> from ultra-long trajectories"</em> —— 是 reduce <strong>tail latency</strong>，不是 reduce weight-sync overhead。</p>
+<p>✅ Kimi 原文自己讲得很清楚（<a href="02-架构主轴-同步到全异步.html">02 章 §2.4</a> 引的那句）：<em>"use partial rollouts to </em><em>reduce tail latency</em><em> from ultra-long trajectories"</em> —— 是 reduce <strong>tail latency</strong>，不是 reduce weight-sync overhead。</p>
 <p>⚠️ 推论：<strong>这两个是正交的，可以同时用。</strong> 就算权重同步瞬间完成、完全不需要中断，K3 那种百万 token 上下文照样需要 partial rollout 切长尾；反过来，就算所有样本等长、没有长尾，PipelineRL 的永不停照样省下气泡。</p>
+<blockquote>
+<p>★ 这一条在 <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 的气泡分解表里有对应的数字：<strong>「训练卡等生成」占 44.7%、「长尾空转」占 20.1%，是两块不同的气泡。</strong> 档 1 打的是前者的一部分（换权重那段），partial rollout 打的是后者。两块加起来才是全部。</p>
+</blockquote>
 <p><strong>② 切点谁说了算</strong></p>
 <table>
 <thead>
@@ -634,18 +1052,89 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>路由记录走 <strong>HCCL</strong> 而非 Ray，避开 Ray 瓶颈和 padding</td>
 <td>§10.3</td>
 </tr>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>未披露</td>
+<td>—</td>
+</tr>
 </tbody>
 </table>
-<p>⚠️ GLM-5 的「每 K 步推一次」是这里最实用的一条：<strong>权重同步频率是一个独立的旋钮</strong>。K=1 是最 on-policy 但最贵，K 越大越省通信但样本越陈旧。它和 <a href="02-架构主轴-同步到全异步.html">02 章</a> 的 buffer 深度是<strong>两个不同的旋钮</strong>，很多人会把它们混为一谈：</p>
-<div class="codehilite"><pre><span></span><code>buffer 深度 K_buf  ── 控制「样本在队列里等多久」
-权重同步频率 K_sync ── 控制「推理引擎多久拿到新权重」
+<p>⚠️ 注意 openPangu 那一行搬的<strong>不是权重，是路由记录</strong>（MoE 每个 token 选了哪几个专家）。这是 <a href="04-训推一致性.html">04 章 §4.4</a> 的话题，但它出现在这里说明一件事：<strong>推理侧要回传给训练侧的东西正在变多，这条通路的带宽预算要重新算。</strong></p>
+<h3 id="_6">★ 两个旋钮，不是一个</h3>
+<p>⚠️ GLM-5 的「每 K 步推一次」是这里最实用的一条：<strong>权重同步频率是一个独立的旋钮</strong>。它和 <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 的 buffer 深度是<strong>两个不同的旋钮</strong>，很多人会把它们混为一谈：</p>
+<div class="codehilite"><pre><span></span><code>buffer 深度   K_buf  -- 控制「样本在队列里等多久」
+权重同步频率 K_sync  -- 控制「推理引擎多久才拿到新权重」
 
-真实陈旧度 ≈ K_buf + K_sync
+真实陈旧度 ~= K_buf + K_sync
 </code></pre></div>
 
-<p><strong>两个旋钮都要调，而且它们的成本结构完全不同</strong>：K_buf 换的是训练卡的空转时间，K_sync 换的是通信带宽。</p>
+<p><strong>两个旋钮都要调，而且它们的成本结构完全不同：</strong></p>
+<table>
+<thead>
+<tr>
+<th>旋钮</th>
+<th>调大了省什么</th>
+<th>调大了付什么</th>
+<th>对应的账</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>K_buf</code></td>
+<td><strong>训练卡的空转时间</strong></td>
+<td>样本在队列里变旧</td>
+<td><a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a>：墙钟 760 s → 325 s</td>
+</tr>
+<tr>
+<td><code>K_sync</code></td>
+<td><strong>通信带宽 + 中断次数</strong></td>
+<td>推理引擎用的权重更旧</td>
+<td>§3.2：每次省 1.3 s 传输；§3.5：每次省 ~324 s 排空</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这里有一条交叉出来的结论，单看任一维度都看不出来</strong>：</p>
+<blockquote>
+<p><code>K_sync</code> 调大省下来的<strong>不是 1.3 秒的传输，是 324 秒的排空</strong>（§3.5 那张表）。所以——<strong>如果你用的是档 1「永不停」，<code>K_sync</code> 这个旋钮几乎不值钱</strong>，因为每次同步本来就不花钱，调大它只换来更陈旧的权重，没有任何收益。<strong><code>K_sync</code> 只在中断模型是档 2/3/4 时才有调的价值。</strong></p>
+</blockquote>
+<p><strong>一个具体的数字</strong>，把两个旋钮都拧上：设 <code>K_buf = 2</code>、<code>K_sync = 4</code>、每个训练步 325 秒（<a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 全异步那一档）：</p>
+<div class="codehilite"><pre><span></span><code>推理引擎手上的权重最多落后   K_sync - 1 = 3 步
+样本生成完又在队列里躺了     K_buf      = 2 步
+最旧的那个样本，总共落后     3 + 2      = 5 步
+换算成时间                   5 x 325 s  = 1,625 s = 27 分钟前的权重
+</code></pre></div>
+
+<p>⚠️ <strong>「用 27 分钟前的策略生成的样本，去更新现在的策略」——这就是 IS 修正要兜住的距离。</strong> 偏到多少就该警惕，<a href="04-训推一致性.html">04 章 §4.6</a> 会算出来。</p>
 <hr />
 <h2 id="37">3.7 本章小结</h2>
+<h3 id="_7">两笔账</h3>
+<table>
+<thead>
+<tr>
+<th>账</th>
+<th>数字</th>
+<th>出自</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32B BF16 权重跨机传一次</td>
+<td><strong>1.28 s</strong>，占一个 325 s 迭代的 <strong>0.39%</strong></td>
+<td>§3.2</td>
+</tr>
+<tr>
+<td>为传这 1.28 s 而排空一次生成</td>
+<td><strong>~324 s</strong>，占一个迭代的 <strong>~100%</strong></td>
+<td>§3.5</td>
+</tr>
+<tr>
+<td>⟹ 中断代价 ÷ 传输代价</td>
+<td><strong>253 倍</strong></td>
+<td>§3.5</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_8">结论清单</h3>
 <table>
 <thead>
 <tr>
@@ -659,8 +1148,32 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>⚠️ 归纳</td>
 </tr>
 <tr>
-<td>传输层七档，NCCL 广播 ~100–500ms，加上分桶降到 ~20ms，差 5~25 倍</td>
+<td>⚠️ <strong>NVLink 900 GB/s 是双向聚合，单向 450</strong>；<strong>IB 400 Gb/s ÷ 8 = 50 GB/s</strong>；⟹ NVLink : IB = <strong>9 倍不是 18 倍</strong></td>
+<td>⚠️ 单位纪律</td>
+</tr>
+<tr>
+<td>⚠️ 搬回推理侧的只有 BF16 权重（2 字节/参数），不含梯度和优化器状态（训练态共 16 字节/参数），<strong>差 8 倍</strong></td>
+<td>⚠️ 口径纪律</td>
+</tr>
+<tr>
+<td>传输时间表：7B 14 GB / 70B 140 GB / 700B 1.4 TB；跨机 IB 分别 0.28 s / 2.8 s / 28 s</td>
+<td>⚠️ 本文推算</td>
+</tr>
+<tr>
+<td><strong>传输不是瓶颈</strong>：32B 跨机只占一个迭代的 0.39%，这解释了为什么五家报告都对它语焉不详</td>
+<td>⚠️ 本文推算</td>
+</tr>
+<tr>
+<td>Mooncake 256×H20 更新 Kimi-K2 约 16~17 秒 ↔ 单条 400G IB 线速是 20 秒 ⟹ <strong>它用了不止一条链路</strong></td>
+<td>🌐 + ⚠️ 本文推断</td>
+</tr>
+<tr>
+<td>传输层七档，NCCL 广播 ~100–500 ms，加上分桶降到 ~20 ms，差 5~25 倍</td>
 <td>🌐</td>
+</tr>
+<tr>
+<td>veRL 做六个后端不是为了带宽，是为了绕开 NCCL「所有 rank 必须同时到齐」的约束</td>
+<td>⚠️ 归纳</td>
 </tr>
 <tr>
 <td>veRL 用 3,540 行、6 个后端做这一件事；<code>delta_checkpoint_engine.py</code> 672 行是最大的</td>
@@ -675,16 +1188,16 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>✅ 原文</td>
 </tr>
 <tr>
-<td>veRL 与 slime 独立收敛到「只传增量」，说明跨机房带宽已成瓶颈</td>
+<td>veRL 与 slime 独立收敛到「只传增量」，说明<strong>跨机房</strong>带宽已成瓶颈（同机房仍不是）</td>
 <td>✅ 双方 + ⚠️</td>
-</tr>
-<tr>
-<td>Mooncake 在 256×H20 更新 Kimi-K2 约 16~17 秒 ↔ veRL 本地确有该后端</td>
-<td>🌐 ↔ ✅</td>
 </tr>
 <tr>
 <td>中断模型四档；PipelineRL 主打「永不停」（新权重 + 陈旧 KV + 逐参数流式，层间混合）</td>
 <td>🌐</td>
+</tr>
+<tr>
+<td><strong>排空的代价是传输的 253 倍</strong> ⟹ 选中断模型比选传输层重要两个数量级</td>
+<td>⚠️ 本文推算</td>
 </tr>
 <tr>
 <td>档 1 与 partial rollout 解决的<strong>不是同一个问题</strong>（气泡 vs 长尾），⚠️ 正交可叠加</td>
@@ -702,9 +1215,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>buffer 深度和权重同步频率是<strong>两个独立旋钮</strong>，真实陈旧度是两者之和</td>
 <td>⚠️ 关键区分</td>
 </tr>
+<tr>
+<td>⚠️ <strong>档 1 下 <code>K_sync</code> 几乎不值钱</strong>——它省的是排空，而档 1 本来就不排空</td>
+<td>⚠️ 交叉推论</td>
+</tr>
 </tbody>
 </table>
-<p><strong>下一篇</strong> → <a href="05-算法与框架的接口.html">05-算法与框架的接口.md</a></p>
+<p><strong>下一篇</strong> → <a href="04-训推一致性.html">04-训推一致性.md</a>：样本陈旧只是偏差的一半，另一半是两个引擎算出的概率本来就不一样</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

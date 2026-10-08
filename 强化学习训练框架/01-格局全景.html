@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -249,27 +254,34 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h1 id="01-18-5">01 · 格局全景：18 个开源框架 + 5 套自研系统</h1>
 <blockquote>
 <p><strong>这一篇干什么</strong>：把散落的框架名字放进同一个坐标系，让你知道「一共有哪些、按什么分、谁跟谁像」。<br />
-<strong>难度</strong> ★ · <strong>前置</strong>：<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14-RL训练框架.md</a>（RL 原理）</p>
+<strong>难度</strong> ★ · <strong>前置</strong>：<a href="../训练框架/分布式训练入门/14-RL训练框架.html">14-RL训练框架.md</a>（RL 原理）<br />
+<strong>读法</strong>：本章是全目录的地图。<strong>不要求记住任何一个框架名</strong>，只要记住 §1.1 的五个模块和 §1.4 的那张坐标图——后面六章都是在这两张图上贴细节。<br />
+<strong>分工</strong>：RL 的<strong>算法与数据</strong>那一半（SFT / DPO / PPO / GRPO / RLVR、奖励从哪来）在 <a href="../后训练/README.html">../后训练/</a> 目录，本目录只讲<strong>系统与工程</strong>。推理引擎本身怎么跑在 <a href="../推理框架/README.html">../推理框架/</a>。</p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>RL</strong>（Reinforcement Learning，强化学习）—— 模型自己生成答案、拿到打分、再据此调整参数的训练方式。<br />
+<strong>rollout</strong>（生成 / 采样）—— 让模型针对一批题目生成答案的过程，RL 里时间大头在这。<br />
+<strong>on-policy / off-policy</strong>（在策略 / 离策略）—— 用来算梯度的样本，是不是<strong>当前这一版权重</strong>生成的。是 → on-policy；来自旧版权重 → off-policy。<br />
+<strong>staleness</strong>（陈旧度）—— 一个样本生成时用的权重，落后当前权重多少个训练步。<br />
+<strong>colocated / disaggregated</strong>（同置 / 分离部署）—— 训练和推理挤在同一批 GPU 上轮流用，还是各占一批卡。<br />
+<strong>resharding</strong>（重切分）—— 训练态的并行切法和推理态不同，权重搬过去要重新切一遍。<br />
+<strong>TP / PP / DP / EP</strong>（Tensor / Pipeline / Data / Expert Parallelism，张量 / 流水线 / 数据 / 专家并行）—— 四种把模型摊到多卡上的切法，详见 <a href="../训练框架/分布式训练入门/README.html">../训练框架/分布式训练入门/</a>。</p>
 <hr />
 <h2 id="11">1.1 先复述五个模块（不重写，只对齐词汇）</h2>
 <p>任何一个 RL 训练框架，拆开都是这五块。这个拆法在 <a href="../训练框架/分布式训练入门/14-RL训练框架.html">14 章 §14.4</a> 已经讲过，这里只把名字对齐，方便后面几章引用：</p>
-<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────┐
-│                    ① Controller（控制器）                │
-│         决定「现在该生成还是该训练」的那段主循环         │
-└───────────────┬──────────────────────────┬───────────────┘
-                │                          │
-       ┌────────▼────────┐        ┌────────▼────────┐
-       │  ② Rollout      │        │  ④ Trainer      │
-       │  生成引擎       │        │  训练引擎       │
-       │  vLLM / SGLang  │        │  Megatron/FSDP  │
-       └────────┬────────┘        └────────┬────────┘
-                │                          │
-                │   ③ Data Buffer          │
-                └──────►（样本队列）───────┘
-                             │
-                ⑤ Weight Sync（权重同步）
-                训练完的新权重，怎么塞回生成引擎
+<div class="codehilite"><pre><span></span><code>(1) Controller 控制器 -- 决定「现在该生成还是该训练」的那段主循环
+      |
+      |--&gt; (2) Rollout 生成引擎        [vLLM / SGLang]
+      |          |
+      |          v   吐出：token_ids + 每个 token 的 logprob
+      |     (3) Data Buffer 样本队列
+      |          |
+      |          v   取一批出来
+      |--&gt; (4) Trainer 训练引擎        [Megatron / FSDP]
+                 |
+                 v   算出新权重
+            (5) Weight Sync 权重同步  --&gt; 搬回 (2)，回到循环开头
 </code></pre></div>
 
 <table>
@@ -288,7 +300,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td>② Rollout</td>
-<td>让模型生成答案。RL 里 ~80% 时间在这</td>
+<td>让模型生成答案。RL 里时间大头在这</td>
 <td><a href="02-架构主轴-同步到全异步.html">02</a></td>
 </tr>
 <tr>
@@ -308,6 +320,57 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<h3 id="_1">用一道题走一遍这五块</h3>
+<p>抽象的模块图没感觉，换成具体的一轮。设定：题库里取 <strong>2 道数学题</strong>，每道题让模型生成 <strong>4 个答案</strong>（GRPO 的组大小 G=4），这一轮一共 <strong>8 条轨迹</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>时刻</th>
+<th>谁在动</th>
+<th>发生什么</th>
+<th>这时候别的模块在干什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>t0</td>
+<td>① Controller</td>
+<td>从题库取 2 道题，拼好 prompt 发给 ②</td>
+<td>④ 训练引擎<strong>空着</strong></td>
+</tr>
+<tr>
+<td>t1</td>
+<td>② Rollout</td>
+<td>8 条轨迹并行生成，一个 token 一个 token 往外写</td>
+<td>④ 仍然<strong>空着</strong></td>
+</tr>
+<tr>
+<td>t2</td>
+<td>② → ③</td>
+<td>8 条都写完了，连同每个 token 的 logprob 一起塞进队列</td>
+<td>④ 还是空着</td>
+</tr>
+<tr>
+<td>t3</td>
+<td>③ → ④</td>
+<td>④ 取走这 8 条：判对错给奖励 → 组内比较算优势 → 前向 + 反向算梯度</td>
+<td>② <strong>空着</strong></td>
+</tr>
+<tr>
+<td>t4</td>
+<td>⑤ Weight Sync</td>
+<td>把更新后的权重从 ④ 搬回 ②</td>
+<td>②④ 两边都在等</td>
+</tr>
+<tr>
+<td>t5</td>
+<td>—</td>
+<td>回到 t0，下一轮</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这张表里有三格写着「空着」。整个目录的后六章，说到底都在想办法把这三格填上。</strong> <a href="02-架构主轴-同步到全异步.html">02 章</a> 会把 t0–t5 换成真实的秒数，算出「空着」到底浪费了多少机时。</p>
 <blockquote>
 <p>🌐 HuggingFace 那篇 16 框架横评把这五块进一步展开成<strong>七条轴</strong>（编排原语 / buffer 深度 / 权重同步协议 / 陈旧度管理 / partial rollout 处理 / LoRA 支持 / 训练后端与并行）。本目录把其中最吃架构的三条——<strong>buffer 深度</strong>、<strong>权重同步</strong>、<strong>陈旧度管理</strong>——分别放进 <a href="02-架构主轴-同步到全异步.html">02</a>、<a href="03-权重同步.html">03</a>、<a href="04-训推一致性.html">04</a>。<br />
 来源：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>，访问于 2026-08。</p>
@@ -316,18 +379,26 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <h2 id="12">1.2 🌐 开源框架总表</h2>
 <blockquote>
 <p>⚠️ <strong>这张表会过时。</strong> 开源 RL 框架的迭代速度远快于训练框架，star 数只用于表达量级（数量级对了就行，别当精确数字）。以官方仓库现状为准。<br />
-star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓库 README。</p>
+来源：HF 横评（同上，访问于 2026-08）+ 各仓库 README；标 ✅ 的格子是本仓库读过源码确认的。</p>
 </blockquote>
+<h3 id="_2">⚠️ 先说这张表的「—」怎么读</h3>
+<p><strong><code>—</code> 的意思是「本仓库没有核到」，不是「不支持」。</strong> 这一点必须先讲，否则整张表会被读反。</p>
+<ul>
+<li><strong>异步档位</strong>和<strong>推理后端</strong>两栏，多数来自 🌐 HF 横评 + 仓库 README，二手但覆盖面全。</li>
+<li><strong>权重同步怎么做</strong>这一栏，只有 veRL / slime / OpenRLHF 三家是 ✅ 读过源码的，PipelineRL 是 🌐 论文描述，<strong>其余十四家一律 <code>—</code></strong>。</li>
+<li><strong>算法菜单</strong>这一栏同理，只有两家有硬证据。</li>
+</ul>
+<p>⚠️ 这不是偷懒，是刻意的：一个「<code>—</code>」比一个瞎填的「支持」有用得多。后面 §1.3 讲自研系统时会看到同一件事的另一面——<strong>披露程度本身就是信息</strong>。</p>
+<h3 id="a">表 A · 架构口径</h3>
 <table>
 <thead>
 <tr>
 <th>框架</th>
 <th>出品方</th>
 <th>编排原语</th>
-<th>训练后端</th>
-<th>推理后端</th>
 <th>异步档位</th>
-<th>量级</th>
+<th>权重同步怎么做</th>
+<th>开源</th>
 </tr>
 </thead>
 <tbody>
@@ -335,100 +406,97 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 <td><strong>veRL</strong></td>
 <td>字节跳动</td>
 <td>Ray</td>
-<td>Megatron / FSDP / TorchTitan / VeOmni / MindSpeed</td>
-<td>vLLM / SGLang / TRT-LLM</td>
 <td>同步 → 一步离策略 → 全异步（<strong>三档都有</strong>）</td>
-<td>~2 万 star</td>
+<td>✅ 六个 checkpoint engine（NCCL / HCCL / Mooncake / NIXL / Kimi / Delta），见 <a href="03-权重同步.html">03 §3.3</a></td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>slime</strong></td>
 <td>智谱 THUDM</td>
 <td>Ray</td>
-<td><strong>只有</strong> Megatron</td>
-<td><strong>只有</strong> SGLang</td>
 <td>同步 + 全异步</td>
-<td>~5 千 star</td>
+<td>✅ 四条通路（tensor / distributed / disk / disk-delta），见 <a href="03-权重同步.html">03 §3.4</a></td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>OpenRLHF</strong></td>
 <td>社区</td>
 <td>Ray</td>
-<td>DeepSpeed</td>
-<td>vLLM</td>
 <td>同步 + 异步</td>
-<td>—</td>
+<td>✅ NCCL 广播 + 互斥锁；中断模型取「软暂停」档，见 <a href="OpenRLHF拆解.html">OpenRLHF拆解</a></td>
+<td>✅</td>
 </tr>
 <tr>
-<td><strong>verifiers-rl</strong></td>
-<td>—</td>
-<td>原生 Python</td>
-<td>—</td>
-<td>—</td>
-<td>—</td>
-<td>~4 千 star</td>
+<td><strong>PipelineRL</strong></td>
+<td>ServiceNow</td>
+<td>pub/sub</td>
+<td>全异步</td>
+<td>🌐 <strong>逐参数流式广播，权重同步不打断生成</strong>，见 <a href="03-权重同步.html">03 §3.5</a></td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>AReaL</strong></td>
 <td>inclusionAI</td>
 <td>原生 Python</td>
-<td>—</td>
-<td>—</td>
 <td><strong>全异步</strong>为主打</td>
-<td>~4 千 star</td>
+<td>—</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>open-instruct</strong></td>
 <td>AI2</td>
 <td>Ray</td>
-<td>—</td>
-<td>vLLM</td>
 <td>一步离策略</td>
-<td>~4 千 star</td>
+<td>—</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>ROLL</strong></td>
 <td>阿里</td>
 <td>Ray</td>
-<td>Megatron / DeepSpeed</td>
-<td>vLLM / SGLang</td>
 <td>同步 + 异步</td>
-<td>~3 千 star</td>
-</tr>
-<tr>
-<td><strong>Tunix</strong></td>
-<td>Google</td>
 <td>—</td>
-<td>JAX / TPU</td>
-<td>—</td>
-<td>—</td>
-<td>~2 千 star</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>SkyRL</strong></td>
 <td>NovaSky（伯克利）</td>
 <td>Ray</td>
-<td>FSDP / Megatron</td>
-<td>vLLM / SGLang</td>
 <td>一步离策略</td>
-<td>~2 千 star</td>
+<td>—</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>NeMo-RL</strong></td>
 <td>NVIDIA</td>
 <td>Ray</td>
-<td>Megatron / DTensor</td>
-<td>vLLM</td>
 <td>同步 + 异步</td>
-<td>~1 千 star</td>
+<td>—</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>PRIME-RL</strong></td>
 <td>Prime Intellect</td>
 <td>原生 Python</td>
-<td><strong>FSDP2 + EP</strong></td>
-<td>vLLM</td>
 <td>异步</td>
-<td>~1 千 star</td>
+<td>—</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>TorchForge</strong></td>
+<td>Meta</td>
+<td><strong>Monarch</strong>（非 Ray）</td>
+<td>异步</td>
+<td>—</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>TRL</strong></td>
+<td>HuggingFace</td>
+<td>无（单进程为主）</td>
+<td>同步</td>
+<td>—</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>MILES</strong></td>
@@ -436,22 +504,155 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 <td>Ray</td>
 <td>—</td>
 <td>—</td>
-<td>—</td>
-<td>~1 千 star</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>ART</strong></td>
 <td>CoreWeave</td>
 <td>原生 Python</td>
 <td>—</td>
-<td>vLLM</td>
 <td>—</td>
-<td>~9 千 star</td>
+<td>✅</td>
 </tr>
 <tr>
 <td><strong>Atropos</strong></td>
 <td>Nous Research</td>
 <td><strong>HTTP 微服务</strong></td>
+<td>—</td>
+<td>不适用（只做环境侧，不碰权重）</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>OAT</strong></td>
+<td>SAIL-SG</td>
+<td>Ray</td>
+<td>—</td>
+<td>—</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Tunix</strong></td>
+<td>Google</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>verifiers-rl</strong></td>
+<td>—</td>
+<td>原生 Python</td>
+<td>—</td>
+<td>—</td>
+<td>✅</td>
+</tr>
+</tbody>
+</table>
+<h3 id="b">表 B · 后端与算法口径</h3>
+<table>
+<thead>
+<tr>
+<th>框架</th>
+<th>训练后端</th>
+<th>rollout 引擎</th>
+<th>算法菜单</th>
+<th>量级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>veRL</strong></td>
+<td>Megatron / FSDP / TorchTitan / VeOmni / MindSpeed</td>
+<td>vLLM / SGLang / TRT-LLM</td>
+<td>✅ <strong>12 个</strong> <code>@register_policy_loss</code>（含 <code>gspo</code> / <code>cispo</code>），见 <a href="04-训推一致性.html">04 §4.6</a></td>
+<td>~2 万 star</td>
+</tr>
+<tr>
+<td><strong>slime</strong></td>
+<td><strong>只有</strong> Megatron</td>
+<td><strong>只有</strong> SGLang</td>
+<td>—</td>
+<td>~5 千 star</td>
+</tr>
+<tr>
+<td><strong>OpenRLHF</strong></td>
+<td>DeepSpeed</td>
+<td>vLLM</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>ART</strong></td>
+<td>—</td>
+<td>vLLM</td>
+<td>—</td>
+<td>~9 千 star</td>
+</tr>
+<tr>
+<td><strong>verifiers-rl</strong></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>~4 千 star</td>
+</tr>
+<tr>
+<td><strong>AReaL</strong></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>~4 千 star</td>
+</tr>
+<tr>
+<td><strong>open-instruct</strong></td>
+<td>—</td>
+<td>vLLM</td>
+<td>—</td>
+<td>~4 千 star</td>
+</tr>
+<tr>
+<td><strong>ROLL</strong></td>
+<td>Megatron / DeepSpeed</td>
+<td>vLLM / SGLang</td>
+<td>🌐 被 HF 横评点名为 <strong>IS 修正菜单最全</strong>的一家</td>
+<td>~3 千 star</td>
+</tr>
+<tr>
+<td><strong>Tunix</strong></td>
+<td>JAX / TPU</td>
+<td>—</td>
+<td>—</td>
+<td>~2 千 star</td>
+</tr>
+<tr>
+<td><strong>SkyRL</strong></td>
+<td>FSDP / Megatron</td>
+<td>vLLM / SGLang</td>
+<td>—</td>
+<td>~2 千 star</td>
+</tr>
+<tr>
+<td><strong>NeMo-RL</strong></td>
+<td>Megatron / DTensor</td>
+<td>vLLM</td>
+<td>—</td>
+<td>~1 千 star</td>
+</tr>
+<tr>
+<td><strong>PRIME-RL</strong></td>
+<td><strong>FSDP2 + EP</strong></td>
+<td>vLLM</td>
+<td>—</td>
+<td>~1 千 star</td>
+</tr>
+<tr>
+<td><strong>MILES</strong></td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>~1 千 star</td>
+</tr>
+<tr>
+<td><strong>Atropos</strong></td>
 <td>不含（只做环境侧）</td>
 <td>—</td>
 <td>—</td>
@@ -459,8 +660,6 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 </tr>
 <tr>
 <td><strong>OAT</strong></td>
-<td>SAIL-SG</td>
-<td>Ray</td>
 <td>—</td>
 <td>vLLM</td>
 <td>—</td>
@@ -468,43 +667,38 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 </tr>
 <tr>
 <td><strong>TorchForge</strong></td>
-<td>Meta</td>
-<td><strong>Monarch</strong>（非 Ray）</td>
 <td>PyTorch 原生</td>
 <td>vLLM</td>
-<td>异步</td>
+<td>—</td>
 <td>~600 star</td>
 </tr>
 <tr>
 <td><strong>PipelineRL</strong></td>
-<td>ServiceNow</td>
-<td><strong>pub/sub</strong></td>
 <td>—</td>
 <td>vLLM</td>
-<td><strong>权重同步不打断生成</strong></td>
+<td>—</td>
 <td>~400 star</td>
 </tr>
 <tr>
 <td><strong>TRL</strong></td>
-<td>HuggingFace</td>
-<td>无（单进程为主）</td>
 <td>Accelerate / DeepSpeed</td>
 <td>vLLM（可选）</td>
-<td>同步</td>
+<td>—</td>
 <td>生态最广</td>
 </tr>
 </tbody>
 </table>
-<h3 id="_1">从这张表能直接读出三件事</h3>
-<p><strong>① 🌐 Ray 占了绝对多数。</strong><br />
-18 家里有 8 家明确用 <a href="https://github.com/ray-project/ray">Ray</a>（一个 Python 分布式计算框架）做编排：veRL、SkyRL、NeMo-RL、slime、MILES、ROLL、OAT、open-instruct。</p>
+<blockquote>
+<p><strong>术语</strong>：IS = Importance Sampling（重要性采样），用旧策略生成的样本去估计新策略的梯度时，要乘上的那个修正比值。展开在 <a href="04-训推一致性.html">04 章 §4.6</a>。</p>
+</blockquote>
+<h3 id="_3">从这两张表能直接读出三件事</h3>
+<p><strong>① 🌐 Ray 占了绝对多数。</strong></p>
+<p>18 家里有 8 家明确用 <a href="https://github.com/ray-project/ray">Ray</a>（一个 Python 分布式计算框架）做编排：veRL、SkyRL、NeMo-RL、slime、MILES、ROLL、OAT、open-instruct。</p>
 <p>⚠️ 我的理解：这不是巧合。RL 训练需要的恰好是 Ray 最擅长的东西——<strong>异构角色</strong>（训练进程和推理进程完全不同）、<strong>动态生命周期</strong>（推理引擎要能睡眠、唤醒、重启）、<strong>跨进程对象传递</strong>（样本要从生成侧流到训练侧）。用 <code>torchrun</code> 那套「所有进程跑同一份代码」的模型，表达不了这种拓扑。</p>
 <p>剩下的几家是有意识地不用 Ray：TorchForge 用 Meta 自己的 Monarch，Atropos 干脆把环境做成 HTTP 微服务，PipelineRL 用发布/订阅，AReaL 和 PRIME-RL 直接写原生 Python。</p>
-<p><strong>② 🌐 「多后端」是少数派，而且是奢侈品。</strong><br />
-只有 veRL、ROLL、NeMo-RL、SkyRL 支持多个训练后端。veRL 一家就接了 6 个训练引擎和 4 个推理引擎（✅ 见 <a href="../训练框架/训练框架对比.html">训练框架对比.md §7.5–7.6</a>）。</p>
-<p>而 slime 明确走了反方向：<strong>只支持 Megatron 一个训练后端、SGLang 一个推理后端</strong>。<br />
-🌐 slime README 给的理由是拒绝「为了兼容多后端而把抽象降到最小公分母」——多后端抽象层意味着任何一家的新特性都要等抽象层跟上。<br />
-详见 <a href="slime拆解.html">slime拆解.md</a>。</p>
+<p><strong>② 🌐 「多后端」是少数派，而且是奢侈品。</strong></p>
+<p>只有 veRL、ROLL、NeMo-RL、SkyRL 支持多个训练后端。veRL 一家就接了 6 个训练引擎和 4 个推理引擎（✅ 见 <a href="../训练框架/训练框架对比.html">训练框架对比.md</a>）。</p>
+<p>而 slime 明确走了反方向：<strong>只支持 Megatron 一个训练后端、SGLang 一个推理后端</strong>。🌐 slime README 给的理由是拒绝「为了兼容多后端而把抽象降到最小公分母」——多后端抽象层意味着任何一家的新特性都要等抽象层跟上。详见 <a href="slime拆解.html">slime拆解.md</a>。</p>
 <p><strong>③ ⚠️ 代码量差了一个数量级，但不代表能力差一个数量级。</strong></p>
 <table>
 <thead>
@@ -532,18 +726,21 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 </tr>
 </tbody>
 </table>
-<p>veRL 是 OpenRLHF 的 <strong>12.8 倍</strong>。但这 12.8 倍里，绝大部分不是「RL 算法更强」，而是<strong>后端适配</strong>——6 个训练引擎 × 4 个推理引擎 × 6 个 checkpoint 后端的排列组合。</p>
+<p>veRL ÷ OpenRLHF = 171,584 ÷ 13,411 = <strong>12.8 倍</strong>。但这 12.8 倍里，绝大部分不是「RL 算法更强」，而是<strong>后端适配</strong>——6 个训练引擎 × 4 个推理引擎 × 6 个 checkpoint 后端的排列组合。</p>
 <p>OpenRLHF 只认 DeepSpeed + vLLM 一条路，所以 13,411 行就够了。<strong>如果你的目的是读懂 RL 框架的骨架，OpenRLHF 是最好的入口</strong>，见 <a href="OpenRLHF拆解.html">OpenRLHF拆解.md</a>。</p>
 <hr />
 <h2 id="13">1.3 ✅ 五套自研系统</h2>
 <p>开源榜单之外，五份前沿模型技术报告各自披露了一套自研的 RL 基建。这是本仓库的独特材料——<strong>这五家从来没有被横向对齐过</strong>。</p>
+<h3 id="a-12-a">表 A · 架构口径（和 §1.2 表 A 同栏，可以直接对读）</h3>
 <table>
 <thead>
 <tr>
 <th>模型</th>
 <th>系统名</th>
-<th>是否开源</th>
-<th>一句话定位</th>
+<th>开源</th>
+<th>训推放置</th>
+<th>异步档位</th>
+<th>权重同步怎么做</th>
 <th>✅ 报告出处</th>
 </tr>
 </thead>
@@ -551,40 +748,167 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 <tr>
 <td><strong>GLM-5</strong></td>
 <td><strong>slime</strong></td>
-<td>✅ 开源</td>
-<td>全异步、训推分离，「统一的后训练基础设施」</td>
+<td>✅</td>
+<td><strong>分离</strong></td>
+<td><strong>全异步</strong>（连续生成）</td>
+<td>每 <strong>K</strong> 次梯度更新才推一次，推完<strong>重置优化器</strong></td>
 <td>§3.6 The slime Framework · §4.1.1</td>
 </tr>
 <tr>
 <td><strong>MiniMax-M2</strong></td>
 <td><strong>Forge</strong></td>
-<td>❌ 未开源</td>
-<td>Agent 侧 / 中间件 / 训推侧三层解耦，为 agentic RL 设计</td>
+<td>❌</td>
+<td>分离（三层解耦）</td>
+<td>有界队列，窗口 <code>W = 0.3N</code></td>
+<td>Train Engine 算完 CISPO 梯度后同步回 Rollout Engine</td>
 <td>§6.2</td>
 </tr>
 <tr>
 <td><strong>Kimi-K3</strong></td>
 <td>未命名</td>
 <td>❌</td>
-<td><strong>同置（co-located）</strong> + partial rollout + 外部 KV 池</td>
+<td><strong>同置（co-located）</strong></td>
+<td>同步（但单个样本可跨步）</td>
+<td>未披露实现；🌐 旁证是 Mooncake checkpoint engine</td>
 <td>§5.3 Infra for 1M Agentic RL</td>
 </tr>
 <tr>
 <td><strong>DeepSeek-V4</strong></td>
 <td>未命名</td>
 <td>❌</td>
-<td>Keep Routing / Keep Sampling Mask，主攻训推一致性</td>
+<td>未披露</td>
+<td>未披露</td>
+<td>未披露</td>
 <td>见 <a href="04-训推一致性.html">04</a></td>
 </tr>
 <tr>
 <td><strong>openPangu-2.0-Pro</strong></td>
 <td>未命名</td>
 <td>❌</td>
-<td>唯一给出训推失配<strong>诊断框架</strong>的（三分类）</td>
+<td>未披露</td>
+<td>未披露</td>
+<td>路由记录走 <strong>HCCL</strong> 而非 Ray</td>
 <td>§10</td>
 </tr>
 </tbody>
 </table>
+<h3 id="b_1">表 B · 手段口径</h3>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>长尾怎么处理</th>
+<th>训推一致性手段</th>
+<th>报告里明说的约束</th>
+<th>哪一章展开</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td>靠全异步吸收 + PD 分离 + FP8</td>
+<td>FP8 rollout + bitwise 量化 kernel + <strong>TITO</strong></td>
+<td>744B 参数 / 28.5T token 的规模</td>
+<td><a href="02-架构主轴-同步到全异步.html">02 §2.4</a></td>
+</tr>
+<tr>
+<td><strong>MiniMax-M2</strong></td>
+<td><strong>窗口内贪心 + 前缀树合并</strong></td>
+<td><strong>CISPO</strong>（算法侧 IS 修正）</td>
+<td>10 万+ agent 脚手架</td>
+<td><a href="02-架构主轴-同步到全异步.html">02 §2.4</a></td>
+</tr>
+<tr>
+<td><strong>Kimi-K3</strong></td>
+<td><strong>partial rollout + 外部 KV 池</strong></td>
+<td>全程 <strong>MXFP4 QAT</strong></td>
+<td><em>"within a few hundred GPUs"</em></td>
+<td><a href="02-架构主轴-同步到全异步.html">02 §2.4</a> · <a href="03-权重同步.html">03 §3.5</a></td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>未披露</td>
+<td><strong>batch-invariant 与确定性 kernel 库</strong>，目标逐位可复现</td>
+<td>未披露</td>
+<td><a href="04-训推一致性.html">04 §4.3</a></td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>未披露</td>
+<td><strong>FP16 替代 BF16</strong> + <strong>KPop</strong> + <strong>R3 路由重放</strong></td>
+<td>昇腾 NPU 平台</td>
+<td><a href="04-训推一致性.html">04 §4.2</a> · <a href="04-训推一致性.html">04 §4.4</a></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>术语</strong>：TITO = Token-in-Token-out（token 进 token 出），训练直接吃推理吐出的 token id，不经过「解码成文字再重新分词」。QAT = Quantization-Aware Training（量化感知训练）。CISPO = Clipped Importance Sampling Policy Optimization（裁剪重要性采样策略优化）。PD 分离 = Prefill-Decode Disaggregation（预填充-解码分离），见 <a href="../推理框架/推理优化入门/10-PD分离.html">../推理框架/推理优化入门/10-PD分离.md</a>。</p>
+</blockquote>
+<h3 id="_4">⚠️ 披露程度本身是信息</h3>
+<p>上面两张表里空着的格子，不要当成「这家没做」。把它们重新画成一张<strong>披露地图</strong>，能读出别的东西：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>整体架构</th>
+<th>异步档位</th>
+<th>权重同步细节</th>
+<th>长尾手段</th>
+<th>训推一致性</th>
+<th>给了可验算的数字</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GLM-5</strong></td>
+<td>✅ 有架构描述</td>
+<td>✅ 明说</td>
+<td>半（只说「每 K 步」，K 没给）</td>
+<td>✅</td>
+<td>✅</td>
+<td>规模数字有，耗时数字无</td>
+</tr>
+<tr>
+<td><strong>MiniMax-M2</strong></td>
+<td>✅ 三层图</td>
+<td>✅ 明说 <code>W = 0.3N</code></td>
+<td>⚠️ 只说「同步回去」</td>
+<td>✅</td>
+<td>✅</td>
+<td>有（40× 加速、0.3N）</td>
+</tr>
+<tr>
+<td><strong>Kimi-K3</strong></td>
+<td>半（一句话）</td>
+<td>⚠️ 只说同置</td>
+<td>❌</td>
+<td>✅</td>
+<td>✅</td>
+<td>半（"a few hundred GPUs"）</td>
+</tr>
+<tr>
+<td><strong>DeepSeek-V4</strong></td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>❌</td>
+<td>✅ <strong>专章</strong></td>
+<td>❌</td>
+</tr>
+<tr>
+<td><strong>openPangu-2.0-Pro</strong></td>
+<td>❌</td>
+<td>❌</td>
+<td>半（只提 HCCL 通路）</td>
+<td>❌</td>
+<td>✅ <strong>专章 + 分类学</strong></td>
+<td>半（PCC 阈值）</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这张图要读出两件事：</p>
+<p><strong>① 一家在哪一块写得细，通常就是它真正踩过坑、也真正花过力气的地方。</strong> openPangu 不是五家里最强的模型，但它是唯一一个把「训推失配」拆成分类学（A / B / C 三类）来写的——它在昇腾 NPU 上重做了一遍所有人都在 GPU 上做过的事，所以失配的每一种形态它都亲手撞过。DeepSeek-V4 同理：整份报告里和 RL 基建相关的篇幅几乎全给了 kernel 的逐位可复现。</p>
+<p><strong>② 五家都对「权重同步具体怎么实现」语焉不详。</strong> ⚠️ 我的判断是：<strong>不是不重要，而是它已经被当成一个解决了的工程问题。</strong> <a href="03-权重同步.html">03 章 §3.2</a> 会把这笔账算出来——一个 70B 模型的权重在机内 NVLink 上只要 0.3 秒、跨机 InfiniBand 上只要 2.8 秒，而一轮 rollout 要十分钟量级。<strong>占比在百分之零点几，没人会在技术报告里写一个占比 0.3% 的模块。</strong> 真正贵的不是传输，是「传的时候生成要不要停」——那是 <a href="03-权重同步.html">03 章 §3.5</a> 的话题。</p>
 <h3 id="glm-5-kimi-k3">★★ 最值得注意的一点：GLM-5 和 Kimi-K3 给出了相反的答案</h3>
 <p>同一个问题——「训练和推理该不该放在同一批 GPU 上」——两家顶级团队给出了<strong>完全相反</strong>的选择：</p>
 <blockquote>
@@ -594,39 +918,31 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 ——反而同置。</p>
 </blockquote>
 <p>⚠️ 我的解读：<strong>这不是谁对谁错，是约束不同。</strong> Kimi 那句话自己写出了约束——<em>"within a few hundred GPUs"</em>（把每次实验控制在几百张卡内）。分离部署要求训练侧和推理侧各自独占一批卡，卡少的时候这笔账划不来。而 GLM-5 是 744B 参数、28.5T token 的规模，分离带来的重叠收益足以覆盖额外的卡。</p>
-<p>这条线是 <a href="02-架构主轴-同步到全异步.html">02-架构主轴</a> 的主题，那一篇会把 MiniMax 的第三条路（Windowed FIFO，在两个极端之间插值）也放进来。</p>
+<p>这条线是 <a href="02-架构主轴-同步到全异步.html">02-架构主轴</a> 的主题，那一篇会把 MiniMax 的第三条路（Windowed FIFO，在两个极端之间插值）也放进来，并且把「卡少的时候这笔账划不来」真的算成数字。</p>
 <hr />
 <h2 id="14">1.4 ⚠️ 开源与自研在同一坐标系里的位置</h2>
-<p>把上面两张表叠起来看，能看到一个位置差：</p>
-<div class="codehilite"><pre><span></span><code>    分布式程度
-        ▲
-  全异步 │   AReaL     PipelineRL          ★ GLM-5 / slime
-        │   TorchForge  PRIME-RL
-        │
-一步离策略│   SkyRL   open-instruct    veRL(experimental)
-        │                              ★ MiniMax Forge (Windowed FIFO)
-        │
-    同步 │   TRL      OpenRLHF(默认)   veRL(默认)   ★ Kimi-K3(co-located)
-        │
-        └────────────────────────────────────────────────► 工程复杂度
-           单机可跑         需要 Ray 集群        需要专门的基建团队
+<p>把 §1.2 和 §1.3 两组表叠起来看，能看到一个位置差。纵轴是<strong>异步程度</strong>（buffer 有多深），横轴是<strong>把它跑起来要多少工程</strong>：</p>
+<div class="codehilite"><pre><span></span><code>  异步程度（buffer 深度）
+          ^
+    全异步|  AReaL   PipelineRL   TorchForge   PRIME-RL   [GLM-5 / slime]
+          |
+一步离策略|  SkyRL   open-instruct   veRL(experimental)   [MiniMax Forge W=0.3N]
+          |
+      同步|  TRL   OpenRLHF(default)   veRL(default)      [Kimi-K3 co-located]
+          |
+          +------------------------------------------------------------&gt; 工程复杂度
+             单机可跑        需要 Ray 集群        需要专门的基建团队
+
+   [方括号] = 自研系统     无方括号 = 开源框架
 </code></pre></div>
 
 <p>⚠️ 三点归纳：</p>
-<ol>
-<li>
-<p><strong>开源框架把「异步档位」做成了可选项，自研系统把它做成了架构前提。</strong><br />
-   veRL 在 <code>experimental/</code> 下同时放了同步、一步离策略、全异步三套实现（✅ 实测：<code>one_step_off_policy/</code> 553 行、<code>fully_async_policy/</code> 4,335 行、<code>separation/</code> 1,040 行）——它在<strong>同时探索</strong>。而 GLM-5 直接把全异步写进了架构定义。</p>
-</li>
-<li>
-<p><strong>自研系统普遍比开源框架更「窄」，但更深。</strong><br />
-   Forge 只服务 MiniMax 自己的 agentic 场景，但为此做了 prefix tree merging、全局 L3 KV 池这些开源框架里没有的东西。反过来，开源框架为了通用性必须留抽象层，深度优化就难做。</p>
-</li>
-<li>
-<p><strong>slime 是唯一一个「既是自研又是开源」的样本。</strong><br />
-   它既在 GLM-5 报告里被当作生产基建描述（✅ <em>"the unified post-training infrastructure for GLM-5"</em>），又是一个能 clone 下来读的开源仓库。这让它成为本目录唯一可以<strong>报告与源码互相印证</strong>的对象——<a href="slime拆解.html">slime拆解.md</a> 就是干这个的。</p>
-</li>
-</ol>
+<p><strong>1. 开源框架把「异步档位」做成了可选项，自研系统把它做成了架构前提。</strong><br />
+veRL 在 <code>experimental/</code> 下同时放了同步、一步离策略、全异步三套实现（✅ 实测：<code>one_step_off_policy/</code> 553 行、<code>fully_async_policy/</code> 4,335 行、<code>separation/</code> 1,040 行）——它在<strong>同时探索</strong>。而 GLM-5 直接把全异步写进了架构定义。</p>
+<p><strong>2. 自研系统普遍比开源框架更「窄」，但更深。</strong><br />
+Forge 只服务 MiniMax 自己的 agentic 场景，但为此做了 prefix tree merging、全局 L3 KV 池这些开源框架里没有的东西。反过来，开源框架为了通用性必须留抽象层，深度优化就难做。</p>
+<p><strong>3. slime 是唯一一个「既是自研又是开源」的样本。</strong><br />
+它既在 GLM-5 报告里被当作生产基建描述（✅ <em>"the unified post-training infrastructure for GLM-5"</em>），又是一个能 clone 下来读的开源仓库。这让它成为本目录唯一可以<strong>报告与源码互相印证</strong>的对象——<a href="slime拆解.html">slime拆解.md</a> 就是干这个的。</p>
 <hr />
 <h2 id="15">1.5 本章小结</h2>
 <table>
@@ -642,6 +958,10 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 <td>⚠️ 归纳</td>
 </tr>
 <tr>
+<td>一轮同步迭代里，②④ 两侧各有一段时间完全空着——后六章都在填这几格</td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
 <td>Ray 在开源 RL 框架里占绝对多数（18 家中 8 家）</td>
 <td>🌐</td>
 </tr>
@@ -650,12 +970,24 @@ star 数与能力描述来源同上（HF 横评，访问于 2026-08）+ 各仓�
 <td>🌐 + ✅</td>
 </tr>
 <tr>
-<td>veRL 171,584 行 vs OpenRLHF 13,411 行 = 12.8 倍，差距主要在后端适配而非算法</td>
+<td>veRL 171,584 行 ÷ OpenRLHF 13,411 行 = 12.8 倍，差距主要在后端适配而非算法</td>
 <td>✅ 实测 + ⚠️ 解读</td>
+</tr>
+<tr>
+<td>18 家里只有 4 家的权重同步实现被本仓库核到；其余的 <code>—</code> 是「没核到」不是「不支持」</td>
+<td>⚠️ 口径声明</td>
 </tr>
 <tr>
 <td>GLM-5 选分离、Kimi-K3 选同置——相反的答案，不同的约束</td>
 <td>✅ 双方原文 + ⚠️ 解读</td>
+</tr>
+<tr>
+<td>五家都对权重同步细节语焉不详，因为它在端到端里只占百分之零点几（账见 <a href="03-权重同步.html">03 §3.2</a>）</td>
+<td>⚠️ 推断</td>
+</tr>
+<tr>
+<td>披露程度本身是信息：写得最细的那一块，就是那家踩坑最多的那一块</td>
+<td>⚠️ 归纳</td>
 </tr>
 </tbody>
 </table>

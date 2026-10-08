@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -250,62 +255,114 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一篇干什么</strong>：把前六章的坐标系收成一张可执行的决策图。<br />
 <strong>难度</strong> ★<br />
-<strong>前置</strong>：读过 <a href="01-格局全景.html">01-格局全景.md</a> 和 <a href="02-架构主轴-同步到全异步.html">02-架构主轴-同步到全异步.md</a> 就够了。</p>
+<strong>前置</strong>：读过 <a href="01-格局全景.html">01-格局全景.md</a> 和 <a href="02-架构主轴-同步到全异步.html">02-架构主轴-同步到全异步.md</a> 就够了。<br />
+<strong>读法</strong>：这一篇的两张表（§7.2 的同口径对照表、§7.4 的自研触发条件）是可以直接打印出来对着勾的。⚠️ 凡是本文的主观判断都标了 ⚠️，请当成「一个人的看法」而不是结论。</p>
 </blockquote>
 <hr />
 <h2 id="71">7.1 · 先问三个问题，不是先看框架</h2>
 <p>⚠️ 我见过最常见的错误是「先挑框架，再想需求」。RL 框架的选型，<strong>80% 由下面三个问题决定</strong>，剩下 20% 才是框架本身的优劣：</p>
 <div class="codehilite"><pre><span></span><code>Q1  你有多少卡？
-    ├─ ≤ 8 卡          → 同置（colocated）。异步的收益还没有它的复杂度贵。
-    ├─ 数十 ~ 数百卡    → ★ 分水岭。见 Q2。
-    └─ 上千卡          → 分离 + 异步几乎是唯一答案。
+    +- 8 卡以内         -&gt; 同置（colocated）。异步的收益还没有它的复杂度贵。
+    +- 数十 ~ 数百卡    -&gt; (*) 分水岭。见 Q2。
+    +- 上千卡           -&gt; 分离 + 异步几乎是唯一答案。
 
 Q2  你的轨迹有多长、多参差？
-    ├─ 数学/短推理（输出 &lt; 4K token，长度接近） → 长尾不严重，同步够用
-    ├─ 长推理（16K~32K）                        → ★ 长尾开始吃掉一半以上时间
-    └─ Agentic（多轮 + 工具 + 环境等待）        → 必须异步，且必须有沙箱
+    +- 数学/短推理（输出 4K token 以内，长度接近） -&gt; 长尾不严重，同步够用
+    +- 长推理（16K ~ 32K）                         -&gt; (*) 长尾开始吃掉一半以上时间
+    +- Agentic（多轮 + 工具 + 环境等待）           -&gt; 必须异步，且必须有沙箱
 
 Q3  你要改的是算法，还是要跑通一个模型？
-    ├─ 改算法（试新 loss / 新 advantage）  → veRL（注册表最全）或 OpenRLHF（最好改）
-    └─ 跑模型（把一个已知配方跑到生产）    → slime（Megatron 后端最成熟）
+    +- 改算法（试新 loss / 新 advantage）  -&gt; veRL（注册表最全）或 OpenRLHF（最好改）
+    +- 跑模型（把一个已知配方跑到生产）    -&gt; slime（Megatron 后端最成熟）
 </code></pre></div>
 
-<p>⚠️ <strong>Q1 和 Q2 会互相抵消。</strong> 卡少但轨迹长（比如 8 卡跑 32K agentic），你既不能靠加卡缩短长尾，也不能靠同步硬扛——这是最难受的位置。这时候 ✅ Kimi-K3 的答案（同置 + partial rollout，见 <a href="02-架构主轴-同步到全异步.html">02 章 §2.4</a>）比 GLM-5 的答案（全异步分离）更值得抄。</p>
-<hr />
-<h2 id="72">7.2 · 决策图</h2>
-<div class="codehilite"><pre><span></span><code>                         我要做 RL 后训练
-                                 │
-           ┌─────────────────────┼───────────────────────┐
-           │                     │                       │
- 只想快速验证一个想法   要长期迭代一条产线      要做算法研究/发论文
-           │                     │                       │
-           ▼                     ▼                       ▼
-  ┌─────────────────┐    ┌───────────────┐       ┌───────────────┐
-  │       TRL       │    │  看后端偏好   │       │     veRL      │
-  │ 单机 · 配置最少 │    └───────┬───────┘       │ 14 优势估计器 │
-  └─────────────────┘            │               │  12 策略损失  │
-                     ┌───────────┴───────────┐   │  6 训练后端   │
-                     │                       │   └───────────────┘
-                     ▼                       ▼
-             已有 MCore 经验           HF 生态更熟
-                     │                       │
-                     ▼                       ▼
-            ┌──────────────────┐    ┌──────────────────┐
-            │      slime       │    │     OpenRLHF     │
-            │      72K 行      │    │      13K 行      │
-            │  MCore + SGLang  │    │    DS + vLLM     │
-            │      全异步      │    │  Hybrid Engine   │
-            └──────────────────┘    └──────────────────┘
-                     │
-                     ├─→ 要 Agentic？slime 自带 claude_code / codex harness
-                     └─→ 要国产卡？看 veRL 的 hccl checkpoint engine
-</code></pre></div>
-
-<p>⚠️ 这张图刻意<strong>没有画「最好的那个」</strong>。因为：</p>
+<blockquote>
+<p><strong>术语</strong>：<strong>同置</strong>（colocated）= 训练和生成共用同一批 GPU，轮流用。<strong>分离</strong>（disaggregated）= 训练卡和生成卡是两批不同的卡，同时各干各的。详见 <a href="02-架构主轴-同步到全异步.html">02 章</a>。</p>
+</blockquote>
+<p>⚠️ <strong>Q1 和 Q2 会互相抵消。</strong> 卡少但轨迹长（比如 8 卡跑 32K agentic），你既不能靠加卡缩短长尾，也不能靠同步硬扛 —— 这是最难受的位置。这时候 ✅ Kimi-K3 的答案（同置 + partial rollout，见 <a href="02-架构主轴-同步到全异步.html">02 章 §2.4</a>）比 GLM-5 的答案（全异步分离）更值得抄，因为 partial rollout 不要求你有两批卡。</p>
+<h3 id="_1">三个具体场景，走一遍这三个问题</h3>
 <table>
 <thead>
 <tr>
-<th>维度</th>
+<th>场景</th>
+<th>Q1 卡数</th>
+<th>Q2 轨迹</th>
+<th>Q3 目标</th>
+<th>走到哪</th>
+<th>决定性的是哪一问</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A</strong> 高校实验室，做数学推理的 GRPO 变体，要发论文</td>
+<td>8×A100</td>
+<td>输出 &lt; 4K，长度接近</td>
+<td>改算法</td>
+<td><strong>先 OpenRLHF 跑通 → 再换 veRL 做消融</strong></td>
+<td>Q3。Q1/Q2 都说「同步就够」，所以框架选型只剩「哪个好改」</td>
+</tr>
+<tr>
+<td><strong>B</strong> 公司产线，训一个代码 agent</td>
+<td>256×H100</td>
+<td>32K + 工具调用 + 沙箱</td>
+<td>跑模型</td>
+<td><strong>slime</strong></td>
+<td>Q2。agentic 把「必须异步 + 必须有沙箱」变成硬门槛，而 slime 自带 harness</td>
+</tr>
+<tr>
+<td><strong>C</strong> 创业团队，主力 H800，同时要备一套国产卡方案</td>
+<td>16×H800</td>
+<td>16K 长推理</td>
+<td>跑模型</td>
+<td><strong>veRL</strong></td>
+<td>都不是 —— 是 §7.2 那条<strong>横切判断</strong>：国产卡支持压倒其他所有考虑</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 场景 C 要注意：<strong>横切判断（国产卡、Agentic、特殊模型结构）会直接否决三问的结论。</strong> 先过横切判断，再走三问。</p>
+<hr />
+<h2 id="72">7.2 · 决策图与同口径对照表</h2>
+<div class="codehilite"><pre><span></span><code>我要做 RL 后训练
+│
+├─ 只想快速验证一个想法
+│  └─&gt; TRL
+│
+├─ 要做算法研究 / 发论文
+│  └─&gt; veRL
+│
+└─ 要长期迭代一条产线
+   │
+   ├─ 已有 Megatron 经验
+   │  └─&gt; slime
+   │
+   └─ HF 生态更熟
+      └─&gt; OpenRLHF
+</code></pre></div>
+
+<p><strong>两条横切判断</strong>（和上面的树正交，先过这两条）：</p>
+<table>
+<thead>
+<tr>
+<th>横切条件</th>
+<th>结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>要跑<strong>国产卡</strong>（昇腾等）</td>
+<td>看 veRL 的 hccl checkpoint engine；⚠️ 其余三家都要自己补通信层</td>
+</tr>
+<tr>
+<td>要做 <strong>Agentic + 沙箱</strong></td>
+<td>slime 自带 <code>claude_code</code> / <code>codex</code> harness（见 <a href="06-AgenticRL-环境与沙箱.html">06 章 §6.4</a>）；veRL 有 <code>agent_loop/</code> 但沙箱要自己接；OpenRLHF 把用户代码挂在推理引擎侧；TRL 没有</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 这张图刻意<strong>没有画「最好的那个」</strong>。下面这张表是同一组口径下的横向对照 —— <strong>口径一致比数字本身重要</strong>，所以每一行都先说清楚这一行是怎么量的。</p>
+<table>
+<thead>
+<tr>
+<th>口径（这一行怎么量）</th>
 <th>veRL</th>
 <th>slime</th>
 <th>OpenRLHF</th>
@@ -314,151 +371,299 @@ Q3  你要改的是算法，还是要跑通一个模型？
 </thead>
 <tbody>
 <tr>
-<td>代码量</td>
-<td>171,584</td>
-<td>72,468</td>
-<td><strong>13,411</strong></td>
-<td>—</td>
+<td><strong>代码量</strong>：本地 clone 后统计（commit 见 <a href="README.html">README</a>）</td>
+<td>✅ 171,584 行 / 649 文件</td>
+<td>✅ 72,468 行 / 332 个 <code>.py</code></td>
+<td>✅ <strong>13,411 行 / 65 个 <code>.py</code></strong></td>
+<td>⚠️ 未实测</td>
 </tr>
 <tr>
-<td>上手成本</td>
+<td><strong>算法菜单</strong>：数注册表里的条目</td>
+<td>✅ <strong>26 项</strong>（14 优势估计器 + 12 策略损失）</td>
+<td>中：常见几种</td>
+<td>6 个</td>
+<td>中：HF 维护的主流几种</td>
+</tr>
+<tr>
+<td><strong>训练后端</strong>：官方文档声明支持的</td>
+<td>✅ <strong>最广（6 个）</strong></td>
+<td>Megatron（MCore）一家</td>
+<td>DeepSpeed 一家</td>
+<td>HF Accelerate 生态</td>
+</tr>
+<tr>
+<td><strong>推理后端</strong></td>
+<td>vLLM / SGLang</td>
+<td>SGLang</td>
+<td>vLLM</td>
+<td>HF <code>generate</code> / vLLM</td>
+</tr>
+<tr>
+<td><strong>异步程度</strong>：看有没有独立的异步训练入口</td>
+<td>✅ <strong>全谱系</strong>（<code>experimental/</code> 下四套）</td>
+<td>✅ <strong>全异步</strong>（<code>train_async.py</code>）</td>
+<td>有界队列（<code>--train.async_queue_size</code>）</td>
+<td>同步</td>
+</tr>
+<tr>
+<td><strong>权重同步方式</strong>：见 <a href="03-权重同步.html">03 章</a> 的传输层七档</td>
+<td>多档可选，含 hccl checkpoint engine</td>
+<td>MCore ↔ SGLang 直连</td>
+<td><strong>Hybrid Engine</strong>（同置，权重不出卡）</td>
+<td>同进程，不需要同步</td>
+</tr>
+<tr>
+<td><strong>沙箱 / agent 环境</strong></td>
+<td><code>experimental/agent_loop/</code> + <code>tools/</code>，<strong>沙箱要自己接</strong></td>
+<td>✅ <code>slime/agent/</code> 2,727 行，<strong>自带真实 CLI harness</strong></td>
+<td>执行器与算法解耦，用户代码挂推理侧</td>
+<td>无</td>
+</tr>
+<tr>
+<td><strong>上手难度</strong> ⚠️ 主观</td>
 <td>高</td>
 <td>中</td>
 <td><strong>低</strong></td>
 <td><strong>最低</strong></td>
 </tr>
 <tr>
-<td>后端覆盖</td>
-<td><strong>最广</strong></td>
-<td>Megatron+SGLang 二选一</td>
-<td>DeepSpeed+vLLM</td>
-<td>HF 生态</td>
+<td><strong>可读性</strong> ⚠️ 主观</td>
+<td>低（抽象层多、配置深）</td>
+<td>中（刻意不做抽象，但行数大）</td>
+<td><strong>高</strong></td>
+<td>高</td>
 </tr>
 <tr>
-<td>算法菜单</td>
-<td><strong>最全</strong>（26 个注册项）</td>
-<td>中</td>
-<td>6 个</td>
-<td>中</td>
-</tr>
-<tr>
-<td>异步档位</td>
-<td><strong>全谱系</strong>（experimental/ 四套）</td>
-<td><strong>全异步</strong>（<code>train_async.py</code>）</td>
-<td>有界队列</td>
-<td>同步</td>
-</tr>
-<tr>
-<td>生产验证</td>
+<td><strong>生产验证</strong>：有没有前沿模型公开说自己在用</td>
 <td>多家</td>
 <td>✅ <strong>GLM-5 自用</strong></td>
 <td>多家</td>
-<td>教学/小规模</td>
+<td>教学 / 小规模</td>
+</tr>
+<tr>
+<td><strong>社区活跃度</strong></td>
+<td>⚠️ 见下方说明</td>
+<td>⚠️ 见下方说明</td>
+<td>⚠️ 见下方说明</td>
+<td>⚠️ 见下方说明</td>
 </tr>
 </tbody>
 </table>
-<p>（✅ 数字均为本地 clone 实测，commit 见 <a href="README.html">README</a>）</p>
+<blockquote>
+<p>⚠️ <strong>为什么「社区活跃度」这一行空着。</strong> 这一项的时效性比其他所有行都强：star 数、commit 频率、issue 响应速度三个月就能翻盘，而本仓库的材料访问于 2026-08。<strong>给一个过期的数字比不给更有害</strong> —— 它会让你以为自己做了调研。请自己花十分钟查这三项：① 近 90 天的 commit 数；② 最近 20 个 issue 的中位首次响应时间；③ 有没有稳定的 release 节奏（而不是只有 main 分支在滚）。</p>
+<p>⚠️ <strong>「上手难度」和「可读性」这两行是我的主观判断</strong>，依据是读源码时「从入口追到一次权重更新要跳几个文件」。你的背景不同，结论可能相反 —— 比如一个 Megatron 老手会觉得 slime 比 OpenRLHF 好懂得多。</p>
+</blockquote>
 <hr />
-<h2 id="73">7.3 · ★ 三个最容易踩的坑</h2>
+<h2 id="73">7.3 · ★ 四个最容易踩的坑</h2>
 <h3 id="1">坑 1：以为「异步」是一个开关</h3>
-<p>⚠️ <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 和 <a href="03-权重同步.html">03 章 §3.6</a> 已经论证过：<strong>异步至少是两个独立的旋钮</strong>。</p>
-<div class="codehilite"><pre><span></span><code>K_buf   = rollout 缓冲深度      （OpenRLHF: --train.async_queue_size，默认 1）
-K_sync  = 权重同步间隔          （slime:    --update-weights-interval）
+<p>⚠️ <a href="02-架构主轴-同步到全异步.html">02 章 §2.2</a> 和 <a href="03-权重同步.html">03 章 §3.6</a> 已经论证过：<strong>异步至少是两个独立的旋钮。</strong></p>
+<div class="codehilite"><pre><span></span><code>K_buf   = rollout 缓冲深度     （OpenRLHF: --train.async_queue_size，默认 1）
+K_sync  = 权重同步间隔         （slime:    --update-weights-interval）
 
 真实陈旧度 ≈ K_buf + K_sync
 </code></pre></div>
 
-<p>⚠️ 常见的翻车方式是：只调了 <code>K_buf</code>，以为陈旧度是 1，实际 <code>K_sync=8</code>，真实陈旧度接近 9。<strong>训练崩了却查不出原因。</strong></p>
-<p><strong>实践建议</strong>：先把 <code>K_sync = 1</code> 固定住（每步都同步权重），只调 <code>K_buf</code>，等收敛稳定了再放松 <code>K_sync</code>。</p>
+<p>⚠️ 常见的翻车方式是：只调了 <code>K_buf</code>，以为陈旧度是 1，实际 <code>K_sync = 8</code>，真实陈旧度接近 1 + 8 = <strong>9</strong>。<strong>训练崩了却查不出原因</strong> —— 因为监控面板上显示的 <code>async_queue_size = 1</code> 看起来一切正常。</p>
+<p><strong>实践建议</strong>：先把 <code>K_sync = 1</code> 固定住（每步都同步权重），只调 <code>K_buf</code>，等收敛稳定了再放松 <code>K_sync</code>。⚠️ 并且<strong>把真实陈旧度打成一个独立的监控指标</strong>，而不是靠两个配置项各自看。</p>
 <h3 id="2">坑 2：训推不一致，但你查不出来</h3>
 <p>⚠️ <a href="04-训推一致性.html">04 章</a> 整章都在讲这个。对新手最重要的一条是：</p>
 <blockquote>
 <p><strong>训推不一致的表现不是报错，是「训练看起来在跑，但就是不涨」。</strong></p>
 </blockquote>
 <p>✅ 最低成本的自查（openPangu 用的就是这个思路）：</p>
-<div class="codehilite"><pre><span></span><code>① 拿同一批 prompt，分别用推理引擎和训练引擎算一遍 logprob
-② 算两者的皮尔逊相关系数（PCC, Pearson Correlation Coefficient）
-③ PCC &lt; 0.99  →  ★ 有问题，先别调超参，先查一致性
+<div class="codehilite"><pre><span></span><code>(1) 拿同一批 prompt，分别用推理引擎和训练引擎算一遍 logprob
+(2) 算两者的皮尔逊相关系数（PCC = Pearson Correlation Coefficient）
+(3) PCC &lt; 0.99  -&gt;  (*) 有问题，先别调超参，先查一致性
 </code></pre></div>
 
-<p>⚠️ 这个 0.99 阈值来自 ✅ openPangu 的 KPop 方法（<a href="04-训推一致性.html">04 章 §4.6</a>）——它把 PCC 当作在线判据来切换掩码策略。<strong>你至少可以把它当离线体检用。</strong></p>
+<p>⚠️ 这个 0.99 阈值来自 ✅ openPangu 的 KPop 方法（<a href="04-训推一致性.html">04 章 §4.6</a>）—— 它把 PCC 当作<strong>在线判据</strong>来切换掩码策略。<strong>你至少可以把它当离线体检用。</strong></p>
 <h3 id="3">坑 3：过滤了样本，却引入了偏差</h3>
 <p>⚠️ <a href="05-算法与框架的接口.html">05 章 §5.5</a> 讲的非对称过滤陷阱，是最隐蔽的一个：</p>
-<div class="codehilite"><pre><span></span><code>你以为的：      过滤掉全对/全错的组 → 保留有梯度信号的组 → 效率提升
-实际发生的：    难题耗时长 → 难题的样本更陈旧 → 但难题恰好是「有信号」的那批
-                → 存活下来的样本系统性偏陈旧 → batch 级的 staleness 门控看不见
+<div class="codehilite"><pre><span></span><code>你以为的：    过滤掉全对/全错的组 -&gt; 保留有梯度信号的组 -&gt; 效率提升
+实际发生的：  难题耗时长 -&gt; 难题的样本更陈旧 -&gt; 但难题恰好是「有信号」的那批
+              -&gt; 存活下来的样本系统性偏陈旧 -&gt; batch 级的陈旧度门控看不见
 </code></pre></div>
 
-<p><strong>实践建议</strong>：把 staleness 记录到<strong>样本级</strong>而不是 batch 级，并且分组统计。✅ GLM-5 更进一步——它记的是一条轨迹跨过的<strong>权重版本序列</strong> <code>(w₀, ..., wₖ)</code>，用最老的那个判断（<a href="06-AgenticRL-环境与沙箱.html">06 章 §6.6</a>）。</p>
+<p>⚠️ 而 <a href="06-AgenticRL-环境与沙箱.html">06 章</a> 的失败处理一节给出了<strong>第二个同向的偏差</strong>：环境崩溃率和难度正相关，排除崩溃样本又会多丢难题。<strong>两个偏差叠加，方向一致，都在把训练分布往简单题推。</strong></p>
+<p><strong>实践建议</strong>：把陈旧度记录到<strong>样本级</strong>而不是 batch 级，并且<strong>按难度分组统计</strong>。✅ GLM-5 更进一步 —— 它记的是一条轨迹跨过的<strong>权重版本序列</strong> <code>(w₀, ..., wₖ)</code>，用最老的那个判断（<a href="06-AgenticRL-环境与沙箱.html">06 章 §6.6</a>）。</p>
+<h3 id="4">坑 4：⚠️ 读性能数字时的三个口径陷阱</h3>
+<p>选型阶段要读大量「我们比它快 X」的宣传。下面三个口径错误在这类材料里高频出现，<strong>而且全都会让数字看起来更漂亮</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>陷阱</th>
+<th>错在哪</th>
+<th>正确算法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>把「时间减少 X%」说成「加速 X%」</strong></td>
+<td>这是两个不同的数</td>
+<td><code>加速倍数 = 1 ÷ (1 − 时间减少比例)</code>。时间减少 <strong>50%</strong> = 加速 <strong>2 倍</strong>（也就是「快了 100%」）；时间减少 <strong>90%</strong> = 加速 <strong>10 倍</strong>。反过来，「加速 50%」只对应时间减少 <strong>33.3%</strong></td>
+</tr>
+<tr>
+<td><strong>把「百分点」写成「百分比」</strong></td>
+<td>两个比例相减得到的是<strong>百分点</strong></td>
+<td>GPU 利用率从 40% 提到 55%，是提高了 <strong>15 个百分点</strong>，相对提升是 15÷40 = <strong>37.5%</strong>。写成「提升 15%」会被读成 40%×1.15 = 46%</td>
+</tr>
+<tr>
+<td><strong>带宽单位混用</strong></td>
+<td><strong>GB/s 和 Gb/s 差 8 倍</strong>；聚合带宽和单向带宽又差 2 倍</td>
+<td>见下面这笔账</td>
+</tr>
+</tbody>
+</table>
+<p>带宽这一项值得单独算一遍，因为它直接影响 <a href="03-权重同步.html">03 章</a> 的权重同步选型：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>算什么</th>
+<th>算式</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>NVLink（第四代，H100）标称</td>
+<td>—</td>
+<td><strong>900 GB/s</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td>⚠️ 但这个 900 是<strong>双向聚合</strong>（发 + 收加起来）</td>
+<td>900 ÷ 2</td>
+<td><strong>单向 450 GB/s</strong></td>
+</tr>
+<tr>
+<td>③</td>
+<td>InfiniBand NDR 标称</td>
+<td>—</td>
+<td><strong>400 Gb/s</strong>（小写 b = bit）</td>
+</tr>
+<tr>
+<td>④</td>
+<td>换成字节</td>
+<td>400 ÷ 8</td>
+<td><strong>50 GB/s</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td><strong>同单位、同方向</strong>比</td>
+<td>450 ÷ 50</td>
+<td><strong>9 倍</strong></td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>⚠️ 如果直接拿 900 ÷ 50</td>
+<td>900 ÷ 50</td>
+<td><strong>18 倍 —— 错，多算了一倍</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>⑥ 这个「18 倍」是本仓库见过最多的一个数值错误。</strong> 它的来源是拿「双向聚合的 NVLink」去比「单向的 IB」。做权重同步选型时，这一倍的差别会直接决定「跨节点同步到底可不可接受」的判断。</p>
 <hr />
 <h2 id="74">7.4 · ⚠️ 什么时候不该自研</h2>
-<p>五家前沿模型全都自研了 RL 基建（<a href="01-格局全景.html">01 章 §1.3</a>）。⚠️ 但这<strong>不构成你也该自研的理由</strong>——它们自研是因为踩到了下面这些线：</p>
+<p>五家前沿模型全都自研了 RL 基建（<a href="01-格局全景.html">01 章 §1.3</a>）。⚠️ 但这<strong>不构成你也该自研的理由</strong> —— 它们自研是因为踩到了下面这些线：</p>
 <table>
 <thead>
 <tr>
 <th>触发自研的真实原因</th>
 <th>你踩到了吗</th>
+<th>谁因为这条自研的</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>训练规模超过开源框架验证过的范围（数千卡）</td>
-<td>大概率没有</td>
+<td>⚠️ 大概率没有</td>
+<td>—</td>
 </tr>
 <tr>
-<td>用了非 NVIDIA 硬件（昇腾等），通信/kernel 层要重写</td>
-<td>✅ openPangu 是这个原因</td>
+<td>用了非 NVIDIA 硬件（昇腾等），通信层 / kernel 层要重写</td>
+<td><strong>这一条最可能成立</strong></td>
+<td>✅ openPangu</td>
 </tr>
 <tr>
 <td>算力预算是硬约束，必须把利用率榨到极致</td>
+<td>⚠️ 大概率没有</td>
 <td>✅ Kimi-K3 的 <em>"within a few hundred GPUs"</em></td>
 </tr>
 <tr>
 <td>有和框架强耦合的自研模型结构（MoE 路由、MLA 变体）</td>
 <td>可能</td>
+<td>—</td>
 </tr>
 <tr>
-<td>环境/沙箱规模到了数十万并发（DeepSeek DSec）</td>
-<td>大概率没有</td>
+<td>环境 / 沙箱规模到了数十万并发</td>
+<td>⚠️ 大概率没有</td>
+<td>✅ DeepSeek DSec（见 <a href="06-AgenticRL-环境与沙箱.html">06 章 §6.3</a>）</td>
 </tr>
 </tbody>
 </table>
 <p>⚠️ 我的判断：<strong>除了「非 NVIDIA 硬件」这一条，其余四条在绝大多数团队都不成立。</strong></p>
-<p>而且注意 ✅ 一个关键事实：<strong>slime 本身就是 GLM 的自研框架，但它是开源的</strong>（<a href="slime拆解.html">slime拆解</a>）。也就是说，「自研」和「用开源」在 2026 年已经不是二选一——<strong>你可以直接用一个被前沿模型生产验证过的开源框架</strong>。</p>
+<p>而且注意 ✅ 一个关键事实：<strong>slime 本身就是 GLM 的自研框架，但它是开源的</strong>（见 <a href="slime拆解.html">slime拆解.md</a>）。也就是说，「自研」和「用开源」在 2026 年已经不是二选一 —— <strong>你可以直接用一个被前沿模型生产验证过的开源框架。</strong></p>
 <p>⚠️ 更现实的做法是<strong>分层自研</strong>：</p>
-<div class="codehilite"><pre><span></span><code>应该考虑自己写的：    环境 / 沙箱 / reward 函数 / agent harness
-                     （✅ 三家报告都强调这一层要与训练循环解耦——
-                       GLM「isolates task-specific logic from the core training loop」
-                       slime「They do not fork the training kernel」
-                       OpenRLHF 把用户代码挂在推理引擎侧）
+<div class="codehilite"><pre><span></span><code>应该考虑自己写的：  环境 / 沙箱 / reward 函数 / agent harness
+                    （三家报告都强调这一层要与训练循环解耦：
+                      GLM     : &quot;isolates task-specific logic from the core training loop&quot;
+                      slime   : &quot;They do not fork the training kernel&quot;
+                      OpenRLHF: 把用户代码挂在推理引擎侧）
 
-基本不该自己写的：    训练后端 / 推理后端 / 权重同步传输层 / 并行策略
-                     （这些是 10,000+ 行起步且和硬件强耦合的部分）
+基本不该自己写的：  训练后端 / 推理后端 / 权重同步传输层 / 并行策略
+                    （这些是 10,000+ 行起步、且和硬件强耦合的部分）
 </code></pre></div>
 
-<p>★ <strong>这条分界线不是我编的，它是三家独立表述后收敛出来的同一条原则。</strong> 它也解释了为什么 <a href="06-AgenticRL-环境与沙箱.html">06 章</a> 说「评测的 harness 和训练的 environment 是同一件东西的两面」——<strong>这一层本来就该是你自己的资产</strong>。</p>
+<p>★ <strong>这条分界线不是我编的，它是三家独立表述后收敛出来的同一条原则。</strong> 它也解释了为什么 <a href="06-AgenticRL-环境与沙箱.html">06 章 §6.5</a> 说「评测的 harness 和训练的 environment 是同一件东西的两面」—— <strong>这一层本来就该是你自己的资产</strong>：它编码的是你的业务、你的数据、你的评判标准，换框架时它应该能整体搬走。</p>
 <hr />
 <h2 id="75">7.5 · ⚠️ 一份务实的上手顺序</h2>
 <p>如果你从零开始，我会这样走：</p>
-<div class="codehilite"><pre><span></span><code>第 1 周   跑通同步 PPO/GRPO，小模型（1.5B~7B）、短输出（&lt; 2K）
-          用 OpenRLHF。目标不是效果，是把五个模块（[01 章 §1.1]）都摸一遍。
-          ★ 必须做：读 openrlhf/cli/train_ppo_ray.py:660-700 的参数断言
-
-第 2 周   加长输出到 16K，观察生成时间占比
-          ★ 你会亲眼看到「生成占 80% 时间」（✅ OpenRLHF README 原文）
-          此时才有资格讨论异步
-
-第 3 周   开 --train.async_enable，K_buf=1，K_sync=1
-          对比 reward 曲线，确认没崩。这一步验证的是你的过滤/掩码没写错。
-
-第 4 周   做训推一致性体检（§7.3 坑 2 的 PCC 三步）
-          ⚠️ 我的建议是这一步越早越好，很多人是第 8 周才发现问题
-
-第 2 月   按 Q1/Q2 决定是否换 slime / veRL
-          换的成本主要在数据和 reward，不在框架 API
-</code></pre></div>
-
-<p>⚠️ <strong>注意第 4 周那一条</strong>。训推一致性检查在教程里从来没人讲，但它是 <a href="04-训推一致性.html">04 章</a> 整章存在的理由——✅ 五家前沿报告里有四家专门写了这个问题。<strong>它不是边角料，是主线。</strong></p>
+<table>
+<thead>
+<tr>
+<th>时间</th>
+<th>做什么</th>
+<th>目标</th>
+<th>★ 必须做的那一件事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>第 1 周</strong></td>
+<td>跑通同步 PPO/GRPO，小模型（1.5B~7B）、短输出（&lt; 2K），用 OpenRLHF</td>
+<td>不是效果，是把五个模块（<a href="01-格局全景.html">01 章 §1.1</a>）都摸一遍</td>
+<td>读 <code>openrlhf/cli/train_ppo_ray.py:660-700</code> 的参数断言 —— 那里写着哪些组合是非法的</td>
+</tr>
+<tr>
+<td><strong>第 2 周</strong></td>
+<td>把输出加长到 16K，观察生成时间占比</td>
+<td>亲眼看到「生成占 80% 时间」（✅ OpenRLHF README 原文）</td>
+<td>此时才有资格讨论异步</td>
+</tr>
+<tr>
+<td><strong>第 3 周</strong></td>
+<td>开 <code>--train.async_enable</code>，<code>K_buf=1</code>、<code>K_sync=1</code></td>
+<td>对比 reward 曲线，确认没崩</td>
+<td>这一步验证的是你的过滤和掩码没写错，不是验证异步有多快</td>
+</tr>
+<tr>
+<td><strong>第 4 周</strong></td>
+<td>做训推一致性体检（§7.3 坑 2 的 PCC 三步）</td>
+<td>拿到一个 PCC 数字</td>
+<td>⚠️ 这一步越早越好，很多人是第 8 周才发现问题</td>
+</tr>
+<tr>
+<td><strong>第 2 月</strong></td>
+<td>按 Q1/Q2 决定是否换 slime / veRL</td>
+<td>—</td>
+<td>换的成本主要在数据和 reward，<strong>不在框架 API</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>注意第 4 周那一条。</strong> 训推一致性检查在教程里从来没人讲，但它是 <a href="04-训推一致性.html">04 章</a> 整章存在的理由 —— ✅ 五家前沿报告里有四家专门写了这个问题。<strong>它不是边角料，是主线。</strong></p>
+<p>⚠️ 如果你要做 Agentic RL，在第 2 月之前再插一步：按 <a href="06-AgenticRL-环境与沙箱.html">06 章</a> 的「账一」算一遍你的沙箱规模（轨迹数 × 步数 × 每步秒数），<strong>在写第一行环境代码之前就知道自己要开多少个沙箱、要多少内存</strong>。这笔账会直接决定你选容器还是 microVM。</p>
 <hr />
 <h2 id="76">7.6 · 本篇小结</h2>
 <table>
@@ -474,24 +679,40 @@ K_sync  = 权重同步间隔          （slime:    --update-weights-interval）
 <td>⚠️ 我的归纳</td>
 </tr>
 <tr>
-<td>卡少 + 轨迹长是最难受的位置，抄 Kimi 而不是抄 GLM</td>
+<td>⚠️ <strong>横切判断（国产卡 / Agentic / 特殊模型结构）会否决三问的结论</strong>，要先过</td>
+<td>⚠️ 我的归纳</td>
+</tr>
+<tr>
+<td>卡少 + 轨迹长是最难受的位置，抄 Kimi（同置 + partial rollout）而不是抄 GLM</td>
 <td>⚠️ 推断</td>
 </tr>
 <tr>
-<td>veRL 覆盖最广 / slime 生产验证最硬 / OpenRLHF 最好读 / TRL 最快上手</td>
-<td>✅ 实测 + ⚠️</td>
+<td>同口径对照：veRL 覆盖最广 / slime 生产验证最硬 + 自带 agent harness / OpenRLHF 最好读 / TRL 最快上手</td>
+<td>✅ 实测 + ⚠️ 主观</td>
 </tr>
 <tr>
-<td><strong>异步不是一个开关，是 K_buf 和 K_sync 两个旋钮</strong>；先固定 K_sync=1</td>
+<td>⚠️ <strong>「社区活跃度」本表不给数字</strong> —— 时效性太强，给过期数字比不给更有害</td>
+<td>⚠️</td>
+</tr>
+<tr>
+<td><strong>异步不是一个开关，是 K_buf 和 K_sync 两个旋钮</strong>；真实陈旧度 ≈ 两者之和，先固定 <code>K_sync=1</code></td>
 <td>✅ 源码 + ⚠️ 建议</td>
 </tr>
 <tr>
-<td>训推不一致的表现是「不涨」而不是「报错」；用 PCC&lt;0.99 做体检</td>
+<td>训推不一致的表现是「不涨」而不是「报错」；用 PCC &lt; 0.99 做体检</td>
 <td>✅ openPangu + ⚠️</td>
 </tr>
 <tr>
-<td>非对称过滤会让存活样本系统性偏陈旧；staleness 记到样本级</td>
+<td>非对称过滤和环境崩溃排除是<strong>两个同向的偏差</strong>，都在把分布推向简单题；陈旧度要记到样本级并按难度分组</td>
 <td>⚠️ 推断 + ✅ GLM 版本序列</td>
+</tr>
+<tr>
+<td>⚠️ <strong>口径陷阱</strong>：「时间减少 X%」≠「加速 X%」（<code>加速 = 1÷(1−减少比例)</code>）；比例作差用百分点；GB/s 与 Gb/s 差 8 倍</td>
+<td>⚠️ 纪律</td>
+</tr>
+<tr>
+<td>⚠️ <strong>NVLink 900 GB/s 是双向聚合（单向 450）</strong>，IB 400 Gb/s = 50 GB/s，同口径下 NVLink : IB = <strong>9 倍不是 18 倍</strong></td>
+<td>⚠️ 本文更正</td>
 </tr>
 <tr>
 <td>除「非 NVIDIA 硬件」外，四条自研触发条件在多数团队不成立</td>
@@ -502,13 +723,13 @@ K_sync  = 权重同步间隔          （slime:    --update-weights-interval）
 <td>✅ 三家收敛</td>
 </tr>
 <tr>
-<td>上手顺序：同步跑通 → 加长看长尾 → 开异步 → <strong>第 4 周做一致性体检</strong></td>
+<td>上手顺序：同步跑通 → 加长看长尾 → 开异步 → <strong>第 4 周做一致性体检</strong>；做 Agentic 的再插一步「先算沙箱账」</td>
 <td>⚠️ 建议</td>
 </tr>
 </tbody>
 </table>
 <hr />
-<p><strong>回到</strong> → <a href="README.html">README.md</a> ｜ <strong>原理入门</strong> → <a href="../训练框架/分布式训练入门/14-RL训练框架.html">14-RL训练框架.md</a></p>
+<p><strong>上一篇</strong> → <a href="06-AgenticRL-环境与沙箱.html">06-AgenticRL-环境与沙箱.md</a> ｜ <strong>回到</strong> → <a href="README.html">README.md</a> ｜ <strong>原理入门</strong> → <a href="../训练框架/分布式训练入门/14-RL训练框架.html">14-RL训练框架.md</a></p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

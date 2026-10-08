@@ -1079,7 +1079,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>MILES</strong></td>
 <td>radixark</td>
-<td>较新</td>
+<td>建在 slime 之上的生产级下游，不是独立谱系（见 <a href="MILES拆解.html">MILES拆解.md</a>）</td>
 </tr>
 <tr>
 <td><strong>verifiers-rl</strong></td>
@@ -1088,6 +1088,842 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="_7">七、四笔可以自己验算的账</h2>
+<blockquote>
+<p>这一节不是查表，是<strong>动笔算</strong>。每笔账都给出「单位 → 代数字 → 交叉验算」三步，照着走一遍就不会记错。全目录凡是出现这几类数字的地方，口径都和这里一致。</p>
+</blockquote>
+<h3 id="71-7b-70b">7.1 权重同步的传输账：7B / 70B 要传多久</h3>
+<p><strong>第 0 步 · 两个单位陷阱必须先过</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>陷阱</th>
+<th>错的写法</th>
+<th>对的写法</th>
+<th>差多少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>NVLink 的 900</strong></td>
+<td>「NVLink 900 GB/s」直接拿来除</td>
+<td><strong>900 是双向聚合值</strong>，单向是 <strong>450 GB/s</strong></td>
+<td>2 倍</td>
+</tr>
+<tr>
+<td><strong>InfiniBand 的 400</strong></td>
+<td>「IB 400 GB/s」</td>
+<td><strong>400 是 Gb（比特）不是 GB（字节）</strong>，÷ 8 = <strong>50 GB/s</strong></td>
+<td>8 倍</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这两个陷阱叠在一起，会把真实的 9 倍差距算成 18 倍。</strong> 同单位下的正确比值：</p>
+<div class="codehilite"><pre><span></span><code>NVLink : IB = 450 GB/s : 50 GB/s = 9 倍      &lt;-- 对
+                900    :  400    = 2.25 倍   &lt;-- 错（混了单位，又混了双向/单向）
+                900    :   50    = 18 倍     &lt;-- 错（只改对了一半）
+</code></pre></div>
+
+<p><strong>第 1 步 · 算权重字节数</strong>（BF16 = Brain Float 16，每个参数 2 字节）：</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>参数量</th>
+<th>× 2 字节</th>
+<th>权重大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7B</td>
+<td>7 × 10⁹</td>
+<td>14 × 10⁹ B</td>
+<td><strong>14 GB</strong></td>
+</tr>
+<tr>
+<td>70B</td>
+<td>70 × 10⁹</td>
+<td>140 × 10⁹ B</td>
+<td><strong>140 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 本节统一用十进制 GB（10⁹ 字节），和带宽的 GB/s 对齐。若用二进制 GiB（2³⁰ 字节），14 GB = 13.04 GiB——<strong>换算差 7%，不影响量级，但别在同一个式子里混用。</strong></p>
+</blockquote>
+<p><strong>第 2 步 · 除以带宽</strong>：</p>
+<div class="codehilite"><pre><span></span><code>7B，走 NVLink：   14 GB ÷ 450 GB/s = 0.0311 s = 31.1 ms
+7B，走 IB：       14 GB ÷  50 GB/s = 0.280  s =  280 ms
+70B，走 NVLink： 140 GB ÷ 450 GB/s = 0.311  s =  311 ms
+70B，走 IB：     140 GB ÷  50 GB/s = 2.80   s =  2.80 s
+</code></pre></div>
+
+<p><strong>第 3 步 · 交叉验算</strong>（两种算法应得同一个答案）：</p>
+<div class="codehilite"><pre><span></span><code>按比值算： 280 ms ÷ 31.1 ms = 9.00     ✓ 等于 450 ÷ 50
+按规模算： 311 ms ÷ 31.1 ms = 10.0     ✓ 等于 70B ÷ 7B
+最贵那格： 2.80 s ÷ 31.1 ms = 90.0     ✓ 等于 9 × 10
+</code></pre></div>
+
+<p><strong>结果表</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>7B（14 GB）</th>
+<th>70B（140 GB）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>NVLink 单向 450 GB/s</strong>（机内）</td>
+<td>31.1 ms</td>
+<td>311 ms</td>
+</tr>
+<tr>
+<td><strong>IB 400 Gb/s = 50 GB/s</strong>（跨机）</td>
+<td>280 ms</td>
+<td><strong>2.80 s</strong></td>
+</tr>
+<tr>
+<td>倍数</td>
+<td>9×</td>
+<td>9×</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这四个数字全是理论下界</strong>，只数「字节 ÷ 带宽」。真实耗时还要加上：① resharding（重切分，训练态的 TP/PP 切法转成推理态的切法）；② 推理引擎重建 KV cache 池；③ 排空在飞的生成。⚠️ 社区报告的落点从亚秒到数秒都有，<strong>差异来自实现而非带宽，必须在自己的框架上测</strong>，本表不给具体数字。</p>
+<p>⚠️ <strong>什么时候这笔账才要紧</strong>：把它和「这一轮 rollout 用了多久」放在同一个分母上比。按 <a href="../大模型算子开发/10-RL算子.html">大模型算子开发/10-RL算子.md</a> §10.9.2，8B 规模下同机同步只占一次迭代的 0.07%、跨机 0.6%——<strong>通常不是瓶颈</strong>。它变成问题只有两种场合：<strong>（a）每轮 rollout 很短</strong>（小 batch、短 response，分母小了），<strong>（b）模型很大且必须跨机</strong>（70B 跨机 2.80 s，若迭代本身只有 30 s 就接近 10%）。</p>
+<h3 id="72-16">7.2 显存账：16 字节 / 参数</h3>
+<p><strong>第 1 步 · 混合精度 AdamW 训练，一个参数要留五份东西</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>内容</th>
+<th>精度</th>
+<th>字节/参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>权重</td>
+<td>BF16</td>
+<td>2</td>
+</tr>
+<tr>
+<td>②</td>
+<td>梯度</td>
+<td>BF16</td>
+<td>2</td>
+</tr>
+<tr>
+<td>③</td>
+<td>FP32 主副本（master weights）</td>
+<td>FP32</td>
+<td>4</td>
+</tr>
+<tr>
+<td>④</td>
+<td>Adam 的 <strong>m</strong>（一阶动量）</td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>Adam 的 <strong>v</strong>（二阶动量）</td>
+<td>FP32</td>
+<td><strong>4</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><strong>训练态合计</strong></td>
+<td></td>
+<td><strong>16</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>最高频的错是漏掉 m 和 v 里的一个。</strong> Adam 要存<strong>两个</strong>动量，各 4 字节：</p>
+<div class="codehilite"><pre><span></span><code>正确：2 + 2 + 4 + 4 + 4 = 16 字节/参数  --&gt;  7B × 16 =  112 GB
+漏一个：2 + 2 + 4 + 4   = 12 字节/参数  --&gt;  7B × 12 =   84 GB   &lt;-- 错，少了 28 GB
+</code></pre></div>
+
+<p><strong>第 2 步 · 乘参数量</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>角色</th>
+<th>字节/参数</th>
+<th>7B</th>
+<th>70B</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Actor（训练态）</td>
+<td>16</td>
+<td><strong>112 GB</strong></td>
+<td><strong>1120 GB</strong></td>
+</tr>
+<tr>
+<td>Reference（冻结，只前向）</td>
+<td>2</td>
+<td>14 GB</td>
+<td>140 GB</td>
+</tr>
+<tr>
+<td>Reward Model（同尺寸，冻结）</td>
+<td>2</td>
+<td>14 GB</td>
+<td>140 GB</td>
+</tr>
+<tr>
+<td><strong>rollout 引擎的那一份权重副本</strong></td>
+<td>2</td>
+<td><strong>14 GB</strong></td>
+<td><strong>140 GB</strong></td>
+</tr>
+<tr>
+<td>Critic / Value Model（<strong>只 PPO 需要</strong>，训练态）</td>
+<td>16</td>
+<td><strong>112 GB</strong></td>
+<td><strong>1120 GB</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>第 3 步 · 按算法合账</strong>（⚠️ 别忘了 rollout 引擎那一份——这是 RL 比纯预训练多出来的一块）：</p>
+<div class="codehilite"><pre><span></span><code>GRPO（无 Critic）：
+  7B ：112（Actor）+ 14（Ref）+ 14（rollout 副本）             = 140 GB
+  70B：1120        + 140      + 140                            = 1400 GB
+
+PPO（有 Critic）：
+  7B ：112 + 112（Critic）+ 14 + 14                            = 252 GB
+  70B：1120 + 1120        + 140 + 140                          = 2520 GB
+</code></pre></div>
+
+<p><strong>第 4 步 · 换算成卡数</strong>（H100 SXM5 单卡 HBM3 <strong>80 GB</strong>，8 卡一机 = 640 GB）：</p>
+<div class="codehilite"><pre><span></span><code>7B  + GRPO：140 GB  / 640 GB = 21.9%  --&gt;  一机绰绰有余，剩 500 GB 给激活和 KV cache
+7B  + PPO ：252 GB  / 640 GB = 39.4%  --&gt;  一机够用
+70B + GRPO：1400 GB --&gt;  光放状态就要 ceil(1400/80) = 18 张卡，实际 32 张起
+70B + PPO ：2520 GB --&gt;  光放状态就要 ceil(2520/80) = 32 张卡，实际 48 张起
+</code></pre></div>
+
+<p>⚠️ 「实际 N 张起」里的余量是给<strong>激活</strong>和 <strong>KV cache</strong> 的，这两块都随 batch 和序列长度变，不在「每参数多少字节」这个口径里。</p>
+<blockquote>
+<p>★ <strong>Critic 是 PPO 最贵的一件行李</strong>：7B 规模下它一个人就占 112 GB，和 Actor 一样重，等于把显存需求翻倍。这才是 GRPO（以及 RLOO、REINFORCE++ 等去 critic 算法）在大模型上迅速普及的第一位原因，优势公式简单只是副产品。对照 <a href="slime拆解.html">slime拆解.md</a> §10.1 和 <a href="OpenRLHF拆解.html">OpenRLHF拆解.md</a> §8.1：<strong>两家框架的六个优势估计器里，都只有 PPO 那一个需要 critic。</strong></p>
+<p>★ <strong>记住「16 字节 / 参数」这个口径，比记任何具体 GB 数都有用</strong>——换模型直接乘。冻结模型是 2，训练态是 16，<strong>比值正好 8 倍</strong>。</p>
+</blockquote>
+<h3 id="73-x-x">7.3 「时间减少 X%」≠「加速 X%」</h3>
+<p><strong>两个方向的公式</strong>：</p>
+<div class="codehilite"><pre><span></span><code>加速倍数   = 1 / (1 − 时间减少比例)
+时间减少比例 = 1 − 1 / 加速倍数
+</code></pre></div>
+
+<p><strong>对照表</strong>（⚠️ 左右两列不是一回事，差距在高档位会非常大）：</p>
+<table>
+<thead>
+<tr>
+<th>时间减少</th>
+<th>加速倍数</th>
+<th>口语上常被误说成</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10%</td>
+<td>1.11×</td>
+<td>「加速 10%」（勉强接近）</td>
+</tr>
+<tr>
+<td>20%</td>
+<td>1.25×</td>
+<td>「加速 20%」（已经差 5 个百分点）</td>
+</tr>
+<tr>
+<td>25%</td>
+<td>1.33×</td>
+<td>「加速 25%」</td>
+</tr>
+<tr>
+<td>33.3%</td>
+<td><strong>1.50×</strong></td>
+<td>「加速 33%」（实际是 50%）</td>
+</tr>
+<tr>
+<td>36.0%</td>
+<td>1.56×</td>
+<td>—</td>
+</tr>
+<tr>
+<td>50%</td>
+<td><strong>2.00×</strong></td>
+<td>「加速 50%」（实际是<strong>翻倍</strong>）</td>
+</tr>
+<tr>
+<td>75%</td>
+<td><strong>4.00×</strong></td>
+<td>「加速 75%」（实际是 <strong>4 倍</strong>）</td>
+</tr>
+<tr>
+<td>90%</td>
+<td><strong>10.0×</strong></td>
+<td>「加速 90%」（实际是 <strong>10 倍</strong>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>反过来</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>加速倍数</th>
+<th>时间减少</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.25×</td>
+<td>20.0%</td>
+</tr>
+<tr>
+<td>1.50×</td>
+<td>33.3%</td>
+</tr>
+<tr>
+<td>2.00×</td>
+<td>50.0%</td>
+</tr>
+<tr>
+<td>3.00×</td>
+<td>66.7%</td>
+</tr>
+<tr>
+<td>10.0×</td>
+<td>90.0%</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>判断一句话该套哪个公式，只看它的分母是什么</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>说法</th>
+<th>分母是</th>
+<th>该用哪个口径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「耗时从 50 s 降到 32 s」</td>
+<td><strong>原耗时 50 s</strong></td>
+<td>时间减少 36%</td>
+</tr>
+<tr>
+<td>「吞吐从 100 样本/s 涨到 156」</td>
+<td><strong>原吞吐 100</strong></td>
+<td>加速 1.56 倍</td>
+</tr>
+</tbody>
+</table>
+<p><strong>一个本目录里的实例</strong>（取自 <a href="slime拆解.html">slime拆解.md</a> §4.2 的推演）：</p>
+<div class="codehilite"><pre><span></span><code>同步档一次迭代 50.6 s，单步异步档 32.4 s
+
+时间减少 = 1 − 32.4/50.6 = 36.0%
+加速倍数 = 50.6/32.4      = 1.56 倍
+验算     = 1/(1 − 0.360)  = 1.5625  ✓
+</code></pre></div>
+
+<p>⚠️ <strong>说「异步让 RL 加速了 36%」是错的</strong>，正确说法是「<strong>迭代时间减少 36%</strong>」或「<strong>加速 1.56 倍</strong>」。</p>
+<h3 id="74-vs">7.4 百分比 vs 百分点</h3>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>什么时候用</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>百分点</strong>（percentage point，pp）</td>
+<td>两个<strong>百分数相减</strong></td>
+<td>训练卡利用率从 34.8% 升到 64.0%，<strong>升了 29.2 个百分点</strong></td>
+</tr>
+<tr>
+<td><strong>百分比</strong>（percent, %）</td>
+<td>一个量<strong>相对自己</strong>的变化</td>
+<td>同一件事：64.0 ÷ 34.8 − 1 = <strong>相对提升 83.9%</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>34.8%  --&gt;  64.0%
+
+说「提升了 29.2 个百分点」    ✓ 对
+说「提升了 83.9%」            ✓ 对（相对口径）
+说「提升了 29.2%」            ✗ 错——把百分点说成了百分比
+说「提升了 83.9 个百分点」    ✗ 错——反过来也不行
+</code></pre></div>
+
+<p>⚠️ <strong>一个判别诀窍</strong>：两个数都带 % 号，相减得到的<strong>一定是百分点</strong>；只有「变化量 ÷ 原值」才是百分比。</p>
+<p>⚠️ 这条在 MFU（Model FLOPs Utilization，模型算力利用率）和 Occupancy（占用率）这类本身就是百分数的指标上最容易出错，对照 <a href="../大模型算子开发/01-GPU硬件基础.html">大模型算子开发/01-GPU硬件基础.md</a> §1.6.2 里「Occupancy 从 75% 掉到 62.5%，<strong>掉了 12.5 个百分点</strong>」的写法。</p>
+<hr />
+<h2 id="_8">八、硬件基准数字（全目录统一口径）</h2>
+<blockquote>
+<p>⚠️ 本目录凡是出现「算一下要多久 / 要多少显存」的地方，硬件数字一律取下表，和 <a href="../大模型算子开发/附-速查表.html">大模型算子开发/附-速查表.md</a> 一致。换硬件请整表替换，不要只改一两个数。</p>
+</blockquote>
+<h3 id="81-h100-sxm5">8.1 H100 SXM5（稠密口径）</h3>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>数值</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>BF16 / FP16 算力</strong></td>
+<td><strong>989 TFLOPS</strong></td>
+<td>⚠️ <strong>稠密值</strong>。见 8.2</td>
+</tr>
+<tr>
+<td>FP8 算力</td>
+<td>1979 TFLOPS</td>
+<td>稠密值</td>
+</tr>
+<tr>
+<td>FP32（CUDA Core）</td>
+<td>67 TFLOPS</td>
+<td>不走 Tensor Core</td>
+</tr>
+<tr>
+<td><strong>显存容量</strong></td>
+<td><strong>80 GB</strong></td>
+<td>HBM3</td>
+</tr>
+<tr>
+<td><strong>显存带宽</strong></td>
+<td><strong>3.35 TB/s</strong></td>
+<td>HBM3</td>
+</tr>
+<tr>
+<td>NVLink 4.0 单向</td>
+<td><strong>450 GB/s</strong></td>
+<td>⚠️ 900 GB/s 是双向聚合值</td>
+</tr>
+<tr>
+<td>PCIe 5.0 ×16 单向</td>
+<td>63 GB/s 理论 / ⚠️ 约 50 GB/s 实测</td>
+<td>—</td>
+</tr>
+<tr>
+<td>8 卡一机</td>
+<td>8 × 989 = <strong>7.912 PFLOPS</strong> · 640 GB</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>HBM = High Bandwidth Memory（高带宽显存）</strong>；<strong>HBM3</strong> 是 H100 SXM5 用的那一代。<strong>SXM</strong> 是 NVIDIA 的服务器 GPU 模组规格（对比 PCIe 插卡版，SXM 版功耗上限更高、带 NVLink）。</p>
+</blockquote>
+<h3 id="82-1979">8.2 ⚠️ 1979 这个数字的两个身份，别搞混</h3>
+<div class="codehilite"><pre><span></span><code>NVIDIA 官方规格表里每个精度都有【稠密 / 稀疏】两列，稀疏值 = 稠密值 × 2：
+
+  BF16 稠密  989 TFLOPS   &lt;-- 常规算子用这个，本目录统一口径
+  BF16 稀疏 1979 TFLOPS   &lt;-- 要求权重满足 2:4 结构化稀疏才能达到
+  FP8  稠密 1979 TFLOPS   &lt;-- 和上面一行数值相同，但精度不同！
+  FP8  稀疏 3958 TFLOPS
+</code></pre></div>
+
+<p>⚠️ <strong>1979 同时是「BF16 的稀疏值」和「FP8 的稠密值」</strong>，所以光看数字判断不了口径——<strong>必须同时说精度和稠密/稀疏</strong>。⚠️ 把 BF16 的稀疏值 1979 当稠密用，会把所有基于算力的推演都算错一半。</p>
+<blockquote>
+<p>⚠️ <strong>2:4 结构化稀疏</strong> = 每连续 4 个权重里必须有 2 个是零，且零的位置要符合硬件规定的模式。常规训练出来的稠密权重<strong>不满足</strong>这个条件，RL 训练里基本用不上。</p>
+</blockquote>
+<h3 id="83">8.3 带宽换算速查</h3>
+<table>
+<thead>
+<tr>
+<th>写法</th>
+<th>换成 GB/s</th>
+<th>场合</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>InfiniBand / RoCE <strong>400 Gb/s</strong></td>
+<td>÷ 8 = <strong>50 GB/s</strong></td>
+<td>跨机</td>
+</tr>
+<tr>
+<td>InfiniBand <strong>200 Gb/s</strong></td>
+<td>÷ 8 = <strong>25 GB/s</strong></td>
+<td>老一代跨机</td>
+</tr>
+<tr>
+<td>以太网 <strong>100 Gb/s</strong></td>
+<td>÷ 8 = <strong>12.5 GB/s</strong></td>
+<td>没有 RDMA 网卡时</td>
+</tr>
+<tr>
+<td>NVLink 4.0「900 GB/s」</td>
+<td>÷ 2 = <strong>450 GB/s</strong> 单向</td>
+<td>机内</td>
+</tr>
+<tr>
+<td>HBM3「3.35 TB/s」</td>
+<td>= <strong>3350 GB/s</strong></td>
+<td>卡内</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>两条规矩</strong>：① <strong>小写 b 是 bit（比特），大写 B 是 Byte（字节）</strong>，网络厂商标 Gb、存储厂商标 GB，差 8 倍；② <strong>互联总线的大数通常是双向聚合值</strong>，算单向传输要除以 2。这两条踩错任意一条，结论就差 2 倍以上。</p>
+<hr />
+<h2 id="_9">九、缩写补遗</h2>
+<blockquote>
+<p>第一到第六节已有的不重复。这里补上三份源码拆解（<a href="slime拆解.html">slime</a> / <a href="OpenRLHF拆解.html">OpenRLHF</a> / <a href="MILES拆解.html">MILES</a>）和本表第七、八节里出现、但前面没列过的缩写。</p>
+</blockquote>
+<h3 id="91">9.1 工程与系统</h3>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>中文</th>
+<th>一句话</th>
+<th>出现于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OOM</strong></td>
+<td>Out Of Memory</td>
+<td>显存 / 内存溢出</td>
+<td>要的内存比剩下的多，程序直接崩</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>IPC</strong></td>
+<td>Inter-Process Communication</td>
+<td>进程间通信</td>
+<td>两个进程交换数据的机制；CUDA IPC 传的是显存指针句柄</td>
+<td><a href="OpenRLHF拆解.html">OpenRLHF拆解</a></td>
+</tr>
+<tr>
+<td><strong>ABC</strong></td>
+<td>Abstract Base Class</td>
+<td>抽象基类</td>
+<td>Python 里不能直接实例化、只定义接口的类</td>
+<td><a href="slime拆解.html">slime拆解</a></td>
+</tr>
+<tr>
+<td><strong>CLI</strong></td>
+<td>Command-Line Interface</td>
+<td>命令行界面</td>
+<td>这里特指 Claude Code / Codex 这类 agent 程序本身</td>
+<td><a href="slime拆解.html">slime拆解</a></td>
+</tr>
+<tr>
+<td><strong>API</strong></td>
+<td>Application Programming Interface</td>
+<td>应用程序接口</td>
+<td>这里特指 OpenAI / Anthropic 两套不兼容的请求协议</td>
+<td><a href="slime拆解.html">slime拆解</a></td>
+</tr>
+<tr>
+<td><strong>WIP</strong></td>
+<td>Work In Progress</td>
+<td>仍在开发中</td>
+<td>代码或文档里标「这块还没做完」</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>GC</strong></td>
+<td>Garbage Collection</td>
+<td>垃圾回收</td>
+<td>Python 自动释放不再引用的对象；<code>gc.collect()</code> 是手动催一次</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>PFLOPS / TFLOPS</strong></td>
+<td>Peta / Tera FLoating-point Operations Per Second</td>
+<td>每秒千万亿 / 万亿次浮点运算</td>
+<td>算力单位，1 PFLOPS = 1000 TFLOPS</td>
+<td>本表 8.1</td>
+</tr>
+<tr>
+<td><strong>MFU</strong></td>
+<td>Model FLOPs Utilization</td>
+<td>模型算力利用率</td>
+<td>实际用到的算力 ÷ 硬件峰值算力</td>
+<td>本表 7.4</td>
+</tr>
+<tr>
+<td><strong>HBM</strong></td>
+<td>High Bandwidth Memory</td>
+<td>高带宽显存</td>
+<td>GPU 上那几块堆叠显存，H100 用 HBM3</td>
+<td>本表 8.1</td>
+</tr>
+<tr>
+<td><strong>SXM</strong></td>
+<td>—</td>
+<td>英伟达服务器 GPU 模组规格</td>
+<td>相对 PCIe 插卡版：功耗上限更高、带 NVLink</td>
+<td>本表 8.1</td>
+</tr>
+<tr>
+<td><strong>pp</strong></td>
+<td>percentage point</td>
+<td>百分点</td>
+<td>两个百分数相减的单位</td>
+<td>本表 7.4</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92">9.2 算法与训练</h3>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>中文</th>
+<th>一句话</th>
+<th>出现于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SFT</strong></td>
+<td>Supervised Fine-Tuning</td>
+<td>有监督微调</td>
+<td>给定输入输出对直接做下一词预测训练，RL 之前的那一步</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>RM</strong></td>
+<td>Reward Model</td>
+<td>奖励模型</td>
+<td>给生成结果打分的模型，RLHF 里替代人工打分</td>
+<td><a href="01-格局全景.html">01</a></td>
+</tr>
+<tr>
+<td><strong>DPO</strong></td>
+<td>Direct Preference Optimization</td>
+<td>直接偏好优化</td>
+<td>不训奖励模型、不做采样，直接用偏好对优化策略</td>
+<td><a href="OpenRLHF拆解.html">OpenRLHF拆解</a></td>
+</tr>
+<tr>
+<td><strong>icepop</strong></td>
+<td>—</td>
+<td>—</td>
+<td>一种 IS 修正：比值超出阈值的 token 直接置零（<strong>丢弃</strong>），区别于 TIS 的<strong>截断</strong></td>
+<td><a href="OpenRLHF拆解.html">OpenRLHF拆解</a> · <a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>K1 / K2 / K3</strong></td>
+<td>—</td>
+<td>三种 KL 估计量</td>
+<td>Schulman 给出的三个 KL 散度估计公式，偏差与方差各不同</td>
+<td><a href="../大模型算子开发/10-RL算子.html">大模型算子开发/10-RL算子.md</a></td>
+</tr>
+<tr>
+<td><strong>AdamW</strong></td>
+<td>Adam with decoupled Weight decay</td>
+<td>解耦权重衰减的 Adam</td>
+<td>主流优化器。<strong>要存 m 和 v 两个动量，各 4 字节</strong>（本表 7.2）</td>
+<td>本表 7.2</td>
+</tr>
+<tr>
+<td><strong>GAE</strong></td>
+<td>Generalized Advantage Estimation</td>
+<td>广义优势估计</td>
+<td>见第二节</td>
+<td><a href="05-算法与框架的接口.html">05</a></td>
+</tr>
+<tr>
+<td><strong>CP</strong></td>
+<td>Context Parallelism</td>
+<td>上下文并行</td>
+<td>把超长序列沿序列维切到多卡，和 TP/PP/DP/EP 并列的第五种并行</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>varlen</strong></td>
+<td>variable length</td>
+<td>变长</td>
+<td>不做 padding、把不等长序列首尾相接送进 Attention 的做法</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>spec decode</strong></td>
+<td>Speculative Decoding</td>
+<td>投机解码 / 投机采样</td>
+<td>小模型先起草多个 token，大模型一次批量验证，摊薄权重读成本</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>draft model</strong></td>
+<td>—</td>
+<td>草稿模型</td>
+<td>投机解码里负责起草的那个小模型</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="93">9.3 算子与数值</h3>
+<table>
+<thead>
+<tr>
+<th>缩写</th>
+<th>英文全称</th>
+<th>中文</th>
+<th>一句话</th>
+<th>出现于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GEMM</strong></td>
+<td>GEneral Matrix Multiply</td>
+<td>通用矩阵乘</td>
+<td><code>C = αAB + βC</code>，深度学习里最主要的算子</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>FA / FA2 / FA3</strong></td>
+<td>FlashAttention（第 2 / 3 代）</td>
+<td>闪存注意力</td>
+<td>把注意力融成一个 kernel、不落地 N×N 中间矩阵。⚠️ <strong>两代的累加顺序不同，数值不等价</strong></td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>cuBLAS</strong></td>
+<td>CUDA Basic Linear Algebra Subprograms</td>
+<td>英伟达基础线性代数库</td>
+<td>NVIDIA 官方的 GEMM 库，训练端默认用它</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>DeepGEMM</strong></td>
+<td>—</td>
+<td>—</td>
+<td>DeepSeek 开源的 FP8 GEMM 库，推理端常用</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>batch-invariant</strong></td>
+<td>—</td>
+<td>batch 不变</td>
+<td>同一条序列，不管放在多大的 batch 里算，结果<strong>逐比特相同</strong></td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>ULP</strong></td>
+<td>Unit in the Last Place</td>
+<td>末位单位</td>
+<td>浮点数精度的最小刻度，用来量「两个结果差了几个最小单位」</td>
+<td><a href="../大模型算子开发/11-训推一致性算子层.html">大模型算子开发/11-训推一致性算子层.md</a></td>
+</tr>
+<tr>
+<td><strong>eager mode</strong></td>
+<td>—</td>
+<td>即时执行模式</td>
+<td>PyTorch 默认模式：一行 Python 发一个 kernel，不编译不融合</td>
+<td><a href="MILES拆解.html">MILES拆解</a></td>
+</tr>
+<tr>
+<td><strong>Split-K</strong></td>
+<td>—</td>
+<td>K 维切分</td>
+<td>GEMM 优化手段：把归约维切成几段并行算再相加。⚠️ <strong>切几段会改变累加顺序</strong></td>
+<td><a href="../大模型算子开发/11-训推一致性算子层.html">大模型算子开发/11-训推一致性算子层.md</a></td>
+</tr>
+<tr>
+<td><strong>PagedAttention</strong></td>
+<td>—</td>
+<td>分页注意力</td>
+<td>KV cache 按页按需分配，不为最坏长度预留</td>
+<td><a href="../大模型算子开发/09-推理侧算子.html">大模型算子开发/09-推理侧算子.md</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="94">9.4 ⚠️ 三个最容易混的缩写对</h3>
+<table>
+<thead>
+<tr>
+<th>容易混的一对</th>
+<th>区别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TIS</strong> vs <strong>icepop</strong></td>
+<td>都是 IS 修正，都看重要性比值是否超界。<strong>TIS 把超界的比值压回阈值（样本保留）</strong>；<strong>icepop 把超界的 token 置零（样本部分丢弃）</strong>。✅ 两者在 slime <code>loss.py</code> 里是 <code>vanilla_tis_function</code>（883 行）和 <code>icepop_function</code>（907 行）两个独立函数</td>
+</tr>
+<tr>
+<td><strong>CP</strong> vs <strong>PP</strong></td>
+<td><strong>CP（上下文并行）切的是序列长度维</strong>，每张卡拿同一层的不同 token；<strong>PP（流水线并行）切的是层</strong>，每张卡拿不同层的全部 token</td>
+</tr>
+<tr>
+<td><strong>MTP 层</strong> vs <strong>外部 draft model</strong></td>
+<td>两种投机解码的草稿来源。<strong>MTP 层</strong>和主模型在同一个 checkpoint 里（多出来几层）；<strong>外部 draft model</strong> 是独立的小模型。✅ slime 对前者支持在线训练（<code>--enable-mtp-training</code>），对后者文档自陈 WIP——区别见 <a href="MILES拆解.html">MILES拆解.md</a> §2.4</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="_10">十、三份源码拆解的共同骨架</h2>
+<blockquote>
+<p><a href="slime拆解.html">slime拆解.md</a>、<a href="OpenRLHF拆解.html">OpenRLHF拆解.md</a>、<a href="MILES拆解.html">MILES拆解.md</a> 三篇的 §0 回答的是<strong>同一组七个问题</strong>，方便横向比。这里只放索引，答案在各自文档里。</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>问题</th>
+<th>为什么这个问题重要</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Q1</strong></td>
+<td>架构是同步 / 单步异步 / 全异步？</td>
+<td>决定训练卡会不会空转，见 <a href="02-架构主轴-同步到全异步.html">02</a></td>
+</tr>
+<tr>
+<td><strong>Q2</strong></td>
+<td>训练后端是谁？</td>
+<td>决定并行方式、checkpoint 格式、能跑多大</td>
+</tr>
+<tr>
+<td><strong>Q3</strong></td>
+<td>rollout 引擎用谁？怎么和训练进程通信？</td>
+<td>决定生成速度和接新特性的延迟</td>
+</tr>
+<tr>
+<td><strong>Q4</strong></td>
+<td>权重同步怎么做（全量广播 / 逐参数流式 / 共享显存）？要不要停推理？</td>
+<td>本表 7.1 那笔账落在哪一格，见 <a href="03-权重同步.html">03</a></td>
+</tr>
+<tr>
+<td><strong>Q5</strong></td>
+<td>支持哪些算法？加一个新算法要动哪些文件？</td>
+<td>决定你能不能不 fork 仓库就做实验，见 <a href="05-算法与框架的接口.html">05</a></td>
+</tr>
+<tr>
+<td><strong>Q6</strong></td>
+<td>沙箱 / 环境怎么接？</td>
+<td>决定 agentic 任务能不能接进来，见 <a href="06-AgenticRL-环境与沙箱.html">06</a></td>
+</tr>
+<tr>
+<td><strong>Q7</strong></td>
+<td>一次迭代的完整时序：谁在算、谁在等、数据怎么流？</td>
+<td>★ <strong>最该有、通常却没有的一张图</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>选型时按这七问逐条问一遍，比看 star 数和 benchmark 曲线有用得多。</strong> 配合 <a href="07-选型与实践.html">07-选型与实践.md</a> 用。</p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

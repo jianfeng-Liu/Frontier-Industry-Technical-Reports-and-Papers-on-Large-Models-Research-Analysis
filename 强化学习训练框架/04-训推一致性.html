@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -250,33 +255,247 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p><strong>这一篇干什么</strong>：解释 RL 里最隐蔽、也最容易让训练悄悄掉点的一类 bug，以及五家的解法。<br />
 <strong>难度</strong> ★★ · <strong>前置</strong>：<a href="02-架构主轴-同步到全异步.html">02-架构主轴</a><br />
-<strong>本篇 🌐 材料统一出处</strong>：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>（下称「HF 横评」），访问于 2026-08，以官方仓库现状为准。</p>
+<strong>读法</strong>：本章 §4.2 会用一个<strong>三个数相加</strong>的例子，把「为什么两个引擎算出的概率不一样」落到看得见的位上；§4.3 给一张「哪些差异是数值噪声、哪些是真 bug」的判据表。⚠️ 这一章的全部价值在那张判据表上。<br />
+<strong>本篇 🌐 材料统一出处</strong>：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</a>（下称「HF 横评」），访问于 2026-08，以官方仓库现状为准。<br />
+<strong>分工</strong>：<strong>kernel 与数值层的完整展开在 <a href="../大模型算子开发/11-训推一致性算子层.html">../大模型算子开发/11-训推一致性算子层.md</a></strong>（一次前向有多少次归约、几个 ULP 怎么被放大成训练崩掉）。本章只讲<strong>系统架构层</strong>：五家自研系统各自怎么解、接口契约要怎么改。算法本身在 <a href="../后训练/README.html">../后训练/</a>。</p>
 </blockquote>
+<hr />
+<p><strong>本章关键词</strong></p>
+<p><strong>logprob</strong>（对数概率）—— 模型吐出某个 token 的概率取自然对数。RL 的 loss 直接吃这个数。<br />
+<strong>ratio</strong>（比值）—— <code>π_new / π_old</code>，新旧策略在同一个 token 上的概率之比。理想情况下在 1 附近。<br />
+<strong>IS</strong>（Importance Sampling，重要性采样）—— 承认样本来自旧策略，在 loss 里乘一个比值把偏差纠回来。<br />
+<strong>PCC</strong>（Pearson Correlation Coefficient，皮尔逊相关系数）—— 衡量两组数线性相关的程度，1 是完全一致。这里用来体检「推理算的 logprob」和「训练算的 logprob」对不对得上。<br />
+<strong>ULP</strong>（Unit in the Last Place，末位单位）—— 浮点数能表示的最小间隔。「差 1 个 ULP」是浮点误差的最小单位。<br />
+<strong>归约</strong>（reduction）—— 把一堆数加成一个数。浮点加法不满足结合律，<strong>加的顺序一变结果就变</strong>，这是本章一切问题的物理根源。<br />
+<strong>MLA / MQA / MHA</strong>（Multi-head Latent / Multi-Query / Multi-Head Attention，多头潜在 / 多查询 / 多头注意力）—— 三种注意力形式，见 <a href="../推理框架/推理优化入门/07-注意力变体MQA-GQA-MLA.html">../推理框架/推理优化入门/07-注意力变体MQA-GQA-MLA.md</a>。<br />
+<strong>MoE</strong>（Mixture of Experts，混合专家）—— 每个 token 只激活一小部分参数。<br />
+<strong>TITO</strong>（Token-in-Token-out，token 进 token 出）—— 训练直接吃推理吐出的 token id，不经过「解码成文字再重新分词」。<br />
+<strong>QAT</strong>（Quantization-Aware Training，量化感知训练）—— 训练时就模拟量化误差。</p>
 <hr />
 <h2 id="41">4.1 问题是什么</h2>
 <p>RL 训练需要知道「模型生成某个 token 的概率是多少」。这个概率被用了两次：</p>
-<div class="codehilite"><pre><span></span><code>推理引擎（vLLM / SGLang）生成答案 ──► 顺手记下每个 token 的 logprob   ← 第一次
-                                                   │
-                                                   ▼
-训练引擎（Megatron / FSDP）重新前向一遍 ──► 又算出一份 logprob        ← 第二次
-                                                   │
-                                                   ▼
-                          policy loss 里要用它们的比值 π_new / π_old
+<div class="codehilite"><pre><span></span><code>推理引擎（vLLM / SGLang）生成答案  --&gt;  顺手记下每个 token 的 logprob   &lt;-- 第一次
+                                                 |
+                                                 v
+训练引擎（Megatron / FSDP）重新前向一遍  --&gt;  又算出一份 logprob        &lt;-- 第二次
+                                                 |
+                                                 v
+                        policy loss 里要用它们的比值 ratio = pi_new / pi_old
 </code></pre></div>
 
 <p><strong>理论上这两份应该完全一样</strong>——同一份权重、同一段输入。</p>
-<p><strong>实际上它们不一样。</strong> 而且不一样的地方会被直接塞进 loss 的分母里。当比值本该是 1.0 却变成 1.3 时，梯度就被放大了 30%——不是因为策略真的变了，而是因为两个引擎算错了同一件事。</p>
+<p><strong>实际上它们不一样。</strong> 而且不一样的地方会被直接塞进 loss 的分母里。</p>
+<h3 id="vs">⚠️ 先把两件事分开：陈旧度 vs 数值失配</h3>
+<blockquote>
+<p><strong>这是本章第一个也是最重要的区分。</strong> 「ratio 不等于 1」有两个完全不同的原因，混在一起就永远查不出来：</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>陈旧度</strong>（off-policy）</th>
+<th><strong>数值失配</strong>（numerical mismatch）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原因</td>
+<td>样本是<strong>旧版权重</strong>生成的</td>
+<td>两个引擎用<strong>同一份权重</strong>也算不出同一个数</td>
+</tr>
+<tr>
+<td>这是 bug 吗</td>
+<td>不是，是异步架构的设计代价</td>
+<td><strong>一半是，一半不是</strong>（§4.2 末尾的判据表）</td>
+</tr>
+<tr>
+<td>哪一章管</td>
+<td><a href="02-架构主轴-同步到全异步.html">02 章</a>、<a href="03-权重同步.html">03 章</a></td>
+<td><strong>本章</strong></td>
+</tr>
+<tr>
+<td>怎么消除</td>
+<td>回到同步（代价见 <a href="02-架构主轴-同步到全异步.html">02 §2.2</a>）</td>
+<td>对齐 kernel / 精度 / 接口</td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>分离这两者的判据，只有一条，而且很硬</strong>：</p>
+<blockquote>
+<p><strong>把配置改成「一批数据只做一次梯度更新 + <code>logp_old</code> 由训练引擎自己算」。此时 ratio 必须精确等于 1.0。</strong></p>
+<p>如果不是，剩下的偏离 <strong>100% 是数值失配</strong>，和 off-policy 没有半点关系。这是把两半分开的唯一可靠手段。完整推导见 <a href="../大模型算子开发/11-训推一致性算子层.html">../大模型算子开发/11-训推一致性算子层.md</a>。</p>
+</blockquote>
 <p>⚠️ 这件事的恶劣之处在于<strong>它不会报错</strong>。训练照跑，loss 曲线看着也正常，只是模型效果慢慢变差，或者某一步突然梯度爆炸。</p>
+<h3 id="_1">★ 为什么偏差会被放大：一个能算的例子</h3>
+<p>PPO / GRPO 这类算法会对 ratio 做<strong>裁剪（clip）</strong>，超出 <code>[1−ε, 1+ε]</code> 的 token 梯度被砍掉。取常用的 <code>ε = 0.2</code>：</p>
+<div class="codehilite"><pre><span></span><code>clip 上界 ratio = 1.2
+ratio = exp(logprob_new - logprob_old)
+==&gt; 能容忍的 logprob 偏差 = ln(1.2) = 0.1823
+</code></pre></div>
+
+<p>★ <strong>记住 0.1823 这个数。它是 clip 机制的全部预算。</strong></p>
+<table>
+<thead>
+<tr>
+<th>logprob 偏差 Δ</th>
+<th>ratio = exp(Δ)</th>
+<th>落在 clip 区间里吗</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.001</td>
+<td>1.0010</td>
+<td>✅ 远在区间内</td>
+<td>无害</td>
+</tr>
+<tr>
+<td>0.01</td>
+<td>1.0101</td>
+<td>✅ 区间内</td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>0.05</td>
+<td>1.0513</td>
+<td>✅ 区间内</td>
+<td>梯度被放大 5.1%</td>
+</tr>
+<tr>
+<td>0.10</td>
+<td>1.1052</td>
+<td>✅ 勉强在内</td>
+<td>梯度被放大 10.5%</td>
+</tr>
+<tr>
+<td><strong>0.1823</strong></td>
+<td><strong>1.2000</strong></td>
+<td>⚠️ <strong>正好在边界</strong></td>
+<td>再多一点就被砍</td>
+</tr>
+<tr>
+<td>0.20</td>
+<td>1.2214</td>
+<td>❌ <strong>越界</strong></td>
+<td><strong>梯度精确归零</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 读这张表要抓住两点：</p>
+<ol>
+<li><strong>权重没变、策略没变、什么都没变</strong>，纯粹因为两个引擎的 kernel 写法不同，就有 token 被判定成「策略变化过大」而丢掉梯度。</li>
+<li><strong>0.1823 这个预算是和陈旧度共享的。</strong> 数值失配吃掉 0.1 之后，留给真实策略变化的只剩 0.08 了。<a href="02-架构主轴-同步到全异步.html">02 章</a> 算出全异步下样本可能落后 5 步（27 分钟前的权重），那 5 步带来的真实策略变化，本来就要占掉相当一部分预算。</li>
+</ol>
+<blockquote>
+<p>★ <strong>一句话：训推一致性不是「锦上添花的精度问题」，它在和异步架构抢同一份 clip 预算。</strong> 这就是为什么 <a href="01-格局全景.html">01 章 §1.3</a> 那张披露地图上，五家报告里有四家专门写了这个问题——异步越激进，这个预算越紧张。</p>
+</blockquote>
 <hr />
 <h2 id="42-openpangu">4.2 ✅ openPangu 的三分类：五家里唯一给出诊断框架的</h2>
 <p>五份技术报告里，四家是在陈述「我们做到了训推一致」，<strong>只有 openPangu 把「为什么会不一致」拆成了分类学</strong>。这是本章的骨架。</p>
 <blockquote>
 <p>✅ 来源：openPangu-2.0-Pro 报告 §10.3，详见 <a href="../业界模型技术报告/openPangu-2.0-Pro.html">业界模型技术报告/openPangu-2.0-Pro.md</a></p>
 </blockquote>
+<h3 id="b">★ 先用三个数相加看懂 B 类，再看分类</h3>
+<p>B 类是三类里最常见、也最容易被误判成 bug 的一类。它的全部原理就是一句话：<strong>浮点加法不满足结合律。</strong> 用一个能手算的例子走一遍。</p>
+<p><strong>先用十进制的玩具版本，这样可以纯手算。</strong> 假设有一台只能存 <strong>3 位有效数字</strong>的计算器（每做完一次加法就四舍五入到 3 位有效数字），要算 <code>1.00 + 0.004 + 0.004</code>：</p>
+<table>
+<thead>
+<tr>
+<th>加法顺序</th>
+<th>第一步</th>
+<th>存进 3 位有效数字</th>
+<th>第二步</th>
+<th>存进 3 位有效数字</th>
+<th>最终结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>(a+b)+c</strong></td>
+<td>1.00 + 0.004 = 1.004</td>
+<td>⚠️ <strong>1.00</strong>（0.004 被舍掉了）</td>
+<td>1.00 + 0.004 = 1.004</td>
+<td>⚠️ <strong>1.00</strong></td>
+<td><strong>1.00</strong></td>
+</tr>
+<tr>
+<td><strong>a+(b+c)</strong></td>
+<td>0.004 + 0.004 = 0.008</td>
+<td>0.008（精确）</td>
+<td>1.00 + 0.008 = 1.008</td>
+<td><strong>1.01</strong></td>
+<td><strong>1.01</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>同样三个数、同样的加法，只换了顺序，结果差了 1%。</strong> 第一种顺序里，两个小数各自都「太小，不足以改变 1.00 的第 3 位」，于是被逐个吞掉；第二种顺序里它们先攒在一起，攒成了一个「够大」的数。</p>
+<p><strong>这就是浮点加法不满足结合律的全部原理：<code>(a+b)+c ≠ a+(b+c)</code>。</strong> 没有任何一行是 bug——两行都在正确地做 3 位有效数字的加法。</p>
+<p>★ <strong>BF16 的处境是一样的，只是位数不同。</strong> BF16 = Brain Float 16，有 <strong>8 位二进制有效位</strong>（7 位存储的尾数 + 1 位隐含位），<code>log₁₀(2⁸) = 2.4</code>，<strong>相当于约 2~3 位十进制有效数字</strong>——和上面那台玩具计算器是同一个量级。具体地：</p>
+<div class="codehilite"><pre><span></span><code>BF16 在 1.0 附近，相邻两个可表示的数之间的间隔 = 2^-7 = 1/128 = 0.0078125
+==&gt; 任何小于间隔一半（2^-8 = 0.0039）的增量，加到 1.0 上都会被舍掉
+</code></pre></div>
+
+<p>⚠️ 真用 BF16 验算一遍（取 <code>a = 1.0</code>、<code>b = c = 3 × 2⁻¹⁰ = 0.0029296875</code>，两个 b 都小于 0.0039 这条线）：</p>
+<table>
+<thead>
+<tr>
+<th>加法顺序</th>
+<th>过程</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>(a+b)+c</strong></td>
+<td><code>1.0 + 0.00293</code> → 舍回 <strong>1.0</strong>；<code>1.0 + 0.00293</code> → 再舍回 <strong>1.0</strong></td>
+<td><strong>1.0</strong></td>
+</tr>
+<tr>
+<td><strong>a+(b+c)</strong></td>
+<td><code>b+c = 0.0058594</code>（精确）；<code>1.0 + 0.0058594</code> → 舍到 <strong>1.0078125</strong></td>
+<td><strong>1.0078125</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⟹ 差了整整一个 <code>2⁻⁷</code>。<strong>✅ 这两行是本文用 IEEE 舍入规则（round-to-nearest-even）实际算过的，不是估的。</strong></p>
+<p>★ <strong>现在把这个例子放大。</strong> 一次前向传播里，每个输出元素都是上千个乘积的和（矩阵乘的 K 维），而<strong>训练引擎和推理引擎会选中不同的加法顺序</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练引擎</th>
+<th>推理引擎（decode 阶段）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>batch 里有多少条</td>
+<td>很大（几十到几百）</td>
+<td><strong>1</strong>（一次只解一个 token）</td>
+</tr>
+<tr>
+<td>GEMM kernel 的选择</td>
+<td>M 大，<strong>不需要切 K 轴</strong>就能打满 GPU</td>
+<td>M=1，<strong>必须切 K 轴</strong>才填得满</td>
+</tr>
+<tr>
+<td>⟹ 加法顺序</td>
+<td>一条长链，顺序加</td>
+<td><strong>切成多段并行加，再把段和相加</strong></td>
+</tr>
+<tr>
+<td>⟹ 结果</td>
+<td>上表第 1 行</td>
+<td>上表第 3 行</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>这不是谁实现错了，是两边各自选了对自己最快的 kernel。</strong> 这就是 B 类的全貌。为什么 M=1 必须切 K，见 <a href="../大模型算子开发/03-GEMM深度剖析.html">../大模型算子开发/03-GEMM深度剖析.md</a>；decode 阶段为什么 M=1，见 <a href="../推理框架/推理优化入门/03-Prefill与Decode两阶段.html">../推理框架/推理优化入门/03-Prefill与Decode两阶段.md</a>。</p>
 <h3 id="a">A 类 · 显式定义失配（数学上就不等价）</h3>
 <p>训练引擎和推理引擎是两套独立实现的代码库，公式本身就有差别。这类最好查，但也最难改——要改就得改一边的实现。</p>
-<h3 id="b">B 类 · 计算图重排失配（数学等价，数值发散）</h3>
-<p>公式一样，但<strong>算的顺序不一样</strong>。浮点加法不满足结合律，<code>(a+b)+c ≠ a+(b+c)</code>，顺序一变结果就变。三个来源：</p>
+<h3 id="b_1">B 类 · 计算图重排失配（数学等价，数值发散）</h3>
+<p>公式一样，但<strong>算的顺序不一样</strong>——就是上面那个三数相加的例子。三个来源：</p>
 <table>
 <thead>
 <tr>
@@ -291,7 +510,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 <tr>
 <td><strong>② 并行策略</strong></td>
-<td>训练和推理偏好不同的并行切法，切法一变，浮点累加的精度与顺序就变</td>
+<td>训练和推理偏好不同的并行切法（TP 度不同），切法一变，浮点累加的分段方式就变——就是上表第 3 行那种情况</td>
 </tr>
 <tr>
 <td><strong>③ 融合算子</strong></td>
@@ -299,10 +518,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p><strong>术语</strong>：MLA = Multi-head Latent Attention（多头潜在注意力），DeepSeek 提出的注意力变体，大幅压缩 KV cache。MQA = Multi-Query Attention（多查询注意力），所有注意力头共享一份 K/V。MHA = Multi-Head Attention（多头注意力），标准形式。MoE = Mixture of Experts（混合专家）。</p>
-</blockquote>
-<p>⚠️ <strong>①那条最值得单独记：MLA 在训练和推理走的根本不是同一条算子路径。</strong> 这不是实现疏忽，是性能优化的必然结果——decode 阶段吸收成 MQA 才快。所以只要用了 MLA，这个失配源就天然存在。</p>
+<p>⚠️ <strong>①那条最值得单独记：MLA 在训练和推理走的根本不是同一条算子路径。</strong> 这不是实现疏忽，是性能优化的必然结果——decode 阶段吸收成 MQA 才快。所以只要用了 MLA，这个失配源就天然存在，<strong>而且基本修不掉</strong>：要两边走同一条路，等于让 decode 每一步都物化整条 KV（直接慢几倍）。正确的应对是承认它，在 §4.6 的 IS 修正层兜底。</p>
+<p>⚠️ <strong>②那条里的「MoE 专家累加顺序」很值得记</strong>：训练按专家编号升序加，推理按分数降序加——<strong>同样 8 个专家的输出，加的顺序完全不同</strong>，就是上面那张表第 1 行 vs 第 3 行。这一条倒是<strong>能修</strong>：把两边的累加顺序统一就行，代价接近零。</p>
 <h3 id="c">C 类 · 硬件调度非确定性（同一次运行到下一次都会变）</h3>
 <p>最底层、也最没法从框架层面解决的一类。✅ openPangu 举的是昇腾 NPU 的例子——按输入 shape 自动选 tiling 策略：</p>
 <ul>
@@ -312,6 +529,137 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <li>AllReduce 的 Ring / Tree 拓扑算法选择进一步放大发散</li>
 </ul>
 <p>⚠️ C 类的特点是：<strong>你连「复现问题」都做不到</strong>，因为跑两次结果就不同。</p>
+<p>⚠️ <strong>B 类和 C 类的区别必须分清</strong>：B 类是「形状变了 → kernel 选择变了」，是<strong>确定的函数关系</strong>（同样的 batch 每次结果一样）；C 类是「同一个 kernel 内部的到达顺序随机」，<strong>同样的输入每次都可能不同</strong>。⟹ <strong>先消灭 C 类，否则后面所有测量都在噪声里</strong>，连「有没有 B 类问题」都测不出来。</p>
+<h3 id="bug">★★ 判据表：哪些差异是数值噪声，哪些是真 bug</h3>
+<blockquote>
+<p><strong>这是全章最该直接拿去用的一段。</strong> 上面讲了「为什么会不一样」，这里讲「不一样到什么程度该报警」。</p>
+</blockquote>
+<p><strong>四个指标，按「从原因到结果」排</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>指标</th>
+<th>怎么测</th>
+<th><strong>正常</strong></th>
+<th><strong>可疑</strong></th>
+<th><strong>一定有 bug</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>逐 token logprob 差的均值</strong> <code>mean(Δ)</code></td>
+<td>同一批样本，推理侧记一份、训练侧重算一份，逐 token 相减</td>
+<td>|mean(Δ)| &lt; 1e-3</td>
+<td>1e-3 ~ 1e-2</td>
+<td><strong>&gt; 1e-2，或方向系统性偏一侧</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>逐 token logprob 差的标准差</strong> <code>σ(Δ)</code></td>
+<td>同上</td>
+<td>σ &lt; 0.01</td>
+<td>0.01 ~ 0.05</td>
+<td><strong>&gt; 0.05</strong>（对照 §4.1 那张表：0.05 ÷ 0.1823 = 已经吃掉 clip 预算的 27%）</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>train-rollout PCC</strong></td>
+<td>两份 logprob 向量求皮尔逊相关系数</td>
+<td><strong>&gt; 0.999</strong></td>
+<td>0.99 ~ 0.999</td>
+<td><strong>&lt; 0.99</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>top-k 专家重合度</strong>（仅 MoE）</td>
+<td>同一个 token，训练侧选的专家集合 ∩ 推理侧选的</td>
+<td>&gt; 99%</td>
+<td>95% ~ 99%</td>
+<td><strong>&lt; 95%</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 上表的阈值里，<strong>只有 ③ 的 0.99 这条线有一手出处</strong>（✅ openPangu 的 KPop 把 PCC 0.99 当作在线切换掩码策略的判据，见 §4.6）。<strong>①②④ 三行的具体数字是 ⚠️ 本文按 §4.1 的 clip 预算 0.1823 反推的量级，不是任何论文给的阈值。</strong> 用它们判量级可以，别当标准。</p>
+<p>★ <strong>④ 那条 95% 有一处独立佐证</strong>：<a href="../大模型算子开发/11-训推一致性算子层.html">大模型算子开发 · 11 训推一致性算子层 §11.9.2</a> 从算子侧另走一条路得出同一个指标（top-k 重合度），并在它的排查阶梯里同样把 <strong>&lt; 95%</strong> 当作「该上确定性 kernel」的分界。两边口径独立、落点一致 —— ⚠️ 但那一章的 95% 也没有论文出处，所以这只是<strong>两处互相印证的经验值</strong>，不构成一手依据。</p>
+<p>⚠️ 另外注意两边的 <strong>σ 不是同一个量</strong>：本表的 <code>σ(Δ)</code> 是 <strong>logprob 差</strong>的标准差，算子开发那章讲的 <code>σ &gt; 0.1</code> 是 <strong>IS 比值</strong>的标准差。小偏差时 <code>ratio = exp(Δ) ≈ 1 + Δ</code>，两者数值接近，但量纲不同，<strong>别混着引用</strong>。</p>
+</blockquote>
+<p><strong>三条「长什么样就是什么病」的判据</strong></p>
+<p>⚠️ 比看绝对数值更有用的是<strong>看形状</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>是哪一类</th>
+<th>为什么</th>
+<th>怎么办</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>同一个引擎、同样输入，<strong>跑两次结果就不同</strong></td>
+<td><strong>C 类</strong></td>
+<td>硬件调度非确定性（AtomicAdd、SplitK 顺序随机）</td>
+<td><strong>必须第一个修</strong>，否则后面什么都测不准</td>
+</tr>
+<tr>
+<td>逐层 PCC <strong>平滑下降</strong></td>
+<td><strong>B 类</strong></td>
+<td>每层贡献一点归约顺序差异，线性累积</td>
+<td>对齐 TP 度 / 统一融合 kernel；兜不住就上 IS 修正</td>
+</tr>
+<tr>
+<td>逐层 PCC <strong>在某一层断崖下跌</strong></td>
+<td><strong>A 类</strong>或 <strong>MoE 路由跳变</strong></td>
+<td>要么公式真的不同，要么那一层是 MoE 层、专家选择跳了</td>
+<td>查那一层是不是 MoE；是就上 R3（§4.4）</td>
+</tr>
+<tr>
+<td><strong>batch 从 1 改到 32，同一条序列结果变了</strong></td>
+<td><strong>B 类</strong></td>
+<td>kernel 按形状选，形状变了顺序就变</td>
+<td>batch-invariant kernel（§4.3 DeepSeek 那条）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>「平滑下降 vs 断崖」是判读的全部技巧。</strong> 先看曲线形状，再决定用哪个工具。逐层 PCC 曲线怎么测、每一级误差怎么放大，在 <a href="../大模型算子开发/11-训推一致性算子层.html">../大模型算子开发/11-训推一致性算子层.md</a>。</p>
+</blockquote>
+<p><strong>⚠️ 一条反直觉的判据：差异「小而系统性」比「大而随机」更危险</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>大而随机</th>
+<th><strong>小而系统性</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>例子</td>
+<td>C 类的 AtomicAdd 抖动</td>
+<td>B 类：推理侧的 kernel 系统性地把某类值算偏一个方向</td>
+</tr>
+<tr>
+<td><code>mean(Δ)</code></td>
+<td>≈ 0（正负抵消）</td>
+<td><strong>≠ 0，稳定偏一侧</strong></td>
+</tr>
+<tr>
+<td>多步之后</td>
+<td>像噪声，被平均掉</td>
+<td><strong>偏差累积，变成一个假的梯度方向</strong></td>
+</tr>
+<tr>
+<td>症状</td>
+<td>reward 曲线抖</td>
+<td><strong>reward 曲线平滑地不涨</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 所以<strong>指标 ① 的「方向性」比它的绝对值重要</strong>：<code>mean(Δ) = 0.005</code> 但稳定为正，比 <code>mean(Δ) = 0</code> 而 <code>σ = 0.02</code> 更需要查。前者是在往一个固定的错方向推模型。</p>
 <hr />
 <h2 id="43">4.3 五家怎么解的</h2>
 <table>
@@ -356,25 +704,164 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<p>⚠️ 这张表读出来的分层很清楚——同一个问题可以在<strong>四个不同层次</strong>上解：</p>
-<div class="codehilite"><pre><span></span><code>算法层    ── 承认不一致，在 loss 里修正它        MiniMax(CISPO)、openPangu(KPop)
-   ▲
-接口层    ── 不让 tokenize/detokenize 引入新误差  GLM(TITO)、OpenRLHF(token-in-token-out)
-   ▲
-数值层    ── 让两边用同一种精度                  Kimi(MXFP4 QAT)、GLM(FP8)、Pangu(FP16)
-   ▲
-kernel层  ── 让两边逐位相同                      DeepSeek(batch-invariant kernel)
-</code></pre></div>
-
-<p><strong>越往下越根治，也越贵。</strong> DeepSeek 走的是最彻底但工程量最大的一条；MiniMax 走的是最省事的一条（改 loss 函数而已）。⚠️ 大多数团队应该从上往下走：先用算法侧修正兜住，只有当兜不住时才往下沉。</p>
+<p>⚠️ 这张表读出来的分层很清楚——同一个问题可以在<strong>四个不同层次</strong>上解。按「从上往下越根治、也越贵」排：</p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>做法</th>
+<th>谁在用</th>
+<th>改哪里</th>
+<th>代价</th>
+<th>治到什么程度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>算法层</strong></td>
+<td>承认不一致，在 loss 里修正它</td>
+<td>MiniMax(CISPO)、openPangu(KPop)</td>
+<td><strong>只改 loss 函数</strong></td>
+<td><strong>近乎为零</strong></td>
+<td>掩盖症状，不治因</td>
+</tr>
+<tr>
+<td><strong>接口层</strong></td>
+<td>不让 tokenize / detokenize 引入新误差</td>
+<td>GLM(TITO)、OpenRLHF(token-in-token-out)</td>
+<td>改数据通路</td>
+<td><strong>零</strong>（见 §4.5）</td>
+<td><strong>彻底消灭 A 类里的分词那一支</strong></td>
+</tr>
+<tr>
+<td><strong>数值层</strong></td>
+<td>让两边用同一种精度</td>
+<td>Kimi(MXFP4 QAT)、GLM(FP8)、Pangu(FP16)</td>
+<td>改训练精度，要重训</td>
+<td><strong>大</strong>（整个训练流程）</td>
+<td>大幅压缩 B 类</td>
+</tr>
+<tr>
+<td><strong>kernel 层</strong></td>
+<td>让两边逐位相同</td>
+<td>DeepSeek(batch-invariant kernel)</td>
+<td>重写算子库</td>
+<td><strong>最大</strong></td>
+<td><strong>根治 B + C 类</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ <strong>大多数团队应该从上往下走</strong>：先把接口层（零代价）做掉，再用算法侧修正兜住，只有当兜不住时才往下沉到数值层和 kernel 层。</p>
+<blockquote>
+<p>★ <strong>注意接口层的位置</strong>：它代价为零、而且根治一整类问题，<strong>所以它不是「第二选择」，它是唯一一个无条件该先做的</strong>。§4.5 单独讲它。</p>
+</blockquote>
 <h3 id="openpangu-fp16">★ openPangu 的 FP16 是个逆潮流选择</h3>
 <p>✅ openPangu 用 <strong>FP16 替代 BF16</strong>（配动态 loss scaling 处理梯度下溢）。<strong>这是五家里唯一一个这么做的。</strong></p>
-<p>⚠️ 为什么反潮流：BF16 之所以成为训练默认，是因为它的<strong>指数位多、动态范围大</strong>，不容易溢出；代价是尾数位少、精度低。而训推一致性关心的恰恰是<strong>精度</strong>不是范围——FP16 尾数位多，两边算出来的数更接近。openPangu 是把「不溢出」的问题交给 loss scaling，换取「更精确」。这个取舍只有在训推一致性成为首要矛盾时才成立。</p>
+<p>⚠️ 为什么反潮流？两种格式都是 16 位，差别在于这 16 位怎么分：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>指数位</th>
+<th>尾数位（含隐含位）</th>
+<th>动态范围</th>
+<th>1.0 附近的间隔</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>BF16</strong></td>
+<td>8</td>
+<td><strong>8</strong></td>
+<td>和 FP32 一样大，约 ±3×10³⁸</td>
+<td>2⁻⁷ = 0.0078</td>
+</tr>
+<tr>
+<td><strong>FP16</strong></td>
+<td>5</td>
+<td><strong>11</strong></td>
+<td>只到约 ±6.5×10⁴</td>
+<td><strong>2⁻¹⁰ = 0.00098</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>FP16 在 1.0 附近的间隔只有 BF16 的 1/8</strong>（<code>2⁻¹⁰ ÷ 2⁻⁷ = 1/8</code>），也就是精度高 3 个二进制位。</p>
+<p>把这个和 §4.2 的三数相加例子对上：<strong>间隔越小，「太小以至于被吞掉」的增量就越少，两种加法顺序的结果就越接近。</strong> BF16 之所以成为训练默认，是因为它的动态范围大、不容易溢出；而训推一致性关心的恰恰是<strong>精度</strong>不是范围。openPangu 是把「不溢出」的问题交给 loss scaling，换取「更精确」。</p>
+<p>⚠️ 这个取舍只有在训推一致性成为首要矛盾时才成立。混合精度训练的完整权衡见 <a href="../训练框架/分布式训练入门/10-混合精度与FP8.html">../训练框架/分布式训练入门/10-混合精度与FP8.md</a>。</p>
 <hr />
 <h2 id="44-r3-keep-routing">4.4 ★★ 一处独立收敛：R3 ↔ Keep Routing</h2>
 <p>这是本目录里我认为最有价值的一处交叉印证。</p>
-<p><strong>MoE 模型有一个 dense 模型没有的失配源</strong>：每个 token 走哪几个专家，是由一个路由器（router）决定的。而路由器的输出对数值扰动极其敏感——B 类的一点点数值差异，可能让某个 token 在推理时走专家 {3, 17}、在训练时走专家 {3, 21}。<strong>走的专家都不一样了，算出来的概率当然不同。</strong> 而且这个误差不是渐变的，是跳变的。</p>
-<p>两家独立给出了同一个解法：<strong>把推理时的路由选择录下来，训练时重放</strong>。</p>
+<h3 id="moe">⚠️ MoE 把连续的数值噪声整流成了离散的跳变</h3>
+<p><strong>MoE 模型有一个 dense 模型没有的失配源</strong>：每个 token 走哪几个专家，是由一个路由器（router）决定的。路由器的做法是——给每个专家打一个分，取分数最高的 k 个。</p>
+<p><strong>而「取最高的 k 个」是一个阶跃函数。</strong> 用一个具体例子看它有多脆：</p>
+<table>
+<thead>
+<tr>
+<th>专家编号</th>
+<th>推理侧算出的分数</th>
+<th>训练侧算出的分数（B 类误差 ~0.001）</th>
+<th>变了吗</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3</td>
+<td>0.812</td>
+<td>0.8124</td>
+<td>—</td>
+</tr>
+<tr>
+<td>17</td>
+<td><strong>0.4031</strong></td>
+<td>0.4028</td>
+<td>⚠️ 掉到第 3 名</td>
+</tr>
+<tr>
+<td>21</td>
+<td><strong>0.4029</strong></td>
+<td>0.4033</td>
+<td>⚠️ 升到第 2 名</td>
+</tr>
+<tr>
+<td>8</td>
+<td>0.251</td>
+<td>0.2508</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>取 top-2：<strong>推理侧选 {3, 17}，训练侧选 {3, 21}。</strong></p>
+<p>⟹ 两个专家的分数只差 <strong>0.0002</strong>，而 B 类的数值误差就有 0.001 量级——<strong>误差比差距还大 5 倍，排名就翻了。</strong> 一旦翻了，这个 token 的输出就不是「差一点」，而是<strong>经过了一个完全不同的全连接层</strong>。</p>
+<p>⚠️ <strong>这就是 MoE 的特殊之处</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>dense 模型</th>
+<th><strong>MoE 模型</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入扰动 1e-3</td>
+<td>输出扰动也在 1e-3 量级</td>
+<td><strong>要么 1e-3，要么跳变（量级无上界）</strong></td>
+</tr>
+<tr>
+<td>误差怎么传</td>
+<td>连续、可估、线性累积</td>
+<td><strong>离散跳变 + 正反馈</strong>（跳变让隐状态偏更多，偏更多又更容易跳）</td>
+</tr>
+<tr>
+<td>逐层 PCC 曲线</td>
+<td>平滑下降</td>
+<td><strong>在某一层之后断崖下跌</strong></td>
+</tr>
+</tbody>
+</table>
+<p>★ <strong>这就是 §4.2 末尾那张判据表里「断崖 → 查是不是 MoE 层」的物理原因。</strong> 数值层的完整分析见 <a href="../大模型算子开发/11-训推一致性算子层.html">../大模型算子开发/11-训推一致性算子层.md</a>。</p>
+<h3 id="_2">两家独立给出了同一个解法</h3>
+<p><strong>把推理时的路由选择录下来，训练时重放。</strong></p>
 <table>
 <thead>
 <tr>
@@ -393,6 +880,11 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 <td>核心</td>
 <td>推理时记录每个 token 的专家选择，训练时强制用同一套</td>
 <td>同</td>
+</tr>
+<tr>
+<td>平台</td>
+<td>昇腾 NPU</td>
+<td>英伟达 GPU</td>
 </tr>
 </tbody>
 </table>
@@ -423,11 +915,9 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 </tr>
 </tbody>
 </table>
-<blockquote>
-<p>PCC = Pearson Correlation Coefficient（皮尔逊相关系数），这里用来衡量训练侧与推理侧算出的 logits 有多像。</p>
-</blockquote>
-<p>⚠️ <strong>Masked R3 这一条最反直觉，也最有信息量</strong>：全量重放不是「越多越好」。强行让训练侧走推理侧的路由，在隐状态已经发散的深层，反而是在<strong>用错误的专家算错误的输入</strong>，比不重放更糟。所以要设阈值——只在两边本来就接近的地方对齐。这是「一致性」和「正确性」的一次直接冲突。</p>
-<h3 id="_1">⚠️ 这件事的真正含义：接口契约要变了</h3>
+<p>⚠️ <strong>Masked R3 这一条最反直觉，也最有信息量</strong>：全量重放不是「越多越好」。强行让训练侧走推理侧的路由，在隐状态已经发散的深层，反而是在<strong>用错误的专家算错误的输入</strong>，比不重放更糟。所以要设阈值——只在两边本来就接近的地方对齐。</p>
+<p>★ <strong>这是「一致性」和「正确性」的一次直接冲突，而且它和 §4.6 的 KPop 规则是同一个道理</strong>：修正的强度要跟着实测的一致性程度走，不能设一个固定值。</p>
+<h3 id="_3">⚠️ 这件事的真正含义：接口契约要变了</h3>
 <p>推理引擎交给训练引擎的东西，长期以来就是三元组：</p>
 <div class="codehilite"><pre><span></span><code>(token_ids, logprobs, finish_reason)
 </code></pre></div>
@@ -436,6 +926,14 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 <div class="codehilite"><pre><span></span><code>(token_ids, logprobs, finish_reason, routing_records, sampling_mask, ...)
 </code></pre></div>
 
+<p>⚠️ <strong>这不只是「多传一个字段」，是回传带宽翻倍。</strong> 粗略估一下量级：</p>
+<div class="codehilite"><pre><span></span><code>原契约：每个 token 1 个 token_id (4 B) + 1 个 logprob (4 B) = 8 B
+加路由：每个 token 每个 MoE 层要记 top-k 个专家编号
+        设 58 个 MoE 层 x top-8 x 1 B = 464 B/token
+==&gt; ⚠️ 回传量增加约 58 倍（本文量级估算，不是实测）
+</code></pre></div>
+
+<p>⚠️ 这就是为什么 openPangu 必须做「流式传输」和「路由记录走 HCCL 而非 Ray」——⚠️ 本文推断：<strong>原契约那 8 字节/token 塞在 Ray 的对象传递里完全无感，几百字节/token 就不行了。</strong> 这也呼应 <a href="03-权重同步.html">03 章 §3.6</a> 那条观察：推理侧要回传的东西正在变多，这条通路的带宽预算要重新算。</p>
 <p>🌐 HF 那篇横评把这件事称为「<strong>a breaking change everywhere</strong>」（一处到处都要改的破坏性变更）——所有推理引擎要吐出路由，所有传输层要传路由，所有训练引擎要吃路由。</p>
 <p>⚠️ 我的判断：<strong>这是未来一到两年 RL 框架最确定的演进方向之一。</strong> 两家不同架构（昇腾 NPU / 英伟达 GPU）、不同团队、不同模型的实验室独立收敛到同一个方案，说明这不是某家的特殊需求，而是 MoE + 异步 RL 组合下的结构性问题。</p>
 <hr />
@@ -446,7 +944,40 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 （TITO 指训练管线直接消费推理引擎产出的那份 token 流，不做任何重新分词。）</p>
 </blockquote>
 <p>对立面是 <strong>Text-in-Text-out</strong>：推理引擎把 token 解码成文字 → 传给训练侧 → 训练侧重新分词。</p>
-<p>⚠️ 问题在于 <strong>tokenize(detokenize(x)) ≠ x 不总是成立</strong>。多字节字符被切在中间、特殊 token 的边界、连续空格的合并——都可能让重新分词出来的序列和原来不一样。序列一变，logprob 就完全对不上了。</p>
+<h3 id="_4">⚠️ 用一个具体例子看它怎么坏事</h3>
+<p>问题在于 <strong><code>tokenize(detokenize(x)) ≠ x</code> 不总是成立</strong>。走一遍：</p>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 推理引擎生成</td>
+<td>token id 序列 <code>[..., 15339, 11, 1917, ...]</code>，共 <strong>100</strong> 个 token，每个都有自己的 logprob</td>
+</tr>
+<tr>
+<td>② 解码成文字</td>
+<td><code>"hello, world"</code>（中间某处有两个连续空格，或一个被切成两半的中文字符）</td>
+</tr>
+<tr>
+<td>③ 传给训练侧</td>
+<td>字符串</td>
+</tr>
+<tr>
+<td>④ 训练侧重新分词</td>
+<td>⚠️ 两个连续空格被合并成一个 token、或多字节字符的两半被重新拼成一个 token ⟹ 得到 <strong>98</strong> 个 token</td>
+</tr>
+<tr>
+<td>⑤ 算 loss</td>
+<td>❌ <strong>100 个 logprob 对不上 98 个 token。全错位。</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 注意第 ⑤ 步的后果<strong>不是「有几个 token 的概率不准」，是「从错位那一刻起，后面每一个 token 的 logprob 都配到了错的 token 上」</strong>。这在 §4.2 的三分类里属于 <strong>A 类</strong>（显式定义失配），而且是 A 类里最恶劣的一种——因为它不产生「一点小误差」，它产生<strong>完全无意义的 loss</strong>。</p>
+<p>常见的触发点：多字节字符（中文、emoji）被切在中间、特殊 token 的边界、连续空格的合并、行尾空白被 strip。</p>
 <p>✅ GLM-5 的判断很硬：</p>
 <blockquote>
 <p><em>"We find token-in-token-out is </em><em>critical</em><em> for asynchronous RL training."</em></p>
@@ -468,10 +999,64 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 </tr>
 </tbody>
 </table>
-<p>⚠️ 这是本章里<strong>最便宜的一条建议</strong>：TITO 不需要改 kernel、不需要改精度、不需要改算法，只需要在接口上别做多余的解码-再编码。<strong>如果你的 RL 管线还在传文本，先把这个改了。</strong></p>
+<p>⚠️ 这是本章里<strong>最便宜的一条建议</strong>：TITO 不需要改 kernel、不需要改精度、不需要改算法，只需要在接口上别做多余的解码-再编码。<strong>如果你的 RL 管线还在传文本，先把这个改了。</strong> 对照 §4.3 那张分层表——它是唯一一个「代价为零、却能根治一整类问题」的位置。</p>
 <hr />
 <h2 id="46-is">4.6 算法层：IS 修正家族</h2>
 <p>如果前面几层都兜不住，最后一道防线是在 loss 里做<strong>重要性采样（Importance Sampling, IS）修正</strong>——承认 <code>π_推理 ≠ π_训练</code>，然后乘一个比值把偏差纠回来。</p>
+<h3 id="is">★ IS 修正到底在干什么：一个能算的例子</h3>
+<p>IS 的数学形式只有一行：</p>
+<div class="codehilite"><pre><span></span><code>用旧策略采的样本，估计新策略的梯度：
+  E_{x ~ pi_new}[ f(x) ]  =  E_{x ~ pi_old}[ (pi_new(x) / pi_old(x)) * f(x) ]
+                                              \____________________/
+                                                   IS 比值 w
+</code></pre></div>
+
+<p><strong>直觉</strong>：某个 token 在新策略下出现概率是旧策略的 2 倍，那用旧策略采到它时，就把它的贡献乘 2。</p>
+<p>⚠️ <strong>问题在于 <code>w</code> 的方差。</strong> 用一个序列级的例子看它怎么爆炸——设一条 100 个 token 的轨迹，每个 token 的 logprob 偏差都是 Δ（同向）：</p>
+<table>
+<thead>
+<tr>
+<th>每 token 偏差 Δ</th>
+<th>单 token 的 w = exp(Δ)</th>
+<th><strong>整条序列的 w = exp(100Δ)</strong></th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.001</td>
+<td>1.0010</td>
+<td>exp(0.1) = <strong>1.11</strong></td>
+<td>可用</td>
+</tr>
+<tr>
+<td>0.005</td>
+<td>1.0050</td>
+<td>exp(0.5) = <strong>1.65</strong></td>
+<td>开始偏</td>
+</tr>
+<tr>
+<td>0.01</td>
+<td>1.0101</td>
+<td>exp(1.0) = <strong>2.72</strong></td>
+<td>⚠️ 这条样本的权重是别人的 2.7 倍</td>
+</tr>
+<tr>
+<td><strong>0.05</strong></td>
+<td>1.0513</td>
+<td>exp(5.0) = <strong>148</strong></td>
+<td>❌ <strong>一条样本吃掉整个 batch 的梯度</strong></td>
+</tr>
+<tr>
+<td>0.1</td>
+<td>1.1052</td>
+<td>exp(10) = <strong>22,026</strong></td>
+<td>❌ 彻底爆炸</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>序列级 IS 比值是逐 token 比值的连乘，偏差在指数上累积。</strong> 这就是 §4.2 末尾判据表里 <code>σ(Δ) &gt; 0.05</code> 被判为「一定有 bug」的理由——到这个量级，IS 修正自己先崩了。</p>
+<p>★ <strong>这解释了整个 IS 家族为什么全都叫「截断」「裁剪」「掩码」</strong>：它们本质上都是在给这个指数爆炸设一个闸。</p>
 <p>🌐 常见的几个变体：</p>
 <table>
 <thead>
@@ -479,38 +1064,127 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 <th>名称</th>
 <th>全称</th>
 <th>一句话</th>
+<th>闸设在哪</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>TIS</strong></td>
-<td>Truncated Importance Sampling</td>
-<td>给 IS 比值设上限，防止个别 token 权重爆炸</td>
+<td>Truncated Importance Sampling（截断重要性采样）</td>
+<td>给 IS 比值设上限</td>
+<td><code>w = min(w, C)</code></td>
 </tr>
 <tr>
 <td><strong>OPSM</strong></td>
-<td>Off-Policy Sampling Mask</td>
+<td>Off-Policy Sampling Mask（离策略采样掩码）</td>
 <td>用 mask 屏蔽掉偏差过大的 token</td>
+<td>超阈值的 token 直接不参与</td>
 </tr>
 <tr>
 <td><strong>TOPR</strong></td>
 <td>Truncated/Tapered Off-Policy REINFORCE</td>
 <td>截断式的离策略 REINFORCE</td>
+<td>比值两端都收</td>
 </tr>
 <tr>
 <td><strong>CISPO</strong></td>
 <td>Clipped Importance Sampling Policy Optimization</td>
 <td>裁剪<strong>重要性权重本身</strong>而不是裁剪比值，MiniMax 用的就是这个</td>
+<td>裁 <code>w</code>，但梯度不归零</td>
 </tr>
 <tr>
 <td><strong>KPop</strong></td>
 <td>（openPangu 自研）</td>
 <td>替代 IcePop 和常规拒绝采样的主校正机制</td>
+<td>自适应</td>
 </tr>
 </tbody>
 </table>
-<p>✅ <strong>KPop 有个值得单独记的设计——shadow 超参机制</strong>：训练初期并行评估多个候选 <code>φ</code>，先估计它们的 mask 行为再定值。经验规则是：<strong>train-rollout PCC &lt; 0.99 时用更严的 mask；&gt; 0.99 时用更松的 <code>φ</code> 以保留探索能力</strong>。</p>
+<p>⚠️ <strong>CISPO 和 TIS 的区别值得单独记</strong>：PPO 的 clip 把越界 token 的<strong>梯度精确归零</strong>（§4.1 那张表的最后一行），而被 clip 掉的恰恰是偏差最大、也往往最有信息量的 token。CISPO 裁的是权重本身，<strong>token 还在、梯度还在，只是权重被压住了</strong>。算法细节见 <a href="../后训练/README.html">../后训练/</a>，不在本目录重写。</p>
+<h3 id="kpop-shadow">✅ KPop 的 shadow 超参机制：修正强度该跟着实测走</h3>
+<p>✅ <strong>KPop 有个值得单独记的设计——shadow 超参机制</strong>：训练初期并行评估多个候选 <code>φ</code>，先估计它们的 mask 行为再定值。经验规则是：</p>
+<table>
+<thead>
+<tr>
+<th>实测 train-rollout PCC</th>
+<th>该怎么做</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>&lt; 0.99</strong></td>
+<td>用<strong>更严</strong>的 mask（多屏蔽一些 token）</td>
+</tr>
+<tr>
+<td><strong>&gt; 0.99</strong></td>
+<td>用<strong>更松</strong>的 <code>φ</code>，以保留探索能力</td>
+</tr>
+</tbody>
+</table>
 <p>⚠️ 这条经验规则本身就是本章的一个总结：<strong>当训推已经足够一致（PCC &gt; 0.99）时，过度修正反而有害</strong>，因为它会压掉本该保留的探索。修正的强度应该跟着实测的一致性程度走，而不是设一个固定值。</p>
+<p>★ <strong>注意这和 §4.4 的 Masked R3 是同一条原则的两次出现</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Masked R3</th>
+<th>KPop shadow 超参</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>在哪一层</td>
+<td>MoE 路由</td>
+<td>loss 函数</td>
+</tr>
+<tr>
+<td>固定做法会怎样</td>
+<td>全量重放 → 在发散的深层用错专家算错输入</td>
+<td>固定强修正 → 压掉探索</td>
+</tr>
+<tr>
+<td>自适应判据</td>
+<td>专家重合度超阈值才重放</td>
+<td><strong>PCC 跨过 0.99 才换档</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>「修正要自适应、不要一刀切」在两个完全不同的层次上各被独立发现了一次。</strong> ⚠️ 这是本文的归纳，不是任一报告的结论；但两条证据来自同一份 openPangu 报告的不同小节，方向一致。</p>
+<h3 id="is_1">⚠️ 什么时候 IS 修正会失效</h3>
+<table>
+<thead>
+<tr>
+<th>情形</th>
+<th>为什么失效</th>
+<th>征兆</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>数值失配太大</strong>（<code>σ(Δ) &gt; 0.05</code>）</td>
+<td>序列级 w 爆炸到 10² 量级，一条样本主导整个 batch</td>
+<td>梯度范数突然尖峰</td>
+</tr>
+<tr>
+<td><strong>陈旧度太大</strong>（样本落后很多步）</td>
+<td><code>π_new</code> 和 <code>π_old</code> 的支撑集都快不重叠了，比值要么趋 0 要么趋无穷</td>
+<td>有效样本数骤降</td>
+</tr>
+<tr>
+<td><strong>MoE 路由跳变</strong></td>
+<td><code>π_old</code> 这个「分母」本身就不对应任何一个真实模型</td>
+<td>PCC 断崖，IS 修正修的是个假的分母</td>
+</tr>
+<tr>
+<td><strong>档 1「永不停」的层间混合</strong></td>
+<td>见 <a href="03-权重同步.html">03 章 §3.5</a>：behavior policy 不对应任何真实存在过的模型</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★ <strong>最后两行是同一个病</strong>：IS 修正的前提是「分母 <code>π_old</code> 是一个真实存在过的策略」。MoE 路由跳变和逐参数流式广播都破坏了这个前提。⚠️ 这是本文的推断，但它解释了为什么 PipelineRL 必须自己做 KL 实验来证明「混合策略 + 陈旧 KV」在实践中可接受——<strong>理论上它是没有保证的。</strong></p>
+</blockquote>
 <h3 id="verl">✅ 这些算法在 veRL 里是可查的</h3>
 <p>veRL 把 policy loss 做成了注册表。✅ 本地实测（commit <code>b256ebf</code>，<code>verl/trainer/ppo/core_algos.py</code>），共 <strong>12 个</strong> <code>@register_policy_loss</code>：</p>
 <table>
@@ -568,13 +1242,98 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 </tr>
 </tbody>
 </table>
-<p>★ 一处三方交叉验证：<br />
-- ✅ MiniMax-M2 报告说 Forge 的训练引擎算的是 <strong>CISPO</strong> 梯度<br />
-- ✅ veRL <code>core_algos.py:2046</code> 确实注册了 <code>cispo</code><br />
-- 🌐 ROLL 被 HF 横评点名为 IS 修正菜单最全的一家</p>
+<p>★ 一处三方交叉验证：</p>
+<ul>
+<li>✅ MiniMax-M2 报告说 Forge 的训练引擎算的是 <strong>CISPO</strong> 梯度</li>
+<li>✅ veRL <code>core_algos.py:2046</code> 确实注册了 <code>cispo</code></li>
+<li>🌐 ROLL 被 HF 横评点名为 IS 修正菜单最全的一家</li>
+</ul>
 <p><strong>一个算法从技术报告走到开源框架的注册表，这条路径是可以逐条回查的。</strong></p>
 <hr />
 <h2 id="47">4.7 本章小结</h2>
+<h3 id="_5">两张能直接拿去用的表</h3>
+<p><strong>① 判据（完整版在 §4.2 末尾）</strong></p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>正常</th>
+<th>一定有 bug</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mean(Δ)</code></td>
+<td>&lt; 1e-3</td>
+<td>&gt; 1e-2，或方向系统性偏一侧</td>
+</tr>
+<tr>
+<td><code>σ(Δ)</code></td>
+<td>&lt; 0.01</td>
+<td><strong>&gt; 0.05</strong>（序列级 IS 比值会爆到 148）</td>
+</tr>
+<tr>
+<td>train-rollout PCC</td>
+<td>&gt; 0.999</td>
+<td><strong>&lt; 0.99</strong>（✅ 唯一有一手出处的阈值）</td>
+</tr>
+<tr>
+<td>MoE top-k 专家重合度</td>
+<td>&gt; 99%</td>
+<td>&lt; 95%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>② 该按什么顺序修</strong></p>
+<table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>做什么</th>
+<th>代价</th>
+<th>治哪一类</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>第 1 步</strong></td>
+<td>先消灭 <strong>C 类</strong>（关掉硬件非确定性）</td>
+<td>性能略降</td>
+<td>C</td>
+</tr>
+<tr>
+<td><strong>第 2 步</strong></td>
+<td><strong>TITO</strong>——别再传文本</td>
+<td><strong>零</strong></td>
+<td>A 类里的分词那一支</td>
+</tr>
+<tr>
+<td><strong>第 3 步</strong></td>
+<td>对齐 MoE 专家累加顺序、对齐 TP 度</td>
+<td>低</td>
+<td>B 类的一部分</td>
+</tr>
+<tr>
+<td><strong>第 4 步</strong></td>
+<td><strong>IS 修正</strong>兜底（CISPO / TIS / KPop）</td>
+<td>低（只改 loss）</td>
+<td>掩盖症状，不治因</td>
+</tr>
+<tr>
+<td><strong>第 5 步</strong></td>
+<td>MoE 且重合度仍 &lt; 95% → <strong>R3 路由重放</strong></td>
+<td>中（要改接口契约）</td>
+<td>MoE 路由跳变</td>
+</tr>
+<tr>
+<td><strong>第 6 步</strong></td>
+<td>还不行 → 下沉到数值层（FP16 / FP8 QAT）或 kernel 层（batch-invariant）</td>
+<td><strong>大</strong></td>
+<td>B + C 类根治</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">结论清单</h3>
 <table>
 <thead>
 <tr>
@@ -584,6 +1343,26 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 </thead>
 <tbody>
 <tr>
+<td>⚠️ 「ratio ≠ 1」有两个来源：<strong>陈旧度</strong>和<strong>数值失配</strong>，必须先分开</td>
+<td>⚠️ 关键区分</td>
+</tr>
+<tr>
+<td>★ 分开的判据：一批数据只更新一次 + <code>logp_old</code> 自己算 ⟹ ratio 必须精确等于 1</td>
+<td>⚠️ 判据</td>
+</tr>
+<tr>
+<td><code>ε = 0.2</code> 时 clip 的全部预算是 <code>ln(1.2) = 0.1823</code>，数值失配和真实策略变化<strong>共享</strong>这份预算</td>
+<td>⚠️ 本文推算</td>
+</tr>
+<tr>
+<td>浮点加法不满足结合律：✅ 本文实算 BF16 下 <code>(a+b)+c = 1.0</code> 而 <code>a+(b+c) = 1.0078125</code>，差 2⁻⁷</td>
+<td>✅ 实算</td>
+</tr>
+<tr>
+<td>训练 batch 大不切 K、推理 decode M=1 必须切 K ⟹ 两边落在不同的加法顺序上</td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
 <td>训推不一致不会报错，只会让模型悄悄变差或突然爆炸</td>
 <td>⚠️</td>
 </tr>
@@ -592,19 +1371,35 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 <td>✅ §10.3</td>
 </tr>
 <tr>
-<td>MLA 在 decode 走 MQA、训练走 MHA，是结构性失配源，用了 MLA 就有</td>
+<td>⚠️ B 类 vs C 类：B 是确定的函数关系，C 是跑两次都不同 ⟹ <strong>先消灭 C</strong></td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
+<td>MLA 在 decode 走 MQA、训练走 MHA，是结构性失配源，用了 MLA 就有，<strong>且基本修不掉</strong></td>
 <td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>MoE 专家累加顺序（训练按 ID 升序 / 推理按分数降序）<strong>能修，代价接近零</strong></td>
+<td>✅ + ⚠️</td>
+</tr>
+<tr>
+<td>⚠️ 「小而系统性」的差异比「大而随机」更危险——前者会累积成一个假梯度方向</td>
+<td>⚠️ 归纳</td>
 </tr>
 <tr>
 <td>解法分四层：算法 / 接口 / 数值 / kernel，越往下越根治越贵</td>
 <td>⚠️ 归纳</td>
 </tr>
 <tr>
-<td>openPangu 用 FP16 替代 BF16，五家里唯一，因为它要的是精度不是范围</td>
-<td>✅ + ⚠️</td>
+<td>openPangu 用 FP16 替代 BF16：FP16 尾数 11 位 vs BF16 的 8 位，<strong>1.0 附近间隔小 8 倍</strong></td>
+<td>✅ + ⚠️ 推算</td>
 </tr>
 <tr>
-<td>openPangu R3 与 DeepSeek Keep Routing 独立收敛到同一方案</td>
+<td>MoE 把连续噪声<strong>整流成离散跳变</strong>：两个专家分数差 0.0002 而误差有 0.001 ⟹ 排名翻转</td>
+<td>⚠️ 本文构造的例子</td>
+</tr>
+<tr>
+<td>openPangu R3 与 DeepSeek Keep Routing 独立收敛到同一方案（跨 NPU / GPU 两个平台）</td>
 <td>✅ + 🌐</td>
 </tr>
 <tr>
@@ -612,16 +1407,28 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 <td>✅</td>
 </tr>
 <tr>
-<td>推理→训练的接口契约要从三元组扩到含 routing 与 mask，是全行业的破坏性变更</td>
-<td>🌐 + ⚠️</td>
+<td>接口契约要从三元组扩到含 routing 与 mask；⚠️ 回传量粗估增加约 58 倍</td>
+<td>🌐 + ⚠️ 量级估算</td>
 </tr>
 <tr>
-<td>TITO 是最便宜的一条改进，GLM 称其对异步 RL 是 critical，OpenRLHF 做成了架构基石</td>
-<td>✅ 双方</td>
+<td>TITO 是最便宜的一条改进：代价为零且根治一整类 A 类问题</td>
+<td>✅ 双方 + ⚠️</td>
+</tr>
+<tr>
+<td>序列级 IS 比值是逐 token 的连乘：<code>σ(Δ) = 0.05</code> 时 100 token 的 w 爆到 <strong>148</strong></td>
+<td>⚠️ 本文推算</td>
 </tr>
 <tr>
 <td>KPop 的 shadow 超参：PCC &gt; 0.99 就该放松修正</td>
 <td>✅</td>
+</tr>
+<tr>
+<td>⚠️ Masked R3 与 KPop 是同一条原则（修正要自适应）在两个层次上的独立出现</td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
+<td>⚠️ IS 修正的前提是分母 <code>π_old</code> 对应一个真实存在过的策略；MoE 跳变和层间混合破坏了这个前提</td>
+<td>⚠️ 推断</td>
 </tr>
 <tr>
 <td>veRL 注册了 12 个 policy loss，含 <code>gspo</code>(1545) 与 <code>cispo</code>(2046)</td>
@@ -629,7 +1436,7 @@ kernel层  ── 让两边逐位相同                      DeepSeek(batch-inva
 </tr>
 </tbody>
 </table>
-<p><strong>下一篇</strong> → <a href="03-权重同步.html">03-权重同步.md</a></p>
+<p><strong>下一篇</strong> → <a href="05-算法与框架的接口.html">05-算法与框架的接口.md</a></p>
 </div>
 <div class="page-footer">业界前沿技术报告及论文研究 · 转换自 Markdown</div>
 </div>

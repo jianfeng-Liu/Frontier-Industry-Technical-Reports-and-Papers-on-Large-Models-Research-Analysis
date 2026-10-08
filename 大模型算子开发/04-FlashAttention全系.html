@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -420,7 +425,7 @@ kernel ③  O = P V             又一次 GEMM
 → 理论耗时 = 34.36 G ÷ 989 TFLOPS = 34.7 µs（vs 朴素的 162.7 µs，快 4.7×）
 </code></pre></div>
 
-<p>FA 就是奔着这个数去的。<strong>能不能真的做到 8.4 MB，取决于分块之后 K、V 被重复读了几次，以及有多少次被 L2 缓存接住</strong>——这笔账在 §4.3.3 算。</p>
+<p>FA 就是奔着这个数去的。<strong>能不能真的做到 8.4 MB，取决于分块之后哪个张量被重复读、被读了几次，以及有多少次被 L2 缓存接住</strong>——这笔账在 §4.3.3 算，FA1 和 FA2 的答案不一样。</p>
 <hr />
 <h2 id="42-softmax">4.2 在线 Softmax：全章唯一需要动笔的数学</h2>
 <h3 id="421-softmax">4.2.1 标准 Softmax 为什么要扫三遍</h3>
@@ -698,16 +703,68 @@ Bc = ⌈116736 / (4 × 128)⌉ = ⌈228⌉ = 228 行
 <p>⚠️ 上面的配置是<strong>为了说明量级的示意</strong>，真实 FA 的块大小随 head_dim、精度、正反向而变，以仓库里的 tile 表为准。但结论是稳的：<strong>FA 是一个寄存器压力极大的 kernel</strong>。一个 SM 的寄存器文件总共 256 KB，一个上面这样的线程块就吃掉 96 KB，所以一个 SM 只放得下 2 个块 = 8 个 Warp，Occupancy（占用率）只有 <code>8/64 = 12.5%</code>。</p>
 <p>★ 这正是 <a href="01-GPU硬件基础.html">01 章 §1.6.3</a> 说的"高 Occupancy ≠ 高性能"的又一个活例子：FA 靠的是<strong>每个线程持有大量数据、反复复用</strong>，不是靠堆 Warp 掩盖延迟。想不通这一点，去调 <code>-maxrregcount</code> 压寄存器，只会把 tile 压小、复用变差、性能塌掉。</p>
 </blockquote>
-<h3 id="433-io-545-mb">4.3.3 IO 账：从 545 MB 降到多少</h3>
-<p>现在把 §4.1.3 的那笔账重算一遍。还是一个 head，N=8192, d=128, BF16。</p>
-<p>FA 的 HBM 流量由两部分组成：<strong>只读写一次的 Q 和 O</strong>，加上<strong>被重复读的 K 和 V</strong>。K/V 被重复读几次，取决于循环结构：</p>
-<div class="codehilite"><pre><span></span><code>Q（2.1 MB）读一次，O（2.1 MB）写一次                       = 4.2 MB
-K、V（各 2.1 MB）被重复读 T 次                             = 4.2 × T MB
-
-FA2 那种&quot;Q 外层&quot;的结构：T = Tr = N/Br = 8192/128 = 64 次
-    → 4.2 + 4.2×64 = 4.2 + 268.8 = 273 MB
+<h3 id="433-io">4.3.3 IO 账：哪个张量被重复读，由循环顺序决定</h3>
+<p>现在把 §4.1.3 的那笔账重算一遍。还是一个 head，N=8192, d=128, BF16，Q、K、V、O 四个张量各 2.1 MB。</p>
+<p>FA 的 HBM 流量都由两部分组成：<strong>只读写一次的张量</strong>，加上<strong>被循环结构逼着重复读的张量</strong>。但<strong>哪个张量被重复读，完全由内外层循环的顺序决定，FA1 和 FA2 的答案正好相反</strong>——这是本节最容易搞反的一点：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>外层循环</th>
+<th>只读写一次</th>
+<th>被重复读</th>
+<th>重复次数</th>
+<th>总流量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FA1</strong>（§4.3.1）</td>
+<td>K/V</td>
+<td>K、V</td>
+<td><strong>Q（读）、O（读 + 写）</strong></td>
+<td>Tc = N/Bc</td>
+<td>2Nd + <strong>3</strong>Nd·Tc</td>
+</tr>
+<tr>
+<td><strong>FA2</strong>（§4.4.2）</td>
+<td>Q</td>
+<td>Q、O</td>
+<td><strong>K、V（只读）</strong></td>
+<td>Tr = N/Br</td>
+<td>2Nd + <strong>2</strong>Nd·Tr</td>
+</tr>
+</tbody>
+</table>
+<p>FA1 那个系数 3 就是论文 Algorithm 1 第 8 行的直接后果——内层每转一圈，<code>Q_i</code> 要读一遍、<code>O_i</code> 要读一遍再写一遍：</p>
+<div class="codehilite"><pre><span></span><code>FA1 论文 Algorithm 1（外层 K/V，内层 Q）           ✅ 原文第 5–13 行
+   5: for j = 1 … Tc:
+   6:   Load K_j, V_j from HBM               ← 每块只载入一次 → K、V 全程各读一遍
+   7:   for i = 1 … Tr:
+   8:     Load Q_i, O_i, ℓ_i, m_i from HBM   ← 每一圈都重新读
+  12:     Write O_i to HBM
+  13:     Write ℓ_i, m_i to HBM              ← 每一圈都写回
 </code></pre></div>
 
+<blockquote>
+<p>★ 论文 Theorem 2 的证明用的就是这一行：<strong>"For each block of K and V, we iterate over all blocks of Q (Algorithm 1 line 8), resulting in Θ(Nd·M⁻¹) passes over Q."</strong>（✅ 论文 §3.2 原文）FA1 的整个 IO 上界是从<strong>"扫了多少遍 Q"</strong>推出来的，跟 K/V 重读没有关系。</p>
+</blockquote>
+<p>代进数字，注意 <strong>FA1 的流量全挂在 Bc 上，而 Bc 取多大要看 §4.3.2 那笔预算</strong>：</p>
+<div class="codehilite"><pre><span></span><code>FA1 = 4.2 + 6.3 × Tc   MB      （Tc = N/Bc）
+  Bc = 228  ← 论文公式 ⌈M/4d⌉，M 是一个 SM 的 SRAM（§4.3.2 算过）
+      Tc = ⌈8192/228⌉ = 36  →  4.2 + 226.5 = 230.7 MB
+  Bc = 64   ← 若为了省寄存器把 KV 块压小
+      Tc = 128              →  4.2 + 805.2 = 809.4 MB   ← 比朴素的 545 MB 还差！
+
+FA2 = 4.2 + 4.2 × Tr   MB      （Tr = N/Br）
+  Br = 128  ← 被寄存器卡死：O 累加器 128×128 个 FP32 就是 64 KB（§4.3.2）
+      Tr = 64               →  4.2 + 268.4 = 272.6 MB
+  （ℓ、m 的流量两边都在 5~8 MB 量级，以下略去）
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>这里有个反直觉但很重要的结论：按各自的论文公式取块大小，FA1 的原始流量（231 MB）比 FA2（273 MB）还略低。</strong> 原因是 <code>Bc</code> 只受<strong>共享内存</strong>限制（FA1 只需要把 K_j、V_j 放进 SRAM），而 <code>Br</code> 受<strong>寄存器</strong>限制（FA2 要把整个 <code>O_i</code> 累加器留在寄存器里），所以 FA1 能开到 228、FA2 只能开到 128。<strong>这跟 FA2 论文自己的说法是一致的：FA2 的 IO 复杂度和 FA1 完全相同</strong>（§4.4 开头那句"对数学一个字没改"）。</p>
+</blockquote>
 <table>
 <thead>
 <tr>
@@ -717,6 +774,7 @@ FA2 那种&quot;Q 外层&quot;的结构：T = Tr = N/Br = 8192/128 = 64 次
 <th>带宽时间</th>
 <th>算力时间</th>
 <th>取大者</th>
+<th>相对朴素</th>
 </tr>
 </thead>
 <tbody>
@@ -727,44 +785,73 @@ FA2 那种&quot;Q 外层&quot;的结构：T = Tr = N/Br = 8192/128 = 64 次
 <td>162.7 µs</td>
 <td>17.4×2 µs</td>
 <td><strong>162.7 µs</strong></td>
+<td>1.0×</td>
 </tr>
 <tr>
-<td>FA（K/V 重读全部<strong>未命中</strong> L2，最坏）</td>
+<td>FA1（Bc=228，重读全部<strong>未命中</strong> L2）</td>
+<td>230.7 MB</td>
+<td>149</td>
+<td>68.9 µs</td>
+<td>34.7 µs</td>
+<td><strong>68.9 µs</strong></td>
+<td>2.4×</td>
+</tr>
+<tr>
+<td>FA2（Br=128，重读全部<strong>未命中</strong> L2）</td>
 <td>272.6 MB</td>
 <td>126</td>
 <td>81.4 µs</td>
 <td>34.7 µs</td>
 <td><strong>81.4 µs</strong></td>
+<td>2.0×</td>
 </tr>
 <tr>
-<td>FA（K/V 重读全部<strong>命中</strong> L2，最好）</td>
+<td>FA1 / FA2（重读全部<strong>命中</strong> L2，理论下限）</td>
 <td>8.4 MB</td>
 <td>4090</td>
 <td>2.5 µs</td>
 <td>34.7 µs</td>
 <td><strong>34.7 µs</strong></td>
+<td>4.7×</td>
 </tr>
 </tbody>
 </table>
 <blockquote>
-<p>⚠️ 三行都是屋顶线推算，不是实测。</p>
+<p>⚠️ 四行都是屋顶线推算，不是实测。</p>
 </blockquote>
-<p><strong>真实情况在中间偏好的一侧，原因是 L2</strong>：一个 head 的 K + V 只有 4.2 MB，而 H100 的 L2 是 50 MB 全芯片共享；同一时刻有 64 个线程块在读<strong>同一份</strong> K/V，第一个读进 L2 之后，后面 63 个大概率直接命中。所以那 268 MB 的"重读"里，绝大部分根本没碰到 HBM。</p>
-<div class="codehilite"><pre><span></span><code>加速比 = 162.7 ÷ 81.4 = 2.0×   （最坏）
-       = 162.7 ÷ 34.7 = 4.7×   （最好）
+<p><strong>所以 FA2 快，不是因为总流量更少——那笔账两边打平。</strong> 差别在于<strong>这些重读 L2 接不接得住</strong>，而 FA1 和 FA2 的重读在 L2 眼里是两种完全不同的东西：</p>
+<ul>
+<li><strong>FA2 的重读是"很多块读同一份数据"（共享重读）</strong>：一个 head 的 K + V 只有 4.2 MB，而 H100 的 L2 是 50 MB 全芯片共享；同一时刻有 64 个 Q 块在读<strong>同一份</strong> K/V，第一个块把它读进 L2 之后，后面 63 个大概率直接命中。那 268 MB 的重读里，绝大部分根本没碰到 HBM。</li>
+<li><strong>FA1 的重读是"同一个块反复读它自己的数据"（私有重读）</strong>：FA1 的并行度只有 B×H，一个 (batch, head) 就是一个线程块，它反复读写的 <code>Q_i</code>、<code>O_i</code> 是<strong>它私有的</strong>，别的块一个字节都用不上。几十个块同时在跑，每个的 Q+O 工作集就是 4.2 MB，十几个块就把 50 MB 的 L2 顶穿，然后互相把对方的数据踢出去。而且 <code>O_i</code> 是<strong>写</strong>，写还得最终落回 HBM。</li>
+</ul>
+<blockquote>
+<p>★ <strong>这才是 §4.4.2 交换循环顺序的真正价值</strong>：它不是把流量总数压下去（压不下去），而是把<strong>私有重读换成了共享重读</strong>——前者只能一遍遍去找 HBM，后者 L2 就能吃下。同样一张"最坏—最好"区间表，FA1 的实际落点更靠"最坏"那一侧，FA2 更靠"最好"那一侧。</p>
+</blockquote>
+<p>两边和论文实测对一下，方向正好相反，而这恰恰说明问题出在哪：</p>
+<div class="codehilite"><pre><span></span><code>FA1：屋顶线说 68.9 µs（= 峰值算力的 34.7/68.9 = 50%）
+     论文实测只有峰值的 25–40%              ✅ 论文数字（§4.3.4）
+     → 屋顶线「高估」了 FA1。说明 FA1 的瓶颈已经不全在这笔 IO 账上，
+       剩下的差距是非矩阵乘运算、B×H 并行度不足、Warp 间归约（§4.3.4 那张表）。
 
-FA1 论文实测报告的是 2–4×   ✓ 落在这个区间里，两边对上了
+FA2：屋顶线说 81.4 µs（= 峰值的 34.7/81.4 = 43%）
+     论文实测达到峰值的 50–73%               ✅ 论文数字
+     → 实测「跑赢」了「重读全不命中」的屋顶线。说明 L2 确实接住了一大半共享重读。
+
+⚠️ 论文是 A100 实测、这里是 H100 推算，不是同一把尺子，只能看方向。
 </code></pre></div>
 
 <blockquote>
-<p>★ <strong>到这里，FA 的两个收益就都量化完了</strong>：显存从 §4.1.2 的 1.25 TiB 降到 0（这是<strong>质变</strong>，决定了能不能跑），HBM 流量降到 1/2 ~ 1/65、速度快 2–4×（这是<strong>量变</strong>，决定跑多快）。</p>
+<p>★ <strong>到这里，FA 的两个收益就都量化完了</strong>：显存从 §4.1.2 的 1.25 TiB 降到 0（这是<strong>质变</strong>，决定了能不能跑）；HBM 流量从朴素的 545 MB 降到 230~273 MB，L2 命中好的时候逼近 8.4 MB 的下限，也就是快 2.0× ~ 4.7×（这是<strong>量变</strong>，决定跑多快）。</p>
+<p>⚠️ <strong>别把上面的屋顶线加速比和论文的端到端加速比对账。</strong> FA1 论文披露的端到端训练提速是：BERT-large（N=512）快 15%、GPT-2（N=1K）快 3×、Long Range Arena（N=1K–4K）快 2.4×（✅ FA1 论文摘要）。端到端里 attention 只占一部分时间，序列长度也远短于这里假设的 8192。论文另外给了一组 kernel 级实测（GPT-2 medium，N=1024, d=64, 16 头, batch 64, A100，前向+反向）：HBM 读写 <strong>40.3 GB → 4.4 GB</strong>、耗时 <strong>41.7 ms → 7.3 ms</strong>（✅ 论文 Figure 2 左）——注意那里 d=64、N=1024，按上面的公式 Tc 只有 4 左右，所以流量降了 9 倍；N 越长、Bc 越小，FA 的相对收益越薄。本章旧版拿"论文实测 2–4×"去和这笔 kernel 账对账、说"两边对上了"，那是拿两把不同的尺子量同一件事。</p>
 </blockquote>
 <p>顺带纠正一个常被抄错的公式。FA1 论文 Theorem 2 给的是：</p>
 <div class="codehilite"><pre><span></span><code>标准注意力：Θ(N d + N²)     的 HBM 访问
 FlashAttention：Θ(N² d² / M) 的 HBM 访问       ← 分母是 M 的一次方，不是 √M
 
-  M 越大（SRAM 越多），块越大，K/V 重读次数越少，流量越低。
+  M 越大（SRAM 越多），块越大，重复读的次数（FA1 是 Tc，FA2 是 Tr）越少，流量越低。
   当 M ≥ N·d（SRAM 大到能装下整个 K、V）时退化成 Θ(Nd)，一次读完。
+  注意这个上界对 FA1、FA2 是同一个数量级——两者差的只是常数，
+  差别在&quot;被重复读的是私有数据还是共享数据&quot;，而这一点 Theorem 2 量不出来。
 </code></pre></div>
 
 <blockquote>
@@ -783,7 +870,7 @@ FlashAttention：Θ(N² d² / M) 的 HBM 访问       ← 分母是 M 的一次�
 <tbody>
 <tr>
 <td><strong>循环顺序反了</strong></td>
-<td>外层 K/V，导致 <code>O_i</code>、<code>ℓ_i</code>、<code>m_i</code> 被读写 Tc 遍</td>
+<td>外层 K/V，导致 <code>Q_i</code> 被读 Tc 遍、<code>O_i</code>/<code>ℓ_i</code>/<code>m_i</code> 被读写 Tc 遍，全是<strong>私有</strong>重读，L2 接不住</td>
 <td>FA2 改动二</td>
 </tr>
 <tr>
@@ -922,7 +1009,10 @@ for i = 1..Tr:                           ← 这一层被搬到 grid 维度上�
 </code></pre></div>
 
 <p>对调带来两个独立的收益：</p>
-<p><strong>收益 A：累加器整轮不落盘。</strong> <code>Õ_i</code>、<code>ℓ_i</code>、<code>m_i</code> 从进入外层循环到出来，一直待在寄存器里。少掉的 HBM 流量：<code>Tc × (Br×d + 2×Br) × 2 字节</code>，对 N=8192、Br=128、Tc=64 来说，一个 Q 块少读写 <code>64 × 128 × 128 × 2 × 2 = 4.2 MB</code>，全部 64 个 Q 块就是 <strong>268 MB</strong>——和 §4.3.3 里 K/V 重读的量级一样大。</p>
+<p><strong>收益 A：累加器整轮不落盘，<code>Q_i</code> 也只读一遍。</strong> <code>Õ_i</code>、<code>ℓ_i</code>、<code>m_i</code> 从进入外层循环到出来一直待在寄存器里，<code>Q_i</code> 也只在进循环时读一次。去掉的是 FA1 那笔 <code>3Nd × Tc</code> 的私有重读（§4.3.3，Bc=228、Tc=36 时约 <strong>227 MB</strong>，其中 <code>O_i</code> 那一半还是"读回来—改—写回去"的往返，写流量比读更贵）。</p>
+<blockquote>
+<p>⚠️ <strong>但这不是一笔净赚的字节账。</strong> 代价是 K、V 从"各读一次"变成"各读 Tr 遍"，加回 268.4 MB——净流量其实从 230.7 MB <strong>涨到</strong> 272.6 MB。<strong>这处改动的价值不在字节数</strong>（FA2 论文自己就说 IO 复杂度不变），而在两点：① 累加器彻底不走 HBM 往返，寄存器里直接累，顺带省掉每轮的缩放和除法（改动一）；② 换上来的那笔重读是<strong>所有 Q 块共享的同一份 K/V</strong>，L2 接得住，而 FA1 换下去的是每个块私有的 Q/O，L2 接不住（§4.3.3 末尾）。</p>
+</blockquote>
 <p><strong>收益 B：外层循环变成 grid 维度，并行度从 B×H 涨到 B×H×Tr。</strong> 这一条对长序列尤其重要，因为<strong>长序列恰恰意味着小 batch</strong>（显存就那么多）。算一笔 Block 数的账（H100 有 132 个 SM）：</p>
 <table>
 <thead>
@@ -1273,12 +1363,15 @@ exp 占总运算量的比例 = N² / (4N²d) = 1 / (4d) = 1/512      ← 只有 
 反向（已知 dO，要求 dQ, dK, dV）：
   dV = Pᵀ dO                                   ← 需要 P
   dP = dO Vᵀ                                   ← 需要 V
-  dS = P ⊙ (dP − rowsum(P ⊙ dP))               ← 需要 P   ★ 关键
+  dS = P ⊙ (dP − rowsum(P ⊙ dP))               ← 需要 P，而且需要「整行」的和   ★ 关键
   dQ = dS K / √d
   dK = dSᵀ Q / √d
 </code></pre></div>
 
 <p><strong><code>P</code> 出现了两次，而它是 N×N 的。</strong> 所以标准实现必须把 <code>P</code> 从前向一路留到反向。这就是 §4.1.2 那 1.25 TiB 的来源。</p>
+<blockquote>
+<p>⚠️ <strong>但 <code>dS</code> 那一行还藏着第二个麻烦，它比"要存 P"更难绕。</strong> <code>rowsum(P ⊙ dP)</code> 是<strong>按行求和</strong>：想算出 <code>dS</code> 里任意一个元素，都得先把那一整行 N 个 <code>P·dP</code> 加完。而分块之后，片上任何时刻只有一个 <code>Br×Bc</code> 的小块，<strong>一整行根本凑不齐</strong>。这一项要是绕不过去，FA 的反向就分不了块，下面 §4.6.3、§4.6.4 两笔账都不用算了。怎么绕，见 §4.6.2 第二段。</p>
+</blockquote>
 <h3 id="462-fa">4.6.2 FA 的做法</h3>
 <div class="codehilite"><pre><span></span><code>前向只存：Q, K, V, O（都是 N×d，和输入同量级）
           外加 L = m + log(ℓ)                  ← 每行一个数，大小只有 N
@@ -1290,6 +1383,21 @@ exp 占总运算量的比例 = N² / (4N²d) = 1 / (4d) = 1/512      ← 只有 
 </code></pre></div>
 
 <p><code>L</code> 有多大？<code>B=8, H=32, N=8192</code>、FP32：<code>8 × 32 × 8192 × 4 = 8.4 MB</code>。对比它替代掉的 32 GiB——<strong>小了 3900 倍</strong>。</p>
+<p><strong>那个"要整行"的 rowsum 怎么办？</strong> 靠一个恒等式绕过去。把 <code>dP_ij = dO_i · V_j</code>（就是 <code>dP = dO Vᵀ</code> 写成分量形式，<code>dO_i</code>、<code>V_j</code> 是各自的第 i、第 j 行）代进去：</p>
+<div class="codehilite"><pre><span></span><code>D_i ≝ rowsum(P ⊙ dP) 的第 i 个分量
+
+    = Σ_j P_ij · dP_ij
+    = Σ_j P_ij · (dO_i · V_j)       ← 代入 dP = dO Vᵀ
+    = dO_i · (Σ_j P_ij V_j)         ← dO_i 与 j 无关，提到求和号外面
+    = dO_i · O_i                    ← 括号里正好就是前向算出来的 O_i ！
+
+  ⇒   rowsum(P ⊙ dP) = rowsum(dO ⊙ O)
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>左边要一整行的 <code>P</code>（N×N，FA 没存），右边只要 <code>dO</code> 和 <code>O</code>（都是 N×d，前向都存着）。</strong> 这就是 FA 反向能分块的那块基石：<code>D</code> 是个长度只有 N 的向量，用 O(Nd) 的逐元素运算就能算完。有了 <code>D</code>，<code>dS</code> 立刻退化成纯逐元素运算 <code>dS_ij = P_ij (dP_ij − D_i)</code>，<strong>块内自给自足，不需要任何跨块信息</strong>。这个恒等式是 FA1 论文 Appendix B 的式 (4)（✅ 论文原文：<code>D_i = P_i:ᵀ dP_i: = do_iᵀ o_i</code>），在反向伪码里是 Algorithm 4 第 19 行 <code>D_i = rowsum(dO_i ∘ O_i)</code>、第 20 行 <code>dS_ij = P_ij ∘ (dP_ij − D_i)</code>（✅ 论文原文）。</p>
+<p>⚠️ 论文 Algorithm 4 是在每个块内就地算 <code>D_i</code>；工程实现里也常见反向前先跑一个单独的轻量 kernel 把整个 <code>D</code> 向量预算好，避免每个 KV 块重复算一遍（⚠️ 这是实现细节，未回溯官方源码）。</p>
+</blockquote>
 <h3 id="463-flop">4.6.3 FLOP 账：多花多少</h3>
 <p>按一个 head、矩阵乘 FLOP 计（<code>2·M·K·N</code> 的老规矩）：</p>
 <table>
@@ -1324,6 +1432,7 @@ exp 占总运算量的比例 = N² / (4N²d) = 1 / (4d) = 1/512      ← 只有 
 
 <blockquote>
 <p>⚠️ 社区常引的"约 30%"是个偏保守的口径（不同文献的计数口径不一致，有的把逐元素运算也折进去）。按矩阵乘 FLOP 严格数就是上面这两个数。</p>
+<p>⚠️ 表里没算 <code>D = rowsum(dO ⊙ O)</code>，因为它是 O(Nd) 的逐元素运算，和 N²d 的矩阵乘差了整整 N 倍（N=8192 时是 8192 倍），完全可以忽略。<strong>FA 反向省显存的代价只有"重算一次 QKᵀ"这一项，没有隐藏开销。</strong></p>
 </blockquote>
 <h3 id="464">4.6.4 为什么说"连时间都省"</h3>
 <p>现在做一个对比，用 B=1, H=32, N=8192, d=128, BF16，<strong>一层</strong>：</p>
@@ -1409,8 +1518,8 @@ exp 占总运算量的比例 = N² / (4N²d) = 1 / (4d) = 1/512      ← 只有 
 </tr>
 <tr>
 <td><strong>省掉的是哪一类开销</strong></td>
-<td><strong>HBM 上 N×N 矩阵的读写</strong>（545 → 273 MB/head）</td>
-<td><strong>① 除法与冗余缩放 ② 累加器落盘 ③ Warp 间归约 ④ SM 空转</strong></td>
+<td><strong>HBM 上 N×N 矩阵的读写</strong>（545 → 231 MB/head）</td>
+<td><strong>① 除法与冗余缩放 ② 累加器落盘 + Q 重复读（总流量持平，但重读从私有变共享，L2 接得住）③ Warp 间归约 ④ SM 空转</strong></td>
 <td><strong>Tensor Core 的空转时间</strong>（等 SFU 算 exp 的那段）</td>
 </tr>
 <tr>
@@ -1775,7 +1884,7 @@ m  ← max(m_旧, 本块最大值)
 <tr>
 <td>FA2</td>
 <td>循环对调 + 线程映射（外 Q 内 K/V，split-Q）</td>
-<td>除法、累加器落盘、Warp 间归约、SM 空转</td>
+<td>除法、累加器落盘、Q 重复读、Warp 间归约、SM 空转</td>
 <td>约 350 TFLOPS（35%）</td>
 </tr>
 <tr>
@@ -1794,9 +1903,10 @@ m  ← max(m_旧, 本块最大值)
   它不是&quot;用时间换空间&quot;，是时间和空间两头都赚。
 </code></pre></div>
 
-<p><strong>三个最容易搞反的点</strong>（本章旧版都错过）</p>
+<p><strong>四个最容易搞反的点</strong>（本章旧版都错过）</p>
 <ul>
 <li><strong>FA1 的外层循环是 K/V，不是 Q。</strong> FA2 最大的改动就是把它对调过来。</li>
+<li><strong>"Q、O 读写一次、K/V 被重复读"是 FA2 的账，不是 FA1 的。</strong> FA1 外层是 K/V，所以反过来：K、V 各读一次，被重复读的是 Q（Tc 遍）和 O（读+写 Tc 遍）——论文 Theorem 2 的证明原话就是 "Θ(Nd/M) <strong>passes over Q</strong>"。而且两代的<strong>总流量基本打平</strong>（231 vs 273 MB），FA2 的收益在"重读从私有变共享、L2 接得住"，不在字节数（§4.3.3）。</li>
 <li><strong>FA2 的序列维度并行，收益在长序列小 batch，不是短序列。</strong> 短序列时 <code>B×H</code> 本来就够填满 SM。</li>
 <li><strong>FA2 的 Warp 分工是 split-Q（按 Q 切行，无需归约），FA1 才是 split-K（按 K 切列，要过共享内存汇总）。</strong></li>
 </ul>

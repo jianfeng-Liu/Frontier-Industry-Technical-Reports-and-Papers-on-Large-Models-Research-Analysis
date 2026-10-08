@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -322,6 +327,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </table>
 <blockquote>
 <p><strong>术语</strong>：NCCL = NVIDIA Collective Communications Library（英伟达集合通信库），GPU 之间高速传数据的标准库。CUDA IPC = CUDA Inter-Process Communication（CUDA 进程间通信）。<br />
+⚠️ 易混：<strong>NCCL 不等于 RDMA</strong>（Remote Direct Memory Access，远程直接内存访问）。NCCL 是定义「一群 GPU 怎么一起传」的软件库，RDMA 是底下「数据实际怎么跑」的传输能力——跨机时 NCCL 会用 RDMA，机内 8 卡走的是 NVLink，一点 RDMA 都不沾。完整分层关系（含 NIXL / Mooncake 各在哪一层）见 <a href="附-速查表.html">附-速查表 3.1</a>。<br />
 来源：<a href="https://huggingface.co/blog/async-rl-training-landscape">Keep the Tokens Flowing</a>，访问于 2026-08。</p>
 </blockquote>
 <p>⚠️ 注意档 1 和档 2 差了 <strong>5~25 倍</strong>，而两者用的是<strong>同一个底层库</strong>。差别只在「有没有把小张量打包」。这是典型的「工程细节决定量级」——一个 700B MoE 模型有几万个张量，一次一个地广播，光是启动开销就吃掉大部分时间。</p>
@@ -506,8 +512,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td>1</td>
 <td><strong>永不停（never-stop）</strong></td>
-<td>权重换了，正在生成的请求接着用旧权重跑完</td>
-<td>一条轨迹跨两个策略版本</td>
+<td>推理引擎<strong>原地换成新权重</strong>，在飞的序列接着往下生成；前缀 KV cache 是旧权重算出来的，<strong>不重算</strong>，继续复用</td>
+<td>一条轨迹混两个版本，且前缀是<strong>陈旧 KV</strong></td>
 </tr>
 <tr>
 <td>2</td>
@@ -530,10 +536,73 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
-<p>来源同 3.2（HF 横评，访问于 2026-08）。</p>
+<p>来源：HF 横评（同 3.2）+ 🌐 <a href="https://arxiv.org/abs/2509.19128">PipelineRL 论文 arXiv:2509.19128</a>（TMLR 2026）、<a href="https://huggingface.co/blog/ServiceNow/pipelinerl">ServiceNow 官方博客</a>，访问于 2026-09。</p>
 </blockquote>
-<p>⚠️ 档 1 看着最激进，但它其实和 <a href="02-架构主轴-同步到全异步.html">02 章</a> 的全异步是一套逻辑：<strong>既然已经接受了样本陈旧，那再多接受「一条轨迹里混两个版本」也不算什么</strong>，反正下游有 IS 修正兜底（见 <a href="04-训推一致性.html">04</a>）。🌐 PipelineRL 就是把这一条当作核心卖点。</p>
-<p>⚠️ 而 Kimi-K3 的 <strong>partial rollout</strong> 走的是另一条路：它不是「不停」，而是<strong>主动把长样本切开</strong>——生成到一半就存下来，权重换完下一轮接着生成。所以每一段仍然是单一版本的，只是一条完整轨迹由多段拼成。这比档 1 干净，代价是需要外部 KV cache 池来保存前缀状态（见 <a href="02-架构主轴-同步到全异步.html">02 章 §2.4</a>）。</p>
+<p>⚠️ <strong>档 1 的机制容易写反</strong>：不是「接着用<strong>旧</strong>权重跑完」（那样轨迹就是单版本的，和「跨两个版本」自相矛盾），而是<strong>换成新权重、继续往下生成</strong>，只有前缀的 KV cache 停留在旧版本。🌐 HF 横评进一步指出 PipelineRL 用的是<strong>逐参数流式广播</strong>（每个参数一次 RPC + NCCL broadcast），前向传播穿插在参数更新之间——所以在飞的序列<strong>同一次前向里不同层可能用的是不同版本的权重</strong>。严格说，这已经不只是「跨两个版本」，而是<strong>层间混合</strong>：它的 behavior policy 不对应任何一个真实存在过的模型。</p>
+<p>⚠️ 档 1 看着最激进，但它其实和 <a href="02-架构主轴-同步到全异步.html">02 章</a> 的全异步是一套逻辑：<strong>既然已经接受了样本陈旧，那再多接受「一条轨迹里混两个版本」也不算什么</strong>，反正下游有 IS 修正兜底（见 <a href="04-训推一致性.html">04</a>）。🌐 PipelineRL 就是把这一条当作核心卖点；其论文做了 KL 实验——混合策略 + 复用陈旧 KV 相比完全重算，KL 只略高一点，所以保留了这个设计。</p>
+<h3 id="351-1-partial-rollout">3.5.1 ⚠️ 档 1 与 partial rollout 差在哪</h3>
+<p>⚠️ 这两条路<strong>光看「一条轨迹由多个版本产生」这个结果分不出来</strong>——在这一点上它们确实一样。区别在目的、切点和时间尺度三个层面。</p>
+<p><strong>① 最本质的：它们解决的根本不是同一个问题</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>要消灭的浪费</th>
+<th>不用它会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>档 1 永不停</strong></td>
+<td>换权重时的 <strong>GPU 气泡</strong>——排空期间生成吞吐掉到零</td>
+<td>每个训练步都有一段时间推理卡在空转</td>
+</tr>
+<tr>
+<td><strong>partial rollout</strong></td>
+<td><strong>长尾</strong>——一批里 99% 生成完了，剩 1% 超长样本让整批干等</td>
+<td>见 <a href="02-架构主轴-同步到全异步.html">02 章:41</a>：512 个 32K rollout，必须等最慢那个</td>
+</tr>
+</tbody>
+</table>
+<p>✅ Kimi 原文自己讲得很清楚（<a href="02-架构主轴-同步到全异步.html">02 章:156</a> 引的那句）：<em>"use partial rollouts to </em><em>reduce tail latency</em><em> from ultra-long trajectories"</em> —— 是 reduce <strong>tail latency</strong>，不是 reduce weight-sync overhead。</p>
+<p>⚠️ 推论：<strong>这两个是正交的，可以同时用。</strong> 就算权重同步瞬间完成、完全不需要中断，K3 那种百万 token 上下文照样需要 partial rollout 切长尾；反过来，就算所有样本等长、没有长尾，PipelineRL 的永不停照样省下气泡。</p>
+<p><strong>② 切点谁说了算</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>档 1</th>
+<th>partial rollout</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>切点位置</td>
+<td><strong>被动撞上</strong>——权重什么时候到，就切在哪个 token</td>
+<td><strong>主动选定</strong>——到达 token 预算、或一个工具调用回合结束</td>
+</tr>
+<tr>
+<td>可预测性</td>
+<td>每条轨迹切点都不同，长轨迹可能被切好几次，事先不知道</td>
+<td>调度器决定，可对齐语义边界</td>
+</tr>
+<tr>
+<td>切点处生成</td>
+<td><strong>不停</strong>，无缝往下走</td>
+<td><strong>真的停了</strong>，这一段结束，存盘走人</td>
+</tr>
+</tbody>
+</table>
+<p><strong>③ 时间尺度差一整个数量级</strong></p>
+<ul>
+<li>档 1：切点前后只隔 <strong>1 个 optimizer step</strong>，同一个 rollout 批次内立刻续上。</li>
+<li>partial rollout：切点后<strong>存进 buffer 等下一轮</strong>，中间隔了<strong>一整个训练迭代</strong>。超长样本可能在 buffer 里躺好几轮。</li>
+</ul>
+<p>⚠️ 反直觉的结论：<strong>partial rollout 的版本跨度未必比档 1 小</strong>，甚至可能更大。它「干净」不在跨度，而在于<strong>边界清晰、每段能精确记上自己的版本号</strong>，下游 IS 修正的分母是确定的。</p>
+<p>⚠️ <strong>待核实</strong>：Kimi 原文只描述了 <code>external KV-cache retention</code> 的 write-back 机制，<strong>没有说明跨权重更新时陈旧 KV 是丢弃重算还是继续复用</strong>。若是后者，partial rollout 同样有陈旧 KV 污染，和档 1 在这一点上没有差别，上一段「比档 1 干净」的说法就要再降一档。需回一手技术报告 §5.3 核实。旁证：🌐 ServiceNow 另一篇 vLLM V0→V1 文章恰好踩过这个坑——prefix cache 命中了权重更新之前算出的状态，导致 V1 上出现不该有的退化，最后靠关掉 prefix caching 才定位清楚。</p>
+<blockquote>
+<p>⚠️ 一句话：<strong>档 1 是「换权重时不停下来」，partial rollout 是「长样本主动切段」。前者的多版本是为省气泡付的代价，后者的多版本是为砍长尾付的代价。</strong></p>
+</blockquote>
 <hr />
 <h2 id="36">3.6 ✅ 五家自研系统的权重同步</h2>
 <table>
@@ -614,8 +683,20 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>🌐 ↔ ✅</td>
 </tr>
 <tr>
-<td>中断模型四档；PipelineRL 主打「永不停」，Kimi 用 partial rollout 换一条更干净的路</td>
-<td>🌐 + ✅</td>
+<td>中断模型四档；PipelineRL 主打「永不停」（新权重 + 陈旧 KV + 逐参数流式，层间混合）</td>
+<td>🌐</td>
+</tr>
+<tr>
+<td>档 1 与 partial rollout 解决的<strong>不是同一个问题</strong>（气泡 vs 长尾），⚠️ 正交可叠加</td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
+<td>partial rollout 的版本跨度未必更小，它「干净」在边界清晰、版本号可精确记录</td>
+<td>⚠️ 归纳</td>
+</tr>
+<tr>
+<td>Kimi 外部 KV 池跨权重更新时<strong>是否复用陈旧 KV</strong>，原文未说明</td>
+<td>⚠️ 待核实</td>
 </tr>
 <tr>
 <td>buffer 深度和权重同步频率是<strong>两个独立旋钮</strong>，真实陈旧度是两者之和</td>

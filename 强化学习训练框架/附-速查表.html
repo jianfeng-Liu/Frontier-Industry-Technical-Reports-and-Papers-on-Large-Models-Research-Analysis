@@ -75,6 +75,11 @@
       padding: 0.15em 0.4em;
       border-radius: 4px;
     }
+    /* ⚠️ blockquote 内的围栏：python-markdown 的 fenced_code 是 preprocessor，
+       `^` 匹配不到 `> ` 开头的行，所以 `> ``` ` 不会变成 <pre>，而是跨行的行内 <code>。
+       裸 <code> 默认 white-space: normal ⟹ 图会塌成一行。这条把换行救回来。
+       对单行行内代码无影响（没有换行可保留）。 */
+    blockquote code { white-space: pre-wrap; }
     /* fenced code blocks */
     .codehilite {
       margin: 1rem 0;
@@ -526,6 +531,62 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td><a href="03-权重同步.html">03</a></td>
 </tr>
 <tr>
+<td><strong>RDMA</strong></td>
+<td>Remote Direct Memory Access</td>
+<td>远程直接内存访问</td>
+<td>网卡绕过 CPU 和内核，直接读写对端机器的内存</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>GPUDirect RDMA</strong></td>
+<td>—</td>
+<td>GPU 直连远程内存访问</td>
+<td>网卡直接读写 GPU 显存，不经过主机内存中转</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>IB</strong></td>
+<td>InfiniBand</td>
+<td>无限带宽</td>
+<td>一套自带 RDMA 的专用高速网络</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>RoCE</strong></td>
+<td>RDMA over Converged Ethernet</td>
+<td>融合以太网上的 RDMA</td>
+<td>在普通以太网上跑 RDMA，国内集群更常见</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>UCX</strong></td>
+<td>Unified Communication X</td>
+<td>统一通信框架</td>
+<td>通用传输框架，底下可走 RDMA / TCP / 共享内存。NIXL 的主力后端</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>NVLink / NVSwitch</strong></td>
+<td>—</td>
+<td>英伟达 GPU 高速互联</td>
+<td>同一台机器内 GPU 之间的直连总线，比 PCIe 快得多，不经过网卡</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>PCIe</strong></td>
+<td>Peripheral Component Interconnect Express</td>
+<td>外设高速互联总线</td>
+<td>CPU、GPU、网卡之间的标准总线</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
+<td><strong>UPI</strong></td>
+<td>Ultra Path Interconnect</td>
+<td>超级通道互联</td>
+<td>Intel 服务器上两颗 CPU 之间的互联总线。跨它做 GPU-网卡直连会显著掉速</td>
+<td>本表 3.1</td>
+</tr>
+<tr>
 <td><strong>MTP</strong></td>
 <td>Multi-Token Prediction</td>
 <td>多 token 预测</td>
@@ -548,6 +609,166 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
+<h3 id="31-nccl-rdma-nixl-mooncake">3.1 传输层分层：NCCL / RDMA / NIXL / Mooncake 各在哪一层</h3>
+<p>这四个词在权重同步和 PD 分离的语境里经常混着出现，但它们<strong>不在同一层</strong>。一句话先定性：</p>
+<blockquote>
+<p><strong>NCCL 和 NIXL 是上层 API（定义「怎么传」的语义），RDMA 是下层传输能力（定义「数据实际怎么跑」），Mooncake 是一整套架构（自带传输引擎）。</strong></p>
+</blockquote>
+<p><strong>语义层：上层调用的 API</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>NCCL / HCCL</th>
+<th>NIXL</th>
+<th>Mooncake</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>是什么</strong></td>
+<td>集合通信库</td>
+<td>点对点传输抽象</td>
+<td>KVCache 架构</td>
+</tr>
+<tr>
+<td><strong>提供什么</strong></td>
+<td>Broadcast / AllReduce</td>
+<td>多后端插件</td>
+<td>传输引擎 + 存储 + 调度</td>
+</tr>
+<tr>
+<td><strong>一句话</strong></td>
+<td>「一群 GPU 一起传」</td>
+<td>「把 A 搬到 B」</td>
+<td>「池化整个集群」</td>
+</tr>
+<tr>
+<td><strong>往下接谁</strong></td>
+<td>直接落到传输层</td>
+<td>经 <strong>UCX</strong> 落到传输层</td>
+<td>自带传输引擎，落到传输层</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>       NCCL/HCCL            NIXL             Mooncake
+           |                  |                  |
+           |              +---------+            |
+           |              |   UCX   |            |
+           |              +---------+            |
+           |                  |                  |
+           v                  v                  v
+    ----------------- 传输层：数据实际怎么跑 -----------------
+</code></pre></div>
+
+<p><strong>传输层：数据实际怎么跑</strong></p>
+<table>
+<thead>
+<tr>
+<th>范围</th>
+<th>用什么</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>跨机</strong></td>
+<td>RDMA（InfiniBand 或 RoCE）</td>
+<td>⚠️ 没有 RDMA 网卡则退化成 TCP</td>
+</tr>
+<tr>
+<td></td>
+<td>└ <strong>GPUDirect RDMA</strong></td>
+<td>网卡<strong>直接读写 GPU 显存</strong>，不过主机内存</td>
+</tr>
+<tr>
+<td><strong>机内</strong></td>
+<td>NVLink / NVSwitch、PCIe P2P、共享内存、CUDA IPC</td>
+<td>一点 RDMA 都不沾</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 三个最容易混的点：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>常见误解</th>
+<th>实际情况</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>「NCCL 属于 RDMA」</td>
+<td><strong>不属于。</strong> NCCL 是软件库（定义「一群 GPU 怎么一起传」），RDMA 是传输能力。NCCL 跨机时确实走 RDMA，但机内 8 卡走的是 NVLink，一点 RDMA 都不沾；没有 RDMA 网卡时它退化成 TCP 照样能跑。反过来 RDMA 也不需要 NCCL，MPI / UCX / Mooncake 都直接调它</td>
+</tr>
+<tr>
+<td>2</td>
+<td>「GPU 的 RDMA 和 CPU 的 RDMA 是两种 RDMA」</td>
+<td><strong>只有一种。</strong> 搬数据的永远是网卡，区别只在缓冲区在显存(HBM)还是主机内存(DRAM)。<strong>线速上限完全一样</strong>；GPUDirect 快在省掉 2 趟 PCIe 拷贝、不占主机内存带宽、CPU 全程不参与。⚠️ 但网卡和 GPU 若分属不同 CPU socket，点对点要穿 UPI，性能会断崖下跌——<code>nvidia-smi topo -m</code> 看到 <code>SYS</code> 就该警觉，看到 <code>PIX</code>/<code>PXB</code> 才是好的</td>
+</tr>
+<tr>
+<td>3</td>
+<td>「NIXL 和 Mooncake 二选一」</td>
+<td><strong>不是竞争关系。</strong> NIXL 的后端插件列表里就有 <code>MOONCAKE</code>，可以把 Mooncake 当成自己的一条腿</td>
+</tr>
+</tbody>
+</table>
+<p><strong>为什么权重同步要绕开 NCCL 另做后端？</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>NCCL 集合通信</th>
+<th>RDMA 点对点（NIXL / Mooncake）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>参与方约束</td>
+<td>所有 rank 必须<strong>同时在线、同步进场</strong>凑齐一个 communicator</td>
+<td>谁准备好谁拉，<strong>推理实例可随时扩缩容</strong></td>
+</tr>
+<tr>
+<td>适合</td>
+<td>同步架构、固定拓扑</td>
+<td>异步架构、弹性推理池</td>
+</tr>
+</tbody>
+</table>
+<p>⚠️ 归纳：这正是 <a href="03-权重同步.html">03-权重同步.md</a> 里 veRL 要做六个 checkpoint engine 后端的根本原因——异步 RL 不想被「所有人必须同时到齐」卡住。</p>
+<p><strong>三者的出身</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>出品方</th>
+<th>定位</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>NCCL</strong></td>
+<td>NVIDIA</td>
+<td>GPU 集合通信标准库</td>
+</tr>
+<tr>
+<td><strong>NIXL</strong></td>
+<td>NVIDIA，2025 年 GTC 开源，仓库 <code>ai-dynamo/nixl</code>（Dynamo 推理框架的数据平面）</td>
+<td>多后端点对点传输抽象层</td>
+</tr>
+<tr>
+<td><strong>Mooncake</strong></td>
+<td><strong>月之暗面 Moonshot AI + 清华大学 MADSys 实验室</strong>，论文获 USENIX FAST '25 最佳论文</td>
+<td>Kimi 线上推理平台；开源了 Transfer Engine（RDMA 传输层）+ Mooncake Store（分布式 KV Cache）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>✅ 本地实测：<a href="源码/slime/">源码/slime/</a> 的 <code>tests/test_qwen3.6_35B_A3B_pd_mooncake.py:105</code> 里有 <code>--sglang-disaggregation-transfer-backend mooncake</code>——说明 slime 用 Mooncake 不只是同步权重，rollout 阶段 SGLang 的 PD 分离也走它。<br />
+🌐 来源：<a href="https://github.com/ai-dynamo/nixl">ai-dynamo/nixl</a>、<a href="https://arxiv.org/abs/2407.00079">Mooncake 论文 arXiv:2407.00079</a>、<a href="https://www.usenix.org/conference/fast25/presentation/qin">USENIX FAST '25</a>，访问于 2026-09。</p>
+</blockquote>
 <hr />
 <h2 id="_5">四、并行与训练后端</h2>
 <table>
@@ -737,6 +958,18 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <td>veRL / Mooncake</td>
 <td>专门负责「把训练权重搬到推理引擎」的独立组件</td>
 <td><a href="03-权重同步.html">03</a></td>
+</tr>
+<tr>
+<td><strong>Mooncake</strong></td>
+<td>月之暗面 + 清华 MADSys</td>
+<td>KVCache 为中心的分离式推理架构，开源了 Transfer Engine 和 Store</td>
+<td>本表 3.1 · <a href="03-权重同步.html">03</a></td>
+</tr>
+<tr>
+<td><strong>Dynamo</strong></td>
+<td>NVIDIA</td>
+<td>英伟达的分布式推理服务框架，NIXL 是它的数据平面</td>
+<td>本表 3.1</td>
 </tr>
 <tr>
 <td><strong>harness</strong></td>

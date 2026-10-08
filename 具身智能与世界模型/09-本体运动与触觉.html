@@ -259,25 +259,45 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <hr />
 <h2 id="91">9.1 ★★ 两拨人，两套完全不同的方法论</h2>
-<div class="codehilite"><pre><span></span><code>    ┌──── 运动派（locomotion / 全身控制）─────────────┐
-    │  出身：机器人控制 + 强化学习                      │
-    │  任务：走、跑、跳、被推了不摔、上楼梯、后空翻      │
-    │  做法：★ 在【仿真器】里用强化学习练几十亿步，       │
-    │        再零样本搬到真机                           │
-    │  现状：✅ 已经相当成熟，宇树、波士顿动力的炫技视频   │
-    │        基本都出自这条路线                         │
-    └─────────────────────────────────────────────────┘
-
-    ┌──── 操作派（manipulation）──────────────────────┐
-    │  出身：大模型 / 计算机视觉                        │
-    │  任务：抓、放、倒水、叠衣服、听指令干活            │
-    │  做法：★ 收集【真机遥操作数据】做模仿学习（VLA）    │
-    │  现状：⚠️ 泛化能力还很弱（第 01 章的四堵墙）        │
-    └─────────────────────────────────────────────────┘
-
-    ★★ 关键问题：为什么走路能在仿真里练成，抓取却不行？
-</code></pre></div>
-
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>运动派</strong>（locomotion，全身控制）</th>
+<th><strong>操作派</strong>（manipulation）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>出身</strong></td>
+<td>机器人控制 + 强化学习</td>
+<td>大模型 / 计算机视觉</td>
+</tr>
+<tr>
+<td><strong>任务</strong></td>
+<td>走、跑、跳、被推了不摔、上楼梯、后空翻</td>
+<td>抓、放、倒水、叠衣服、听指令干活</td>
+</tr>
+<tr>
+<td><strong>做法</strong></td>
+<td>★ 在<strong>仿真器</strong>里用强化学习练几十亿步，再零样本搬到真机</td>
+<td>★ 收集<strong>真机遥操作数据</strong>做模仿学习（VLA）</td>
+</tr>
+<tr>
+<td><strong>现状</strong></td>
+<td>✅ 已经相当成熟 —— 宇树、波士顿动力的炫技视频基本都出自这条路线</td>
+<td>⚠️ 泛化能力还很弱（<a href="01-具身智能与VLA.html">01 章</a>的四堵墙）</td>
+</tr>
+<tr>
+<td><strong>数据从哪来</strong></td>
+<td>★ 仿真器<strong>凭空造</strong>，边际成本≈0</td>
+<td>⚠️ 真人一条条<strong>遥操作采</strong>，边际成本极高</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>于是有了这一章真正要回答的问题</strong>：同样是控制一副身体，<strong>为什么走路能在仿真里练成，抓取却不行？</strong></p>
+</blockquote>
 <h3 id="sim2real">答案：Sim2Real 鸿沟在<strong>不同的感知通道上大小完全不同</strong></h3>
 <div class="codehilite"><pre><span></span><code>    走路主要依赖【本体感受】：
       📖 本体感受 proprioception：关节角度、关节速度、
@@ -356,6 +376,66 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
       ⟹ 产业界对硬件的保守，是理性的，不是不思进取。
 </code></pre></div>
 
+<h3 id="_2">★★ 控制频率阶梯：理解整个具身栈的钥匙</h3>
+<p>上面说「硬件不是瓶颈但硬件说了算」，背后有一个很具体的原因：<strong>这一摞东西不是跑在同一个时间尺度上的。</strong> 把各层的频率并排摆出来，很多看起来是工程口味的设计，就变成了没得选的结论：</p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>做什么</th>
+<th>频率</th>
+<th>周期</th>
+<th>谁来做</th>
+<th>这一层崩了会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>高层规划</strong></td>
+<td>理解指令、拆任务、决定「下一步干什么」</td>
+<td>⚠️ 约 <strong>1~10 Hz</strong></td>
+<td><strong>100 ms ~ 1 s</strong></td>
+<td>视觉语言大模型（VLM）</td>
+<td>任务做错 —— 去拿了错的东西</td>
+</tr>
+<tr>
+<td><strong>轨迹生成</strong></td>
+<td>把「去抓杯把」变成一串目标位姿</td>
+<td>⚠️ 约 <strong>10~100 Hz</strong></td>
+<td><strong>10 ~ 100 ms</strong></td>
+<td>小策略网络 / 运动规划器</td>
+<td>动作笨拙、撞到东西</td>
+</tr>
+<tr>
+<td><strong>关节控制</strong></td>
+<td>把目标位姿变成每个电机的电流</td>
+<td>⚠️ 约 <strong>200~1000 Hz</strong></td>
+<td>★ <strong>1 ~ 5 ms</strong></td>
+<td>传统控制器（PID / 阻抗控制），<strong>跑在实时系统上</strong></td>
+<td>★★ <strong>机器人物理上失稳</strong> —— 摔倒、抖动、烧电机</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 关键不在每一层【多快】，而在相邻两层【差多少】：
+
+      高层规划  ~  5 Hz    (200 ms)
+                    |
+                    |  差 10~20 倍
+                    v
+      轨迹生成  ~  50 Hz   ( 20 ms)
+                    |
+                    |  差 10~20 倍
+                    v
+      关节控制  ~ 500 Hz   (  2 ms)
+
+    ⟹ 从上到下跨了【两到三个数量级】。
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这就是为什么大模型「管不到」最后这一层。</strong> 一次 VLM 前向要几十到几百毫秒，而关节控制环每 <strong>2 毫秒</strong>就要出一次结果 —— 中间差了<strong>一百倍</strong>。不是模型不够聪明，是<strong>它根本来不及说话</strong>。<a href="01-具身智能与VLA.html">01 章</a> 那个 System 2 / System 1 的快慢双脑，就是这个阶梯在模型侧的投影（7~9 Hz 对 200 Hz，差 25 倍）。</p>
+<p>⚠️ 表里的频率都是<strong>典型量级</strong>，换个本体、换个任务会差很多（轮式底盘比人形宽松得多），要记的是<strong>层与层之间差一到两个数量级</strong>这个结构，不是具体数字。</p>
+<p>★ <strong>一个有用的推论</strong>：你听到某个方案说「我们用端到端大模型直接输出关节指令」时，第一个该问的是 —— <strong>它跑多少 Hz？</strong> 如果答案是几十 Hz 或更低，那它要么接了一个底层控制器（那就不是真端到端），要么只能用在对失稳不敏感的本体上。</p>
+</blockquote>
 <hr />
 <h2 id="94">9.4 ★★ 这半壁江山对「世界模型」意味着什么</h2>
 <p>这是本章最需要带走的一点，也是对第 02 章那场路线之争的一个<strong>新角度</strong>：</p>
@@ -387,7 +467,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ⟹ 这是一个数据瓶颈直接卡死了一整个研究方向的典型例子。</p>
 </blockquote>
 <hr />
-<h2 id="_2">🔑 本章一句话</h2>
+<h2 id="_3">🔑 本章一句话</h2>
 <blockquote>
 <p>具身智能有<strong>两拨人</strong>：运动派在仿真里用强化学习练走跑跳（<strong>已成熟</strong>），操作派靠真机数据做模仿学习（<strong>还很弱</strong>）。<br />
 ★★★ 差别的根源是：<strong>走路依赖本体感受，仿真和真实几乎一样；抓取依赖视觉，仿真和真实差很远。</strong><br />

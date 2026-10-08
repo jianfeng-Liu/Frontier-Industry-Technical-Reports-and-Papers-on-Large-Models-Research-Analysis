@@ -278,6 +278,132 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 🔎 反对方说：画面对 ≠ 物理对，生成视频里的物理常常是「看起来像」而已。<br />
 ★ 这个分歧直接导致了下面的路线① vs 路线②。</p>
 </blockquote>
+<h3 id="_1">★★ 「能往下滚多少步」才是世界模型的第一指标</h3>
+<p>上面第二个词说「它必须能一步步往下滚」。<strong>但没人问过一句最要紧的话：能滚几步？</strong> 这个数决定了一个世界模型到底能干什么活，比它的参数量、分辨率都重要得多。</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 为什么滚不远？因为【自己的输出要当下一步的输入】。
+
+      第 1 步：  真实画面      ==&gt;  预测画面 1    （带一点点误差）
+      第 2 步：  预测画面 1    ==&gt;  预测画面 2    （在带误差的输入上又错一点）
+      第 3 步：  预测画面 2    ==&gt;  预测画面 3    （错上加错）
+      ...
+
+    ==&gt; 📖 这叫【误差累积 / 复合误差】（compounding error）。
+        它不是某个模型的 bug，是【自回归推演】这种做法的固有性质。
+</code></pre></div>
+
+<p><strong>把它写成一个最简单的式子，就能算了</strong>（⚠️ <strong>以下全是示意推演，不是任何论文的实测数据</strong>，只用来看「量级怎么变」）：</p>
+<div class="codehilite"><pre><span></span><code>    记：δ = 每一步【新增】的相对误差
+        λ = 上一步的误差传到这一步会被放大的倍数
+
+      λ = 1.0  ==&gt; 误差只是【累加】，不放大（最理想）
+      λ &gt; 1.0  ==&gt; 误差被【放大】，越滚越快崩（现实）
+
+    滚到第 N 步时的总误差：
+      λ = 1  :  e_N = δ x N
+      λ &gt; 1  :  e_N = δ x (λ^N - 1) / (λ - 1)
+</code></pre></div>
+
+<p>取 δ = 1%（单步 1% 的误差，已经算相当准了），把三种 λ 并排滚一遍：</p>
+<table>
+<thead>
+<tr>
+<th>滚到第 N 步</th>
+<th><strong>λ = 1.0</strong>（误差不放大）</th>
+<th><strong>λ = 1.1</strong></th>
+<th><strong>λ = 1.3</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>1.0%</td>
+<td>1.0%</td>
+<td>1.0%</td>
+</tr>
+<tr>
+<td>5</td>
+<td>5.0%</td>
+<td>6.1%</td>
+<td>9.0%</td>
+</tr>
+<tr>
+<td>10</td>
+<td>10.0%</td>
+<td>15.9%</td>
+<td>42.6%</td>
+</tr>
+<tr>
+<td>14</td>
+<td>14.0%</td>
+<td>28.0%</td>
+<td>128%</td>
+</tr>
+<tr>
+<td>20</td>
+<td>20.0%</td>
+<td>57.3%</td>
+<td>630%</td>
+</tr>
+<tr>
+<td>50</td>
+<td>50.0%</td>
+<td>1164%</td>
+<td>天文数字</td>
+</tr>
+<tr>
+<td>★ <strong>把「误差 &gt; 30%」算崩，能滚几步</strong></td>
+<td><strong>30 步</strong></td>
+<td><strong>14 步</strong></td>
+<td><strong>8 步</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>现在把这三个数字和「世界模型能干什么活」对上</strong>（这三档的划分见 <a href="07-世界模型的四种用法.html">07 章</a> 7.5 节的问题二）：</p>
+<table>
+<thead>
+<tr>
+<th>能滚的步数</th>
+<th>能当什么用</th>
+<th>对应 λ / δ 大概要到什么水平</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>几步</strong></td>
+<td>只能当<strong>数据工厂</strong>（生成几帧画面当训练样本）</td>
+<td>λ = 1.3、δ = 1% 就是这一档</td>
+</tr>
+<tr>
+<td><strong>几十步</strong></td>
+<td>能当<strong>前瞻模块</strong>（动手前推演一下）</td>
+<td>λ = 1.1、δ = 1% ⟹ 14 步，刚够下限</td>
+</tr>
+<tr>
+<td>★ <strong>几百步</strong></td>
+<td>才谈得上<strong>在里面做强化学习</strong></td>
+<td>⚠️ <strong>λ 必须 ≈ 1.0 且 δ ≤ 0.1%</strong> ⟹ 0.30 ÷ 0.001 = 300 步</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>最后一行是这一小节的全部重点</strong>：想滚到几百步，<strong>光把单步做准是不够的</strong>。<br />
+```<br />
+    固定 λ = 1.1，只把单步误差 δ 往下压：<br />
+      δ = 1%     ==&gt;  能滚 14 步<br />
+      δ = 0.1%   ==&gt;  能滚 36 步      （δ 降 10 倍，只多 22 步）<br />
+      δ = 0.01%  ==&gt;  能滚 60 步      （再降 10 倍，又只多 24 步）</p>
+<div class="codehilite"><pre><span></span><code>==&gt; ★ 这是【对数增长】：精度每提高一个数量级，
+    步数只是【加】二十几步，不是【乘】十倍。
+==&gt; ★★ 所以要跨进「几百步」那一档，唯一的办法是把 λ 压到 1.0 ——
+    也就是让模型【不放大误差】，错了还能自己拉回来。
+==&gt; 而「不放大误差」意味着模型真的受物理约束支配，
+    而不只是在外推一段看起来对的画面。
+    ⟹ 这正是 2.7 节硬伤一的另一种说法。
+</code></pre></div>
+
+<p>```</p>
+<p>⚠️ <strong>这套推演的边界要说清楚</strong>：真实的世界模型误差不是一个标量，λ 也不是常数（有的区域稳、有的区域一崩到底）。<strong>上面的表只能用来理解「为什么从几十步到几百步这么难」，不能拿去估任何具体模型的步数。</strong> 真实系统的滚动步数要靠实测。</p>
+</blockquote>
 <hr />
 <h2 id="22">2.2 ★★ 三条路线的总览</h2>
 <table>
@@ -362,9 +488,80 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>📖 <strong>JEPA = Joint-Embedding Predictive Architecture，联合嵌入预测架构。</strong><br />
 Yann LeCun 主推的路线。做法是：<strong>把画面先压成一个抽象向量（潜表示），然后只预测「这个向量在动作之后会变成什么」，全程不还原成图像。</strong></p>
 </blockquote>
-<div class="codehilite"><pre><span></span><code>    像素派：  画面ₜ  ──模型──▶  完整画面ₜ₊₁ （几十万个像素值）
-    潜空间派：画面ₜ ─编码─▶ 向量ₜ ──模型──▶ 向量ₜ₊₁ （几百个数）
-                                              ↑ ★ 到此为止，不解码回图像
+<div class="codehilite"><pre><span></span><code>    像素派：   画面(t)  --模型--&gt;  完整画面(t+1)              （几十万个像素值）
+
+    潜空间派： 画面(t)  --编码--&gt;  向量(t)  --模型--&gt;  向量(t+1)  （几百个数）
+
+    ==&gt; ★ 潜空间派【到此为止】：那个 向量(t+1) 【不会】被解码回图像。
+</code></pre></div>
+
+<h3 id="_2">★★ 「便宜」到底便宜多少——把维度算出来</h3>
+<p>上面那个「几十万个像素值 vs 几百个数」说得很爽，但得算出来才有分量。<strong>沿用 <a href="00-一个例子讲清关系.html">00 章</a> 第七节那套设定：一帧 256 × 256 的 RGB 图。</strong></p>
+<div class="codehilite"><pre><span></span><code>    一帧原始 RGB  =  256 x 256 x 3  =  ★ 196,608 个数
+
+    而潜空间派预测的那个向量，量级是【几百维】，这里取 512。
+
+      196,608 / 512 = ★★ 384 倍
+</code></pre></div>
+
+<p><strong>但这里有一个必须说破的误导</strong>：⚠️ <strong>「像素派」这个名字会让人以为它在逐像素回归，其实它也不是。</strong> 现代的像素派（Genie、Cosmos、各类视频扩散模型）都先用一个<strong>变分自编码器</strong>把画面压一道，在压缩后的潜码上做预测，最后才解码回图像。所以三档摆出来是这样的：</p>
+<table>
+<thead>
+<tr>
+<th>这一档是什么</th>
+<th>一帧要预测多少个数</th>
+<th>相对最省的那一档</th>
+<th>谁在用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始 RGB（256 × 256 × 3）</td>
+<td><strong>196,608</strong></td>
+<td>384 倍</td>
+<td>⚠️ <strong>没人真这么干</strong></td>
+</tr>
+<tr>
+<td>📖 <strong>VAE 潜码</strong>：空间压 8 倍、16 个通道 ⟹ 32 × 32 × 16</td>
+<td><strong>16,384</strong></td>
+<td><strong>32 倍</strong></td>
+<td>★ 像素派的真实工作空间</td>
+</tr>
+<tr>
+<td>语义潜向量（量级）</td>
+<td>约 <strong>512</strong></td>
+<td><strong>1 倍</strong></td>
+<td>★ 潜空间派</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📖 <strong>VAE = Variational AutoEncoder，变分自编码器。</strong> 一个「压缩-还原」的配对：编码器把图压成一小串数，解码器能从这串数把图还原回来。<strong>关键约束是「必须还原得回去」</strong>，所以它不敢压太狠。</p>
+<p>★★ <strong>于是两派的分歧可以精确地重述一遍</strong>，这比「画不画像素」准确得多：<br />
+```<br />
+    像素派：  压缩后【必须还原得回图像】 ==&gt; 只敢压 12 倍（196,608 -&gt; 16,384）<br />
+    潜空间派：压缩后【根本不打算还原】   ==&gt; 敢压 384 倍（196,608 -&gt; 512）</p>
+<div class="codehilite"><pre><span></span><code>==&gt; 真正的分歧不是「有没有压缩」，
+    是【压的时候要不要保住还原图像所需的信息】。
+==&gt; ★ 保住它，你就能用肉眼检查模型想得对不对（像素派的优势）；
+    不保住它，你就省下 32 倍的预测量（潜空间派的优势）。
+</code></pre></div>
+
+<p>```</p>
+</blockquote>
+<p><strong>再乘上步数，这就是「潜空间派便宜」的具体含义</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    往前滚 50 步（按 00 章那套设定，正好是 1 秒的动作）：
+
+      像素派   16,384 x 50 = 819,200 个数要预测
+               ⚠️ 而且每一步还要【解码回图像】才能给 VLA 看
+                  —— 多一次 VAE 解码器前向
+
+      潜空间派    512 x 50 =  25,600 个数要预测
+               ✅ 全程不解码
+
+    ==&gt; 维度上差 32 倍，再算上解码和扩散的迭代次数，
+        真实的算力差会被放大到【三个数量级】。
+    ==&gt; 具体一笔 FLOP 账见本章 2.8 节。
 </code></pre></div>
 
 <h3 id="av-jepa-2meta">代表作 A：V-JEPA 2（Meta）</h3>
@@ -378,7 +575,8 @@ Yann LeCun 主推的路线。做法是：<strong>把画面先压成一个抽象�
 <p>★ <strong>这个数字对比才是重点</strong>：100 万小时 vs 62 小时。<br />
 ⟹ <strong>绝大部分关于「世界怎么运转」的知识，是从无标注视频里白嫖来的</strong>；<br />
 机器人数据只用来告诉它「我的动作对应哪种变化」。<br />
-⚠️ 这正好对着第 01 章那堵「数据墙」开了一个口子。</p>
+⚠️ 这正好对着第 01 章那堵「数据墙」开了一个口子：100 万小时无标注视频正好是 <a href="01-具身智能与VLA.html">01 章</a> 1.5 节那张阶梯表的最上一档，62 小时是最下一档——<strong>这一条结果等于说「最上一档可以替掉最下一档的绝大部分」。</strong></p>
+<p>⚠️ <strong>那个「约 80%」要留个心眼</strong>：🔎 论文给的是一组任务（够取 / 抓取 / 取放）<strong>各自</strong>的成功率，彼此差别不小，「80%」是其中较好的一档，不是所有任务的平均；而且真机试验次数不多。⟹ 读之前先过一遍成功率的噪声门槛（<code>SE ≈ √(p(1−p)/n)</code>，见 <a href="附-速查表.html">附-速查表</a> F2 节）。⚠️ 本条未回溯论文原文，具体口径以原文为准。</p>
 </blockquote>
 <h3 id="bdreamer-deepmind">代表作 B：Dreamer 系列（DeepMind）</h3>
 <div class="codehilite"><pre><span></span><code>    ★ 这是「在梦里做强化学习」这个说法的源头：
@@ -448,12 +646,52 @@ Yann LeCun 主推的路线。做法是：<strong>把画面先压成一个抽象�
 
     🔎 论文结果：几乎所有训练任务提升 25 分以上，
        而且提升能【迁移到完全不同的测试环境】
+       ⚠️ 「25 分」的口径没说清：是【百分点】还是某套 0~100 的评分？
+          ★ 不管哪种，它都【不等于】「提升 25%」——
+            成功率 40% 涨到 65% 是涨了 25 个【百分点】，
+            相对提升却有 62%。这两个数差了一倍半。
 </code></pre></div>
 
 <blockquote>
 <p>🔑 Demis Hassabis 管这个循环叫「<strong>无限训练循环</strong>」（Infinite Training Loop）：<br />
 <strong>AI 生成世界 → AI 在里面练 → 练出更强的 AI → 再生成更难的世界。</strong></p>
 <p>⚠️ <strong>但要泼一盆冷水</strong>（✅ DeepMind 自己也承认）：目前动作空间<strong>很有限</strong>；而且有研究者直接质疑——<strong>游戏画面是给人看的、本来就好懂，真实世界的摄像头画面难得多，能迁移多少是未知数。</strong></p>
+</blockquote>
+<h3 id="3">③ 这一支的硬指标：实时性和一致性，都能换成数字</h3>
+<p>路线③ 比路线① 多扛两条要求，<strong>而这两条都可以写成数</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>要求</th>
+<th>换成数字是什么</th>
+<th>现状</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>实时</strong></td>
+<td>24 帧每秒 ⟹ <strong>每帧必须在 1 ÷ 24 = 41.7 ms 内出来</strong>，而且是<strong>每一帧都不能超时</strong>，不是平均够快就行</td>
+<td>✅ Genie 3 做到了 720p / 24 fps</td>
+</tr>
+<tr>
+<td><strong>长时间一致</strong></td>
+<td>2.1 节那个「能滚多少步」：按 24 fps 换算，🔎 Genie 2 的 10~20 秒 = <strong>240~480 帧</strong>；Genie 3 的「好几分钟」按 3 分钟算 = <strong>4,320 帧</strong> ⟹ <strong>跨了约 9~18 倍</strong></td>
+<td>★ 这是量级跨越，但见下面那条警告</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>「能滚 4,320 帧」和「能滚 4,320 步还物理正确」是两个指标，千万别当成一个。</strong><br />
+```<br />
+    前者衡量的是：画面有没有闪、物体有没有凭空消失、走回头路认不认得原来的房间<br />
+    后者衡量的是：在里面做出的决策，拿到真实世界还成不成立</p>
+<div class="codehilite"><pre><span></span><code>==&gt; ★★ Genie 3 公开的是【前者】。后者目前没有公认的度量方式，
+    这正是 2.7 节硬伤三。
+⚠️ 所以不能把「保持几分钟一致」直接读成
+   「可以在里面滚几千步做强化学习」—— 那是两回事。
+</code></pre></div>
+
+<p>```</p>
 </blockquote>
 <hr />
 <h2 id="27">2.7 ⚠️ 世界模型自己的三个硬伤</h2>
@@ -472,10 +710,124 @@ Yann LeCun 主推的路线。做法是：<strong>把画面先压成一个抽象�
 </code></pre></div>
 
 <hr />
-<h2 id="_1">🔑 本章一句话</h2>
+<h2 id="28">2.8 ⚠️ 三条路线的推理成本，放到同一个口径上</h2>
+<p>前面几节反复说「像素派贵、潜空间派省」，这一节把它变成一笔<strong>能自己验算的账</strong>。</p>
+<blockquote>
+<p>⚠️⚠️ <strong>先声明：整节是示意推演，不是实测。</strong> 每一行的假设都写在表里，换一组假设结论会变。<strong>它要回答的只有一个问题：这三条路线的成本差，是差一倍、差十倍，还是差一千倍？</strong></p>
+</blockquote>
+<p><strong>统一口径</strong>：往前推演<strong>一步</strong>要多少浮点运算（FLOP）、在一张 H100 上要多少毫秒。用的近似公式只有一条：</p>
+<div class="codehilite"><pre><span></span><code>    一次 Transformer 前向的 FLOP  ≈  2 x 参数量 x token 数
+
+    （这个「2」已经把一次乘法 + 一次加法算进去了。
+      📖 FLOP = Floating-point OPeration，浮点运算次数。）
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>逐步算</th>
+<th><strong>① 像素派</strong></th>
+<th><strong>② 潜空间派</strong></th>
+<th><strong>③ 交互式世界</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 一步预测的是什么</td>
+<td>一帧画面的 VAE 潜码<br>32 × 32 × 16 = 16,384 个数</td>
+<td>一个语义潜向量<br>约 512 个数</td>
+<td>同 ①</td>
+</tr>
+<tr>
+<td>② 折合多少个 token</td>
+<td>32 × 32 = <strong>1,024</strong> 个</td>
+<td>⚠️ 量级 <strong>64</strong> 个</td>
+<td>1,024 个</td>
+</tr>
+<tr>
+<td>③ 模型规模（⚠️ 量级估）</td>
+<td><strong>10⁹</strong> 参数的扩散 Transformer</td>
+<td><strong>10⁸</strong> 参数的预测器</td>
+<td>同 ①，但专门为实时做过裁剪</td>
+</tr>
+<tr>
+<td>④ 单次前向 FLOP = 2 × ③ × ②</td>
+<td>2 × 10⁹ × 1,024 = <strong>2.05 TFLOP</strong></td>
+<td>2 × 10⁸ × 64 = <strong>0.013 TFLOP</strong></td>
+<td>2.05 TFLOP</td>
+</tr>
+<tr>
+<td>⑤ 一步要跑几次前向</td>
+<td>⚠️ 扩散去噪 <strong>20~50 次</strong></td>
+<td>★ <strong>1 次</strong></td>
+<td>⚠️ 蒸馏后降到 <strong>1~4 次</strong></td>
+</tr>
+<tr>
+<td>⑥ <strong>一步合计 = ④ × ⑤</strong></td>
+<td>2.05 × 20 = <strong>41 TFLOP</strong></td>
+<td><strong>0.013 TFLOP</strong></td>
+<td>2.05 × 4 = <strong>8.2 TFLOP</strong></td>
+</tr>
+<tr>
+<td>⑦ <strong>相对②的倍数</strong></td>
+<td>⚠️ <strong>约 3,200 倍</strong></td>
+<td><strong>1 倍</strong></td>
+<td>约 640 倍</td>
+</tr>
+<tr>
+<td>⑧ 在 H100 上要多久<br>（按实现算力 300 TFLOPS 估）</td>
+<td>41 ÷ 300 = <strong>137 ms</strong></td>
+<td>0.013 ÷ 300 = 0.04 ms<br>⚠️ 这个尺度上已经不是算力受限了，实测会落在<strong>亚毫秒到几毫秒</strong></td>
+<td>8.2 ÷ 300 = <strong>27 ms</strong></td>
+</tr>
+<tr>
+<td>⑨ 还要不要解码回图像</td>
+<td>⚠️ 要（多一次 VAE 解码器前向）</td>
+<td>✅ 不要</td>
+<td>⚠️ 要</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>第 ⑦ 行是这一节的结论</strong>：两派的成本差是<strong>三个数量级</strong>，不是几倍。而这三个数量级来自<strong>两处相乘</strong>——<br />
+```<br />
+    token 数     1,024 / 64       =  16 倍<br />
+    模型规模     10^9 / 10^8      =  10 倍<br />
+    迭代次数     20 次 / 1 次     =  20 倍<br />
+                                     --------<br />
+    连乘         16 x 10 x 20     =  3,200 倍</p>
+<div class="codehilite"><pre><span></span><code>==&gt; ★ 「三个数量级」不是某一项造成的，是三件事【连乘】出来的。
+==&gt; 所以指望靠单项优化把它抹平是不现实的：
+    哪怕把去噪步数从 20 砍到 1（已经是最激进的蒸馏），
+    也还剩 16 x 10 = 160 倍。
+</code></pre></div>
+
+<p>```</p>
+</blockquote>
+<p><strong>现在把它和控制周期并排放</strong>，这才是这笔账的用处所在：</p>
+<div class="codehilite"><pre><span></span><code>    00 章第七节那个例子里，控制器每 20 ms 要一条指令。
+
+      像素派一步 137 ms  ==&gt;  137 / 20 = ★ 超预算 约 7 倍
+      交互式一步  27 ms  ==&gt;  仍然超预算
+      潜空间一步 亚毫秒~几毫秒  ==&gt;  ★★ 唯一塞得进去的
+
+    ==&gt; 这就是 03 章 3.3 节「前瞻模块」那盆冷水的来源：
+        不是工程没做好，是三个数量级的差距摆在那儿。
+    ==&gt; ★ 同时也解释了为什么【数据工厂】和【想象中做 RL】
+        反而是像素派的主场 —— 那两种用法都【离线】，
+        没有 20 ms 这个紧箍咒，慢一点无所谓。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一条必须补上的反例</strong>：✅ Genie 3 实打实做到了 720p / 24 fps，也就是 <strong>41.7 ms 一帧</strong>，比上表给像素派估的 137 ms 快得多。⟹ 说明 137 ms 是「<strong>拿通用做法在一张卡上</strong>」的量级，<strong>不是物理上限</strong>：少步数蒸馏、专用加速器、并行流水，都能把它压下来。★ 但请注意 Genie 3 在那 41.7 ms 里<strong>只在画画，并没有同时跑一个策略模型</strong>——而前瞻模块需要的是「画完还要拿去评估并做决策」。<strong>两件事的预算不是一回事。</strong></p>
+<p>🔑 <strong>这一节带走一句话</strong>：像素派和潜空间派的成本差是<strong>三个数量级</strong>，所以它们不是在争同一块地盘——<strong>离线的活（造数据、在想象里练）归像素派，在线的活（每一步都要用）归潜空间派。</strong> ⟹ <a href="03-两者如何结合.html">03 章</a>那四种结合方式，分界线正好画在这里。</p>
+</blockquote>
+<hr />
+<h2 id="_3">🔑 本章一句话</h2>
 <blockquote>
 <p>世界模型有三条路：<strong>画像素</strong>（直观、能当仿真器、但贵）、<strong>不画像素只预测抽象表示</strong>（省、优雅、但难调试且接不上 VLA）、<strong>造一个能住进去的交互世界</strong>（野心最大、也最不成熟）。<br />
 ⚠️ <strong>三条路都还没解决同一个根本问题：「预测得好看」和「预测得物理正确」是两回事。</strong></p>
+<p>★ <strong>本章要带走的三个数</strong>：一帧 256 × 256 的 RGB 是 <strong>196,608</strong> 个数，像素派实际在 <strong>16,384</strong> 维的 VAE 潜码上预测，潜空间派只预测约 <strong>512</strong> 维 ⟹ 推理成本差<strong>三个数量级</strong>（2.4 / 2.8 节）；误差一旦被放大（λ = 1.1、单步 1%），<strong>14 步</strong>就崩，而且单步精度每提高 10 倍只能多滚<strong>二十几步</strong>（2.1 节）；路线③ 的硬门槛是每帧 <strong>41.7 ms</strong>（2.6 节）。</p>
 </blockquote>
 <hr />
 <p><strong>上一章</strong> ← <a href="01-具身智能与VLA.html">01 具身智能与 VLA</a> ｜ <strong>下一章</strong> → <a href="03-两者如何结合.html">03 两者怎么结合</a></p>

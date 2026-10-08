@@ -253,20 +253,23 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="md-body">
 <h1 id="00">00 先用一个例子，讲清「具身智能」和「世界模型」到底什么关系</h1>
 <blockquote>
-<p><strong>这一章不需要你懂任何 AI 知识。</strong> 读完你会有一个正确的框架，后面几章都是往这个框架里填东西。</p>
+<p><strong>这一章不需要你懂任何 AI 知识。</strong> 读完你会有一个正确的框架，后面几章都是往这个框架里填东西。<br />
+<strong>结构</strong>：一到六节建立概念；★ <strong>第七节把概念落到一次可以自己验算的完整走查上</strong>（张量形状、控制周期、失败长什么样），后面几章会反复引用那个例子。</p>
 </blockquote>
 <hr />
 <h2 id="_1">一、场景：让机器人给你倒一杯水</h2>
 <div class="codehilite"><pre><span></span><code>    你说：「帮我倒杯水」
-      │
-      ▼
-   ┌──────────┐
-   │  机器人   │  它得依次完成：
-   └──────────┘  看见杯子和水壶 → 听懂指令 → 伸手 → 抓住壶把
-                  → 举起 → 对准杯口 → 倾倒 → 【水快满时停住】
+      |
+      v
+    机器人要依次完成：
+      看见杯子和水壶  ==&gt;  听懂指令  ==&gt;  伸手  ==&gt;  抓住壶把
+      ==&gt;  举起  ==&gt;  对准杯口  ==&gt;  倾倒  ==&gt;  【水快满时停住】
 </code></pre></div>
 
 <p><strong>注意最后那一步</strong>——后面所有的故事都从它开始。</p>
+<blockquote>
+<p>★ <strong>这一节只给直觉，先不碰数字。</strong> 等概念讲完，第七节会换一个更好算的任务（「把桌上的杯子放进水槽」），把这条链<strong>一步一步拆到张量形状</strong>：每一步看到什么、吐出什么、吐出来的东西是多大一个数组、机器人拿它干什么、错了会怎样。</p>
+</blockquote>
 <hr />
 <h2 id="_2">二、第一个词：具身智能</h2>
 <blockquote>
@@ -412,6 +415,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                 合成操作轨迹，相当于人类遥操作 9 个月的量。
 </code></pre></div>
 
+<blockquote>
+<p>⚠️ <strong>那个「9 个月」要看清口径</strong>：它是按「一条轨迹 30 秒、一天 24 小时不停」折算出来的机器时间，不是「一个上班的人干 9 个月」。换成真实人力大约是 <strong>3 个人年</strong>。⟹ 完整的反推算式见 <a href="03-两者如何结合.html">03 章</a> 3.1 节。</p>
+</blockquote>
 <h3 id="3">用途③ 当【前瞻模块】：动手前先在脑内推演两步</h3>
 <div class="codehilite"><pre><span></span><code>    ⚠️ 问题：机器人常常「反应式」地动作——看到什么就做什么，
              不考虑三步之后会不会把自己卡死。
@@ -440,10 +446,262 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </blockquote>
 <p><strong>顺带一个热度数字</strong>（🔎 二手，需复核）：ICLR 这个顶会上 VLA 相关论文，<strong>2024 年 1 篇 → 2025 年 9 篇 → 2026 年 164 篇</strong>。</p>
 <hr />
-<h2 id="_6">🔑 本章一句话</h2>
+<h2 id="_6">七、★★ 把整条链钉到数字上：一次「把桌上的杯子放进水槽」的完整走查</h2>
+<blockquote>
+<p>前面六节讲的都是<strong>概念</strong>。这一节把概念落到<strong>一次可以自己验算的走查</strong>上：每一步谁在干活、它看到的东西是多大一个张量、吐出来的又是多大一个张量、机器人拿它干什么、这一步错了会怎样。<br />
+★ <strong>后面几章会反复回到这个例子</strong>（01 章讲它的动作怎么输出、02 章讲世界模型要画多大一张图、03 章讲世界模型插在这条链的哪一节），所以这里的数字值得记一下。</p>
+</blockquote>
+<h3 id="0">第 0 步：先把场景钉死</h3>
+<p><strong>所有数字都写在下面这张表里，后面每一行算术你都能自己复算一遍。</strong> ⚠️ 这是一套<strong>示意配置</strong>，不是哪家产品的真实参数；换个本体、换个模型，具体数会变，但<strong>量级和比值不会变</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>取值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>机器人</td>
+<td>单臂桌面机械臂：<strong>7 个关节 + 1 个两指夹爪</strong></td>
+<td>⟹ 一个动作一共 <strong>8 维</strong></td>
+</tr>
+<tr>
+<td>相机</td>
+<td><strong>2 路</strong>：头部 1 路（看全局）+ 手腕 1 路（看夹爪和杯把的相对位置）</td>
+<td>手腕那路是关键——头部相机在最后一刻会被自己的手挡住</td>
+</tr>
+<tr>
+<td>每路分辨率</td>
+<td><strong>256 × 256</strong> 的 RGB 图</td>
+<td>📖 <strong>RGB</strong> = 红（Red）绿（Green）蓝（Blue）三个颜色通道，<strong>一个像素是 3 个数</strong></td>
+</tr>
+<tr>
+<td>图块大小</td>
+<td><strong>16 × 16</strong> 像素切一块</td>
+<td>📖 <strong>patch（图块）</strong>：把一张图切成小方格，每一格当成一个「词」送进模型</td>
+</tr>
+<tr>
+<td>主干维度 d</td>
+<td><strong>2048</strong></td>
+<td>每个「词」最终变成一个 2048 维的向量</td>
+</tr>
+<tr>
+<td>控制频率</td>
+<td><strong>50 Hz</strong></td>
+<td>⟹ 每 <strong>20 ms</strong> 必须给电机发一条新指令，不能迟到</td>
+</tr>
+<tr>
+<td>大脑跑一次</td>
+<td><strong>200 ms</strong>（= 5 Hz）</td>
+<td>⚠️ 示意值；真实系统从几十毫秒到几百毫秒都有</td>
+</tr>
+<tr>
+<td>一次输出多长的动作</td>
+<td><strong>50 步</strong></td>
+<td>= 50 × 20 ms = <strong>整整 1 秒</strong>的动作</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>为什么这里用 256 而 <a href="01-具身智能与VLA.html">01 章</a> 1.1 节写的是 224</strong>：两个都是常见取值，<strong>换哪个结论都不变</strong>。取 256 只是因为 256 ÷ 16 = 16 这步除法最好算；224 配 14 × 14 的图块也正好是 (224÷14)² = 256 个图块，token 数一模一样。</p>
+<p>📖 <strong>动作块</strong>（<strong>action chunk</strong>，也译「动作分块」）：模型一次不只吐出「下一步该怎么动」，而是一口气吐出未来<strong>一整段</strong>（这里是 50 步 = 1 秒）的动作序列，控制器再按 20 ms 一步慢慢往外发。<strong>为什么非这么干不可，下面第 2 步会算出来。</strong> 详细的几种做法见 <a href="01-具身智能与VLA.html">01 章</a> 1.3 节。</p>
+</blockquote>
+<h3 id="1_1">第 1 步：一次前向，张量形状逐步表</h3>
+<p>这张表是本章的核心。<strong>从左往右读一遍，你就知道「机器人大脑」这四个字具体指什么。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>这一步谁在干</th>
+<th>进去的是什么</th>
+<th>进去的形状</th>
+<th>出来的是什么</th>
+<th>出来的形状</th>
+<th>⚠️ 这一步错了会怎样</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>相机</td>
+<td>真实世界的光</td>
+<td>—</td>
+<td>2 张 RGB 图</td>
+<td>每张 <code>[3, 256, 256]</code><br>两张共 <strong>393,216 个数</strong></td>
+<td>曝光过度、杯子糊成一团 ⟹ 后面全错，而且<strong>错得很安静</strong></td>
+</tr>
+<tr>
+<td>②</td>
+<td>视觉编码器<br>（📖 <strong>ViT</strong> = Vision Transformer，视觉 Transformer）</td>
+<td>2 张图</td>
+<td><code>[2, 3, 256, 256]</code></td>
+<td>每张切成 (256÷16)² = <strong>256 个图块 token</strong>，两张共 512 个</td>
+<td><code>[512, 2048]</code></td>
+<td>分辨率不够 ⟹ 看不清杯把的朝向</td>
+</tr>
+<tr>
+<td>③</td>
+<td>分词器</td>
+<td>「把桌上的杯子放进水槽」</td>
+<td>一句话</td>
+<td>约 <strong>12 个文本 token</strong></td>
+<td><code>[12, 2048]</code></td>
+<td>指令有歧义（哪个杯子？）⟹ 拿错东西</td>
+</tr>
+<tr>
+<td>④</td>
+<td>关节编码器（📖 <strong>本体感觉</strong>：机器人对自己身体的感知）</td>
+<td>7 个关节角 + 1 个夹爪开度</td>
+<td><code>[8]</code></td>
+<td>1 个「状态 token」</td>
+<td><code>[1, 2048]</code></td>
+<td>编码器零位漂了 ⟹ 它以为手在 A，手其实在 B</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>视觉语言主干</td>
+<td>②③④ 拼起来</td>
+<td><code>[525, 2048]</code><br>（= 512 + 12 + 1）</td>
+<td>最后一个位置的向量，代表「这一刻的全部理解」</td>
+<td><code>[2048]</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>★ 动作头</td>
+<td>那个 2048 维向量</td>
+<td><code>[2048]</code></td>
+<td>★ <strong>一个动作块</strong></td>
+<td>★ <code>[50, 8]</code></td>
+<td>输出不平滑 ⟹ 手臂发抖、把杯子撞倒</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>底层控制器</td>
+<td>动作块的<strong>第 k 行</strong></td>
+<td><code>[8]</code></td>
+<td>8 路电机的目标值</td>
+<td><code>[8]</code></td>
+<td>超出关节限位 ⟹ 直接报警停机</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ 第 ⑤⑥ 行是<strong>简化</strong>：真实系统常再加 50 个「动作查询 token」让主干直接吐 <code>[50, 2048]</code>，或者用扩散模型迭代若干次才出 <code>[50, 8]</code>。<strong>形状的量级一样，流程的骨架也一样</strong>，这里先不展开（见 <a href="01-具身智能与VLA.html">01 章</a> 1.3 节）。</p>
+</blockquote>
+<p>把头尾两端的数字摆在一起，这条链在干什么就一目了然了：</p>
+<div class="codehilite"><pre><span></span><code>    一次前向，进去 2 x 3 x 256 x 256 = 393,216 个数
+                出来 50 x 8          =     400 个数
+
+    393,216 / 400 = 约 983 : 1
+
+    ==&gt; 所谓「机器人大脑」，干的就是这一件事：
+        把近 40 万个像素值，压成 400 个电机目标。
+    ==&gt; ★ 注意压缩比接近 1000:1 —— 绝大部分像素信息是被【扔掉】的。
+        扔掉哪些、留下哪些，正是第 02 章两派吵架的焦点。
+</code></pre></div>
+
+<h3 id="2-50">第 2 步：为什么非要一次输出 50 步——把两个周期相除就知道了</h3>
+<div class="codehilite"><pre><span></span><code>    控制器周期   20 ms   （50 Hz，每 20 ms 必须发一条指令）
+    大脑周期    200 ms   （5 Hz，想一次要这么久）
+                -------
+    200 / 20  =  10
+
+    ==&gt; 大脑想一次的工夫，控制器已经要往外发 10 条指令。
+    ==&gt; 如果大脑一次只给 1 步，那中间 9 个 20 ms 手臂【没有指令可发】
+        —— 它会僵在半空，或者按上一条指令一直顶下去。
+    ==&gt; ★ 所以动作块的长度必须 &gt;= 10。这里取 50（1 秒），留足余量：
+        哪怕大脑偶尔卡一下，手里也还有存货接着发。
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这就是「快慢两个脑子」的雏形</strong>。本例是 5 Hz 对 50 Hz，差 10 倍；<a href="01-具身智能与VLA.html">01 章</a> 1.4 节会看到真实人形机器人上是 7~9 Hz 对 200 Hz，差 25 倍。⚠️ <strong>具体倍数依本体而变，要记的是「上下两层差一到两个数量级」这个结构</strong>，不是某个具体数。</p>
+</blockquote>
+<h3 id="3-34">第 3 步：把 3.4 秒的任务按时间轴走一遍</h3>
+<div class="codehilite"><pre><span></span><code>    t = 0.00 s   大脑第 1 次前向
+      |          看到：桌面 + 杯子在右前方约 30 cm
+      |          输出：动作块 #1 = [50, 8]  ==&gt;  内容是「手伸向杯子正上方」
+      |
+      |          0.00 ~ 0.20 s  控制器按 20 ms 一步，发出 #1 的【前 10 行】
+      |
+    t = 0.20 s   大脑第 2 次前向（#1 剩下的 40 行直接丢掉，重新规划）
+      |          看到：杯子近了，手腕相机已经能看见杯把
+      |          输出：动作块 #2  ==&gt;  「下降，把夹爪对准杯把」
+      |
+    t = 1.00 s   夹爪合拢；力传感器读数从 0 N 跳到约 3 N
+      |          ==&gt; 这个跳变就是「抓住了」的信号（N = 牛顿，力的单位）
+      |
+    t = 1.20 s   抬起 5 cm
+      |
+    t = 2.60 s   平移到水槽正上方
+      |
+    t = 3.40 s   夹爪张开，杯子落进水槽，任务结束
+
+    全程 3.40 s 的账：
+      大脑前向次数 = 3.40 / 0.20 =  17 次
+      控制指令条数 = 3.40 / 0.02 = 170 条
+      ==&gt; 17 次「思考」要管住 170 条指令，平均一次管 10 条。
+</code></pre></div>
+
+<blockquote>
+<p>★ <strong>注意 t = 0.20 s 那一行</strong>：上一块动作只用了五分之一就被丢掉了。这不是浪费——<strong>每 200 ms 重新看一眼世界、重新规划一次，是机器人唯一的纠错机会</strong>。扔掉的那 40 行，是为了用上更新的画面。</p>
+</blockquote>
+<h3 id="4">第 4 步：★★ 失败长什么样——同一条链，只改一个数</h3>
+<p><strong>把 t = 1.00 s 那一步的夹爪中心偏 5 mm，杯把没进到爪口里。</strong> 然后什么都不改，再走一遍：</p>
+<div class="codehilite"><pre><span></span><code>    t = 1.00 s   合爪，力传感器只跳到 0.3 N（爪子从杯把旁边滑过去了）
+    t = 1.20 s   手臂照样抬起 5 cm  ——  杯子还在桌上
+    t = 2.60 s   手臂照样平移到水槽上方
+    t = 3.40 s   夹爪照样张开  ——  一团空气落进水槽，机器人认为任务完成
+
+    ==&gt; ★★ 全程【没有任何一步知道自己已经失败了】。
+    ==&gt; 为什么？因为教它的数据里全是【成功】的演示，
+        它从没见过「0.3 N」这种读数该怎么办。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这就是整个具身智能最核心的那个病</strong>，<a href="01-具身智能与VLA.html">01 章</a> 1.6 节会给它一个正式名字（误差累积），<a href="03-两者如何结合.html">03 章</a>讲的四种结合方式，有三种都是冲着它去的。<br />
+⚠️ 顺带纠正一个想当然：上面这次失败<strong>不是因为模型不够聪明</strong>，是因为它的训练数据里<strong>根本没有失败这一类样本</strong>。再大的模型也补不上没见过的东西。</p>
+</blockquote>
+<h3 id="5">第 5 步：世界模型插在这条链的哪里</h3>
+<p>现在回头看第五节那三个用途，就能一个一个对号入座了：</p>
+<table>
+<thead>
+<tr>
+<th>这个例子里的哪一刻</th>
+<th>世界模型在这里干什么</th>
+<th>对应五、里的哪个用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>训练阶段</strong></td>
+<td>把这 3.4 秒的轨迹，换 100 种桌面、100 种光照、100 个杯子重新「画」一遍，变出上万条数据</td>
+<td><strong>用途② 数据工厂</strong></td>
+</tr>
+<tr>
+<td><strong>训练阶段</strong></td>
+<td>造一个想象中的厨房，让机器人在里面把这个任务练一万遍，摔的都是想象中的杯子</td>
+<td><strong>用途① 模拟器</strong></td>
+</tr>
+<tr>
+<td>★ <strong>t = 1.00 s 合爪之前</strong></td>
+<td>先在脑内放半秒电影：「照这个姿态合爪，杯把会从爪子侧面滑出去」⟹ 于是先退回去、横向挪 5 mm 再合</td>
+<td><strong>用途③ 前瞻模块</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>第三行才是最提神的那一行</strong>：它<strong>不需要重新训练模型</strong>，只是在推理时多想了半秒，就把上面那次失败拦住了。<br />
+⚠️ <strong>但代价也在这里</strong>：那「半秒电影」得在 <strong>20 ms</strong> 的控制周期里算完。⟹ 这条约束会在 <a href="02-世界模型三条路线.html">02 章</a> 和 <a href="03-两者如何结合.html">03 章</a> 变成一笔很具体的时间账——<strong>也是前瞻这条路至今难落地的全部原因。</strong></p>
+</blockquote>
+<hr />
+<h2 id="_7">🔑 本章一句话</h2>
 <blockquote>
 <p><strong>具身智能是「让 AI 长出身体去干活」这个问题；世界模型是「让它在动手之前先在脑子里预演一遍」这个能力。</strong><br />
 <strong>真实世界的试错成本高到不可接受——这就是为什么这两件事必须凑在一起。</strong></p>
+<p>★ <strong>外加一组要记住的数字</strong>（来自第七节那次走查）：一次前向吃进 <strong>393,216</strong> 个像素值、吐出 <strong><code>[50, 8]</code></strong> 共 400 个电机目标，压缩比约 <strong>1000 : 1</strong>；控制周期 <strong>20 ms</strong>、大脑周期 <strong>200 ms</strong>，<strong>差 10 倍</strong>——所以模型必须一次输出一整块动作，而不是一步。</p>
 </blockquote>
 <hr />
 <p><strong>下一章</strong> → <a href="01-具身智能与VLA.html">01 具身智能与 VLA</a>：机器人大脑到底长什么样</p>

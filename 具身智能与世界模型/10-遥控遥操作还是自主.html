@@ -259,6 +259,17 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 先把这四种拆开，后面所有判断都会变得清楚。</p>
 </blockquote>
 <hr />
+<p><strong>本章关键词</strong>（每个词在正文第一次出现时还会再解释一遍）</p>
+<p><strong>遥控</strong>（remote control）—— 人给「去哪、多快」，怎么走是机器人自己算的。<br />
+<strong>遥操作</strong>（teleoperation）—— 人给「怎么动」，机器人的关节 1:1 跟着人动。<br />
+<strong>预设播放</strong>（motion playback）—— 提前编好一段轨迹，按时间轴回放。<br />
+<strong>自主</strong>（autonomous）—— 模型自己看、自己决策、自己出动作。<br />
+<strong>主从臂</strong>（leader-follower arm）—— 人手里握一条小一号的「主臂」，机器人的「从臂」跟着动，是目前最常见的遥操作采数据设备。<br />
+<strong>动作分块</strong>（action chunking）—— 策略一次输出一「块」动作再整体执行，块与块之间会有停顿。<strong>这个词在本章很重要</strong>：它会让自主策略看起来像有延迟的遥操作。<br />
+<strong>影子模式</strong>（shadow mode）—— 模型在后台跟着跑但不接管，只记录自己和人的决策差异。⚠️ 这个词常被借去指别的东西，§10.2 会说清楚。<br />
+<strong>远程接管</strong>（remote takeover）—— 机器人干不动时，由远端的人接手完成。<br />
+<strong>分布内 / 分布外</strong>（in-distribution / out-of-distribution）—— 测试时遇到的物体和位置，在不在训练数据覆盖的范围里。</p>
+<hr />
 <h2 id="101">10.1 ★★ 四种「遥」，先分清</h2>
 <table>
 <thead>
@@ -310,9 +321,37 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 摇杆说"往前 1 米/秒"，怎么迈腿是机器人自己算的 ⟹ ①；<br />
 你抬一下胳膊、机器人跟着抬一下 ⟹ ②。</p>
 </blockquote>
+<h3 id="_1">把这四种画成一个判别树：先问「此刻人在给什么」</h3>
+<div class="codehilite"><pre><span></span><code>    看一个片段，先问一个问题：这一刻，人在给机器人什么？
+    ├── 什么都没给（或者只说了一句话）
+    │     动作由模型现场算出来 ........................ ③ 自主
+    ├── 给的是「去哪 / 多快」（摇杆、目标点、一句导航指令）
+    │     怎么迈腿、怎么保持平衡，机器人自己算 .......... ① 遥控
+    ├── 给的是「怎么动」（动捕服、VR 手柄、主从臂）
+    │     机器人基本只当执行机构 ...................... ② 遥操作
+    └── 什么都没给，但动作是提前编好的
+          按时间轴回放，平衡控制器在底下自主兜底 ....... ④ 预设播放
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>主从臂</strong>（leader-follower arm）—— 操作员手里握着一条小一号的「主臂」，机器人的「从臂」1:1 跟着动。这是目前采操作数据最常见的一种遥操作设备，成本比动捕服低得多。</p>
+</blockquote>
+<h3 id="_2">★★ 「自主」不是一个开关，是一条光谱 —— 而且同一个视频里各部分不一样</h3>
+<p>这是读 demo 时最容易出错的地方：<strong>一台机器人在同一段视频里，不同部位可以处在不同的类别上。</strong></p>
+<div class="codehilite"><pre><span></span><code>    一个很常见的组合（而且完全不算造假）：
+      走到桌子前    ①   人用摇杆给了方向，平衡和迈步是自主的
+      伸手去抓      ②   操作员戴着设备，手臂 1:1 映射
+      说的那句话    -    旁边的人念的，或者提前录好的
+      最后挥个手    ④   一段预设动作
+
+    ==&gt; ★★ 所以「这个视频是不是遥操作的」这个问法本身就是错的。
+        正确的问法是：【哪一部分、在哪一层，是自主的？】
+</code></pre></div>
+
+<p>⟹ 🔑 <strong>这也是后面 §10.5 所有判据的前提</strong>：你能判断的从来不是「真 / 假」，而是「<strong>这一段里，哪些动作有自主的迹象，哪些没有</strong>」。</p>
 <hr />
 <h2 id="102">10.2 分三层看：整个行业还是以「遥」为主吗？</h2>
-<h3 id="_1">第一层：训练数据 —— ✅ <strong>是，仍以遥操作为主</strong></h3>
+<h3 id="_3">第一层：训练数据 —— ✅ <strong>是，仍以遥操作为主</strong></h3>
 <div class="codehilite"><pre><span></span><code>    这一层答案最确定。
     目前【高质量 + 带动作标签】的操作类数据，
     主力来源仍然是【人戴着设备一条条摇出来的】。
@@ -327,7 +366,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⚠️ 但我没有可靠数据说现在遥操作占几成 —— 别信任何具体百分比。
 </code></pre></div>
 
-<h3 id="_2">第二层：产品演示 —— 🔎 <strong>分领域，差别极大</strong></h3>
+<h3 id="_4">第二层：产品演示 —— 🔎 <strong>分领域，差别极大</strong></h3>
 <div class="codehilite"><pre><span></span><code>    ▸ 走跑跳、后空翻、平衡、越野
         ⟹ ✅【不是遥操作】。仿真里 RL 练出来的自主策略（§9.1），
            人最多用 ① 给个方向。这部分是真的。
@@ -340,7 +379,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
            相当比例是遥操作或预设播放 —— 这是我的观察，不是引用。
 </code></pre></div>
 
-<h3 id="_3">第三层：真实部署 —— ✅ <strong>是，而且是明说的</strong></h3>
+<h3 id="_5">第三层：真实部署 —— ✅ <strong>是，而且是明说的</strong></h3>
 <div class="codehilite"><pre><span></span><code>    ✅ 最有代表性的是 1X 的 NEO 家用机器人：
        公开说明【出厂就带远程人工接管】——
        机器人搞不定时由远端操作员接手完成，同时收集数据。
@@ -351,7 +390,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
          先靠人接管把服务【交付】了
            ⟹ 同时把最贵的【真实场景数据】攒下来
              ⟹ 等模型够强了再逐步撤人
-       📖 行业里有时叫【影子模式】。
+       📖 行业里有时把这类做法笼统叫【影子模式 shadow mode】。
+       ⚠️ 但这个词是借来的，而且借得不太准：
+          影子模式原本指【模型在后台跟着跑、不接管，只记录自己和人的决策差异】
+          （自动驾驶的用法）—— 是【人在开车，机器在旁边看】。
+          而 1X 这种是【机器在干活，干不动时人接手】—— 谁在操作是反过来的。
+          ✅ 两者唯一的共同点是：都拿人类的动作当标签。
+          ⟹ 说得准一点，这类做法更该叫【人工兜底 / 远程接管】。
 
     ⟹ ★ 换个角度看，这其实是把 §10.2 第一层（数据）
        和第三层（部署）合并成了一件事 —— 边挣钱边采数据。
@@ -402,7 +447,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>★ <strong>最后一行是最硬的证据</strong>：一家公司把遥操作方案<strong>作为官方配套发布</strong>，本身就说明这是买家使用这台机器人的主要方式之一——研究者买回去，第一步往往就是遥操作采数据。</p>
 </blockquote>
-<h3 id="_4">★★ 但真正的关键不是「遥控占几成」</h3>
+<h3 id="_6">★★ 但真正的关键不是「遥控占几成」</h3>
 <table>
 <thead>
 <tr>
@@ -436,22 +481,49 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <hr />
 <h2 id="104">10.4 ★★★ 一个通用判断框架：先问它在哪一层</h2>
 <p>这一节其实是<strong>读 <a href="04-玩家全景与产业现状.html">04 章</a>的正确姿势</strong>：</p>
-<div class="codehilite"><pre><span></span><code>    ┌── 模型层（做大脑）──┐   评价标准：泛化、任务成功率、数据效率
-    │  DeepMind · PI      │   ⟹ 用「自主程度」衡量它，合理
-    │  NVIDIA · 智元      │
-    └────────────────────┘
-
-    ┌── 本体层（做身体）──┐   评价标准：可靠性、成本、运动性能、量产
-    │  宇树 · Figure      │   ⟹ ⚠️ 用「自主程度」衡量它，【是错的】
-    │  Tesla · 优必选     │
-    └────────────────────┘
-
-    ★★ 拿模型层的标准去衡量本体层公司，必然得出错误结论。
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>模型层</strong>（做大脑）</th>
+<th><strong>本体层</strong>（做身体）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>代表</strong></td>
+<td>DeepMind · PI · NVIDIA · 智元</td>
+<td>宇树 · Figure · Tesla · 优必选</td>
+</tr>
+<tr>
+<td><strong>它在卖什么</strong></td>
+<td>一套能泛化的策略</td>
+<td>一台能长期不坏、能量产的机器</td>
+</tr>
+<tr>
+<td><strong>评价标准</strong></td>
+<td>泛化、任务成功率、数据效率</td>
+<td>可靠性、成本、运动性能、量产爬坡</td>
+</tr>
+<tr>
+<td><strong>用「自主程度」衡量它</strong></td>
+<td>✅ 合理</td>
+<td>⚠️ <strong>是错的</strong></td>
+</tr>
+<tr>
+<td><strong>「做得好」长什么样</strong></td>
+<td>没见过的物体也能干成</td>
+<td>一万台里坏的少、价格降得快</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ★★ 拿模型层的标准去衡量本体层公司，必然得出错误结论。
        🔎 宇树是国内首家全年盈利的整机企业 ——
           说明「卖身体」这条路在当下反而更赚钱。
        ⟹ 这不是谁高谁低，是【两门不同的生意】。
 </code></pre></div>
 
+<p>⚠️ <strong>这个二分是一把尺子，不是一个事实分类。</strong> 特斯拉、Figure、智元实际上两层都在投，只是<strong>重心</strong>不同。⟹ 所以判断一家公司时问的不是「它属于哪一层」，而是 ★ <strong>它现在靠哪一层挣钱、哪一层是它愿意为之押上现金流的</strong>。</p>
 <hr />
 <h2 id="105-demo">10.5 ⚠️ 实用：怎么自己判断一个 demo</h2>
 <blockquote>
@@ -476,15 +548,241 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
         遥操作和预设播放都【必然】在这一关暴露。
 </code></pre></div>
 
+<h3 id="_7">把判据摊开：看到什么、它暗示什么、以及为什么它只是线索</h3>
+<p>⚠️⚠️ <strong>先立一条纪律</strong>：下面每一条都是<strong>线索</strong>（clue），不是<strong>证据</strong>（evidence）。线索能把你的置信度从 50% 挪到 70%，但<strong>不足以让你写出「这个视频是遥控的」这种句子</strong>。⟹ 这一章是全目录最容易把推断写成结论的地方，所以每条后面都列了「可能的无辜解释」—— <strong>那一列才是真正要读的</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>观察到什么</th>
+<th>它可能暗示</th>
+<th>⚠️ 可能的无辜解释（为什么它只是线索）</th>
+<th>强度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td>动作走走停停，接近目标时「停一下再微调」，节奏在 0.2~0.5 秒量级</td>
+<td>遥操作者在等画面回传，有<strong>往返延迟</strong></td>
+<td>⚠️ 自主策略也这样：很多 VLA 一次输出一「块」动作（📖 <strong>动作分块</strong> action chunking），块与块之间天然有停顿</td>
+<td>弱</td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td>末端有细微的高频抖动</td>
+<td>人手的<strong>生理性震颤</strong>（⚠️ 公开生理学量级约 8~12 Hz）被 1:1 映射过去了</td>
+<td>⚠️ 遥操作链路普遍带低通滤波，会把抖动滤掉；而扩散类策略的输出本身也可能抖</td>
+<td>弱</td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td>动作<strong>异常平滑</strong>、匀速、没有一丝犹豫</td>
+<td>策略网络输出经插值和滤波后的典型特征</td>
+<td>⚠️ 倍速播放会把人类的抖动抹平，看起来就像策略输出 —— 和第 5 条<strong>互相干扰</strong></td>
+<td>中（须先排除倍速）</td>
+</tr>
+<tr>
+<td><strong>4</strong></td>
+<td>全程没有一次失败或重试</td>
+<td>剪辑掉了失败，<strong>成功率被隐藏</strong></td>
+<td>⚠️ 也可能真的是挑了成功的一条；而且「没有失败」本身<strong>不区分</strong>遥操作和自主</td>
+<td>弱</td>
+</tr>
+<tr>
+<td><strong>5</strong></td>
+<td>没有标 <code>1x speed</code></td>
+<td>默认被加速过</td>
+<td>⚠️ 有些团队只是忘了标</td>
+<td>中</td>
+</tr>
+<tr>
+<td><strong>6</strong></td>
+<td>镜头始终避开某一侧，或全程固定机位</td>
+<td>操作员就在几米外的画外</td>
+<td>⚠️ 正常的产品片本来就会固定机位、控制构图</td>
+<td>弱</td>
+</tr>
+<tr>
+<td><strong>7</strong></td>
+<td>频繁剪辑、没有一镜到底</td>
+<td>在掩盖失败重试或人工介入</td>
+<td>⚠️ 也可能只是为了把十分钟剪成三十秒</td>
+<td>中</td>
+</tr>
+<tr>
+<td><strong>8</strong></td>
+<td><strong>没有给出成功率和试验次数</strong></td>
+<td>没有任何可核验的量化结果</td>
+<td>⚠️ 宣传片本来就不是论文 —— 但这恰恰说明<strong>它不能当证据用</strong></td>
+<td>强（反向）</td>
+</tr>
+<tr>
+<td><strong>9</strong></td>
+<td><strong>换没见过的物体 / 没见过的位置，仍然能做</strong></td>
+<td>★★ 真自主</td>
+<td>（几乎没有无辜解释 —— 遥操作和预设播放在这一关<strong>必然</strong>暴露）</td>
+<td>最强（正向）</td>
+</tr>
+<tr>
+<td><strong>10</strong></td>
+<td>一镜到底的长时序多步骤任务，<strong>中途失败了又自己恢复</strong></td>
+<td>★★ 强自主信号</td>
+<td>⚠️ 遥操作者也会失败重试 —— 区别在恢复的<strong>节奏</strong>，但那又回到第 1 条的弱线索</td>
+<td>强（正向）</td>
+</tr>
+<tr>
+<td><strong>11</strong></td>
+<td>公开了权重 / 论文 / 第三方能复现</td>
+<td>★★ 这是唯一能把线索变成<strong>证据</strong>的东西</td>
+<td>—</td>
+<td>✅ 这才叫证据</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ ★★ <strong>注意第 9、10、11 条和前八条方向是反的</strong>：前八条是「可疑信号」，强度都不高；真正有判断力的是后三条 —— 它们问的不是「有没有破绽」，而是 <strong>「它有没有提供足以排除遥操作的信息」</strong>。</p>
+<h4 id="23-5">⚠️ 第 2、3 条和第 5 条会互相抵消，单独用哪一条都不行</h4>
+<div class="codehilite"><pre><span></span><code>    人类遥操作的典型特征：带抖动、有犹豫、会过冲再修正
+    策略输出的典型特征：  平滑、匀速、该停就停
+
+    ⚠️ 但倍速播放会【同时】做两件事：
+       把抖动在时间上压缩掉   ==&gt; 看起来更平滑
+       把犹豫也压缩掉         ==&gt; 看起来更果断
+
+    ==&gt; 结论：没标 1x 的视频，第 2、3 条判据【整个失效】。
+        必须先确认播放速度，再谈动作特征。
+</code></pre></div>
+
+<p>⟹ ⚠️ 这也是为什么上面那条「太像人反而可疑」要<strong>反过来再读一遍</strong>：它成立的前提是<strong>你看到的是原速</strong>。一旦是倍速，「不像人」这个观察本身就没有信息量了。</p>
 <blockquote>
 <p>🔑 顺带一提，这条判据和 <a href="05-数据与评测.html">05 章</a>的读论文姿势是同一件事：<strong>看它敢不敢在没训练过的条件下被测。</strong></p>
 </blockquote>
 <hr />
-<h2 id="_5">🔑 本章一句话</h2>
+<h2 id="106">10.6 ⚠️⚠️ 从线索到结论：这个领域最大的信息缺口，和一套不说过头的说法</h2>
+<p>这一章是本目录<strong>最容易把推断写成结论</strong>的一章 —— 看完一段视频，很容易脱口而出「这肯定是遥控的」。但上一节已经说明：<strong>你手上全是线索，没有一条是证据。</strong></p>
+<p>⟹ 而之所以只能靠线索，是因为这个行业有一块<strong>结构性的信息缺口</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ① 没有统一的「自主度」标注规范
+         自动驾驶好歹有一套分级的共同语言（L2/L3/L4 那套）；
+         ⚠️ 人形机器人的 demo 没有任何对应的东西。
+    ② 发布方没有披露义务
+         宣传片不是论文，不必写清楚试验次数和自主级别。
+    ③ 而自主度恰恰【直接决定】这段演示的技术含量
+         同一个动作，②遥操作 和 ③自主 的难度差着整个 VLA 的全部难题。
+
+    ==&gt; ★★ 于是「一段 demo 里有多少遥操作成分」成了这个领域
+        【最大的一块信息缺口】 —— 不是因为难测，是因为没人必须说。
+</code></pre></div>
+
+<h3 id="_8">先给手上的东西分级</h3>
+<table>
+<thead>
+<tr>
+<th>档</th>
+<th>是什么</th>
+<th>例子</th>
+<th>能支持什么结论</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>A ✅ 当事人明说</strong></td>
+<td>厂商自己披露</td>
+<td>特斯拉 2024-10 "We, Robot" 上 Optimus 的调酒和对话是遥操作（走路自主）；1X 的 NEO 出厂就带远程接管</td>
+<td>✅ 可以直接当结论写</td>
+</tr>
+<tr>
+<td><strong>B ✅ 官方技术材料</strong></td>
+<td>论文、技术博客、开源仓库、官方配套工具</td>
+<td>宇树开源了自己的遥操作工具链</td>
+<td>✅ 能支持「这是官方支持的使用方式」；⚠️ <strong>推不出</strong>「他们的 demo 都是遥操作的」</td>
+</tr>
+<tr>
+<td><strong>C 🔎 第三方可复现</strong></td>
+<td>别人买了同款、按公开方法复现</td>
+<td>第三方复现报告</td>
+<td>🔎 较强，但要看复现条件是否一致</td>
+</tr>
+<tr>
+<td><strong>D ⚠️ 视频里的可观察线索</strong></td>
+<td>§10.5 那十一条</td>
+<td>动作太平滑、没标 1x</td>
+<td>⚠️ <strong>只能调整置信度，不能下结论</strong></td>
+</tr>
+<tr>
+<td><strong>E ❌ 推测与氛围</strong></td>
+<td>「看着就像」「业内都知道」</td>
+<td>—</td>
+<td>❌ 什么都不能支持</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ ⚠️ <strong>最容易越界的是 B 档。</strong>「宇树开源了遥操作工具链」是一个 ✅ 事实，它能推出「<strong>遥操作是买家使用这台机器的主要方式之一</strong>」；但它<strong>推不出</strong>「宇树官方放出的那段抓取视频是遥操作的」—— 后者要 A 档的材料才行。⟹ §10.3 那句「最后一行是最硬的证据」，证的是前一句，不是后一句。</p>
+<h3 id="_9">一个发布方本该给出的披露清单（六项）</h3>
+<div class="codehilite"><pre><span></span><code>    ① 自主级别            这段里哪些部分自主、哪些是 ①/②/④（见 §10.1）
+    ② 播放速度            有没有变速？标 1x，还是标明倍率
+    ③ 试验次数 n 与成功率 p   ★ 这一项最重要，也最常被省掉
+    ④ 分布内还是分布外      物体、位置、光照在不在训练分布里
+    ⑤ 剪辑情况            是否一镜到底；如有剪辑，剪掉了什么
+    ⑥ 有无人工介入         全程有没有远程接管，接管了几次
+</code></pre></div>
+
+<p>⟹ 🔑 <strong>把这六项当成一张检查表去读任何 demo</strong>：缺得越多，这段视频能支持的结论就越少。⚠️ 注意这不是在指控谁 —— 大多数宣传片缺这六项只是因为它本来就是宣传片。<strong>问题不在发布方缺德，在于读者容易把宣传片当成实验结果。</strong></p>
+<h3 id="_10">⚠️ 就算给了成功率，也先过一遍噪声门槛</h3>
+<p>第 ③ 项最容易被当成「有数就是可信」。但机器人演示的试验次数普遍只有几十次，而成功率的噪声大到超出直觉：</p>
+<div class="codehilite"><pre><span></span><code>    成功率的标准误      SE = sqrt( p(1-p) / n )
+
+      n = 20,  p = 0.5  ==&gt;  SE = sqrt(0.25/20)  =  11.2 个百分点  ★★
+      n = 50,  p = 0.5  ==&gt;  SE = sqrt(0.25/50)  =   7.1 个百分点
+      n = 100, p = 0.5  ==&gt;  SE = sqrt(0.25/100) =   5.0 个百分点
+
+    ==&gt; 「20 次成功 12 次」(60%) 和「20 次成功 10 次」(50%)
+        差的 10 个百分点【小于单边的 11.2】 —— 说明不了任何问题。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>比较两组时不要把两个 SE 相加</strong> —— 那会把门槛抬得过高，反而漏掉真实差异。同一批任务、同一批初始条件下应当用 <strong>McNemar 配对检验</strong>（看的是两组结果<strong>不一致</strong>的那些试验）。完整版见 <a href="附-速查表.html">附-速查表</a> §F2。<br />
+⚠️ 顺带两个口径坑：「成功率 50% → 60%」涨的是 <strong>10 个百分点</strong>，不是「提升 10%」；「任务时间减少 60%」不是「快了 60%」，而是 <code>1 / (1 − 0.6)</code> = <strong>2.5 倍</strong>（<a href="附-速查表.html">附-速查表</a> §F4）。</p>
+</blockquote>
+<h3 id="_11">★★ 最后：换一种句式，推断就不会被写成事实</h3>
+<table>
+<thead>
+<tr>
+<th>❌ 不要这样写</th>
+<th>✅ 改成这样写</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>「这个视频是遥操作的」</td>
+<td>「这段视频没有提供足以排除遥操作的信息」</td>
+<td>把举证责任放回发布方，而不是靠读者猜</td>
+</tr>
+<tr>
+<td>「某家的 demo 都是假的」</td>
+<td>「某家没有公开这段 demo 的自主级别和试验次数」</td>
+<td>前者是指控，后者是可核验的事实</td>
+</tr>
+<tr>
+<td>「动作太平滑，所以是策略输出」</td>
+<td>「动作偏平滑，这是一条弱线索；但视频没标 1x，倍速会产生同样的效果」</td>
+<td>把反例一起说出来</td>
+</tr>
+<tr>
+<td>「遥操作占行业的七成」</td>
+<td>「我没有可靠数据支持任何具体百分比」</td>
+<td>§10.2 第一层已经立了这条</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ 🔑 <strong>这套句式不是为了礼貌，是为了准确。</strong>「没有提供足以排除 X 的信息」是一个<strong>你真的能验证的陈述</strong>（把视频描述翻一遍就知道）；而「这就是 X」是一个<strong>你验证不了的陈述</strong>。⟹ 笔记里只写前一种，结论就永远不会被打脸。</p>
+<hr />
+<h2 id="_12">🔑 本章一句话</h2>
 <blockquote>
 <p>「遥」有四种：<strong>遥控（给方向）、遥操作（给动作）、预设播放（放录像）、自主（自己想）</strong>。<br />
 ★★ 行业现状是：<strong>运动能力基本已经自主，操作能力还高度依赖人</strong>——训练时靠遥操作采数据，部署时靠远程接管兜底，而后者是<strong>明说的商业策略，不是造假</strong>。<br />
-⚠️ 具体到某家公司，先问它在<strong>本体层还是模型层</strong>——宇树的运动是真自主、表演是预设播放、操作确实以遥操作为主，但这不算短板，<strong>因为它本来就不是靠操作智能立身的</strong>。</p>
+⚠️ 具体到某家公司，先问它在<strong>本体层还是模型层</strong>——宇树的运动是真自主、表演是预设播放、操作确实以遥操作为主，但这不算短板，<strong>因为它本来就不是靠操作智能立身的</strong>。<br />
+⚠️⚠️ 而具体到某一段视频，你手上<strong>全是线索、没有证据</strong>（§10.5）：唯一能把线索变成证据的是 <strong>「换没见过的物体还能做」</strong>、<strong>一镜到底的长任务</strong>、以及<strong>公开的权重与论文</strong>。⟹ 所以该写的句子是「<strong>这段视频没有提供足以排除遥操作的信息</strong>」，而不是「这段视频是遥操作的」（§10.6）。</p>
 </blockquote>
 <hr />
 <p><strong>上一章</strong> ← <a href="09-本体运动与触觉.html">09 本体、运动与触觉</a> ｜ <strong>下一章</strong> → <a href="11-世界动作模型WAM.html">11 世界动作模型 WAM</a> ｜ <strong>回到</strong> → <a href="README.html">README</a></p>

@@ -258,6 +258,16 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 ⟹ 剧透：<strong>这个领域目前还没有 MMLU 那样公认的尺子。</strong> 这件事的影响比想象中大得多。</p>
 </blockquote>
 <hr />
+<p><strong>本章关键词</strong>（第一次出现都给全称，不用往回翻）</p>
+<p><strong>MMLU</strong>（Massive Multitask Language Understanding，大规模多任务语言理解）—— 大语言模型最常用的那套选择题基准。所有人跑同一套题、同一个评分脚本，分数可以直接摆在一起比。</p>
+<p><strong>遥操作</strong>（teleoperation）—— 人拿手柄、动作捕捉服或者主从臂，牵着机器人把一个任务做一遍，机器人同步录下「看到的画面 + 自己的关节指令」。这是真机数据的主要来源，也是最贵的来源。</p>
+<p><strong>轨迹 / 条</strong>（trajectory，也叫 episode）—— 一次完整的任务演示，从开始到成功或失败。机器人数据的计数单位是「条」，不是「个样本」。</p>
+<p><strong>控制步</strong>（control step，也叫 timestep）—— 一条轨迹里的一帧，内容是「一次观测 + 一个动作」。一条 20 秒、10 Hz 的轨迹有 200 个控制步。</p>
+<p><strong>sim-to-real gap</strong>（仿真到真实的鸿沟，也写作 Sim2Real gap）—— 在仿真里训好的策略搬到真机上掉的那部分分数。分两类：<strong>视觉 gap</strong>（渲染出来的画面和真实摄像头长得不一样）和<strong>动力学 gap</strong>（仿真里的摩擦、间隙、延迟和真实硬件对不上）。</p>
+<p><strong>SE</strong>（Standard Error，标准误）—— 一个估计值自身的抖动幅度。成功率的标准误是 <code>SE ≈ √(p(1−p)/n)</code>，<code>p</code> 是真实成功率，<code>n</code> 是试验次数。</p>
+<p><strong>McNemar 配对检验</strong>（McNemar's test）—— 比较两个策略在<strong>同一批试验</strong>上谁更好时该用的统计检验。它只看两边结果<strong>不一致</strong>的那些试验。</p>
+<p><strong>FVD / FID</strong>（Fréchet Video Distance / Fréchet Inception Distance，弗雷歇视频距离 / 弗雷歇初始距离）—— 衡量生成的视频、图像「像不像真的」的两个常用分数，越低越像。注意它们只管像不像，不管对不对。</p>
+<hr />
 <h2 id="50">5.0 ★ 先感受一下问题有多严重</h2>
 <div class="codehilite"><pre><span></span><code>    大语言模型：  「我在 MMLU 上 88.2 分」
                   ⟹ 你我他都能跑同一套题，分数直接可比。
@@ -274,6 +284,24 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <blockquote>
 <p>⚠️ <strong>我的判断</strong>：这件事的后果是——<strong>这个领域的进步速度很难被准确度量</strong>。你看到的「成功率从 60% 到 85%」，可能一半来自模型，一半来自把桌子擦干净了。</p>
 </blockquote>
+<h3 id="_1">先建立一个心理准备：困难有两层，而且互相独立</h3>
+<p>这一章后面会反复用到一个区分，先在这里立好。读机器人论文时让你看不懂数字的，<strong>不是一个问题，是叠在一起的两个</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    第一层：统计噪声
+      ── 哪怕两次评测是【完全同一道题】，只试 20 次，
+         成功率本身就会上下跳十几个百分点。
+      ── 这是【随机】误差，多试几次就能压下去。
+
+    第二层：条件漂移（真机不可复现）
+      ── 两次评测根本【不是同一道题】：
+         杯子位置差 2 cm、灯换了、机械臂磨损了。
+      ── 这是【系统性】偏移，试一万次也压不下去，
+         只会把「那天那道题」测得很准。
+
+    ★★ 单独看任何一层，问题都还算可控；
+       叠在一起，就变成了「一个真机数字几乎什么都证明不了」。
+</code></pre></div>
+
+<p>第一层在 §5.2 用一个公式算清楚，第二层在 §5.2 后半段用一个具体例子讲透。先往下看数据。</p>
 <hr />
 <h2 id="51">5.1 数据侧：几个必须知道的名字</h2>
 <h3 id="open-x-embodiment-rt-x">★★ Open X-Embodiment（也叫 RT-X）</h3>
@@ -290,8 +318,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <blockquote>
 <p>📖 <strong>本体（embodiment）</strong>：机器人的物理形态——几个关节、多长的胳膊、什么夹爪。<strong>跨本体（cross-embodiment）</strong> 就是「换个身体还能用」。</p>
+<p>★ <strong>为什么这件事不是显然的</strong>：两台机器人的动作空间根本不一样——一台是 7 个关节的机械臂，另一台是带轮子的双臂移动平台，连「一个动作向量有几维」都对不上。合并之后模型学到的到底是什么？<strong>合理的解释是：它学的不是「怎么转关节」，而是「任务长什么样、物体之间该发生什么关系」</strong>，这部分跨本体是通用的，剩下那层「翻译成我的关节」反而是最容易补的。⚠️ 这是本文对实验结果的解读，不是论文原话。</p>
 </blockquote>
-<h3 id="_1">其它几类数据来源</h3>
+<h3 id="_2">其它几类数据来源</h3>
 <table>
 <thead>
 <tr>
@@ -323,7 +352,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <tr>
 <td><strong>人类第一视角视频</strong></td>
 <td>Ego4D、EPIC-KITCHENS 类</td>
-<td><strong>量级碾压，几十万小时</strong></td>
+<td>量最大，但<strong>要看清口径</strong>（见下一段的更正）</td>
 <td>★★ <strong>没有动作标签</strong>（见 §1.5 的潜动作解法）</td>
 </tr>
 <tr>
@@ -340,7 +369,258 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tr>
 </tbody>
 </table>
-<h3 id="_2">⚠️ 一个容易被忽略的坐标系</h3>
+<blockquote>
+<p>⚠️⚠️ <strong>一个本轮抓到的口径错误，先更正</strong>：第一视角视频数据集<strong>本身并没有「几十万小时」那么大</strong>。🔎 Ego4D 是 <strong>3,670 小时</strong>，🔎 EPIC-KITCHENS-100 是 <strong>100 小时</strong>，🔎 Ego-Exo4D 约 <strong>1,300 小时</strong>——都是「千小时」量级。真正到「百万小时」量级的是<strong>互联网视频</strong>（Meta 的 V-JEPA 2 用了 🔎 约 100 万小时，见第 02 章），那是从 YouTube 这类来源抓的第三人称视频，不是第一视角数据集。<strong>两者差了约 270 倍，引用时千万别混。</strong></p>
+</blockquote>
+<h3 id="_3">★★ 四类数据来源的横向对照（本节核心）</h3>
+<p>上面那张表按「是什么」分类，这张表按<strong>「能不能用来堆规模」</strong>分类——这才是决定路线的那个问题。</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>代表</th>
+<th>采集速率（条·小时⁻¹）</th>
+<th>成本量级</th>
+<th>和真机的差距（sim-to-real gap）</th>
+<th>能不能规模化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>真机遥操作</strong><br>（单人 + 单台机器）</td>
+<td>DROID、RT-1</td>
+<td>⚠️ <strong>50 ~ 200</strong></td>
+<td>⚠️ 人力约 100 元/小时 + 一台机器人几万到几十万<br>⟹ 摊到每条<strong>约 1 元起</strong>，长任务高一个量级</td>
+<td><strong>0</strong>——它就是真机</td>
+<td>❌ <strong>线性烧钱</strong>：数据翻倍 = 人和机器都翻倍</td>
+</tr>
+<tr>
+<td><strong>真机遥操作</strong><br>（百台工厂化）</td>
+<td>🔎 AgiBot World（约 100 台并行）</td>
+<td>⚠️ <strong>5,000 ~ 20,000</strong><br>（= 单机速率 × 台数）</td>
+<td>一次性建场地几千万</td>
+<td><strong>0</strong></td>
+<td>⚠️ <strong>只是把线性的斜率放平</strong>，到十万~百万条就是上限，再往上还是线性</td>
+</tr>
+<tr>
+<td><strong>仿真生成</strong></td>
+<td>RoboCasa、ManiSkill、Isaac Lab</td>
+<td>⚠️ <strong>10⁴ ~ 10⁶</strong><br>（GPU 并行，算账见 <a href="06-仿真器与世界模型.html">06 章</a>）</td>
+<td>边际成本≈0；<strong>真实成本在建 3D 资产上，而且是一次性的</strong></td>
+<td><strong>大</strong>：视觉 + 动力学<strong>双重</strong> gap</td>
+<td>✅ <strong>唯一真正能规模化的一类</strong></td>
+</tr>
+<tr>
+<td><strong>人类第一视角视频</strong></td>
+<td>🔎 Ego4D（3,670 h）、EPIC-KITCHENS-100（100 h）</td>
+<td><strong>不适用</strong>——它是存量，不是现采</td>
+<td>≈ 0（已经在互联网上了）</td>
+<td><strong>最大</strong>：没有动作标签、没有本体状态、人手不是夹爪</td>
+<td>✅ 量最大，但<strong>先得解决标签问题</strong>（潜动作，见 <a href="01-具身智能与VLA.html">01 章</a>）</td>
+</tr>
+<tr>
+<td><strong>跨本体合并数据集</strong></td>
+<td>Open X-Embodiment</td>
+<td><strong>不适用</strong>——不新增采集，只做汇总和格式对齐</td>
+<td>≈ 0（但对齐是重体力活）</td>
+<td><strong>0</strong>（底下全是真机数据）</td>
+<td>❌ 上限 = 别人已经采了多少，<strong>它不生产数据</strong></td>
+</tr>
+<tr>
+<td>（补充）<strong>手持装置</strong></td>
+<td>UMI</td>
+<td>⚠️ <strong>100 ~ 400</strong><br>（比遥操作快，因为不用复位机器人）</td>
+<td>一个手持夹持器几千元</td>
+<td><strong>中</strong>：画面和轨迹都是真的，但缺本体状态和力反馈</td>
+<td>⚠️ 介于两者之间</td>
+</tr>
+<tr>
+<td>（补充）<strong>世界模型生成</strong></td>
+<td>Cosmos、GigaWorld</td>
+<td>⚠️ <strong>远低于仿真器</strong>，受算力硬限（见 <a href="06-仿真器与世界模型.html">06 章</a>）</td>
+<td><strong>每一帧都要付算力</strong>，是持续成本不是一次性</td>
+<td>视觉 gap 小、<strong>物理 gap 未知</strong>（最麻烦的一点）</td>
+<td>⚠️ 账目前算不过来</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>🔑 <strong>这张表最该带走的一句</strong>：<strong>真正能规模化的只有「仿真」和「人类视频」两列，而它们恰好各缺一样东西——仿真缺真实性，人类视频缺动作标签。</strong> 过去三年这个方向几乎所有的重要工作，都可以看成在补这两个缺口之一（域随机化、神经渲染重上色补前者；潜动作、逆动力学模型补后者）。</p>
+</blockquote>
+<h3 id="_4">⚠️ 上面那一列「采集速率」是怎么估出来的</h3>
+<p>这一列在公开材料里<strong>没人直接给</strong>，所以必须把估法摊开，读者才知道能信到什么程度。</p>
+<div class="codehilite"><pre><span></span><code>    已知（🔎 DROID 公开口径）：
+       76,000 条轨迹 / 350 小时「机器人交互时间」
+
+    ① 平均每条轨迹多长？
+         350 × 3600 ÷ 76,000 ≈ 16.6 秒/条
+
+    ⚠️⚠️ 关键：这 350 小时【不是人的工时】，
+         是所有轨迹的时长加起来。真实工时还要加上：
+           摆物体 → 复位机械臂 → 换场景 → 丢弃失败条 → 检查标注
+
+    ② 按「16.6 秒动作 + 10~40 秒准备」估一个人一小时能采多少：
+         乐观：3600 ÷ (16.6 + 10) ≈ 135 条
+         保守：3600 ÷ (16.6 + 40) ≈  64 条
+
+    ⟹ 所以表里写【50 ~ 200 条·小时⁻¹】。
+       ⚠️ 这是一个【量级】，不是精确值，更不是任何论文的披露数字。
+</code></pre></div>
+
+<h3 id="_5">★★ 机器人数据到底比语言数据少多少？——一笔必须先说清口径的账</h3>
+<p>这是本章最容易算错的一笔账，也是本仓库已经抓到过两次的错型。<strong>先看错在哪里</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️⚠️ 两个常见的错误除法：
+
+      ❌ 错法一：「语言 15 万亿 token，机器人 100 万条轨迹，
+                  所以差 1500 万倍」
+         ⟹ 「token」和「条」不是同一个单位，
+            这个除法算出来的东西没有任何含义。
+
+      ❌ 错法二：「语言 15×10¹² token，机器人 5000 小时，
+                  15×10¹² ÷ 5000 = 30 亿」
+         ⟹ token ÷ 小时 = token/小时，
+            这是一个【速率】，不是【倍数】。
+
+    ✅ 正确做法：先把两边换算到【同一个单位】，再相除，
+       相除之后单位要能约掉，剩下一个纯数，那才叫「倍数」。
+
+    ⟹ 下面算两笔：一笔全程用【小时】，一笔全程用【token】。
+       两笔的答案差了约 60 倍 —— 这正是本节要讲的重点。
+</code></pre></div>
+
+<p><strong>账 A：两边都换算成「小时」</strong></p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>算什么</th>
+<th>代入</th>
+<th>结果</th>
+<th>口径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>一条真机轨迹平均多长</td>
+<td>350 h × 3600 ÷ 76,000 条</td>
+<td><strong>16.6 秒/条</strong></td>
+<td>🔎 DROID 公开数</td>
+</tr>
+<tr>
+<td>②</td>
+<td>Open X-Embodiment 折合多少小时</td>
+<td>10⁶ 条 × 16.6 s ÷ 3600</td>
+<td>⚠️ <strong>≈ 4,600 小时</strong></td>
+<td>⚠️ 本文推算（假设各子集轨迹长度和 DROID 同量级）</td>
+</tr>
+<tr>
+<td>③</td>
+<td>对照组：喂给世界模型的互联网视频</td>
+<td>🔎 V-JEPA 2 用了约 100 万小时</td>
+<td><strong>10⁶ 小时</strong></td>
+<td>🔎 二手</td>
+</tr>
+<tr>
+<td>④</td>
+<td>倍数（小时 ÷ 小时，单位抵消）</td>
+<td>10⁶ ÷ 4.6×10³</td>
+<td><strong>≈ 220 倍</strong></td>
+<td>⚠️ 推算</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>结论 A：按「看了多少小时」算，带动作标签的真机数据，比能喂给世界模型的互联网视频少两个数量级出头。</strong></p>
+<p><strong>账 B：两边都换算成「token」</strong></p>
+<p>这一笔要先选一个动作的 token 化口径，否则没法比。用 RT-2 那一类做法：每个控制步输出一个 7 维动作（位置 xyz 3 维 + 姿态 3 维 + 夹爪开合 1 维），每一维离散成 256 个格子、占 1 个 token。</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>算什么</th>
+<th>代入</th>
+<th>结果</th>
+<th>口径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>平均控制频率</td>
+<td>⚠️ OXE 各子集从 3 Hz 到 30 Hz 都有，取 10 Hz</td>
+<td><strong>10 步/秒</strong></td>
+<td>⚠️ 本文取值</td>
+</tr>
+<tr>
+<td>②</td>
+<td>一条轨迹多少个控制步</td>
+<td>16.6 s × 10 Hz</td>
+<td><strong>≈ 166 步</strong></td>
+<td>⚠️ 推算</td>
+</tr>
+<tr>
+<td>③</td>
+<td>全库多少个控制步</td>
+<td>10⁶ 条 × 166</td>
+<td><strong>≈ 1.7×10⁸ 步</strong></td>
+<td>⚠️ 推算</td>
+</tr>
+<tr>
+<td>④</td>
+<td>一个控制步几个动作 token</td>
+<td>7 维 × 1 token/维</td>
+<td><strong>7 token/步</strong></td>
+<td>🔎 RT-2 口径</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>全库的动作 token 总量</td>
+<td>1.7×10⁸ × 7</td>
+<td>⚠️ <strong>≈ 1.2×10⁹</strong></td>
+<td>⚠️ 推算</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>对照组：一个主流大语言模型的预训练语料</td>
+<td>🔎 Llama 3 用了 15 万亿 token</td>
+<td><strong>1.5×10¹³</strong></td>
+<td>🔎 二手</td>
+</tr>
+<tr>
+<td>⑦</td>
+<td>倍数（token ÷ token，单位抵消）</td>
+<td>1.5×10¹³ ÷ 1.16×10⁹</td>
+<td><strong>≈ 1.3 万倍</strong></td>
+<td>⚠️ 推算</td>
+</tr>
+</tbody>
+</table>
+<p>⟹ <strong>结论 B：按「学了多少个 token」算，差四个数量级。</strong></p>
+<h3 id="220-13">★ 为什么同一件事能算出 220 倍和 1.3 万倍两个答案</h3>
+<p>这不是哪一笔算错了，<strong>两笔都对，但它们回答的不是同一个问题</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    账 A 问的是：「可看的素材时长」差多少？
+       分母 = 带动作标签的真机数据（4,600 小时）
+       分子 = 无标签的互联网视频（100 万小时）
+       ⟹ 比的是【两种视觉素材】。
+
+    账 B 问的是：「可学习的监督信号条数」差多少？
+       分母 = 动作 token（1.2×10⁹）
+       分子 = 文本 token（1.5×10¹³）
+       ⟹ 比的是【两种序列监督】。
+       而且一小时文本能切出的 token，
+       远多于一小时机器人动作能切出的 token
+       （10 Hz × 7 维 = 70 token/秒，一小时才 25 万 token；
+         而一本书就有十几万 token）。
+
+    ★★ 所以「机器人数据比语言数据少 X 个数量级」这句话，
+       【不给单位就是一句没有信息量的话】。
+       引用它的时候，必须跟上「按什么单位、和谁比」。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>还有一层经常被忽略的</strong>：真正稀缺的既不是「小时」也不是「token」，是<strong>带动作标签的小时</strong>。人类视频有小时、没标签；仿真有标签、有 gap；真机两样都有、但只有四千多小时。⟹ <strong>整个具身智能的数据困局，一句话就是这个三选二。</strong></p>
+</blockquote>
+<h3 id="_6">⚠️ 一个容易被忽略的坐标系</h3>
 <div class="codehilite"><pre><span></span><code>    评价一个具身数据集，其实要看三个独立的维度：
 
         ① 本体多样性 —— 有几种机器人？
@@ -354,6 +634,9 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ 这就是为什么「具身智能的 ImageNet 时刻还没到」。
 </code></pre></div>
 
+<blockquote>
+<p>★ <strong>为什么「只在一个维度上丰富」是个真问题</strong>：模型会把<strong>没有变化的那些维度当成常量学进去</strong>。一个只在实验室白桌面上训出来的策略，很可能把「桌面是白的」当成了识别任务的线索之一——换成木纹桌面就掉分，而你从训练曲线上<strong>完全看不出来</strong>。⟹ 这也是下一节「仿真里 90 分、真机上 30 分」最常见的成因之一。</p>
+</blockquote>
 <hr />
 <h2 id="52">5.2 策略评测：三层，各有各的问题</h2>
 <table>
@@ -387,7 +670,189 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </tbody>
 </table>
 <blockquote>
-<p>★★ <strong>第三层那个「试验次数极少」才是最该警惕的</strong>：成功率的噪声门槛是 <code>SE ≈ √(p(1−p)/n)</code>。<strong>n = 20 次试验、p = 0.5 时，SE 高达 11 个百分点</strong> —— 这意味着常见的「20 次里成功 12 次 vs 成功 10 次」（60% vs 50%）<strong>根本说明不了任何问题</strong>。⚠️ 而且比较两组时<strong>不能把两个 SE 相加</strong>，应当用 <strong>McNemar 配对检验</strong>（同一批任务、看的是分歧对）。机器人论文的试验次数普遍在几十次量级，读的时候这一条要一直挂在心上。</p>
+<p>★★ <strong>第三层那个「试验次数极少」才是最该警惕的</strong>：成功率的噪声门槛是 <code>SE ≈ √(p(1−p)/n)</code>。<strong>n = 20 次试验、p = 0.5 时，SE 高达 11.2 个百分点</strong> —— 这意味着常见的「20 次里成功 12 次 vs 成功 10 次」（60% vs 50%）<strong>根本说明不了任何问题</strong>。⚠️ 而且比较两组时<strong>不能把两个 SE 相加</strong>，应当用 <strong>McNemar 配对检验</strong>（同一批任务、看的是分歧对）。机器人论文的试验次数普遍在几十次量级，读的时候这一条要一直挂在心上。</p>
+</blockquote>
+<h3 id="_7">📖 把上面那个公式拆开看一遍</h3>
+<p>这个公式本身很简单，但它的含义值得多花两分钟。</p>
+<div class="codehilite"><pre><span></span><code>    SE ≈ √( p(1−p) / n )
+
+    ① 分子 p(1−p) 在 p = 0.5 时最大（= 0.25）
+       ⟹ ★ 成功率在 50% 附近时，噪声最大。
+          而机器人论文报的数字，恰好经常落在 40%~70% 这一段。
+
+    ② 分母是 n，开了根号
+       ⟹ 想让误差减半，试验次数要【乘以 4】，不是乘以 2。
+          从 n=20 做到 SE 减半（5.6 个百分点），要做 n=80。
+
+    ③ 一组真实的数（p = 0.5）：
+          n =  20  ⟹  SE = 11.2 个百分点
+          n =  50  ⟹  SE =  7.1 个百分点
+          n = 100  ⟹  SE =  5.0 个百分点
+          n = 500  ⟹  SE =  2.2 个百分点
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>一个很多人会踩的坑</strong>：看到「SE = 11.2 个百分点」，不要理解成「真值在 ±11.2 之内」。按常用的 95% 区间，要再乘约 2 ⟹ <strong>±22 个百分点</strong>。也就是说，<strong>n = 20 测出来的 50%，真值落在 28%~72% 都不奇怪。</strong></p>
+<p>📖 <strong>百分点 vs 百分比，顺手分清</strong>：「从 50% 涨到 60%」是涨了 <strong>10 个百分点</strong>，也是涨了 <strong>20%</strong>（10 ÷ 50）。本章凡是讲成功率的差距，一律用<strong>百分点</strong>。</p>
+</blockquote>
+<h3 id="_8">★★ 真机评测为什么「不可复现」—— 这是和噪声完全不同的第二层问题</h3>
+<p>先看一个场景。这不是假设，是真机实验室里每周都在发生的事：</p>
+<div class="codehilite"><pre><span></span><code>    同一个策略（代码一行没改）
+    同一台机器人、同一个任务「把杯子放到盘子上」
+
+       周一跑 20 次  ⟹  成功 14 次（70%）
+       周三跑 20 次  ⟹  成功  9 次（45%）
+
+    ⚠️ 差了 25 个百分点。这中间到底变了什么？
+</code></pre></div>
+
+<p>变的东西可以排成一棵树。<strong>每一条单独看都很小，但它们是叠加的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>初始条件漂移（人摆出来的）
+├── 杯子起始位置差 2 cm          ← 肉眼对位，摆不准
+├── 杯子朝向差 10 度             ← 把手朝左还是朝右
+├── 盘子换了一只（同款不同只）    ← 釉面反光不一样
+└── 桌上多了一支笔               ← 多一个干扰物
+
+环境漂移（没人动但它自己变）
+├── 周三下午西晒，窗帘没拉        ← 画面整体偏黄，曝光变了
+├── 日光灯老化 / 上周换过灯管
+└── 室温高 5 度                  ← 电机发热、润滑脂变稀
+
+机器人自身漂移（硬件在老化）
+├── 谐波减速器磨损，回程间隙变大
+├── 夹爪硅胶垫用久了变滑          ← 摩擦系数降了
+├── 相机被碰过，外参偏了 1 度     ← 整个坐标系平移
+└── 电池电量低，关节力矩上不去
+</code></pre></div>
+
+<p><strong>★ 为什么「2 cm」这种听起来可以忽略的量，会直接决定成败</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>步</th>
+<th>问什么</th>
+<th>数（⚠️ 举例，各家硬件不同）</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>夹爪最大开口</td>
+<td>9 cm</td>
+<td>—</td>
+</tr>
+<tr>
+<td>②</td>
+<td>杯子直径</td>
+<td>7 cm</td>
+<td>—</td>
+</tr>
+<tr>
+<td>③</td>
+<td>左右各剩多少余量</td>
+<td>(9 − 7) ÷ 2</td>
+<td><strong>1 cm</strong></td>
+</tr>
+<tr>
+<td>④</td>
+<td>人用肉眼摆杯子的重复精度</td>
+<td>约 ±1 ~ 2 cm</td>
+<td><strong>比余量还大</strong></td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>所以</td>
+<td>2 cm &gt; 1 cm</td>
+<td>如果策略<strong>不纠正</strong>，夹爪会先撞到杯壁、把杯子推走</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>那闭环视觉不是能纠正吗</td>
+<td>能，但——</td>
+<td>★ <strong>「纠不纠得回来」本身就是策略好坏的一部分</strong>。初始位置分布变了，等于<strong>换了一道难度不同的题</strong></td>
+</tr>
+</tbody>
+</table>
+<p>⟹ 关键结论：<strong>漂移不是「在同一道题上加了噪声」，而是「换了一道题」。</strong> 这就是它和统计噪声的本质区别。</p>
+<p><strong>两层问题的对照（本节最该记的一张表）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>第一层：统计噪声</strong></th>
+<th><strong>第二层：条件漂移 / 不可复现</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>它是什么</td>
+<td>同一道题、同一个真实成功率 <code>p</code>，抛 20 次硬币本身就会抖</td>
+<td>两次评测<strong>不是同一道题</strong>，<code>p</code> 自己变了</td>
+</tr>
+<tr>
+<td>数学形式</td>
+<td><code>SE ≈ √(p(1−p)/n)</code>，<strong>随机</strong>误差</td>
+<td><strong>系统性</strong>偏移：<code>p</code> 从 0.70 变成了 0.45</td>
+</tr>
+<tr>
+<td>多跑几次能解决吗</td>
+<td>✅ 能。n 乘 4，SE 减半</td>
+<td>❌ <strong>不能</strong>。跑一万次，只是把<strong>那天那道题</strong>的 <code>p</code> 测得很准</td>
+</tr>
+<tr>
+<td>换个实验室能复现吗</td>
+<td>✅ 只要 <code>p</code> 相同就能</td>
+<td>❌ 复现不了——这正是「不可复现」的定义</td>
+</tr>
+<tr>
+<td>在论文里长什么样</td>
+<td>「我们跑了 20 次」</td>
+<td>「我们在自己的实验室里跑了 20 次」</td>
+</tr>
+<tr>
+<td>怎么缓解</td>
+<td>增大 n、报告置信区间、用 McNemar 配对检验</td>
+<td><strong>同一批次交替跑 A/B</strong>、固定初始位姿模板、公开全部视频</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>★★ <strong>叠加起来才是真实困难</strong>：一篇论文报「我们 78% vs 基线 65%」，如果 ① n = 20，② 基线数字是三个月前另一个人在另一台机器上跑的——那么这 13 个百分点里，<strong>光统计噪声就能解释掉 11 个左右，条件漂移还能解释多少，没有任何人知道</strong>。⟹ <strong>这个数字不能用。</strong> 不是说作者造假，而是这个实验设计本身无法支撑这个结论。</p>
+</blockquote>
+<h3 id="_9">★ 那该怎么做？（⚠️ 这是我的工程建议，不是任何论文的结论）</h3>
+<div class="codehilite"><pre><span></span><code>    ❌ 坏做法：
+        先把 A 跑 20 次，收工；
+        三个月后 B 做完了，再跑 20 次，两个百分比一比。
+
+    ✅ 好做法：
+        ├── 同一天、同一台机器、同一个人摆物体
+        ├── 每一轮【摆一次初始条件，A 和 B 各跑一次】   ← 这叫配对
+        ├── A/B 谁先跑随机决定              ← 避免「越摆越熟」的系统偏差
+        ├── 每一对记下 (A 成功?, B 成功?)   ← 这正好就是 McNemar 要的四格表
+        └── 至少 50 对，报告 McNemar 的 p 值，不要只报两个百分比
+</code></pre></div>
+
+<blockquote>
+<p>📖 <strong>McNemar 检验在干什么</strong>，用四格表一眼看懂：</p>
+</blockquote>
+<div class="codehilite"><pre><span></span><code>                      B 成功    B 失败
+          A 成功        a         b
+          A 失败        c         d
+
+    ★ 关键：a（两边都成功）和 d（两边都失败）
+      【不提供任何关于谁更强的信息】——那些题要么太简单要么太难。
+      真正有信息的只有 b 和 c，也就是【两边结果不一致的那些对】。
+
+    McNemar 问的就一句话：
+      b 和 c 的差距，能不能用「抛硬币」解释掉？
+
+    ⟹ ★★ 这也解释了为什么【配对】比【各跑各的】省样本：
+      配对把「这一道题本身难不难」这个最大的变异源直接消掉了，
+      剩下的才是两个策略的真实差别。
+</code></pre></div>
+
+<blockquote>
 <p>🔑 <strong>记住第二层的思路</strong>：当「绝对分数」注定不可信时，退而求其次去保证<strong>排序可信</strong>。⟹ 这个思路在第 5.3 节的世界模型评测里还会再出现一次。</p>
 </blockquote>
 <hr />
@@ -416,12 +881,62 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
          没法在里面做强化学习（§3.2）。
 </code></pre></div>
 
+<h3 id="_10">四项指标的横向对照</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>测什么</strong></th>
+<th><strong>怎么测</strong></th>
+<th><strong>常用指标</strong></th>
+<th><strong>⚠️ 怎么被刷高（读的时候防这一手）</strong></th>
+<th><strong>和「下游有没有用」的关系</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>①</strong></td>
+<td>画得像不像</td>
+<td>生成一批视频，和真实视频比特征分布</td>
+<td>FVD / FID / LPIPS</td>
+<td>画面糊一点、镜头稳一点、动作幅度小一点，分数<strong>反而更好看</strong></td>
+<td>⚠️ <strong>几乎无关</strong></td>
+</tr>
+<tr>
+<td><strong>②</strong></td>
+<td>听不听动作</td>
+<td>同一初始帧 + 两个不同动作，看生成结果分不分得开</td>
+<td>动作一致性、用逆动力学模型从生成视频反推动作再和输入比</td>
+<td>只在训练见过的动作幅度上测；动作改一点点画面也动一点点，看起来就「听话」</td>
+<td>★★ <strong>强相关</strong>——这是世界模型的入场门槛</td>
+</tr>
+<tr>
+<td><strong>③</strong></td>
+<td>物理对不对</td>
+<td>给视频前半段让它续写，检查是否违反重力/守恒/不可穿透</td>
+<td>🔎 Physics-IQ、VideoPhy 一类</td>
+<td>挑<strong>刚体自由落体</strong>这种好做的，避开<strong>流体、绳子、布料</strong>这些做不好的</td>
+<td>中等相关</td>
+</tr>
+<tr>
+<td><strong>④</strong></td>
+<td>滚久了稳不稳</td>
+<td>一直往下滚，看第 N 步画面还对不对、回头看场景还一致吗</td>
+<td>有效滚动步数、回看一致性</td>
+<td><strong>只报前 16 帧</strong>，正好在崩之前停下</td>
+<td>★★ <strong>直接决定它能用在哪一档</strong>（见 <a href="07-世界模型的四种用法.html">07 章</a> 的三个问题）</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p>★ <strong>第 ④ 项是四项里最该优先看、却最少被报的一项。</strong> 它不像画质那样有现成的榜可以刷，但它卡死了用法边界：<strong>能滚几步 ⟹ 只能当数据工厂；能滚几十步 ⟹ 可以做短程前瞻；能滚几百步 ⟹ 才谈得上在里面做强化学习。</strong> 一篇只报了前 16 帧画质分的论文，等于<strong>没有回答它到底能干什么</strong>。</p>
+<p>⚠️ <strong>第 ① 项还有一个更隐蔽的陷阱</strong>：FVD 比的是<strong>分布</strong>，不是<strong>逐帧对错</strong>。一个模型可以生成一批「整体看起来很像真实厨房视频」的片段，而其中每一段的因果都是错的——分布对上了，单条没一条能用。⟹ <strong>分布级指标天生测不出「这一次预测对不对」，而机器人只关心这一次。</strong></p>
 <p>⚠️ <strong>我的判断——为什么世界模型的评测特别难</strong>：<br />
 世界模型的<strong>真正价值是「下游有没有用」</strong>（训出来的策略更强吗？），<br />
 但下游评测又贵又不可复现（见 §5.2 第三层）。<br />
 ⟹ 于是大家只好退回去测上面这四个<strong>代理指标</strong>，<br />
 而<strong>代理指标高 ≠ 下游有用</strong>——这是当前整个方向最大的方法论漏洞。</p>
+<p>★ <strong>把这个漏洞说得再具体一点</strong>：理想的评测应该是「用世界模型 A 生成数据训策略，再用世界模型 B 生成数据训策略，比两个策略在真机上谁强」。但这条链路上，<strong>最后一步正好是 §5.2 第三层那个又贵又不可复现的真机评测</strong>。⟹ 所以这不是「大家偷懒」，而是<strong>下游评测本身不可靠，导致上游没法被正确排序</strong>——两个问题是扣在一起的。</p>
 </blockquote>
 <hr />
 <h2 id="54">5.4 ⚠️ 泼冷水：基准过拟合</h2>
@@ -434,19 +949,67 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
     ★ 一个实用的读论文姿势：
       看到真机成功率时，先找三件事：
-        ▸ 试了多少次？（少于 20 次的数字，误差极大）
-        ▸ 物体/位置是不是训练时见过的？
-        ▸ 有没有和【同一台机器人上的】基线对比？
+        - 试了多少次？（少于 20 次的数字，误差极大）
+        - 物体/位置是不是训练时见过的？
+        - 有没有和【同一台机器人上的】基线对比？
       三条都答不上来的，这个数字基本只能当 demo 看。
 </code></pre></div>
 
+<h3 id="_11">⚠️ 具身基准比语言基准更容易被过拟合，原因在数据这一侧</h3>
+<p>语言基准的过拟合主要是「题目泄漏到训练语料里」。具身这边多一个更难防的通道：</p>
+<div class="codehilite"><pre><span></span><code>    仿真基准的资产库是【公开且有限】的。
+
+      LIBERO / Meta-World 这类基准，物体模型、桌面材质、
+      初始位姿的采样范围，全都写在开源仓库里。
+
+      ⟹ 你完全可以用【同一套资产】生成一百万条训练数据，
+         这在技术上不算作弊（没有碰测试集的那几条轨迹），
+         但模型见过的「视觉世界」和测试时一模一样。
+
+      ⟹ ★★ 结果：仿真基准分数 90，换一张木纹桌子就掉到 30。
+         而论文里看不出任何异常——因为基准本身没要求换桌子。
+</code></pre></div>
+
+<blockquote>
+<p>⚠️ <strong>我的判断</strong>：这解释了一个常见的割裂现象——<strong>仿真榜单上的分数这两年涨得很快，但真机上的体感进步慢得多</strong>。两条曲线之所以对不上，很可能不是因为真机更难，而是因为<strong>仿真榜单测的那件事，已经被「用同一套资产堆数据」这条捷径绕过去了</strong>。</p>
+<p>★ <strong>第二层（SimplerEnv 这类）之所以值钱，正是因为它堵了这个洞</strong>：它不追求绝对分数，只要求<strong>仿真里的排序和真机里的排序一致</strong>。排序一致这个要求，用「堆同资产数据」这一招是刷不上去的——你把仿真分数刷到 99，真机没动，排序反而更不一致了。</p>
+</blockquote>
 <hr />
-<h2 id="_3">🔑 本章一句话</h2>
+<h2 id="55-60">5.5 ★ 看到一个真机成功率，60 秒内该问的五个问题</h2>
+<p>把前面四节压成一个可以直接用的流程。<strong>从上往下走，任何一步答不上来就可以停了。</strong></p>
+<div class="codehilite"><pre><span></span><code>看到「真机成功率 78%」
+├── ① n 是多少？
+│     ├── 没写                ⟹ 当 demo 看，不要引用
+│     ├── n &lt; 20              ⟹ SE &gt; 11 个百分点，只能读量级，读不了排名
+│     └── n &gt;= 50             ⟹ 往下
+├── ② 基线的数字是谁跑的？
+│     ├── 抄自别人论文        ⟹ 不可比（不同机器人、不同桌子、不同月份）
+│     ├── 自己复现但不同批次  ⟹ 条件漂移无法排除，存疑
+│     └── 同一批次交替跑      ⟹ 往下（这是目前能做到的最好情况）
+├── ③ 测试物体和位置，训练时见过吗？
+│     ├── 见过                      ⟹ 这是「记住了」，不是泛化，别当泛化读
+│     ├── 物体新、位置旧            ⟹ 只证明了物体泛化
+│     └── 物体新 + 位置新 + 场景新  ⟹ 往下
+├── ④ 「失败」的口径是什么？
+│     ├── 允许重试 / 人工扶一把 / 中途复位   ⟹ 口径被放宽了，和别人不可比
+│     └── 一次定输赢，掉了就算失败           ⟹ 往下
+└── ⑤ 有没有配对统计？
+      ├── 只给两个百分比      ⟹ 差距小于 15 个百分点时一律存疑
+      └── 给了 McNemar / 置信区间 / 逐次原始记录
+                              ⟹ ★ 这是当前这个领域最可信的一档，可以引用
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>这五问里，第 ② 问最常被跳过，也最致命。</strong> 「抄自别人论文的基线」在语言模型里是完全正当的做法（大家跑同一套题），但在真机上，它等价于<strong>拿你家的秤称的体重，去和别人家秤称的体重比</strong>。⟹ 读到这种对比表，直接把它当成「两个互不相干的数字被排版在了一起」。</p>
+</blockquote>
+<hr />
+<h2 id="_12">🔑 本章一句话</h2>
 <blockquote>
 <p><strong>具身智能目前最缺的不是模型，是尺子。</strong><br />
-数据侧的关键突破是 Open X-Embodiment 证明了「<strong>别的机器人的数据也有用</strong>」；<br />
+数据侧的关键突破是 Open X-Embodiment 证明了「<strong>别的机器人的数据也有用</strong>」；但数据总量仍然很小——⚠️ 按本章的推算，<strong>真机数据折合约 4,600 小时（对比互联网视频 100 万小时，差约 220 倍）、折合约 1.16×10⁹ 个动作 token（对比语言 1.5×10¹³，差约 1.3 万倍）</strong>，⚠️ <strong>引用这个差距时必须跟上单位和对照组，否则是一句空话</strong>。<br />
 评测侧的现状是——<strong>仿真可复现但不算数，真机算数但不可复现</strong>，中间层（SimplerEnv 这类）在试图用「排序一致」来救场。<br />
-⚠️ 而世界模型的评测更糟：<strong>我们只会测代理指标，不会测它到底有没有用。</strong></p>
+★★ 而真机评测的困难是<strong>两层叠加</strong>：<strong>统计噪声</strong>（n=20 时 SE 就有 11.2 个百分点，多跑能压下去）<strong>加上条件漂移</strong>（杯子差 2 cm、灯变了、机械臂磨损了，跑一万次也压不下去）。<br />
+⚠️ 世界模型的评测更糟：<strong>我们只会测代理指标，不会测它到底有没有用</strong>——而之所以测不了，恰恰是因为下游那个真机评测本身就不可靠。</p>
 </blockquote>
 <hr />
 <p><strong>上一章</strong> ← <a href="04-玩家全景与产业现状.html">04 玩家全景与产业现状</a> ｜ <strong>下一章</strong> → <a href="06-仿真器与世界模型.html">06 仿真器与世界模型的分工</a> ｜ <strong>回到</strong> → <a href="README.html">README</a></p>

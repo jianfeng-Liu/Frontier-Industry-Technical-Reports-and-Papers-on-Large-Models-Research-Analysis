@@ -295,6 +295,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </table>
 <blockquote>
 <p>★★ <strong>最后一行是 VLA 和普通视觉语言模型的真正分界</strong>：语言模型输出的是<strong>词表上的一道选择题</strong>（从十几万个 token 里挑一个），VLA 输出的是<strong>连续实数向量</strong>。挑错一个词读者还能看懂，关节角差 5 度杯子就摔了 —— 这个差别会在 1.3 节变成一个实打实的技术难点。</p>
+<p>★ <strong>想看这张表里每一行的具体数字</strong>（图像切成几个图块、拼起来一共多少 token、动作块是多大一个数组、控制器多久要一条指令），<a href="00-一个例子讲清关系.html">00 章</a> 第七节有一次从头到尾的走查，本章后面会反复引用它。</p>
 </blockquote>
 <p><strong>为什么这个设计是个突破</strong>：在 VLA 之前，机器人得靠工程师针对每个任务写规则、调参数。VLA 的想法是——<strong>把已经在互联网上学过「什么是杯子、什么叫递给我」的视觉语言大模型，直接接上电机</strong>。</p>
 <blockquote>
@@ -345,7 +346,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     ⟹ 「转 37.4 度」≈ 第 148 号格子 ⟹ 变成了选择题，语言模型直接能做
 
     ✅ 优点：改动最小，语言模型的整套训练流程直接复用
-    ⚠️ 缺点：精度被格子大小卡死；要输出 20 步动作 × 7 个关节 = 140 个 token，太慢
+    ⚠️ 缺点：精度被格子大小卡死；要输出 20 步动作 x 8 维（7 关节 + 夹爪）
+             = 160 个 token，太慢
 </code></pre></div>
 
 <h3 id="2">路线② 扩散 / 流匹配：让模型直接「画」出连续动作</h3>
@@ -360,12 +362,143 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>★ π0 系列走的就是这条路。</p>
 <h3 id="3">路线③ 更聪明的动作分词器</h3>
 <div class="codehilite"><pre><span></span><code>    ✅ FAST：专为 VLA 设计的【动作块分词器】
+       🔎 思路是先把一段动作变换到【频域】再量化，
+          ⟹ 一段动作的低频部分（大致往哪挪）几个系数就描述完了，
+             原来要几百个 token 的东西能压到几十个量级
        ⟹ 证明了「离散 token」这条路也能做好，不一定非要上扩散
-    🔎 ICLR 2026 上的新分词器进一步用了【残差矢量量化】等技术
+    🔎 ICLR 2026 上的新分词器进一步用了【残差矢量量化】
+       （Residual Vector Quantization，RVQ：先量化一遍，
+         再对「量化误差」量化第二遍，层层补残差）等技术
+</code></pre></div>
+
+<h3 id="_1">★★ 四种做法横着比一遍</h3>
+<p>上面三条路讲的是<strong>「一个动作怎么编码」</strong>。但真实系统里还有一个和它<strong>正交</strong>的选择——<strong>「一次输出几个动作」</strong>。把四件事摆在一张表里，这个领域的选型就清楚了：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><strong>① 连续向量回归</strong></th>
+<th><strong>② 离散 token 分箱</strong></th>
+<th><strong>③ 扩散 / 流匹配</strong></th>
+<th><strong>④ 动作分块</strong>（叠加项）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>一句话</strong></td>
+<td>动作头直接吐 8 个实数</td>
+<td>每一维切 256 格，当成词输出</td>
+<td>从随机噪声去噪成一段轨迹</td>
+<td>一次吐一整段，而不是一步</td>
+</tr>
+<tr>
+<td><strong>输出形状</strong></td>
+<td><code>[8]</code></td>
+<td>H × 8 个整数 token</td>
+<td><code>[H, 8]</code></td>
+<td>把上面任一种的 H 从 1 变成 50</td>
+</tr>
+<tr>
+<td><strong>出 1 秒动作<br>（50 步 × 8 维）要解码几次</strong></td>
+<td>1 次前向</td>
+<td>⚠️ <strong>400 个 token</strong>，自回归就是 400 次</td>
+<td>去噪迭代 <strong>10~50 次</strong><br>（每次都出完整的 <code>[50, 8]</code>）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>能不能和语言模型<br>共享同一套词表</strong></td>
+<td>❌ 不能，得换一个回归头</td>
+<td>✅ <strong>能</strong> —— 这是它最大的卖点</td>
+<td>❌ 不能，要外挂一个「动作专家」</td>
+<td>与此无关</td>
+</tr>
+<tr>
+<td><strong>延迟</strong></td>
+<td>✅ 最低</td>
+<td>⚠️ 随 H <strong>线性</strong>涨，最慢</td>
+<td>⚠️ 中等，被去噪步数支配</td>
+<td>✅ ★ <strong>把延迟摊薄</strong>：想一次管 H 步</td>
+</tr>
+<tr>
+<td><strong>动作平滑度</strong></td>
+<td>⚠️ 步与步之间可能跳变</td>
+<td>⚠️ 被格子量化，有台阶感</td>
+<td>✅ 天生平滑</td>
+<td>✅ 块内天然连贯</td>
+</tr>
+<tr>
+<td><strong>★ 多峰性</strong></td>
+<td>❌ <strong>会取平均</strong>，平均出一个两边都不对的动作</td>
+<td>✅ softmax 分布天然多峰</td>
+<td>✅ 天生多峰</td>
+<td>与此无关</td>
+</tr>
+<tr>
+<td><strong>给不给得出<br>这个动作的概率</strong></td>
+<td>❌ 不给</td>
+<td>✅ <strong>给</strong>（就是 softmax 那一列数）</td>
+<td>❌ <strong>不给</strong> ⟹ 1.6 节的大麻烦</td>
+<td>与此无关</td>
+</tr>
+<tr>
+<td><strong>训练难度</strong></td>
+<td>✅ 最简单（一个均方误差就完了）</td>
+<td>✅ 和训语言模型一模一样（交叉熵）</td>
+<td>⚠️ 要调噪声调度、去噪步数</td>
+<td>⚠️ 块越长越难，还要处理「块和块怎么接上」</td>
+</tr>
+<tr>
+<td><strong>代表</strong></td>
+<td>早期行为克隆的回归头</td>
+<td>RT-1 / RT-2 / OpenVLA / FAST</td>
+<td>π0 系列 / Diffusion Policy</td>
+<td>ACT、π0，以及 2024 年后几乎所有系统</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📖 <strong>多峰性</strong>（multimodality，多模态分布 —— ⚠️ 注意这个「多模态」和「图文多模态」是两个完全不同的词，只是中文撞名）：<strong>对同一个画面，可能有好几个都正确的动作。</strong><br />
+<code>杯子正前方挡着一个碗，手要绕过去。
+      左绕  ==&gt; 对
+      右绕  ==&gt; 也对
+    ① 连续向量回归学到的是这两者的【平均】==&gt; 直直撞上碗。
+    ==&gt; ★★ 这就是扩散策略被请进机器人领域的头号理由：
+        它建模的是【一个分布】，不是【一个数】。</code></p>
+<p>★★ <strong>这张表最要紧的一句话：④ 和 ①②③ 不在同一个维度上，可以任意叠加。</strong><br />
+⟹ RT-2 ≈ ②；π0 ≈ ③ + ④；FAST ≈ ② + ④。看到一篇新论文，先把这两件事拆开问：<strong>动作怎么编码？一次出几步？</strong></p>
+</blockquote>
+<p><strong>为什么④几乎成了标配——把延迟和控制周期并排一除就知道了</strong>（沿用 <a href="00-一个例子讲清关系.html">00 章</a> 第七节那套数字：控制周期 20 ms，一次要出 1 秒 = 50 步动作）：</p>
+<div class="codehilite"><pre><span></span><code>    走 ② 这条路，50 步 x 8 维 = 400 个 token 要自回归吐出来。
+    哪怕一个 token 只要 1 ms：
+
+      不分块（每步重想一次）：  8 token x 1 ms =   8 ms  想一步
+                               ==&gt; 控制周期 20 ms，勉强跟得上，
+                                   但大脑【什么别的都干不了】
+
+      分块一次出 1 秒：        400 token x 1 ms = 400 ms 想一次
+                               ==&gt; 这 400 ms 换来 1000 ms 的动作
+                               ==&gt; ★ 占空比 40%，还剩 60% 的余量，能跑
+
+    ==&gt; ★★ 动作分块不是为了动作更好看，是为了【把一次昂贵的思考
+        摊到几十个控制周期上】，让大模型在毫秒级控制环里活下来。
+    ==&gt; ⚠️ 代价：块内这 1 秒是【睁眼瞎】—— 动作早就定好了，
+        中途看到杯子滑了也改不了。所以实际系统只执行块的前一小段
+        就重新规划（00 章那个例子是 50 步只执行 10 步）。
+    ==&gt; 🔎 这也正是 FAST 那类分词器的价值：把 400 个 token 压到几十个，
+        占空比就从 40% 掉到个位数。
+
+    ⚠️ 上面只算了【吐 token】的时间，没算「看一眼画面 + 过一遍主干」
+       那一次前向 —— 那才是大头（1.7 节会算出它在边缘芯片上要 68 ms）。
+       把它加回去：
+         不分块：每 20 ms 要跑一次 68 ms 的前向  ==&gt; ★ 根本不成立
+         分块：  (68 + 400) ms 换 1000 ms 的动作 ==&gt; 占空比约 47%，还能跑
+       ==&gt; ⚠️ 所以「不分块勉强跟得上」只在纸面上成立；
+          真实系统里动作分块不是优化项，是【准入条件】。
 </code></pre></div>
 
 <blockquote>
-<p>🔑 <strong>这一节记住</strong>：VLA 的一半工程量，花在「怎么把连续动作塞进一个语言模型的框架里」。</p>
+<p>🔑 <strong>这一节记住</strong>：VLA 的一半工程量，花在「怎么把连续动作塞进一个语言模型的框架里」。<br />
+★ 而且这笔工程量有一半不是为了「准」，是为了「快」—— 上面那个占空比的账，就是全部原因。</p>
 </blockquote>
 <hr />
 <h2 id="14">1.4 ★★ 第二个技术难点：快慢两个脑子</h2>
@@ -440,6 +573,114 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
                    互联网上【一条都没有】—— 因为没人会把关节角度发到网上
 </code></pre></div>
 
+<h3 id="_2">★★ 先把「极贵」换算成数量级——不然这一节只是情绪</h3>
+<p><strong>「数据贵」这三个字说一百遍也没用，得算出来差多少。</strong> ⚠️ 难点在于两边的单位根本不是一回事：文本按 <strong>token（词元）</strong> 计，机器人数据按 <strong>条（轨迹 / episode）</strong> 计。</p>
+<div class="codehilite"><pre><span></span><code>    ⚠️ 第一件要避开的事：
+       「10^13 个 token」  除以  「10^6 条轨迹」  是【没有意义】的。
+       分子分母不是同一种东西，相除得到的数不代表任何现实。
+
+    ==&gt; 必须先把两边换成【同一个单位】再比。下面换两次：按 token 比一次，按小时比一次。
+</code></pre></div>
+
+<p><strong>换算用到的假设</strong>（⚠️ <strong>全部是本文自己设的量级估值，不是任何论文的结论</strong>；换一组假设，结果会在一两个数量级内浮动）：</p>
+<table>
+<thead>
+<tr>
+<th>假设项</th>
+<th>取值</th>
+<th>为什么这么取</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>一条遥操作轨迹多长</td>
+<td>20 秒</td>
+<td>桌面抓放类任务的典型时长</td>
+</tr>
+<tr>
+<td>记录频率</td>
+<td>10 Hz</td>
+<td>⟹ 一条 = 20 × 10 = <strong>200 个时间步</strong></td>
+</tr>
+<tr>
+<td>一个时间步的监督信号</td>
+<td>8 维动作</td>
+<td>沿用 1.1 节那个 <code>[8]</code></td>
+</tr>
+<tr>
+<td>一维动作折合几个 token</td>
+<td>1 个</td>
+<td>按 1.3 节路线②「离散分箱」口径 ⟹ <strong>一步 = 8 个动作 token</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>口径一：都换成 token。</strong></p>
+<div class="codehilite"><pre><span></span><code>    文本侧（🔎 公开披露的前沿配方在这个量级）：
+      预训练语料  ~ 1.5 x 10^13 token
+
+    机器人侧（🔎 公开数据集最大的一档，Open X-Embodiment 约 100 万条）：
+      时间步总数 = 10^6 条  x 200 步/条     = 2.0 x 10^8 步
+      动作 token = 2.0 x 10^8 x 8 token/步 = 1.6 x 10^9 token
+
+    相除（现在单位一致了，可以除）：
+      1.5 x 10^13  /  1.6 x 10^9  =  约 9,400 倍
+
+    ==&gt; ★★ 差【四个数量级】。
+</code></pre></div>
+
+<p><strong>口径二：都换成小时。</strong> 这个口径更好懂，也更能看清各类数据之间的阶梯：</p>
+<table>
+<thead>
+<tr>
+<th>数据种类</th>
+<th>量级（小时）</th>
+<th>有没有动作标签</th>
+<th>代表</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>互联网视频</strong></td>
+<td><strong>10⁶</strong> 小时</td>
+<td>❌ 没有</td>
+<td>🔎 V-JEPA 2 预训练用了「超过 100 万小时」（见 <a href="02-世界模型三条路线.html">02 章</a> 2.4 节）</td>
+</tr>
+<tr>
+<td><strong>人类第一视角视频</strong></td>
+<td><strong>10⁴</strong> 小时</td>
+<td>❌ 没有</td>
+<td>🔎 Ego4D 约 3,700 小时；GR00T N1.7 的 EgoScale 约 20,854 小时</td>
+</tr>
+<tr>
+<td>★ <strong>带动作标签的真机数据</strong></td>
+<td><strong>10³ ~ 10⁴</strong> 小时</td>
+<td>✅ <strong>有</strong></td>
+<td>🔎 Open X-Embodiment 约 100 万条 ≈ 5,600 小时（= 10⁶ × 20 秒 ÷ 3600）；DROID 约 350 小时</td>
+</tr>
+</tbody>
+</table>
+<div class="codehilite"><pre><span></span><code>    ==&gt; ★ 每往下一档，【量】掉一到两个数量级，【可用性】升一档。
+    ==&gt; 上面那张「五条出路」表里的每一条，本质都是同一句话：
+        拿上面两档的【量】，去补最下面一档的【质】。
+</code></pre></div>
+
+<p><strong>口径三：换成人力——这才是「贵」字落地的地方。</strong></p>
+<div class="codehilite"><pre><span></span><code>    一条轨迹 20 秒，但真实采集还要摆场景、复位、挑废片。
+      一个人一小时实际能采到的 ==&gt; 约 50 条（⚠️ 本文估值）
+
+    要采满 10^6 条：
+      10^6 / 50          = 2 x 10^4 人·小时
+      按一人一年工作 2,000 小时
+      2 x 10^4 / 2,000   = ★★ 10 个人全职干一整年
+
+    ==&gt; 而这 10 人年换来的，是比文本语料小【四个数量级】的东西。
+    ==&gt; 文本那 10^13 token 的采集成本是【零】—— 它本来就躺在互联网上。
+</code></pre></div>
+
+<blockquote>
+<p>★★ <strong>这个四个数量级的差距，是本领域一切技术选择的根源。</strong> 仿真、手持采集装置、人类视频预训练、世界模型生成数据 —— 它们看上去是四件不相干的事，其实都在回答同一个问题：<strong>怎么绕开那 10 个人年。</strong><br />
+⚠️ <strong>但请只记量级，别记具体数</strong>：上面每一步都挂着假设（20 秒一条、50 条一人时、8 token 一步）。换一组合理的假设，倍数会在 <strong>10³ ~ 10⁵</strong> 之间浮动。<strong>能确定的是「三到五个数量级」，不是「三倍五倍」。</strong></p>
+</blockquote>
 <p>现在的五条出路，按成本从高到低：</p>
 <table>
 <thead>
@@ -507,10 +748,14 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <p><strong>解法 RECAP</strong>（RL with Experience and Corrections via Advantage-conditioned Policies）：</p>
 <div class="codehilite"><pre><span></span><code>    ① 先用【离线强化学习】预训练一个通才 VLA
+       📖 离线强化学习 offline RL：只拿【已经录好】的数据训，
+          训练过程中不和真实环境交互 —— 和「在线」相对
     ② 让它上机器人真干活，同时收集两种东西：
          · 它自己跑出来的轨迹（有成功有失败）
          · ★ 人类专家在它快搞砸时【实时接管纠正】的操作
     ③ 用这些数据训一个【价值函数】，判断「某个动作到底是好是坏」
+       📖 价值函数 value function：吃进「当前状态（+ 动作）」，
+          吐出一个数，表示「从这里往下走，预计能拿到多少好处」
     ④ 把这个好坏判断（叫【优势 advantage】）作为【条件】喂回给 VLA
 </code></pre></div>
 
@@ -518,7 +763,11 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <p>★★ <strong>最精妙的一步在 ④</strong>，它绕开了一个硬约束：<br />
 ```<br />
     ⚠️ 1.3 说过，流匹配输出的动作【给不出概率值】<br />
-       ⟹ PPO、SAC 这些标准强化学习算法【全都用不了】（它们都要算概率比）</p>
+       📖 PPO = Proximal Policy Optimization，近端策略优化<br />
+       📖 SAC = Soft Actor-Critic，软演员-评论家<br />
+       ⟹ 这两类标准强化学习算法【全都用不了】——<br />
+          它们都要算「新策略给这个动作的概率 ÷ 旧策略给的概率」，<br />
+          而流匹配根本不输出概率，这个比值无从算起</p>
 <div class="codehilite"><pre><span></span><code>✅ RECAP 的绕法：不算概率，改成给每个动作贴「好/坏」标签，
    把标签当成【输入条件】训练。
    部署时，永远把条件设成「好」⟹ 模型就只生成它认为好的动作。
@@ -535,6 +784,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </code></pre></div>
 
 <blockquote>
+<p>⚠️ <strong>读这几个数之前，先过一道噪声门槛。</strong> 机器人论文的真机试验常常只有几十次，而成功率的标准误是 <code>SE ≈ √(p(1−p)/n)</code> —— <strong>n = 20、p = 0.5 时 SE 就有 11 个百分点</strong>。上面这几条转述<strong>没有给出试验次数</strong>，所以只能当<strong>趋势</strong>看，不能当可比的数。完整门槛与配对检验的做法见 <a href="附-速查表.html">附-速查表</a> F2 节。<br />
+⚠️ <strong>还有一个口径要分清</strong>：「失败率大约减半」和「成功率提升 X%」是两回事。失败率 30% → 15%，等于成功率 70% → 85%，是<strong>涨了 15 个百分点</strong>；写成「提升 15%」会被读成 70% → 80.5%，差了一截。</p>
 <p>🔑 <strong>为什么这件事重要</strong>：这是「机器人真正开始<strong>自我改进</strong>」的第一个生产级信号。<br />
 ⟹ 但注意——<strong>它靠的是真机试错</strong>。真机试错依然又慢又贵。<br />
 ⟹ ★★ <strong>「那能不能在想象里试错？」——这就直接引出了世界模型。</strong></p>
@@ -550,12 +801,88 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
        —— 这就是 2026 年世界模型「杀回来」的原因。
 </code></pre></div>
 
+<h3 id="_3">★★ 每堵墙具体卡在哪个数字上</h3>
+<p><strong>「四堵墙」说出来很顺口，但不给数字就只是口号。</strong> 每一堵墙其实都卡在一个可以写出来的数上：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>墙</th>
+<th>⚠️ 它具体卡在哪个数字上</th>
+<th>这个数哪来的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>泛化</strong></td>
+<td>卡在<strong>训练数据覆盖的场景数</strong>：🔎 公开真机数据集里场景最多的 DROID 约 <strong>564 个场景</strong>，Open X-Embodiment 约 <strong>22 种本体</strong>；而光是「别人家的厨房」这一类，真实布局就远不止几百种</td>
+<td>🔎 数据集公开数字</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong>长程</strong></td>
+<td>卡在 <strong>99.31%</strong>：一个 100 步的任务想做到 50% 成功率，<strong>单步成功率必须 ≥ 0.5^(1/100) = 99.31%</strong></td>
+<td>⚠️ 本文推算，见下</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>实时</strong></td>
+<td>卡在 <strong>68 ms</strong>：一个 7B（70 亿参数）VLA 按 BF16 存是 <strong>14 GB</strong>；边缘芯片 Jetson AGX Orin 的显存带宽是 <strong>204.8 GB/s</strong> ⟹ 光把权重读一遍就要 14 ÷ 204.8 = <strong>68 ms</strong>，频率上限 <strong>14.6 Hz</strong></td>
+<td>✅ 公开规格 + ⚠️ 本文推算</td>
+</tr>
+<tr>
+<td>④</td>
+<td><strong>数据</strong></td>
+<td>卡在 <strong>10 个人年</strong>和 <strong>四个数量级</strong>：见 1.5 节那三笔账</td>
+<td>⚠️ 本文推算</td>
+</tr>
+</tbody>
+</table>
+<p><strong>② 长程那个 99.31% 是怎么来的</strong>（⚠️ <strong>示意模型</strong>，只用来看量级）：</p>
+<div class="codehilite"><pre><span></span><code>    假设：每一步成功与否互相独立，而且失败【不可挽回】。
+          单步成功率 p，N 步全做对的概率 = p^N
+
+      p = 0.95, N =  10   ==&gt;  0.95^10   = 60%
+      p = 0.95, N =  50   ==&gt;  0.95^50   =  7.7%
+      p = 0.99, N =  50   ==&gt;  0.99^50   = 61%
+      p = 0.99, N = 100   ==&gt;  0.99^100  = 37%
+
+    反过来问：100 步的任务想做到 50% 成功率，单步要多准？
+      p = 0.5^(1/100) = 99.31%
+
+    ==&gt; ★★ 这就是「长程」两个字的全部含义 ——
+        它要的不是「做得对」，是【99.3% 那一档的对】。
+        而 1.5 节刚算过，训练数据只有文本的万分之一。
+
+    ⚠️ 这个模型是【下界】，不是实际值：真实任务里步与步并不独立，
+       有些偏差下一步能自己修回来。
+    ==&gt; ★ 但正因为如此，1.6 节那套「从失败里学」的意义才看得清楚：
+        它不是把 p 从 0.99 推到 0.993，
+        而是给系统【装上纠错能力】，让「连乘」这个模型本身失效。
+</code></pre></div>
+
+<p><strong>③ 实时那个 68 ms 还解释了 1.4 节的频率表是怎么来的</strong>：</p>
+<div class="codehilite"><pre><span></span><code>    理论上限      14 GB / 204.8 GB/s        = 68 ms  ==&gt; 14.6 Hz
+    打个带宽折扣  实际利用率按 70% 算        ==&gt; 约 10 Hz
+    再加上视觉编码器、动作头、数据搬运        ==&gt; 落进 ★ 7~9 Hz
+
+    ==&gt; ★★ 1.4 节那个「慢脑 7~9 Hz」不是谁拍脑袋定的，
+        它基本就是【权重除以带宽】这道除法的结果。
+    ⚠️ 只算了「把权重读一遍」这一项，是个乐观下界；
+       真机上还要加上预处理、通信和调度。
+</code></pre></div>
+
+<blockquote>
+<p>🔑 <strong>把四堵墙连起来读</strong>：①④ 是同一堵墙的两面（数据不够 ⟹ 覆盖不住新场景），②是①的放大器（每步差一点，100 步后差很多），③是硬件给的硬天花板。⟹ ★★ 所以 ①②④ 才会一起指向同一个出口——<strong>造数据、在想象里试错</strong>，也就是接下来两章的全部内容。</p>
+</blockquote>
 <hr />
-<h2 id="_1">🔑 本章一句话</h2>
+<h2 id="_4">🔑 本章一句话</h2>
 <blockquote>
 <p><strong>VLA = 视觉语言大模型 + 一个动作输出头</strong>，靠模仿人类演示学会干活。<br />
 它的两个核心工程问题是「<strong>连续动作怎么输出</strong>」和「<strong>快慢两个脑子怎么分工</strong>」，<br />
 而它的<strong>天花板是数据</strong>——⚠️ 这个天花板，是世界模型被请回来的直接原因。</p>
+<p>★ <strong>本章要带走的四个数</strong>：动作分块把一次 <strong>400 ms</strong> 的思考摊到 <strong>1 秒</strong>的动作上（1.3 节）；慢脑 <strong>7~9 Hz</strong> 基本就是「14 GB 权重 ÷ 204.8 GB/s 带宽」这道除法的结果（1.4 / 1.7 节）；带动作标签的真机数据比文本语料小 <strong>四个数量级</strong>、折合约 <strong>10 个人年</strong>（1.5 节）；100 步的任务要 50% 成功率，单步得准到 <strong>99.31%</strong>（1.7 节）。</p>
 </blockquote>
 <hr />
 <p><strong>上一章</strong> ← <a href="00-一个例子讲清关系.html">00 一个例子讲清关系</a> ｜ <strong>下一章</strong> → <a href="02-世界模型三条路线.html">02 世界模型的三条路线</a></p>
